@@ -1,0 +1,180 @@
+{
+  "project": "Earth Observatory",
+  "purpose": "Local mixed-format research demonstration",
+  "source_files_modified": false,
+  "sources": [
+    {
+      "path": "documents/earth-observation-demo.pdf",
+      "origin": "original demo document generated for this collection",
+      "credit": "Lumvise demo collection; original text and vector artwork",
+      "created_at_utc": "2026-09-22T17:20:24.230704+00:00",
+      "size_bytes": 4065,
+      "sha256": "0ba02f56d4865bf799ac0c889be213c198f70ea9ec9ed1a15d4613fa51d27bda",
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_file": "licenses/CC0-1.0.txt",
+      "license_evidence": "CC0 dedication printed in the PDF and REUSE.md; no copied illustrations, photos, logos, or embedded font programs",
+      "reuse_conditions": [
+        "No attribution required by CC0; credit retained for provenance.",
+        "CC0 does not grant trademark, patent, or endorsement rights."
+      ],
+      "reuse_reviewed_on": "2026-09-22"
+    },
+    {
+      "path": "measurements/mauna-loa-monthly-co2.csv",
+      "download_url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.csv",
+      "source_page": "https://gml.noaa.gov/ccgg/trends/data.html",
+      "credit": "Data provided by NOAA Global Monitoring Laboratory, Boulder, Colorado, USA (https://gml.noaa.gov). Dr. Xin Lan, NOAA/GML, and Dr. Ralph Keeling, Scripps Institution of Oceanography. Original measurement and citation headers retained.",
+      "usage_policy": "https://gml.noaa.gov/about/disclaimer.html",
+      "download_completed_at_utc": "2026-09-22T11:35:38.030936+00:00",
+      "size_bytes": 38732,
+      "sha256": "dcf0198658c87ebb5e3b2ce807fe3a52e1d5f000aa0479fb1bf334afb7adde4d",
+      "reuse_reviewed_on": "2026-09-22",
+      "license": "NOAA-GML-public-data-terms",
+      "license_url": "https://gml.noaa.gov/about/disclaimer.html",
+      "license_evidence": [
+        "https://gml.noaa.gov/about/disclaimer.html",
+        "https://gml.noaa.gov/ccgg/trends/data.html",
+        "Original file header: USE OF NOAA GML DATA; freely available with relevant citation."
+      ],
+      "reuse_conditions": [
+        "Retain source citation and original notices.",
+        "Do not claim NOAA material as your own or imply NOAA endorsement.",
+        "Do not present modified content as official government material.",
+        "For third-party Scripps data, preserve informational content; reformatting is permitted under the NOAA terms.",
+        "NOAA-produced material is public domain in the United States; do not assert a new copyright over it."
+      ]
+    },
+    {
+      "path": "measurements/mauna-loa-annual-co2.txt",
+      "download_url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_annmean_mlo.txt",
+      "source_page": "https://gml.noaa.gov/ccgg/trends/data.html",
+      "credit": "Data provided by NOAA Global Monitoring Laboratory, Boulder, Colorado, USA (https://gml.noaa.gov). Dr. Xin Lan, NOAA/GML, and Dr. Ralph Keeling, Scripps Institution of Oceanography. Original measurement and citation headers retained.",
+      "usage_policy": "https://gml.noaa.gov/about/disclaimer.html",
+      "download_completed_at_utc": "2026-09-22T11:35:37.874840+00:00",
+      "size_bytes": 3696,
+      "sha256": "3eea72f254116cd43275fa33b0ed201b14550e6ba21e4d6b4482c24a95f98ab7",
+      "reuse_reviewed_on": "2026-09-22",
+      "license": "NOAA-GML-public-data-terms",
+      "license_url": "https://gml.noaa.gov/about/disclaimer.html",
+      "license_evidence": [
+        "https://gml.noaa.gov/about/disclaimer.html",
+        "https://gml.noaa.gov/ccgg/trends/data.html",
+        "Original file header: USE OF NOAA GML DATA; freely available with relevant citation."
+      ],
+      "reuse_conditions": [
+        "Retain source citation and original notices.",
+        "Do not claim NOAA material as your own or imply NOAA endorsement.",
+        "Do not present modified content as official government material.",
+        "For third-party Scripps data, preserve informational content; reformatting is permitted under the NOAA terms.",
+        "NOAA-produced material is public domain in the United States; do not assert a new copyright over it."
+      ]
+    },
+    {
+      "path": "geography/earthquakes-m2.5-week.geojson",
+      "download_url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_week.geojson",
+      "source_page": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php",
+      "credit": "U.S. Geological Survey, Magnitude 2.5+ Earthquakes, Past Week. Frozen feed response; generated time is retained in metadata.",
+      "usage_policy": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+      "download_completed_at_utc": "2026-09-22T11:35:36.541482+00:00",
+      "size_bytes": 246433,
+      "sha256": "9644b23f7b55f152940684e9411856f1cd8400ca68639a1e8091dd76cd9ebcfa",
+      "reuse_reviewed_on": "2026-09-22",
+      "license": "USGS-public-domain-data",
+      "license_url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+      "license_evidence": [
+        "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+        "https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php"
+      ],
+      "reuse_conditions": [
+        "Credit U.S. Geological Survey.",
+        "USGS-produced data are public domain in the United States.",
+        "No agency endorsement or trademark rights are conveyed."
+      ]
+    },
+    {
+      "path": "imagery/observation-islands.png",
+      "origin": "AI-generated original demo illustration; built-in image_gen, no reference images",
+      "credit": "Lumvise demo collection; synthetic illustration, not observational evidence",
+      "created_at_utc": "2026-09-22T17:34:50.236337+00:00",
+      "size_bytes": 2212215,
+      "sha256": "7d7f18f1bdfe273827a83bb39fc90e8d8b8608ffd8de7b4abf9d1656dea364f7",
+      "dimensions": [
+        1254,
+        1254
+      ],
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_file": "licenses/CC0-1.0.txt",
+      "license_evidence": "Explicit dedication in REUSE.md, to the extent copyright or related rights exist; original generated output without input/reference images",
+      "reuse_conditions": [
+        "Copy, modify and redistribute, including commercially, under CC0.",
+        "No attribution required; generation provenance retained voluntarily.",
+        "Synthetic illustration, not satellite data, a measured map, or an agency product."
+      ],
+      "generation_prompt": "Create one original square 1024x1024 educational Earth-observation demo illustration. A clearly stylized painted cutaway landscape: cobalt ocean, emerald islands with an angular mountain, pale clouds, curved atmospheric bands, a tiny generic abstract observation satellite high above. Editorial science illustration with geometric shapes, elegant restrained teal/blue palette on a dark navy background. Large central island region for a selectable rectangular annotation. Clearly invented geography, not a realistic satellite photograph or a real mapped location. No text, labels, logos, flags, watermark, agency identifiers, recognizable people, copyrighted characters, or imitation of a particular artist. Do not reference or reproduce NASA Blue Marble imagery. This is a fresh illustration to demonstrate selecting regions in a software app."
+    },
+    {
+      "path": "media/flower.mp4",
+      "download_url": "https://developer.mozilla.org/shared-assets/videos/flower.mp4",
+      "source_page": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/video",
+      "credit": "MDN interactive-examples contributors; CC0 media example, not Earth science evidence.",
+      "download_completed_at_utc": "2026-09-22T13:23:35.867747+00:00",
+      "size_bytes": 1128375,
+      "sha256": "0cd83d944a6ca7822b4a8306cecc60a36e859b041f6702c6a1ad9ead78924451",
+      "reuse_reviewed_on": "2026-09-22",
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_file": "licenses/CC0-1.0.txt",
+      "upstream_commit": "13024db581b08fae11a0ca229497198b9b0534e7",
+      "license_evidence": [
+        "https://github.com/mdn/interactive-examples/blob/13024db581b08fae11a0ca229497198b9b0534e7/LICENSE",
+        "https://github.com/mdn/interactive-examples/blob/13024db581b08fae11a0ca229497198b9b0534e7/live-examples/media/cc0-videos/flower.mp4"
+      ],
+      "upstream_git_blob_sha1": "bd91051dc5b10dc351ea06e5430dd335fb1ffb14",
+      "verification": "Local Git blob SHA-1 equals the asset in the pinned CC0 repository; SHA-256 also recorded.",
+      "reuse_conditions": [
+        "CC0 permits copying, modification and redistribution, including commercially, without attribution.",
+        "Credit retained voluntarily for provenance; no endorsement is implied."
+      ]
+    },
+    {
+      "path": "media/t-rex-roar.mp3",
+      "download_url": "https://developer.mozilla.org/shared-assets/audio/t-rex-roar.mp3",
+      "source_page": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/audio",
+      "credit": "MDN interactive-examples contributors; CC0 media example, not Earth science evidence.",
+      "download_completed_at_utc": "2026-09-22T13:23:36.042405+00:00",
+      "size_bytes": 39868,
+      "sha256": "41191d0727073bf848bcc8f0bd851d71a0b0058e901abb1c1b236ad327bda52e",
+      "reuse_reviewed_on": "2026-09-22",
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "license_file": "licenses/CC0-1.0.txt",
+      "upstream_commit": "13024db581b08fae11a0ca229497198b9b0534e7",
+      "license_evidence": [
+        "https://github.com/mdn/interactive-examples/blob/13024db581b08fae11a0ca229497198b9b0534e7/LICENSE",
+        "https://github.com/mdn/interactive-examples/blob/13024db581b08fae11a0ca229497198b9b0534e7/live-examples/media/cc0-audio/t-rex-roar.mp3"
+      ],
+      "upstream_git_blob_sha1": "6b2b066a0f6fd1890ec3a70a0afcda21389b8c37",
+      "verification": "Local Git blob SHA-1 equals the asset in the pinned CC0 repository; SHA-256 also recorded.",
+      "reuse_conditions": [
+        "CC0 permits copying, modification and redistribution, including commercially, without attribution.",
+        "Credit retained voluntarily for provenance; no endorsement is implied."
+      ]
+    }
+  ],
+  "reuse_policy": "Include only original CC0 material or assets with identified upstream free-reuse terms; public availability alone is insufficient. See REUSE.md.",
+  "original_material_license": "CC0-1.0; original demo PDF, generated illustration and collection documentation, to the extent rights exist; not third-party datasets or app code.",
+  "excluded_sources": [
+    {
+      "path": "documents/earthquake-country.pdf",
+      "sha256": "24fd5fcec9d38cd7f2362c026367a71a6faca1d597238291f0c40063c99b23a2",
+      "reason": "Removed: third-party illustration reuse permissions were not established. Not included in the distributable demo."
+    },
+    {
+      "path": "imagery/blue-marble-2002.jpg",
+      "sha256": "9824d30eca98594e73fd276388108ec1ee1ab494038e730fd378efc1aae4ffa6",
+      "reason": "Replaced agency-specific image terms with an original CC0-dedicated generated illustration for uniform visual/audio example licensing; not a claim that NASA reuse is prohibited."
+    }
+  ]
+}
