@@ -1,37 +1,67 @@
+![Lumvise — semantic memory for your projects](assets/lumvise-banner.png)
+
 # Lumvise
 
-**Project knowledge that stays connected to your code.**
+**A visual workspace for your code, conversations, and project knowledge.**
 
-Lumvise gives AI tools a shared, local source of project structure and knowledge
-through the Model Context Protocol (MCP). Explore semantic relationships, attach
-decisions and specifications to the code they describe, and retrieve that context
-in later conversations.
+Explore your project, talk through ideas with an Assistant, and keep the useful
+context attached to your code. Lumvise combines an interactive desktop experience
+with a shared local knowledge core that AI tools can access through the
+Model Context Protocol (MCP).
 
-[Downloads](https://github.com/Lumvise/lumvise-main/releases) ·
-[Demo projects](demos/) · [Contributing](#contributing)
+[Download the macOS preview](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1-preview.1) ·
+[Choose an edition](#choose-an-edition) · [Demo projects](demos/) ·
+[Contributing](#contributing)
+
+## Explore, discuss, and keep the context
+
+- **Interactive workspaces and whiteboards.** Work with visual project context
+  alongside your conversations, with workspace and whiteboard conversations
+  kept separate.
+- **Voice and text Assistant.** Talk through a question or type it. Each
+  conversation owns its canvas; stopping voice keeps that canvas intact.
+  Close a conversation to archive it, then reopen it when you want to continue.
+- **Knowledge connected to your code.** Explore semantic relationships and
+  attach decisions, specifications, reports, and notes to the elements they
+  describe. Retrieve that context in later conversations.
+- **Project context for your AI tools.** Connect an MCP-capable editor or AI
+  client to inspect project structure and create, assign, and retrieve knowledge
+  artifacts from the local database.
+- **An extensible plugin system.** Add capabilities through separately installed
+  plugins. Successful plugin updates keep their selected version after restart.
+
+The [demo projects](demos/) provide sample material to explore.
 
 ## Choose an edition
 
-| Edition | What it includes | Source license |
-| --- | --- | --- |
-| Community | Headless runtime, local database, MCP access, Knowledge and Semantic plugins | MIT core; LGPL-3.0-only public plugins |
-| Full application | Desktop workspace, whiteboard and voice Assistant, plus the community capabilities | Proprietary application; included open-source components retain their licenses |
+Choose how you interact with Lumvise. Both editions share the local database,
+Knowledge and Semantic plugins, and MCP access. They use the same foundation for
+project and knowledge workflows; Full adds the graphical interfaces and desktop
+Assistant experience.
 
-This repository contains the Community source. Download available builds from
-[GitHub Releases](https://github.com/Lumvise/lumvise-main/releases); each release
-identifies its edition, signing status and supported platform.
-The full application's proprietary source and internal documentation are private.
+| Edition | How you use it | What is included | Source license |
+| --- | --- | --- | --- |
+| **Community** | Through an MCP-capable editor or AI client | Headless runtime, local database, MCP access, Knowledge and Semantic plugins | MIT core; LGPL-3.0-only public plugins |
+| **Full** | Through the desktop app or an MCP client | Community capabilities, plus the graphical workspace, whiteboard, voice and text Assistant, and conversation canvases | Proprietary desktop application; included open-source components retain their licenses |
 
-## What you can do
+Use Community when your MCP client is your interface. Use Full when you also
+want to explore and discuss the same project knowledge visually. Community has
+no desktop window; Full also supports MCP access.
 
-- Explore a project's semantic structure and dependencies through MCP.
-- Create typed knowledge: specifications, decisions, issues, reports and notes.
-- Assign each knowledge artifact to the semantic element it describes.
-- Keep knowledge in a local database and retrieve it across runtime restarts.
-- Extend the runtime with separately installed, signed plugins.
+This repository contains the Community source. The full application's
+proprietary source and internal implementation documentation stay private.
 
-The Community runtime runs without a desktop UI. Use an MCP-capable editor or AI
-client to work with it. The [demo projects](demos/) offer sample material to explore.
+### First macOS preview
+
+The [first development preview](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1-preview.1)
+includes **Full and Community DMGs for Apple Silicon Macs running macOS 14 or
+newer**. This release provides macOS installers only.
+
+These DMGs are **ad-hoc signed, without an Apple Developer ID signature or
+Apple notarization**. macOS may block downloaded copies. Each download includes
+a SHA-256 checksum file; the release notes identify the exact builds and
+validation performed. Developer ID signing and notarization are deferred to a
+later release.
 
 ## Build from source
 
