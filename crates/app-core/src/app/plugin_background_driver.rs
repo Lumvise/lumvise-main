@@ -42,7 +42,7 @@ pub(super) fn spawn(app: Arc<AppCore>, shutdown: Arc<AtomicBool>) -> JoinHandle<
 
 fn run_project_refresh(app: &AppCore, shutdown: &AtomicBool) {
     while !shutdown.load(Ordering::Relaxed) {
-        if let Err(error) = super::project_import::refresh_local_projects(app) {
+        if let Err(error) = refresh_ready_local_projects(app) {
             log_driver_error("project_refresh", &error);
         }
         for _ in 0..200 {
@@ -52,6 +52,18 @@ fn run_project_refresh(app: &AppCore, shutdown: &AtomicBool) {
             thread::sleep(DRIVER_SLEEP_SLICE);
         }
     }
+}
+
+fn refresh_ready_local_projects(app: &AppCore) -> Result<(), String> {
+    // Community has no Canvas catalog; disabled plugins must stay idle too.
+    if !app
+        .plugin_system()
+        .is_active("builtin.canvas")
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
+    super::project_import::refresh_local_projects(app)
 }
 
 fn run_supervisor(app: &Arc<AppCore>, shutdown: &AtomicBool) {
@@ -332,4 +344,15 @@ fn log_driver_error(export_kind: &str, error: &str) {
         message = %error,
         "plugin background driver error"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_refresh_is_idle_without_canvas() {
+        let app = AppCore::in_memory().expect("isolated app without Canvas");
+        refresh_ready_local_projects(&app).expect("optional Canvas refresh stays idle");
+    }
 }

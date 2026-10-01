@@ -3,6 +3,8 @@
 
 use lumvise_app_core::{AcquireResult, ActivationRequest, AppRuntimeCoordinator};
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -127,7 +129,12 @@ fn community_cli_starts_without_commercial_plugins_and_serves_mcp() {
             .join(format!("lumvise{}", std::env::consts::EXE_SUFFIX)),
     )
     .unwrap();
-    let mut process = CommunityProcess(isolated_command(workspace.path()).spawn().unwrap());
+    let mut process = CommunityProcess(
+        isolated_command(workspace.path())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let coordinator = AppRuntimeCoordinator::new(workspace.path().join("runtime"), |_| {
         panic!("already started community host must not launch another process")
     });
@@ -154,7 +161,18 @@ fn community_cli_starts_without_commercial_plugins_and_serves_mcp() {
             .is_file()
     );
     #[cfg(unix)]
-    assert_orderly_termination(&mut process, workspace.path());
+    {
+        assert_orderly_termination(&mut process, workspace.path());
+        let mut stderr = String::new();
+        process
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert!(!stderr.contains("builtin.canvas.list_projects"), "{stderr}");
+    }
 }
 
 #[cfg(unix)]
