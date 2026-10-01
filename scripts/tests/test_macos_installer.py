@@ -202,13 +202,14 @@ class MacOSInstallerTests(unittest.TestCase):
         (root / "LICENSE").write_text("community license\n")
         (root / "LICENSES").mkdir(exist_ok=True)
         (root / "LICENSES/LGPL.txt").write_text("license text\n")
+        (root / "assets").mkdir(exist_ok=True)
+        (root / "assets/lumvise-icon.png").write_bytes(b"public company icon")
         if not private:
             return
         (root / "crates/desktop-product").mkdir(parents=True)
         (root / "crates/desktop-product/Cargo.toml").write_text("[package]\n")
         shell = root / "crates/desktop-shell"
-        (shell / "icons").mkdir(parents=True)
-        (shell / "icons/icon.png").write_bytes(b"private desktop mark")
+        shell.mkdir(parents=True)
         (shell / "tauri.conf.json").write_text('{"identifier":"com.lumvise.desktop"}')
         for relative in (
             "crates/frontend-core/renderer",
@@ -297,6 +298,15 @@ class MacOSInstallerTests(unittest.TestCase):
         self.assertEqual(arguments.target_dir, self.root / "release-cache")
         self.assertEqual(arguments.plugin_release, self.root / "prepared-release")
 
+    def test_public_icon_png_is_a_required_input(self) -> None:
+        build = self.make_builder("community")
+        (self.core / "assets/lumvise-icon.png").unlink()
+
+        with self.assertRaisesRegex(
+            ValueError, "lumvise-icon.png.*required source input"
+        ):
+            build.preflight()
+
     def test_community_uses_public_inputs_only_and_minimal_plugins(self) -> None:
         private_unavailable = self.root / "private-must-not-be-read"
         build = self.make_builder("community", private=private_unavailable)
@@ -309,8 +319,8 @@ class MacOSInstallerTests(unittest.TestCase):
         metadata = plistlib.loads((contents / "Info.plist").read_bytes())
         self.assertEqual(metadata["CFBundleIdentifier"], "com.lumvise.community")
         self.assertNotIn("NSMicrophoneUsageDescription", metadata)
-        self.assertNotIn("CFBundleIconFile", metadata)
-        self.assertFalse((contents / "Resources/Lumvise.icns").exists())
+        self.assertEqual(metadata["CFBundleIconFile"], "Lumvise.icns")
+        self.assertTrue((contents / "Resources/Lumvise.icns").is_file())
         self.assertEqual(
             (contents / "Resources/licenses/LICENSE").read_text(), "community license\n"
         )
@@ -325,7 +335,17 @@ class MacOSInstallerTests(unittest.TestCase):
             server["args"], ["mcp", "--project-root", "/absolute/path/to/project"]
         )
         self.assertFalse(any(call[0] == "npm" for call in build.calls))
-        self.assertFalse(any(call[0] in ("sips", "iconutil") for call in build.calls))
+        icon_calls = [call for call in build.calls if call[0] == "sips"]
+        self.assertEqual(len(icon_calls), 10)
+        self.assertTrue(
+            all(
+                call[4] == str(build.core_workspace / "assets/lumvise-icon.png")
+                for call in icon_calls
+            )
+        )
+        self.assertTrue(
+            any(call[:3] == ("iconutil", "-c", "icns") for call in build.calls)
+        )
         self.assertFalse(
             any(str(private_unavailable) in " ".join(call) for call in build.calls)
         )
@@ -342,7 +362,8 @@ class MacOSInstallerTests(unittest.TestCase):
         )
         self.assertEqual(build.target_dir, (self.core / "target").resolve())
         self.assertNotIn("npm", build.required_tools())
-        self.assertNotIn("sips", build.required_tools())
+        self.assertIn("sips", build.required_tools())
+        self.assertIn("iconutil", build.required_tools())
         release = next(call for call in build.calls if call[:2] == ("cargo", "run"))
         self.assertEqual(release.count("--workspace"), 1)
         self.assertIn("minimal", release)
@@ -372,7 +393,18 @@ class MacOSInstallerTests(unittest.TestCase):
         metadata = plistlib.loads((contents / "Info.plist").read_bytes())
         self.assertEqual(metadata["CFBundleIdentifier"], "com.lumvise.desktop")
         self.assertIn("NSMicrophoneUsageDescription", metadata)
+        self.assertEqual(metadata["CFBundleIconFile"], "Lumvise.icns")
         self.assertTrue((contents / "Resources/Lumvise.icns").is_file())
+        icon_calls = [call for call in build.calls if call[0] == "sips"]
+        self.assertEqual(len(icon_calls), 10)
+        self.assertTrue(
+            all(
+                call[4] == str(build.core_workspace / "assets/lumvise-icon.png")
+                for call in icon_calls
+            )
+        )
+        self.assertIn("sips", build.required_tools())
+        self.assertIn("iconutil", build.required_tools())
         licenses = contents / "Resources/licenses"
         self.assertEqual(
             (licenses / "proprietary-LICENSE").read_text(), "proprietary license\n"

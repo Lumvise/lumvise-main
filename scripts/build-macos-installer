@@ -33,8 +33,10 @@ BASE_TOOLS = (
     "hdiutil",
     "otool",
     "lipo",
+    "sips",
+    "iconutil",
 )
-FULL_TOOLS = ("npm", "sips", "iconutil")
+FULL_TOOLS = ("npm",)
 NOTARIZATION_TOOLS = ("ditto", "spctl")
 NATIVE_SYMBOL_TOOLS = ("dsymutil", "dwarfdump", "strip")
 BASE_PLUGIN_IDS = {"builtin.knowledge", "builtin.semantic"}
@@ -218,6 +220,7 @@ class MacOSInstaller:
             "Cargo.toml",
             "crates/mcp-app-adapter/Cargo.toml",
             "crates/plugin/tooling/builtin-release/Cargo.toml",
+            "assets/lumvise-icon.png",
             "LICENSE",
             "LICENSES",
         )
@@ -230,7 +233,6 @@ class MacOSInstaller:
             "Cargo.toml",
             "crates/desktop-product/Cargo.toml",
             "crates/desktop-shell/tauri.conf.json",
-            "crates/desktop-shell/icons/icon.png",
             "crates/frontend-core/renderer/package.json",
             "crates/plugin/builtins/canvas/renderer/package.json",
             "LICENSE",
@@ -470,8 +472,7 @@ class MacOSInstaller:
         (contents / "MacOS/lumvise").chmod(0o755)
         shutil.copytree(staging / "builtins", resources / "builtins")
         self.copy_licenses(resources)
-        if self.edition == "full":
-            self.create_icon(resources, staging)
+        self.create_icon(resources, staging)
         self.write_metadata(contents)
         (contents / "PkgInfo").write_bytes(b"APPL????")
         return app
@@ -549,20 +550,18 @@ class MacOSInstaller:
             "CFBundleShortVersionString": version,
             "LSMinimumSystemVersion": MINIMUM_MACOS,
             "NSHighResolutionCapable": True,
+            "CFBundleIconFile": "Lumvise.icns",
         }
         if not community:
-            metadata["CFBundleIconFile"] = "Lumvise.icns"
             metadata["NSMicrophoneUsageDescription"] = (
                 "Lumvise uses your microphone for voice conversations when you enable voice input."
             )
         (contents / "Info.plist").write_bytes(plistlib.dumps(metadata))
 
     def create_icon(self, resources: Path, staging: Path) -> None:
-        if self.private_workspace is None:
-            raise ValueError("--private-workspace is required for Full app icon")
         iconset = staging / "Lumvise.iconset"
         iconset.mkdir()
-        source = self.private_workspace / "crates/desktop-shell/icons/icon.png"
+        source = self.core_workspace / "assets/lumvise-icon.png"
         for size in (16, 32, 128, 256, 512):
             for scale, suffix in ((1, ""), (2, "@2x")):
                 self.command(
