@@ -10,6 +10,7 @@ with a shared local knowledge core that AI tools can access through the
 Model Context Protocol (MCP).
 
 [Download the macOS preview](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1-preview.1) ·
+[Explore a graph online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fhuggingface__safetensors%2F.lv%2Fgraph.pz) ·
 [Choose an edition](#choose-an-edition) · [Demo projects](demos/) ·
 [Contributing](#contributing)
 
@@ -31,6 +32,12 @@ Model Context Protocol (MCP).
   plugins. Successful plugin updates keep their selected version after restart.
 
 The [demo projects](demos/) provide sample material to explore.
+
+## Try a graph online
+
+[Inspect the Safetensors demo graph in your browser](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fhuggingface__safetensors%2F.lv%2Fgraph.pz)
+with the online graph viewer. The link points to the sample graph hosted in this
+repository, so you can explore it without installing the desktop app.
 
 ## Choose an edition
 
