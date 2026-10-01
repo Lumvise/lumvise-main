@@ -58,9 +58,9 @@ no desktop window; Full also supports MCP access.
 This repository contains the Community source. The full application's
 proprietary source and internal implementation documentation stay private.
 
-### First macOS preview
+### macOS development preview
 
-The [first development preview](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1-preview.1)
+The [latest development preview](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1-preview.2)
 includes **Full and Community DMGs for Apple Silicon Macs running macOS 14 or
 newer**. This release provides macOS installers only.
 
