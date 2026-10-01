@@ -86,6 +86,20 @@ The bare runtime has an empty plugin catalog. Install the Community plugin
 bundle to enable Knowledge and Semantic tools; the packaged Community installer
 includes that bundle. See [building and installing plugins](#plugins).
 
+### Terminal commands
+
+Running `lumvise` without arguments in a terminal shows brief help for your
+edition. Use `lumvise start` to launch the Full desktop app or the Community
+headless runtime, and `lumvise --help` to show help explicitly. Opening the app
+from Finder still starts it normally.
+
+For an installed macOS edition, use its executable path:
+
+```sh
+"/Applications/Lumvise.app/Contents/MacOS/lumvise" start
+"/Applications/Lumvise Community.app/Contents/MacOS/lumvise" --help
+```
+
 ## Connect an MCP client
 
 Set your client's MCP server command to the absolute path of `lumvise`, with the

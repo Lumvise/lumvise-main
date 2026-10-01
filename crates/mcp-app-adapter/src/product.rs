@@ -8,11 +8,12 @@ use crate::{
 };
 use lumvise_app_core::{AcquireResult, ActivationRequest, AppRuntimeCoordinator, OwnerLease};
 use lumvise_mcp_core::run_stdio;
+use std::io::IsTerminal;
 
 /// Leading runtime-role flag used by MCP brokers; never foregrounds a running app.
 pub(crate) const BACKGROUND_LAUNCH_FLAG: &str = "--background-launch";
 
-/// Runs the shared CLI with the headless runtime owner.
+/// Runs the Community CLI with the headless runtime owner and terminal help.
 ///
 /// # Example
 /// ```no_run
@@ -20,10 +21,14 @@ pub(crate) const BACKGROUND_LAUNCH_FLAG: &str = "--background-launch";
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn run_lumvise(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    run_lumvise_with_runtime(args, lumvise_app_core::run_headless_app)
+    run_product(
+        args,
+        ProductEdition::Community,
+        lumvise_app_core::run_headless_app,
+    )
 }
 
-/// Runs the shared CLI with a product-owned runtime launcher.
+/// Runs the Full CLI with a product-owned runtime launcher and terminal help.
 ///
 /// # Example
 /// ```ignore
@@ -33,23 +38,53 @@ pub fn run_lumvise_with_runtime(
     args: Vec<String>,
     run_owner: impl FnOnce(OwnerLease) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    match ProductInvocation::parse(args) {
+    run_product(args, ProductEdition::Full, run_owner)
+}
+
+fn run_product(
+    args: Vec<String>,
+    edition: ProductEdition,
+    run_owner: impl FnOnce(OwnerLease) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let terminal = std::io::stdin().is_terminal() || std::io::stdout().is_terminal();
+    match ProductInvocation::parse(args, terminal) {
+        ProductInvocation::Help => {
+            print_help(edition);
+            Ok(())
+        }
         ProductInvocation::Runtime {
             arguments,
             background,
-        } => run_runtime(
-            ActivationRequest {
-                arguments,
-                background,
-            },
-            run_owner,
-        ),
+        } => run_runtime(arguments, background, run_owner),
         ProductInvocation::Mcp(options) => run_mcp(options),
     }
 }
 
+enum ProductEdition {
+    Community,
+    Full,
+}
+
+fn print_help(edition: ProductEdition) {
+    let (name, description) = match edition {
+        ProductEdition::Community => ("Community", "Headless runtime, MCP, graphs, and knowledge."),
+        ProductEdition::Full => ("Full", "Desktop workspace, Assistant, canvases, and MCP."),
+    };
+    println!(
+        "Lumvise {name} {}\n{description}\n\n\
+         Usage: lumvise <command>\n\n\
+         Commands:\n  start                         Start Lumvise\n  \
+         mcp --project-root <path>     Connect an MCP client to a project\n  \
+         --help, -h                    Show this help\n\n\
+         MCP options: --runtime-root <path>, --instance-id <id>, --native-llm-engine <name>\n\
+         Learn more: https://github.com/Lumvise/lumvise-main",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ProductInvocation {
+    Help,
     Runtime {
         arguments: Vec<String>,
         background: bool,
@@ -72,8 +107,14 @@ struct McpIdentity {
 }
 
 impl ProductInvocation {
-    fn parse(args: Vec<String>) -> Self {
+    fn parse(args: Vec<String>, terminal: bool) -> Self {
         match args.first().map(String::as_str) {
+            None if terminal => Self::Help,
+            Some("--help" | "-h" | "help") => Self::Help,
+            Some("start") => Self::Runtime {
+                arguments: args[1..].to_vec(),
+                background: false,
+            },
             Some("mcp") => Self::Mcp(McpOptions::parse(&args[1..])),
             Some(BACKGROUND_LAUNCH_FLAG) => Self::Runtime {
                 arguments: args[1..].to_vec(),
@@ -149,10 +190,15 @@ fn run_mcp(options: McpOptions) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_runtime(
-    request: ActivationRequest,
+    arguments: Vec<String>,
+    background: bool,
     run_owner: impl FnOnce(OwnerLease) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let coordinator = AppRuntimeCoordinator::production();
+    let request = ActivationRequest {
+        arguments,
+        background,
+    };
     match coordinator.acquire_or_forward(request)? {
         AcquireResult::Owner(owner) => run_owner(owner),
         AcquireResult::Forwarded(_) => Ok(()),
@@ -170,10 +216,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bare_terminal_launch_shows_help_but_nonterminal_launch_starts_runtime() {
+        assert_eq!(
+            ProductInvocation::parse(vec![], true),
+            ProductInvocation::Help
+        );
+        assert_eq!(
+            ProductInvocation::parse(vec![], false),
+            ProductInvocation::Runtime {
+                arguments: vec![],
+                background: false,
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_start_preserves_activation_arguments_in_a_terminal() {
+        assert_eq!(
+            ProductInvocation::parse(
+                vec!["start".into(), "--file".into(), "note.md".into()],
+                true
+            ),
+            ProductInvocation::Runtime {
+                arguments: vec!["--file".into(), "note.md".into()],
+                background: false,
+            },
+        );
+    }
+
+    #[test]
     fn default_role_preserves_runtime_activation_arguments() {
         let arguments = vec!["--file".into(), "note.md".into()];
         assert_eq!(
-            ProductInvocation::parse(arguments.clone()),
+            ProductInvocation::parse(arguments.clone(), false),
             ProductInvocation::Runtime {
                 arguments,
                 background: false,
@@ -184,7 +259,7 @@ mod tests {
     #[test]
     fn background_launch_flag_selects_runtime_without_foreground_activation() {
         assert_eq!(
-            ProductInvocation::parse(vec![BACKGROUND_LAUNCH_FLAG.into()]),
+            ProductInvocation::parse(vec![BACKGROUND_LAUNCH_FLAG.into()], true),
             ProductInvocation::Runtime {
                 arguments: Vec::new(),
                 background: true,
@@ -194,17 +269,20 @@ mod tests {
 
     #[test]
     fn explicit_mcp_role_parses_runtime_and_project_scope() {
-        let invocation = ProductInvocation::parse(vec![
-            "mcp".into(),
-            "--runtime-root".into(),
-            "/runtime".into(),
-            "--project-root".into(),
-            "/project".into(),
-            "--instance-id".into(),
-            "client-1".into(),
-            "--native-llm-engine".into(),
-            "codex".into(),
-        ]);
+        let invocation = ProductInvocation::parse(
+            vec![
+                "mcp".into(),
+                "--runtime-root".into(),
+                "/runtime".into(),
+                "--project-root".into(),
+                "/project".into(),
+                "--instance-id".into(),
+                "client-1".into(),
+                "--native-llm-engine".into(),
+                "codex".into(),
+            ],
+            true,
+        );
         assert_eq!(
             invocation,
             ProductInvocation::Mcp(McpOptions {
@@ -263,6 +341,10 @@ mod entrypoint_tests {
         run_lumvise_with_runtime(vec!["--file".into(), "note.md".into()], |_| {
             panic!("forwarded launch must not acquire ownership")
         })?;
+        run_lumvise_with_runtime(
+            vec!["start".into(), "--file".into(), "other.md".into()],
+            |_| panic!("explicit start must forward to the current owner"),
+        )?;
         run_lumvise_with_runtime(vec![BACKGROUND_LAUNCH_FLAG.into()], |_| {
             panic!("background join must not acquire ownership")
         })?;
@@ -279,7 +361,10 @@ mod entrypoint_tests {
         assert_eq!(error.to_string(), "fake owner launcher failed");
         assert_eq!(
             *control.arguments.lock().unwrap(),
-            vec![vec!["--file".to_string(), "note.md".to_string()]]
+            vec![
+                vec!["--file".to_string(), "note.md".to_string()],
+                vec!["--file".to_string(), "other.md".to_string()],
+            ]
         );
         let headless_error = run_lumvise(vec![]).unwrap_err();
         assert!(
