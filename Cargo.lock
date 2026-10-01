@@ -3018,8 +3018,12 @@ dependencies = [
 name = "lumvise-plugin-admin"
 version = "0.1.1"
 dependencies = [
+ "ed25519-dalek",
+ "hex",
  "lumvise-plugin-package",
  "lumvise-plugin-runtime",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
 ]

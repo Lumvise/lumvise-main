@@ -1,0 +1,36 @@
+name: Community CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-workspace:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust build prerequisites
+        run: command -v cmake >/dev/null && command -v protoc >/dev/null || brew install cmake protobuf
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check locked workspace
+        run: cargo check --workspace --locked
+      - name: Test public release and runtime contracts
+        run: |
+          cargo test --locked -p lumvise-builtin-plugin-release
+          cargo test --locked -p lumvise-plugin-runtime --test plugin_repository
+          cargo test --release --locked -p lumvise-plugin-runtime --lib
+          cargo test --locked -p lumvise-mcp-app-adapter --test community_runtime
+      - name: Test installer and notice tooling when present
+        run: |
+          for test_file in test_macos_installer.py test_third_party_notices.py; do
+            if [ -f "scripts/tests/$test_file" ]; then
+              PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$test_file"
+            fi
+          done

@@ -13,6 +13,9 @@ use tokio::sync::Notify;
 
 use crate::{PluginInvocationContext, PluginRuntimeError};
 
+#[cfg(test)]
+mod cancellation_tests;
+
 /// Plugin-scoped host registry for signed exclusive invocation lanes.
 pub struct ExclusiveInvocationLanes {
     lanes: Mutex<HashMap<String, LaneState>>,
@@ -48,6 +51,46 @@ pub(crate) struct LaneInvocation {
     acquired_session_id: Option<String>,
 }
 
+pub(crate) struct LaneInvocationGuard<'lanes> {
+    lanes: &'lanes ExclusiveInvocationLanes,
+    plugin_id: &'lanes str,
+    invocation: Option<LaneInvocation>,
+}
+
+impl LaneInvocationGuard<'_> {
+    pub(crate) fn finish(mut self, result: &Result<WireOutcome, PluginRuntimeError>) {
+        if let Some(invocation) = self.invocation.take() {
+            self.lanes.finish(self.plugin_id, invocation, result);
+        }
+    }
+}
+
+impl Drop for LaneInvocationGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(invocation) = &self.invocation
+            && let (Some(policy), Some(session)) =
+                (&invocation.policy, &invocation.acquired_session_id)
+        {
+            self.lanes
+                .release_session(self.plugin_id, &policy.lane_id, session);
+        }
+    }
+}
+
+struct QueuedLaneTicket<'lanes> {
+    lanes: &'lanes ExclusiveInvocationLanes,
+    key: &'lanes str,
+    ticket: Option<u64>,
+}
+
+impl Drop for QueuedLaneTicket<'_> {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket {
+            self.lanes.remove_queued(self.key, ticket);
+        }
+    }
+}
+
 /// Caller-visible generic lane state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExclusiveLaneSnapshot {
@@ -66,6 +109,17 @@ pub struct ExclusiveLaneSnapshot {
 }
 
 impl ExclusiveInvocationLanes {
+    pub(crate) fn guard<'lanes>(
+        &'lanes self,
+        plugin_id: &'lanes str,
+        invocation: LaneInvocation,
+    ) -> LaneInvocationGuard<'lanes> {
+        LaneInvocationGuard {
+            lanes: self,
+            plugin_id,
+            invocation: Some(invocation),
+        }
+    }
     /// Creates an empty plugin-scoped lane registry.
     pub fn new() -> Self {
         Self {
@@ -254,14 +308,13 @@ impl ExclusiveInvocationLanes {
             state.enqueue(request)
         };
         let timeout_deadline = request.timeout.map(|timeout| queued.enqueued_at + timeout);
+        let mut ticket = QueuedLaneTicket {
+            lanes: self,
+            key,
+            ticket: Some(queued.ticket),
+        };
         loop {
-            let remaining = match context.ensure_active(&request.plugin_id, maximum_duration) {
-                Ok(remaining) => remaining,
-                Err(error) => {
-                    self.remove_queued(key, queued.ticket);
-                    return Err(error);
-                }
-            };
+            let remaining = context.ensure_active(&request.plugin_id, maximum_duration)?;
             let notified = self.async_changed.notified();
             {
                 let mut lanes = self.lock_lanes()?;
@@ -274,6 +327,7 @@ impl ExclusiveInvocationLanes {
                 if state.can_activate(queued.ticket) {
                     state.pop_ticket(queued.ticket);
                     state.activate_queued(&queued);
+                    ticket.ticket = None;
                     return Ok(());
                 }
             }
@@ -285,7 +339,6 @@ impl ExclusiveInvocationLanes {
                 })
                 .unwrap_or(remaining);
             if wait_for.is_zero() {
-                self.remove_queued(key, queued.ticket);
                 return Err(PluginRuntimeError::ExclusiveLaneTimeout {
                     lane_id: lane_id.into(),
                 });
@@ -654,7 +707,7 @@ mod tests {
         assert_eq!(state.queue.front().unwrap().session_id, "queued");
     }
 
-    fn acquire_export() -> ExportDescriptor {
+    pub(super) fn acquire_export() -> ExportDescriptor {
         ExportDescriptor {
             description: String::new(),
             id: "start".into(),
@@ -683,7 +736,7 @@ mod tests {
         }
     }
 
-    fn request(owner_id: &str, session_id: &str) -> Value {
+    pub(super) fn request(owner_id: &str, session_id: &str) -> Value {
         json!({
             "owner_id": owner_id,
             "session_id": session_id,

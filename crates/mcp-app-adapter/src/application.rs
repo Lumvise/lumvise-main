@@ -26,6 +26,7 @@ struct NativeAssistantCaller {
 #[derive(Clone)]
 struct BoundAssistantSession {
     session_id: String,
+    session_epoch: u64,
     active_tools: Vec<String>,
 }
 
@@ -215,10 +216,19 @@ impl LumviseMcpApplication {
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect::<Vec<_>>();
+        let session_epoch = output
+            .pointer("/state/session_epoch")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                McpApplicationError::invocation(format!(
+                    "invalid Assistant start output {output}; expected unsigned state.session_epoch"
+                ))
+            })?;
         *self.bound_assistant_session.lock().map_err(|_| {
             McpApplicationError::invocation("bound Assistant session lock is poisoned")
         })? = Some(BoundAssistantSession {
             session_id,
+            session_epoch,
             active_tools,
         });
         Ok(output)
@@ -260,6 +270,11 @@ impl LumviseMcpApplication {
         })?;
         input.insert("plugin_id".into(), Value::String(plugin_id.clone()));
         input.insert("session_id".into(), Value::String(bound.session_id.clone()));
+        if plugin_id == ASSISTANT_PLUGIN_ID {
+            // Retain the start generation: querying current state here would let
+            // an old caller write into a conversation reopened by another caller.
+            input.insert("session_epoch".into(), Value::from(bound.session_epoch));
+        }
         let response = self
             .app_bridge
             .invoke_scoped_tool_controlled(
@@ -408,9 +423,15 @@ fn remove_bound_session_fields(tool: &mut Value) {
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.remove("plugin_id");
         properties.remove("session_id");
+        properties.remove("session_epoch");
     }
     if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
-        required.retain(|field| !matches!(field.as_str(), Some("plugin_id" | "session_id")));
+        required.retain(|field| {
+            !matches!(
+                field.as_str(),
+                Some("plugin_id" | "session_id" | "session_epoch")
+            )
+        });
     }
     if response_tool {
         schema

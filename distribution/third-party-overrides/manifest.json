@@ -1,0 +1,317 @@
+{
+  "cargo:asn1-rs-impl@0.2.0": {
+    "files": [
+      "upstream/cargo/rusticata/asn1-rs/a20e5f7319c896737ad0f2557037817b91ad854f/LICENSE-APACHE",
+      "upstream/cargo/rusticata/asn1-rs/a20e5f7319c896737ad0f2557037817b91ad854f/LICENSE-MIT"
+    ],
+    "sha256": {
+      "upstream/cargo/rusticata/asn1-rs/a20e5f7319c896737ad0f2557037817b91ad854f/LICENSE-APACHE": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "upstream/cargo/rusticata/asn1-rs/a20e5f7319c896737ad0f2557037817b91ad854f/LICENSE-MIT": "a5c61b93b6ee1d104af9920cf020ff3c7efe818e31fe562c72261847a728f513"
+    },
+    "source_url": "https://github.com/rusticata/asn1-rs/tree/a20e5f7319c896737ad0f2557037817b91ad854f"
+  },
+  "cargo:crc-catalog@2.5.0": {
+    "files": [
+      "upstream/cargo/crc-catalog/2.5.0/LICENSE-Apache-2.0.txt",
+      "upstream/cargo/crc-catalog/2.5.0/LICENSE-MIT.txt"
+    ],
+    "sha256": {
+      "upstream/cargo/crc-catalog/2.5.0/LICENSE-Apache-2.0.txt": "d3cdb764b98283ee7c3a3cea8d374e2a2957322374378d1f3263f4d512741fc3",
+      "upstream/cargo/crc-catalog/2.5.0/LICENSE-MIT.txt": "5ef8fcfb6cccec8fcae043c834099a60c8b7406408db576e026d2b7e67dc5cf5"
+    },
+    "source_url": "https://static.crates.io/crates/crc-catalog/crc-catalog-2.5.0.crate"
+  },
+  "cargo:dasp_sample@0.11.0": {
+    "files": [
+      "upstream/cargo/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-APACHE",
+      "upstream/cargo/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT"
+    ],
+    "sha256": {
+      "upstream/cargo/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-APACHE": "756c8d2ab2dc24f256e1455b5f03937f4933d83d7bc9f2d55009fc962377d512",
+      "upstream/cargo/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT": "b1d6df41ed3aa96806e74c729444d7c121d90e6660a6aed01d298e03fde475a0"
+    },
+    "source_url": "https://github.com/rustaudio/sample/tree/97c3bb9b2363c0b46ac1633858bf1054fd02a980"
+  },
+  "cargo:dispatch2@0.3.1": {
+    "files": [
+      "upstream/cargo/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+    },
+    "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
+  },
+  "cargo:flatbuffers@25.12.19": {
+    "files": [
+      "upstream/cargo/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "source_url": "https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE"
+  },
+  "cargo:fxhash@0.2.1": {
+    "files": [
+      "upstream/cargo/fxhash/0.2.1/LICENSE-header.txt",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-Apache-2.0.txt",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-MIT.txt"
+    ],
+    "sha256": {
+      "upstream/cargo/fxhash/0.2.1/LICENSE-header.txt": "4b88f68c805a1bb0883f4c202c95083cf9bfc8122a9c57e16a0786bfe4a3b2e0",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-Apache-2.0.txt": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-MIT.txt": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    "source_url": "https://static.crates.io/crates/fxhash/fxhash-0.2.1.crate"
+  },
+  "cargo:grafeo-adapters@0.5.42": {
+    "files": [
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+    ],
+    "sha256": {
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+    },
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+  },
+  "cargo:grafeo-common@0.5.42": {
+    "files": [
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+    ],
+    "sha256": {
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+    },
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+  },
+  "cargo:grafeo-core@0.5.42": {
+    "files": [
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+    ],
+    "sha256": {
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+    },
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+  },
+  "cargo:grafeo-engine@0.5.42": {
+    "files": [
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+    ],
+    "sha256": {
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+    },
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+  },
+  "cargo:grafeo-storage@0.5.42": {
+    "files": [
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+    ],
+    "sha256": {
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+    },
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+  },
+  "cargo:grafeo@0.5.42": {
+    "files": [
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+    ],
+    "sha256": {
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+    },
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+  },
+  "cargo:mac@0.1.1": {
+    "files": [
+      "upstream/mac/0.1.1/NOTICE-Cargo.toml.txt",
+      "upstream/mac/0.1.1/NOTICE-README.md.txt",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/LICENSE-Apache-2.0.txt",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/LICENSE-MIT.txt",
+      "NOTICE-provenance.txt"
+    ],
+    "sha256": {
+      "NOTICE-provenance.txt": "c38cb1fab52fa0ca4e65179a62a0a5cfd7b9a4792121609aaf87799613999133",
+      "upstream/mac/0.1.1/NOTICE-Cargo.toml.txt": "6d465c5e5a4b3e197049e9fb7393b2f996c1c654e6ded700afce046fac2f7969",
+      "upstream/mac/0.1.1/NOTICE-README.md.txt": "8edb7a912d295acf1e1cfeafdd19a6813a63b301c7bbfda3c67f65509bd8d8cc",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/LICENSE-Apache-2.0.txt": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/LICENSE-MIT.txt": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    "source_url": "https://static.crates.io/crates/mac/mac-0.1.1.crate"
+  },
+  "cargo:match_token@0.1.0": {
+    "files": [
+      "upstream/cargo/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/COPYRIGHT",
+      "upstream/cargo/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/LICENSE-APACHE",
+      "upstream/cargo/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/LICENSE-MIT"
+    ],
+    "sha256": {
+      "upstream/cargo/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/COPYRIGHT": "c6b91503fc0a9852e688b56eef715dba9a1ab4b074e86875af2471ce0163b2e5",
+      "upstream/cargo/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/LICENSE-APACHE": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "upstream/cargo/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/LICENSE-MIT": "86dd7f026f916daf7511e39951ad8ea8cf55a8db67ae64060dacf829761c18f3"
+    },
+    "source_url": "https://github.com/servo/html5ever/tree/0e4e125b8672abad4ff14d1e0043d3be9305af6a"
+  },
+  "cargo:objc2-audio-toolbox@0.3.2": {
+    "files": [
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+    },
+    "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+  },
+  "cargo:objc2-core-audio-types@0.3.2": {
+    "files": [
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+    },
+    "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+  },
+  "cargo:objc2-core-audio@0.3.2": {
+    "files": [
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+    },
+    "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+  },
+  "cargo:objc2-core-foundation@0.3.2": {
+    "files": [
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+    },
+    "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+  },
+  "cargo:objc2-encode@4.1.0": {
+    "files": [
+      "upstream/cargo/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+    },
+    "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md"
+  },
+  "cargo:objc2@0.6.4": {
+    "files": [
+      "upstream/cargo/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+    },
+    "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
+  },
+  "cargo:selectors@0.26.0": {
+    "files": [
+      "upstream/cargo/selectors/LICENSE-MPL-header.txt",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-MPL-2.0.txt"
+    ],
+    "sha256": {
+      "upstream/cargo/selectors/LICENSE-MPL-header.txt": "537ba1efbc411986ff686160846d04416d671a1202fa0ebc1e17f520e4e50fdb",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-MPL-2.0.txt": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+    },
+    "source_url": "https://static.crates.io/crates/selectors/selectors-0.26.0.crate"
+  },
+  "cargo:tree-sitter-cpp@0.23.4": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-cpp/f41e1a044c8a84ea9fa8577fdd2eab92ec96de02/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-cpp/f41e1a044c8a84ea9fa8577fdd2eab92ec96de02/LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-cpp/f41e1a044c8a84ea9fa8577fdd2eab92ec96de02/LICENSE"
+  },
+  "cargo:tree-sitter-go@0.23.4": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-go/3c3775faa968158a8b4ac190a7fda867fd5fb748/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-go/3c3775faa968158a8b4ac190a7fda867fd5fb748/LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-go/3c3775faa968158a8b4ac190a7fda867fd5fb748/LICENSE"
+  },
+  "cargo:tree-sitter-javascript@0.23.1": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-javascript/3a837b6f3658ca3618f2022f8707e29739c91364/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-javascript/3a837b6f3658ca3618f2022f8707e29739c91364/LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-javascript/3a837b6f3658ca3618f2022f8707e29739c91364/LICENSE"
+  },
+  "cargo:tree-sitter-json@0.24.8": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-json/ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-json/ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24/LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-json/ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24/LICENSE"
+  },
+  "cargo:tree-sitter-md@0.5.3": {
+    "files": [
+      "upstream/cargo/tree-sitter-grammars/tree-sitter-markdown/f969cd3ae3f9fbd4e43205431d0ae286014c05b5/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter-grammars/tree-sitter-markdown/f969cd3ae3f9fbd4e43205431d0ae286014c05b5/LICENSE": "52ec8a1bf8256511e2a92613e0bb41ffefba3897f16fa958d7bb28c466dd4804"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-markdown/f969cd3ae3f9fbd4e43205431d0ae286014c05b5/LICENSE"
+  },
+  "cargo:tree-sitter-python@0.23.6": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-python/bffb65a8cfe4e46290331dfef0dbf0ef3679de11/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-python/bffb65a8cfe4e46290331dfef0dbf0ef3679de11/LICENSE": "d724405ce238a22c0d35769c5a36b386ad5958192efe8bbb304fb2896254575f"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-python/bffb65a8cfe4e46290331dfef0dbf0ef3679de11/LICENSE"
+  },
+  "cargo:tree-sitter-rust@0.23.3": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-rust/3d087c3df25286140393ddecc339208fae107149/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-rust/3d087c3df25286140393ddecc339208fae107149/LICENSE": "31d5b6f4243d5c7c6e1c4ebbbb9f6407bd1457a08bcc4f706521710341acba36"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-rust/3d087c3df25286140393ddecc339208fae107149/LICENSE"
+  },
+  "cargo:tree-sitter-typescript@0.23.2": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-typescript/f975a621f4e7f532fe322e13c4f79495e0a7b2e7/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-typescript/f975a621f4e7f532fe322e13c4f79495e0a7b2e7/LICENSE": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-typescript/f975a621f4e7f532fe322e13c4f79495e0a7b2e7/LICENSE"
+  },
+  "cargo:uuid-simd@0.8.0": {
+    "files": [
+      "upstream/cargo/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d"
+    },
+    "source_url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+  },
+  "cargo:vsimd@0.8.0": {
+    "files": [
+      "upstream/cargo/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d"
+    },
+    "source_url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+  }
+}

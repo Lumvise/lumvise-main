@@ -13,6 +13,7 @@ pub(crate) struct ScopedMcpRouteContext {
     pub scope_id: String,
     pub owner_id: String,
     pub session_id: String,
+    pub session_epoch: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,7 +194,7 @@ fn tool_route(
 
 fn message_request(
     route: ScopedMcpToolRoute,
-    arguments: Value,
+    mut arguments: Value,
     context: Option<&ScopedMcpRouteContext>,
 ) -> std::result::Result<ScopedMcpMessageRequest, JsonRpcError> {
     let plugin_id = match context {
@@ -208,6 +209,17 @@ fn message_request(
         return Err(invalid_params(format!(
             "plugin_id {plugin_id:?} does not own tool"
         )));
+    }
+    if let Some(epoch) = context.and_then(|context| context.session_epoch)
+        && route
+            .input_schema
+            .pointer("/properties/session_epoch")
+            .is_some()
+    {
+        let object = arguments
+            .as_object_mut()
+            .ok_or_else(|| invalid_params("scoped tool arguments; expected an object"))?;
+        object.insert("session_epoch".into(), Value::from(epoch));
     }
     Ok(ScopedMcpMessageRequest {
         scope_id: context
@@ -285,7 +297,16 @@ fn input_schema_for_route(input_schema: Value, context: Option<&ScopedMcpRouteCo
     if context.is_none() {
         return input_schema;
     }
-    scoped_input_schema(input_schema)
+    let mut schema = scoped_input_schema(input_schema);
+    if context.is_some_and(|context| context.session_epoch.is_some()) {
+        if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+            properties.remove("session_epoch");
+        }
+        if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+            required.retain(|field| field.as_str() != Some("session_epoch"));
+        }
+    }
+    schema
 }
 
 fn scoped_input_schema(mut input_schema: Value) -> Value {

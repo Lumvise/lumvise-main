@@ -247,6 +247,20 @@ Apple notarization and does not produce an official signed release. For an offic
 with a valid Developer ID Application identity and `APPLE_NOTARY_PROFILE`
 with the notarization keychain profile.
 
+Collect the dependency notices before packaging an official release:
+
+```sh
+python3 scripts/collect-third-party-notices \
+  --cargo-manifest Cargo.toml \
+  --license-overrides distribution/third-party-overrides \
+  --output target/community-notices
+```
+
+Use a new output directory for each scan. The collector reports missing license
+texts as errors and includes corresponding source for copyleft dependencies.
+Review its inventory, then pass `--third-party-notices target/community-notices`
+to the installer command. Private application sources are not required.
+
 Rust build artifacts use the selected workspace's `target` directory by
 default. To share a build cache across checkouts, add `--target-dir` followed by
 the cache directory path. If you already have a signed Community plugin release

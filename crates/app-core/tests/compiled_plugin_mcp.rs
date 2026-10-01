@@ -288,6 +288,46 @@ fn cli_scoped_tool_alias_and_wire_name_share_route_and_validation() {
         r#"{"capability_id":"lane.acquire","input":{"force_fail":false,"mcp_owner_id":"cli-owner","plugin_id":"plugin.mcp-fixture","session_id":"cli-session"}}"#
     );
 
+    let epoch_path = format!("{path}/27");
+    let epoch_catalog = scoped_rpc(
+        server.base_url(),
+        &epoch_path,
+        json!({"jsonrpc":"2.0","id":30,"method":"tools/list"}),
+    );
+    assert!(
+        epoch_catalog["result"]["tools"][0]["inputSchema"]["properties"]
+            .get("session_epoch")
+            .is_none()
+    );
+    let epoch_result = scoped_rpc(
+        server.base_url(),
+        &epoch_path,
+        json!({"jsonrpc":"2.0","id":31,"method":"tools/call",
+        "params":{"name":"lane.acquire","arguments":{"force_fail":false}}}),
+    );
+    let epoch_payload: Value = serde_json::from_str(
+        epoch_result["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(epoch_payload["input"]["session_epoch"], 27);
+    for (request_id, epoch) in [(32, 28), (33, 27)] {
+        let retained = scoped_rpc(
+            server.base_url(),
+            &format!("{path}/{epoch}"),
+            json!({"jsonrpc":"2.0","id":request_id,"method":"tools/call",
+            "params":{"name":"lane.acquire","arguments":{"force_fail":false,"session_epoch":999}}}),
+        );
+        let payload: Value =
+            serde_json::from_str(retained["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(
+            payload["input"]["session_epoch"], epoch,
+            "old route must retain its epoch after a newer route is used"
+        );
+    }
+
     let invalid = scoped_rpc(
         server.base_url(),
         path,
@@ -384,7 +424,7 @@ fn compiled_mcp_exports() -> Vec<ExportDescriptor> {
             },
             input_schema: json!({
                 "type": "object",
-                "properties": {"force_fail": {"type": "boolean"}}
+                "properties": {"force_fail": {"type": "boolean"}, "session_epoch": {"type":"integer"}}
             }),
             output_schema: json!({"type": "object"}),
             admission: None,

@@ -184,13 +184,18 @@ fn sse_response(message_endpoint: &str) -> HttpResponse {
 fn parse_scoped_mcp_path(path: &str, prefix: &str) -> Option<ScopedMcpRouteContext> {
     let suffix = path.strip_prefix(prefix)?.strip_prefix('/')?;
     let segments = suffix.split('/').collect::<Vec<_>>();
-    if segments.len() != 3 || segments.iter().any(|segment| segment.is_empty()) {
+    if !(3..=4).contains(&segments.len()) || segments.iter().any(|segment| segment.is_empty()) {
         return None;
     }
+    let session_epoch = match segments.get(3) {
+        Some(epoch) => Some(epoch.parse::<u64>().ok()?),
+        None => None,
+    };
     Some(ScopedMcpRouteContext {
         scope_id: segments[0].to_string(),
         owner_id: segments[1].to_string(),
         session_id: segments[2].to_string(),
+        session_epoch,
     })
 }
 
@@ -259,10 +264,13 @@ fn rewrite_knowledge_routes(mut request: HttpRequest) -> HttpRequest {
 }
 
 fn scoped_message_endpoint(context: &ScopedMcpRouteContext) -> String {
-    format!(
+    let path = format!(
         "{}/{}/{}/{}",
         SCOPED_MCP_MESSAGE_ENDPOINT, context.scope_id, context.owner_id, context.session_id
-    )
+    );
+    context
+        .session_epoch
+        .map_or_else(|| path.clone(), |epoch| format!("{path}/{epoch}"))
 }
 
 pub(crate) fn unknown_app_http_endpoint() -> HttpResponse {
@@ -272,6 +280,29 @@ pub(crate) fn unknown_app_http_endpoint() -> HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_endpoint_preserves_epoch_and_rejects_invalid_epoch_paths() {
+        let base = format!("{SCOPED_MCP_SSE_ENDPOINT}/scope/owner/session");
+        let bound = parse_scoped_mcp_path(&format!("{base}/27"), SCOPED_MCP_SSE_ENDPOINT).unwrap();
+        assert_eq!(bound.session_epoch, Some(27));
+        assert_eq!(
+            scoped_message_endpoint(&bound),
+            format!("{SCOPED_MCP_MESSAGE_ENDPOINT}/scope/owner/session/27")
+        );
+        assert!(
+            parse_scoped_mcp_path(&base, SCOPED_MCP_SSE_ENDPOINT)
+                .unwrap()
+                .session_epoch
+                .is_none()
+        );
+        for suffix in ["-1", "wrong", "18446744073709551616", "27/extra", ""] {
+            assert!(
+                parse_scoped_mcp_path(&format!("{base}/{suffix}"), SCOPED_MCP_SSE_ENDPOINT)
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn health_route_reports_daemon_liveness() {

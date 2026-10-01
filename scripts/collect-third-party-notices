@@ -1,0 +1,825 @@
+#!/usr/bin/env python3
+"""Collect fetched third-party license texts and source for release review.
+
+This inventories metadata and copies existing legal texts; it does not choose
+licenses or claim complete legal compliance.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tomllib
+from typing import Callable
+from urllib.parse import urlsplit
+
+
+PLATFORM = "aarch64-apple-darwin"
+TEXT_PREFIXES = ("license", "licence", "notice", "copying", "copyright")
+SOURCE_LICENSES = re.compile(r"\b(?:MPL|GPL|LGPL)\b", re.IGNORECASE)
+BUILD_OUTPUTS = {".git", "target", "build", "node_modules", "dist"}
+
+
+def safe_relative(path: Path, root: Path) -> Path:
+    """Resolve a path inside its package root or fail on an escaping symlink."""
+    resolved = path.resolve(strict=True)
+    try:
+        resolved.relative_to(root.resolve(strict=True))
+    except ValueError as error:
+        raise ValueError(f"input {path}; expected a path inside {root}") from error
+    return resolved
+
+
+def legal_asset(path: Path) -> bool:
+    return path.is_file() and path.name.lower().startswith(TEXT_PREFIXES)
+
+
+def safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._@+-]+", "_", value).strip("._") or "unknown"
+
+
+def public_url(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    parsed = urlsplit(value.removeprefix("git+").removeprefix("registry+"))
+    if parsed.scheme == "file" or Path(value).is_absolute():
+        return None
+    return value
+
+
+def package_path(ecosystem: str, name: str, version: str) -> PurePosixPath:
+    parts = name.split("/") if ecosystem == "npm" else [name]
+    return PurePosixPath(
+        ecosystem, *(safe_name(part) for part in parts), safe_name(version)
+    )
+
+
+def copy_assets(root: Path, destination: Path) -> list[str]:
+    candidates = legal_candidates(root)
+    copied = [copy_asset(path, root, destination) for path in candidates]
+    return sorted(set(copied))
+
+
+def legal_candidates(root: Path) -> list[Path]:
+    manifest = root / "Cargo.toml"
+    license_file = None
+    if manifest.is_file():
+        metadata = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        package = metadata.get("package", {})
+        license_file = (
+            package.get("license-file") if isinstance(package, dict) else None
+        )
+    explicit = (root / license_file) if isinstance(license_file, str) else None
+    candidates = []
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        validate_entries(root, current_path, directories + files)
+        directories[:] = sorted(
+            name for name in directories if name not in BUILD_OUTPUTS
+        )
+        candidates.extend(
+            current_path / name for name in files if legal_asset(current_path / name)
+        )
+    if explicit is not None and explicit.is_file():
+        candidates.append(explicit)
+    for path in set(candidates):
+        safe_relative(path, root)
+    return sorted(set(candidates))
+
+
+def validate_entries(root: Path, parent: Path, names: list[str]) -> None:
+    for name in names:
+        safe_relative(parent / name, root)
+
+
+def copy_asset(path: Path, root: Path, destination: Path) -> str:
+    relative = path.relative_to(root)
+    target = destination / relative
+    if target.exists() and target.read_bytes() != path.read_bytes():
+        raise ValueError(
+            f"notice asset {relative}; expected unambiguous package output"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(path, target)
+    return relative.as_posix()
+
+
+def copy_tree(root: Path, destination: Path, excluded: set[str]) -> None:
+    visited: set[Path] = set()
+    for current, directories, files in os.walk(root, followlinks=True):
+        current_path = Path(current)
+        resolved = current_path.resolve(strict=True)
+        if resolved in visited:
+            directories[:] = []
+            continue
+        visited.add(resolved)
+        validate_entries(root, current_path, directories + files)
+        directories[:] = sorted(name for name in directories if name not in excluded)
+        relative = current_path.relative_to(root)
+        target_dir = destination / relative
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for name in sorted(files):
+            source = current_path / name
+            safe_relative(source, root)
+            output = target_dir / name
+            output.parent.mkdir(parents=True, exist_ok=True)
+            copy_unambiguous(source, output)
+
+
+def source_files(root: Path) -> list[tuple[str, Path]]:
+    files: dict[str, Path] = {}
+    for current, directories, names in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        validate_entries(root, current_path, directories + names)
+        symlink_dirs = [
+            name for name in directories if (current_path / name).is_symlink()
+        ]
+        directories[:] = sorted(
+            name
+            for name in directories
+            if name not in BUILD_OUTPUTS and name not in symlink_dirs
+        )
+        for name in sorted(names + symlink_dirs):
+            source = current_path / name
+            relative = source.relative_to(root).as_posix()
+            safe_relative(source, root)
+            files[relative] = source
+    return sorted(files.items())
+
+
+def write_source_archive(root: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("wb") as raw:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9
+        ) as compressed:
+            with tarfile.open(
+                fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT
+            ) as archive:
+                add_source_members(archive, source_files(root))
+
+
+def add_source_members(archive: tarfile.TarFile, files: list[tuple[str, Path]]) -> None:
+    for name, source in files:
+        if source.is_symlink():
+            archive.addfile(stable_symlink_info(name, source))
+            continue
+        member = stable_tar_info(name, source, source.stat().st_size)
+        with source.open("rb") as content:
+            archive.addfile(member, content)
+
+
+def stable_symlink_info(name: str, source: Path) -> tarfile.TarInfo:
+    info = stable_tar_info(name, source, 0)
+    info.type = tarfile.SYMTYPE
+    info.mode = 0o777
+    info.linkname = Path(
+        os.path.relpath(source.resolve(strict=True), source.parent.resolve(strict=True))
+    ).as_posix()
+    return info
+
+
+def stable_tar_info(name: str, source: Path, size: int) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mode = 0o755 if source.stat().st_mode & 0o111 else 0o644
+    info.mtime = 0
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    return info
+
+
+def copy_unambiguous(source: Path, target: Path) -> None:
+    if target.exists() and target.read_bytes() != source.read_bytes():
+        raise ValueError(
+            f"output file {target.name}; expected unambiguous copied content"
+        )
+    shutil.copyfile(source, target)
+
+
+def metadata_for_manifest(manifest: Path) -> dict[str, object]:
+    command = [
+        "cargo",
+        "metadata",
+        "--locked",
+        "--all-features",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        str(manifest),
+        "--filter-platform",
+        PLATFORM,
+    ]
+    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    value = json.loads(completed.stdout)
+    if not isinstance(value, dict):
+        raise ValueError(f"cargo metadata for {manifest}; expected a JSON object")
+    return value
+
+
+def cargo_closure(
+    metadata: dict[str, object], manifest: Path
+) -> list[dict[str, object]]:
+    packages = metadata.get("packages", [])
+    resolve = metadata.get("resolve") or {}
+    nodes = resolve.get("nodes", []) if isinstance(resolve, dict) else []
+    if not isinstance(packages, list) or not isinstance(nodes, list):
+        raise ValueError(
+            f"cargo metadata for {manifest}; expected packages and resolve nodes"
+        )
+    package_by_id = {item["id"]: item for item in packages if isinstance(item, dict)}
+    node_by_id = {item["id"]: item for item in nodes if isinstance(item, dict)}
+    roots = cargo_roots(metadata, packages, manifest)
+    visited = dependency_closure(roots, node_by_id)
+    return [package_by_id[key] for key in sorted(visited) if key in package_by_id]
+
+
+def cargo_roots(
+    metadata: dict[str, object], packages: list[object], manifest: Path
+) -> list[str]:
+    workspace_root = Path(str(metadata.get("workspace_root", ""))).resolve()
+    roots = [
+        item["id"]
+        for item in packages
+        if isinstance(item, dict)
+        and Path(str(item.get("manifest_path", ""))).resolve().parent
+        == manifest.resolve().parent
+    ]
+    if manifest.name == "Cargo.toml" and manifest.resolve().parent == workspace_root:
+        members = metadata.get("workspace_members", [])
+        roots = list(members) if isinstance(members, list) else roots
+    return roots
+
+
+def dependency_closure(roots: list[str], node_by_id: dict[str, object]) -> set[str]:
+    pending, visited = list(roots), set()
+    while pending:
+        package_id = pending.pop()
+        if package_id in visited:
+            continue
+        visited.add(package_id)
+        node = node_by_id.get(package_id, {})
+        for dependency in node.get("deps", []):
+            if isinstance(dependency, dict) and dependency.get("pkg"):
+                pending.append(dependency["pkg"])
+    return visited
+
+
+def cargo_records(
+    manifests: list[Path], run_metadata: Callable[[Path], dict[str, object]]
+) -> list[dict[str, object]]:
+    records: dict[str, dict[str, object]] = {}
+    for manifest in manifests:
+        metadata = run_metadata(manifest)
+        for package in cargo_closure(metadata, manifest):
+            if package.get("source") is None:
+                continue
+            record = cargo_record(package)
+            identity = str(record["id"])
+            previous = records.get(identity)
+            if previous and not same_package_notices(previous, record):
+                raise ValueError(
+                    f"package {identity}; expected identical Cargo sources"
+                )
+            records[identity] = record
+    return [records[key] for key in sorted(records)]
+
+
+def cargo_record(package: dict[str, object]) -> dict[str, object]:
+    name, version = str(package["name"]), str(package["version"])
+    source = Path(str(package["manifest_path"])).parent
+    source_value = str(package.get("source") or "")
+    repo = cargo_repository(source)
+    return {
+        "id": f"cargo:{name}@{version}",
+        "ecosystem": "cargo",
+        "name": name,
+        "version": version,
+        "license": package.get("license"),
+        "repository": public_url(repo),
+        "source_url": public_url(source_value),
+        "download_url": None,
+        "source_root": source,
+        "source_archive": bool(
+            SOURCE_LICENSES.search(str(package.get("license") or ""))
+        ),
+    }
+
+
+def cargo_repository(root: Path) -> str | None:
+    manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    package = manifest.get("package", {})
+    repository = package.get("repository") if isinstance(package, dict) else None
+    return str(repository) if repository else None
+
+
+def npm_records(roots: list[Path]) -> list[dict[str, object]]:
+    records: dict[str, dict[str, object]] = {}
+    for root in sorted(roots):
+        for record in npm_root_records(root):
+            identity = str(record["id"])
+            previous = records.get(identity)
+            if previous and previous["source_root"] != record["source_root"]:
+                if not same_package_notices(previous, record):
+                    raise ValueError(
+                        f"package {identity}; expected identical installed copies"
+                    )
+                continue
+            records[identity] = record
+    return [records[key] for key in sorted(records)]
+
+
+def npm_root_records(root: Path) -> list[dict[str, object]]:
+    lock_path = root / "package-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock_packages = lock.get("packages", {})
+    if not isinstance(lock_packages, dict):
+        raise ValueError(f"lockfile {lock_path}; expected packages object")
+    validate_tree_links(root / "node_modules", root)
+    return installed_npm_records(root, lock_packages)
+
+
+def validate_tree_links(root: Path, boundary: Path) -> None:
+    for current, directories, files in os.walk(root, followlinks=False):
+        validate_entries(boundary, Path(current), directories + files)
+
+
+def installed_npm_records(
+    root: Path, lock_packages: dict[str, object]
+) -> list[dict[str, object]]:
+    records = []
+    for manifest in npm_manifests(root / "node_modules"):
+        package_root = manifest.parent
+        safe_relative(manifest, root)
+        lock_info = lock_packages.get(package_root.relative_to(root).as_posix(), {})
+        record = installed_npm_record(manifest, package_root, lock_info)
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def npm_manifests(node_modules: Path) -> list[Path]:
+    manifests, pending, visited = [], [node_modules], set()
+    while pending:
+        current = pending.pop()
+        resolved = current.resolve(strict=True)
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        collect_npm_packages(current, manifests, pending)
+    return sorted(set(manifests))
+
+
+def collect_npm_packages(
+    current: Path, manifests: list[Path], pending: list[Path]
+) -> None:
+    for entry in sorted(current.iterdir()):
+        if entry.name in {".bin", ".cache"} or not entry.is_dir():
+            continue
+        for package_dir in npm_package_directories(entry):
+            if package_dir.is_dir():
+                record_npm_package(package_dir, manifests, pending)
+
+
+def record_npm_package(
+    package_dir: Path, manifests: list[Path], pending: list[Path]
+) -> None:
+    manifest = package_dir / "package.json"
+    if manifest.is_file():
+        manifests.append(manifest)
+    nested = package_dir / "node_modules"
+    if nested.is_dir():
+        pending.append(nested)
+
+
+def npm_package_directories(entry: Path) -> list[Path]:
+    return sorted(entry.iterdir()) if entry.name.startswith("@") else [entry]
+
+
+def installed_npm_record(
+    manifest: Path, package_root: Path, lock_info: object
+) -> dict[str, object] | None:
+    if isinstance(lock_info, dict) and lock_info.get("link"):
+        return None
+    package = json.loads(manifest.read_text(encoding="utf-8"))
+    if package.get("private") is True:
+        return None
+    if not isinstance(package.get("name"), str) or not isinstance(
+        package.get("version"), str
+    ):
+        raise ValueError(
+            f"manifest {manifest}; expected package name and version strings"
+        )
+    return npm_record(package, package_root, lock_info)
+
+
+def same_package_notices(first: dict[str, object], second: dict[str, object]) -> bool:
+    fields = ("license", "repository", "source_url", "download_url", "source_archive")
+    if any(first.get(field) != second.get(field) for field in fields):
+        return False
+    return asset_signature(Path(str(first["source_root"]))) == asset_signature(
+        Path(str(second["source_root"]))
+    )
+
+
+def asset_signature(root: Path) -> list[tuple[str, bytes]]:
+    return [
+        (path.relative_to(root).as_posix(), path.read_bytes())
+        for path in legal_candidates(root)
+    ]
+
+
+def npm_record(
+    package: dict[str, object], root: Path, lock_info: object
+) -> dict[str, object]:
+    name, version = str(package["name"]), str(package["version"])
+    lock = lock_info if isinstance(lock_info, dict) else {}
+    repository = package.get("repository")
+    if isinstance(repository, dict):
+        repository = repository.get("url")
+    return {
+        "id": f"npm:{name}@{version}",
+        "ecosystem": "npm",
+        "name": name,
+        "version": version,
+        "license": package.get("license"),
+        "repository": public_url(repository),
+        "source_url": public_url(package.get("homepage")),
+        "download_url": public_url(lock.get("resolved")),
+        "source_root": root,
+        "source_archive": bool(
+            SOURCE_LICENSES.search(str(package.get("license") or ""))
+        ),
+    }
+
+
+def reviewed_records(directories: list[Path]) -> list[dict[str, object]]:
+    records = []
+    for index, directory in enumerate(directories, 1):
+        records.append(
+            {
+                "id": f"reviewed-extra:{index}:{safe_name(directory.name)}",
+                "root": directory,
+            }
+        )
+    return records
+
+
+def public_record(record: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in record.items()
+        if key not in {"source_root", "source_archive"}
+    }
+
+
+def load_license_overrides(
+    directories: list[Path], records: list[dict[str, object]]
+) -> dict[str, dict[str, object]]:
+    known_ids = {str(record["id"]) for record in records}
+    overrides: dict[str, dict[str, object]] = {}
+    for directory in directories:
+        for identity, override in read_override_manifest(directory).items():
+            if identity not in known_ids:
+                raise ValueError(
+                    f"override id {identity!r}; expected a scanned package identity"
+                )
+            if identity in overrides:
+                raise ValueError(
+                    f"override id {identity!r}; expected one explicit entry"
+                )
+            overrides[identity] = override
+    return overrides
+
+
+def read_override_manifest(directory: Path) -> dict[str, dict[str, object]]:
+    manifest = directory / "manifest.json"
+    safe_relative(manifest, directory)
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"override manifest {manifest}; expected an identity mapping")
+    return {
+        identity: validate_override(directory, identity, item)
+        for identity, item in value.items()
+    }
+
+
+def validate_override(
+    directory: Path, identity: str, item: object
+) -> dict[str, object]:
+    if not isinstance(item, dict):
+        raise ValueError(
+            f"override {identity!r}; expected files, source_url, and sha256"
+        )
+    source_url = item.get("source_url")
+    if not is_pinned_https_url(source_url):
+        raise ValueError(
+            f"override {identity!r} source_url; expected a pinned HTTPS upstream URL"
+        )
+    names, digests = item.get("files"), item.get("sha256")
+    if not isinstance(names, list) or not names or not isinstance(digests, dict):
+        raise ValueError(
+            f"override {identity!r}; expected nonempty files and sha256 mappings"
+        )
+    return {
+        "source_url": source_url,
+        "files": validate_override_files(directory, identity, names, digests),
+    }
+
+
+def is_pinned_https_url(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.netloc)
+        and not parsed.username
+        and not parsed.password
+    )
+
+
+def validate_override_files(
+    directory: Path, identity: str, names: list[object], digests: dict[str, object]
+) -> list[dict[str, object]]:
+    normalized = [override_relative_path(identity, name) for name in names]
+    if len(normalized) != len(set(normalized)) or set(normalized) != set(digests):
+        raise ValueError(
+            f"override {identity!r}; expected one sha256 digest for each unique file"
+        )
+    return [
+        verified_override_file(directory, identity, name, digests[name])
+        for name in sorted(normalized)
+    ]
+
+
+def override_relative_path(identity: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            f"override {identity!r} file {value!r}; expected a relative path"
+        )
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or "\\" in value
+        or relative.as_posix() != value
+    ):
+        raise ValueError(
+            f"override {identity!r} file {value!r}; expected a normalized relative path"
+        )
+    if not relative.name.lower().startswith(TEXT_PREFIXES):
+        raise ValueError(
+            f"override {identity!r} file {value!r}; expected a license or notice text filename"
+        )
+    return value
+
+
+def verified_override_file(
+    directory: Path, identity: str, name: str, expected_digest: object
+) -> dict[str, object]:
+    if not isinstance(expected_digest, str) or not re.fullmatch(
+        r"[0-9a-fA-F]{64}", expected_digest
+    ):
+        raise ValueError(
+            f"override {identity!r} digest for {name!r}; expected SHA-256 hex"
+        )
+    source = safe_relative(directory / Path(*PurePosixPath(name).parts), directory)
+    if not source.is_file():
+        raise ValueError(
+            f"override {identity!r} file {name!r}; expected an existing regular file"
+        )
+    contents = source.read_bytes()
+    actual_digest = hashlib.sha256(contents).hexdigest()
+    if actual_digest != expected_digest.lower():
+        raise ValueError(
+            f"override {identity!r} file {name!r}; expected SHA-256 {expected_digest}"
+        )
+    return {"source_path": name, "sha256": actual_digest, "contents": contents}
+
+
+def write_inventory(
+    records: list[dict[str, object]],
+    extras: list[dict[str, object]],
+    output: Path,
+    overrides: dict[str, dict[str, object]],
+) -> list[str]:
+    packages, missing = write_package_records(records, output, overrides)
+    extra_items = copy_extras(extras, output)
+    inventory = {
+        "notice": "Inventory only; no license selection or compliance claim.",
+        "packages": packages,
+        "reviewed_extra_notices": extra_items,
+    }
+    (output / "inventory.json").write_text(
+        json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    write_text_notice(packages, extra_items, output)
+    return missing
+
+
+def write_package_records(
+    records: list[dict[str, object]],
+    output: Path,
+    overrides: dict[str, dict[str, object]],
+) -> tuple[list[dict[str, object]], list[str]]:
+    packages, missing = [], []
+    occupied: dict[str, str] = {}
+    for record in records:
+        identity = str(record["id"])
+        rel = package_path(
+            str(record["ecosystem"]), str(record["name"]), str(record["version"])
+        )
+        if rel.as_posix() in occupied and occupied[rel.as_posix()] != identity:
+            raise ValueError(f"output path {rel}; expected a unique package identity")
+        occupied[rel.as_posix()] = identity
+        root = Path(str(record["source_root"]))
+        target = output / "packages" / rel
+        assets = copy_assets(root, target / "notices")
+        override = overrides.get(identity)
+        if override:
+            assets.extend(copy_override_files(override, target / "notices"))
+        packages.append(
+            package_inventory_item(record, rel, assets, root, output, missing, override)
+        )
+    return packages, missing
+
+
+def copy_override_files(override: dict[str, object], notices: Path) -> list[str]:
+    copied = []
+    for entry in override["files"]:
+        source_path = str(entry["source_path"])
+        target_path = PurePosixPath("overrides") / PurePosixPath(source_path)
+        target = notices.joinpath(*target_path.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_unambiguous_bytes(entry["contents"], target)
+        copied.append(target_path.as_posix())
+    return sorted(copied)
+
+
+def write_unambiguous_bytes(contents: bytes, target: Path) -> None:
+    if target.exists() and target.read_bytes() != contents:
+        raise ValueError(
+            f"override output {target.name}; expected unambiguous copied content"
+        )
+    target.write_bytes(contents)
+
+
+def package_inventory_item(
+    record: dict[str, object],
+    rel: PurePosixPath,
+    assets: list[str],
+    root: Path,
+    output: Path,
+    missing: list[str],
+    override: dict[str, object] | None,
+) -> dict[str, object]:
+    item = public_record(record)
+    item["notice_files"] = [
+        f"packages/{rel.as_posix()}/notices/{name}" for name in assets
+    ]
+    item["missing_license_text"] = not assets
+    if not assets:
+        missing.append(str(record["id"]))
+    if bool(record["source_archive"]):
+        archive_rel = rel.with_name(f"{rel.name}.tar.gz")
+        write_source_archive(root, output / "sources" / archive_rel)
+        item["source_archive"] = f"sources/{archive_rel.as_posix()}"
+    if override:
+        item["license_override"] = override_provenance(override, rel)
+    return item
+
+
+def override_provenance(
+    override: dict[str, object], package_path: PurePosixPath
+) -> dict[str, object]:
+    files = []
+    for entry in override["files"]:
+        source_path = str(entry["source_path"])
+        relative = (
+            PurePosixPath("packages") / package_path / "notices/overrides" / source_path
+        )
+        files.append({"path": relative.as_posix(), "sha256": entry["sha256"]})
+    return {"source_url": override["source_url"], "files": files}
+
+
+def copy_extras(extras: list[dict[str, object]], output: Path) -> list[dict[str, str]]:
+    copied = []
+    for extra in extras:
+        root = Path(str(extra["root"]))
+        name = str(extra["id"])
+        destination = output / "reviewed-extra-notices" / safe_name(name)
+        copy_tree(root, destination, set())
+        copied.append(
+            {"provenance": name, "path": destination.relative_to(output).as_posix()}
+        )
+    return copied
+
+
+def write_text_notice(
+    packages: list[dict[str, object]], extras: list[dict[str, str]], output: Path
+) -> None:
+    lines = [
+        "THIRD-PARTY NOTICES",
+        "",
+        "Inventory only. No license selection or complete compliance claim is made.",
+        "",
+    ]
+    for package in packages:
+        lines.extend(
+            [
+                f"{package['name']} {package['version']} ({package['ecosystem']})",
+                f"  Declared license: {package.get('license') or 'not declared'}",
+            ]
+        )
+        for key in ("repository", "source_url", "download_url"):
+            if package.get(key):
+                lines.append(f"  {key.replace('_', ' ').title()}: {package[key]}")
+        files = package["notice_files"]
+        lines.extend([f"  Texts: {', '.join(files) if files else 'MISSING'}", ""])
+    for extra in extras:
+        lines.extend(
+            [
+                f"Reviewed extra notices: {extra['provenance']}",
+                f"  Files: {extra['path']}",
+                "",
+            ]
+        )
+    (output / "THIRD-PARTY-NOTICES.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+def validate_inputs(args: argparse.Namespace) -> None:
+    if not args.cargo_manifest and not args.npm_root:
+        raise ValueError(
+            "inputs []; expected at least one --cargo-manifest or --npm-root"
+        )
+    output = args.output.absolute()
+    if output.exists() or output.is_symlink():
+        raise ValueError(f"output {output}; expected a new directory")
+    for root in args.npm_root + args.extra_notices + args.license_overrides:
+        if not root.is_dir():
+            raise ValueError(f"input directory {root}; expected an existing directory")
+    for manifest in args.cargo_manifest:
+        if manifest.name != "Cargo.toml" or not manifest.is_file():
+            raise ValueError(f"manifest {manifest}; expected an existing Cargo.toml")
+    for root in args.npm_root:
+        if (
+            not (root / "package-lock.json").is_file()
+            or not (root / "node_modules").is_dir()
+        ):
+            raise ValueError(
+                f"npm root {root}; expected package-lock.json and node_modules"
+            )
+    for root in args.npm_root + args.extra_notices + args.license_overrides:
+        if output == root.absolute() or root.absolute() in output.parents:
+            raise ValueError(
+                f"output {output}; expected a directory outside input {root}"
+            )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cargo-manifest", action="append", type=Path, default=[])
+    parser.add_argument("--npm-root", action="append", type=Path, default=[])
+    parser.add_argument("--extra-notices", action="append", type=Path, default=[])
+    parser.add_argument("--license-overrides", action="append", type=Path, default=[])
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args(argv)
+    try:
+        validate_inputs(args)
+        records = cargo_records(args.cargo_manifest, metadata_for_manifest)
+        records.extend(npm_records(args.npm_root))
+        overrides = load_license_overrides(args.license_overrides, records)
+        args.output.mkdir(parents=True)
+        missing = write_inventory(
+            records, reviewed_records(args.extra_notices), args.output, overrides
+        )
+    except (
+        OSError,
+        ValueError,
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+    ) as error:
+        print(f"third-party notice collection failed: {error}", file=sys.stderr)
+        return 2
+    print(
+        f"Collected {len(records)} packages to {args.output}; missing license texts: {len(missing)}"
+    )
+    for identity in missing:
+        print(f"  MISSING: {identity}")
+    return 1 if missing else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

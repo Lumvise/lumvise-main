@@ -166,7 +166,7 @@ fn native_mcp_start_selects_the_requested_session_driver() {
             request_id: "1".into(),
             status: AppBridgeInvocationStatusV1::Completed as i32,
             output_json: serde_json::to_vec(
-                &json!({"state":{"session_id":"selected"},"active_tools":[]}),
+                &json!({"state":{"session_id":"selected","session_epoch":1},"active_tools":[]}),
             )
             .unwrap(),
             message: String::new(),
@@ -253,6 +253,7 @@ fn assistant_scoped_surface() -> Value {
                 "properties": {
                     "plugin_id": {"type": "string"},
                     "session_id": {"type": "string"},
+                    "session_epoch": {"type": "integer"},
                     "content": {"type": "string"},
                     "final": {"type": "boolean"},
                     "summary": {"type": "string"}
@@ -322,7 +323,7 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
         retryable: false,
     };
     let started = completed(
-        br#"{"state":{"session_id":"logical-session"},"session_instructions":"Use the bound tools.","active_tools":["assistant.respond","assistant.await_turn","assistant.finish"]}"#,
+        br#"{"state":{"session_id":"logical-session","session_epoch":27},"session_instructions":"Use the bound tools.","active_tools":["assistant.respond","assistant.await_turn","assistant.finish"]}"#,
     );
     let responded =
         completed(br#"{"decision":"assistant_segment_accepted","playback":{"accepted":true}}"#);
@@ -393,7 +394,7 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
         json!({"jsonrpc":"2.0","id":4,
         "method":"tools/call","params":{"name":"invoke_app_plugin_capability",
         "arguments":{"plugin_id":"builtin.assistant","capability_id":"assistant.respond",
-        "input":{"content":"Second sentence.","turn_id":"logical-session:1:0","final":true}}}}),
+        "input":{"content":"Second sentence.","turn_id":"logical-session:1:0","session_epoch":999,"final":true}}}}),
     );
     assert!(
         generic_response.get("error").is_none(),
@@ -410,6 +411,11 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
     assert_eq!(generic.scope_id.as_deref(), Some("assistant_session"));
     assert_eq!(generic.session_id, "logical-session");
     assert_eq!(generic.capability_id, "assistant.respond");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&generic.input_json).unwrap()["session_epoch"],
+        27,
+        "the bound epoch must override a caller-supplied epoch"
+    );
     let names = catalog["result"]["tools"]
         .as_array()
         .unwrap()
@@ -426,7 +432,7 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
     assert_eq!(
         started_output["result"]["content"][0]["text"],
         serde_json::to_string(&json!({
-            "state": {"session_id": "logical-session"},
+            "state": {"session_id": "logical-session", "session_epoch": 27},
             "session_instructions": "Use the bound tools.",
             "active_tools": ["assistant.respond", "assistant.await_turn", "assistant.finish"]
         }))
@@ -463,6 +469,11 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
             .is_none()
     );
     assert_eq!(respond.scope_id.as_deref(), Some("assistant_session"));
+    assert!(
+        respond_schema["inputSchema"]["properties"]
+            .get("session_epoch")
+            .is_none()
+    );
     assert_eq!(respond.session_id, "logical-session");
     assert_eq!(respond.capability_id, "assistant.respond");
     assert_eq!(
@@ -472,7 +483,8 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
             "turn_id":"logical-session:1:0",
             "final": false,
             "plugin_id": "builtin.assistant",
-            "session_id": "logical-session"
+            "session_id": "logical-session",
+            "session_epoch": 27
         })
     );
 }
@@ -548,7 +560,9 @@ fn bound_workspace_and_knowledge_tools_keep_their_plugin_ownership() {
     ]});
     let bridge = FakeBridge::start(vec![
         BridgeResponse::Json(assistant_plugin_surface()),
-        completed(json!({"state":{"session_id":"workspace-session"},"active_tools":[]})),
+        completed(
+            json!({"state":{"session_id":"workspace-session","session_epoch":1},"active_tools":[]}),
+        ),
         BridgeResponse::Json(scoped.clone()),
         completed(json!({"accepted":true})),
         BridgeResponse::Json(scoped),

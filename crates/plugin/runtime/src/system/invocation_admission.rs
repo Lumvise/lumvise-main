@@ -11,6 +11,9 @@ use crate::{PluginInvocationClass, PluginInvocationContext, PluginRuntimeError};
 
 const CANCELLATION_POLL: Duration = Duration::from_millis(10);
 
+#[cfg(test)]
+mod cancellation_tests;
+
 pub(crate) struct PluginInvocationAdmission {
     mailboxes: Mutex<HashMap<String, Arc<PluginMailbox>>>,
     maximum_queued: usize,
@@ -40,6 +43,28 @@ struct MailboxState {
 pub(crate) struct PluginInvocationPermit {
     mailbox: Arc<PluginMailbox>,
     export_id: String,
+}
+
+struct QueuedMailboxTicket<'mailbox> {
+    mailbox: &'mailbox PluginMailbox,
+    ticket: Option<u64>,
+    class: PluginInvocationClass,
+    request_id: &'mailbox str,
+}
+
+impl Drop for QueuedMailboxTicket<'_> {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket {
+            self.mailbox.remove_queued(
+                ticket,
+                self.class,
+                PluginRuntimeError::InvocationCancelled {
+                    plugin_id: self.mailbox.plugin_id.clone(),
+                    request_id: self.request_id.to_owned(),
+                },
+            );
+        }
+    }
 }
 
 /// Lock-local Plugin Invocation admission state and terminal counters.
@@ -214,7 +239,15 @@ impl PluginMailbox {
             }
             self.enqueue_or_reject(&mut state, &request)?
         };
-        self.wait_async_for_turn(request, ticket).await
+        let mut queued = QueuedMailboxTicket {
+            mailbox: self,
+            ticket: Some(ticket),
+            class: request.class,
+            request_id: request.invocation_id,
+        };
+        let result = self.wait_async_for_turn(request, ticket).await;
+        queued.ticket = None;
+        result
     }
 
     fn wait_for_turn(
@@ -436,7 +469,9 @@ impl MailboxState {
     }
 
     fn dispatch(&mut self, ticket: u64, class: PluginInvocationClass, export_id: &str) {
-        debug_assert_eq!(self.queue_mut(class).pop_front(), Some(ticket));
+        // Dequeue in release builds too; an assertion must never own a mutation.
+        let dispatched = self.queue_mut(class).pop_front();
+        debug_assert_eq!(dispatched, Some(ticket));
         let current = self
             .executing_by_export
             .get(export_id)

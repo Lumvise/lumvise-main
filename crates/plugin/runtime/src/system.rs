@@ -459,6 +459,7 @@ impl PluginSystem {
     ) -> Result<WireOutcome, PluginRuntimeError> {
         let plugin_id = invocation.plugin_id;
         let export_id = invocation.capability_id;
+        let lane = self.exclusive_lanes.guard(plugin_id, lane_invocation);
         let result = match self
             .invocation_admission
             .admit_async(
@@ -473,8 +474,7 @@ impl PluginSystem {
             Ok(_permit) => self.invoke_with_installation_async(entry, invocation).await,
             Err(error) => Err(error),
         };
-        self.exclusive_lanes
-            .finish(plugin_id, lane_invocation, &result);
+        lane.finish(&result);
         result
     }
 
