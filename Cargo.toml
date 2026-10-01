@@ -1,0 +1,96 @@
+[workspace]
+members = [
+    "crates/app-core",
+    "crates/db-core",
+    "crates/frontend-core",
+    "crates/lumvise-contracts",
+    "crates/mcp-app-adapter",
+    "crates/mcp-core",
+    "crates/project-indexer",
+    "crates/neural-core",
+    "crates/plugin/package",
+    "crates/plugin/protocol",
+    "crates/plugin/runtime",
+    "crates/plugin/sdk",
+    "crates/plugin/builtins/knowledge",
+    "crates/plugin/builtins/semantic",
+    "crates/plugin/tooling/builtin-release",
+    "crates/plugin/tooling/admin",
+    "crates/resource-routing",
+    "crates/resource-server",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+
+[workspace.dependencies]
+bincode = "1.3"
+dirs = "6.0"
+libc = "0.2"
+fs4 = "0.13"
+interprocess = "2.2"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_Security_Authorization"] }
+chrono = { version = "0.4", features = ["serde"] }
+fastembed = { version = "5.14", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
+# `metrics` is the instrumentation facade (no-op until a recorder is installed);
+# `metrics-exporter-prometheus` renders Prometheus text on demand (http exporter
+# feature disabled — the daemon's own HTTP layer serves `/metrics`).
+metrics = "0.23"
+metrics-exporter-prometheus = { version = "0.15", default-features = false }
+md5 = "0.7"
+prost = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rodio = { version = "0.21.1", default-features = false, features = ["playback"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sherpa-onnx = "1.13.2"
+tempfile = "3.10"
+thiserror = "1.0"
+tokio = { version = "1.45", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+uuid = { version = "1.0", features = ["v4", "v7", "serde"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+url = "2.5"
+http = "1.3"
+bytes = "1.10"
+h2 = "0.4"
+rustls = "0.23"
+rustls-pemfile = "2.2"
+tokio-rustls = "0.26"
+openidconnect = { version = "4.0", features = ["reqwest-blocking"] }
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
+keyring = "3.6"
+parking_lot = "0.12"
+bzip2 = "0.5"
+tar = "0.4"
+sha2 = "0.10"
+hex = "0.4"
+webpki-roots = "1.0"
+tower-service = "0.3"
+whisper-rs = "0.16"
+toml = "0.8"
+
+# Internal package paths live here so module moves do not create fragile
+# relative paths throughout the workspace.
+lumvise-app-core = { path = "crates/app-core" }
+lumvise-db-core = { path = "crates/db-core" }
+lumvise-frontend-core = { path = "crates/frontend-core" }
+lumvise-mcp-app-adapter = { path = "crates/mcp-app-adapter" }
+lumvise-mcp-core = { path = "crates/mcp-core" }
+lumvise-neural-core = { path = "crates/neural-core" }
+lumvise-contracts = { path = "crates/lumvise-contracts" }
+lumvise-plugin-knowledge = { path = "crates/plugin/builtins/knowledge" }
+lumvise-plugin-package = { path = "crates/plugin/package" }
+lumvise-plugin-protocol = { path = "crates/plugin/protocol" }
+lumvise-resource-server = { path = "crates/resource-server" }
+lumvise-resource-routing = { path = "crates/resource-routing" }
+lumvise-plugin-runtime = { path = "crates/plugin/runtime" }
+lumvise-plugin-sdk = { path = "crates/plugin/sdk" }
+lumvise-plugin-semantic = { path = "crates/plugin/builtins/semantic" }

@@ -1,0 +1,55 @@
+[package]
+name = "lumvise-app-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.22"
+chrono.workspace = true
+getrandom = "0.3"
+fs4.workspace = true
+interprocess.workspace = true
+hex = "0.4"
+lumvise-contracts.workspace = true
+lumvise-db-core.workspace = true
+lumvise-frontend-core.workspace = true
+lumvise-mcp-core.workspace = true
+lumvise-neural-core.workspace = true
+lumvise-resource-routing.workspace = true
+lumvise-plugin-package.workspace = true
+lumvise-plugin-protocol.workspace = true
+lumvise-plugin-runtime.workspace = true
+lumvise-project-indexer = { path = "../project-indexer" }
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+prost.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex = "1.12"
+semver = "1.0"
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+widestring = "1.2"
+
+[features]
+default = []
+assistant-e2e = ["lumvise-frontend-core/assistant-e2e", "lumvise-resource-routing/assistant-e2e"]
+# Desktop Settings exposes managed embeddings, so every desktop build needs their runtime.
+desktop-app = ["lumvise-frontend-core/desktop-app", "native-vector"]
+native-vector = ["lumvise-neural-core/native-vector"]
+native-voice = ["lumvise-neural-core/native-voice"]
+
+[dev-dependencies]
+ed25519-dalek = "2.1"
+parking_lot.workspace = true
+tempfile.workspace = true

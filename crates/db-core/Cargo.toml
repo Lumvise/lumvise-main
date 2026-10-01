@@ -1,0 +1,37 @@
+[package]
+name = "lumvise-db-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+bincode.workspace = true
+chrono.workspace = true
+grafeo = { version = "0.5.42", default-features = false, features = ["lpg"] }
+grafeo-core = { version = "0.5.42", default-features = false, features = ["lpg", "vector-index"] }
+metrics.workspace = true
+lumvise-resource-routing.workspace = true
+rusqlite.workspace = true
+lumvise-contracts.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+arrow-array = "59.1.0"
+arrow-schema = "59.1.0"
+parquet = { version = "59.1.0", default-features = false, features = ["arrow", "zstd"] }
+sha2.workspace = true
+zip = { version = "2.4.2", default-features = false }
+bytes.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

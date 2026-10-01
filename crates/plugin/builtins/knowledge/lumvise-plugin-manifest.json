@@ -1,0 +1,6023 @@
+{
+  "schema_version": 1,
+  "publisher": {
+    "publisher_id": "lumvise.builtin",
+    "key_id": "lumvise.release.1"
+  },
+  "plugin_id": "builtin.knowledge",
+  "plugin_version": "0.1.42",
+  "protocol": {
+    "min": 6,
+    "max": 6
+  },
+  "targets": {},
+  "files": {},
+  "exports": [
+    {
+      "id": "manifest",
+      "name": "Knowledge manifest",
+      "kind": "command",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "exports": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plugin_id",
+          "protocol",
+          "exports"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "list_knowledge_dependents",
+      "name": "List Knowledge dependents",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "target_id": {
+            "type": "string"
+          },
+          "target_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_kind",
+          "target_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "metadata": {},
+                "project_root": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "content",
+                "tags",
+                "dependencies",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "create_knowledge",
+      "name": "Create Knowledge",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "target": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "target"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "knowledge_type": {
+            "enum": [
+              "specification",
+              "issue",
+              "task_assignment",
+              "definition",
+              "annotation",
+              "report",
+              "decision",
+              "manual_note",
+              "derived_summary"
+            ],
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "artifact_id",
+          "semantic_element_id",
+          "knowledge_type",
+          "title",
+          "content"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.create",
+      "name": "Assistant Knowledge create",
+      "kind": "scoped_mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "target": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "target"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "knowledge_type": {
+            "enum": [
+              "specification",
+              "issue",
+              "task_assignment",
+              "definition",
+              "annotation",
+              "report",
+              "decision",
+              "manual_note",
+              "derived_summary"
+            ],
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "artifact_id",
+          "semantic_element_id",
+          "knowledge_type",
+          "title",
+          "content"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground",
+      "scope": "assistant_session"
+    },
+    {
+      "id": "update_knowledge",
+      "name": "Update Knowledge",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependencies": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "knowledge_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic_element_id": {
+            "type": "string"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.update",
+      "name": "Assistant Knowledge update",
+      "kind": "scoped_mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependencies": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "knowledge_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic_element_id": {
+            "type": "string"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground",
+      "scope": "assistant_session"
+    },
+    {
+      "id": "delete_knowledge",
+      "name": "Delete Knowledge",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_knowledge",
+      "name": "Get Knowledge",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "list_knowledge_for_element",
+      "name": "List Knowledge for element",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "semantic_element_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "semantic_element_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "metadata": {},
+                "project_root": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "content",
+                "tags",
+                "dependencies",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "list_knowledge",
+      "name": "List Knowledge",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "knowledge_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic_element_ids": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "metadata": {},
+                "project_root": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "content",
+                "tags",
+                "dependencies",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "search_knowledge",
+      "name": "Search Knowledge",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "knowledge_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "vector",
+              "lexical"
+            ],
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "score"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "results"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "find_semantic_elements",
+      "name": "Find semantic elements",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "include_inactive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "elements": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "element_kind": {
+                  "type": "string"
+                },
+                "end_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parent_element_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "start_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "semantic_element_id",
+                "element_kind",
+                "name",
+                "path",
+                "parent_element_id",
+                "start_line",
+                "end_line"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "elements",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_semantic_element",
+      "name": "Get semantic element",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "semantic_element_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "semantic_element_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element": {
+            "additionalProperties": false,
+            "properties": {
+              "element_kind": {
+                "type": "string"
+              },
+              "end_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "parent_element_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "start_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "semantic_element_id",
+              "element_kind",
+              "name",
+              "path",
+              "parent_element_id",
+              "start_line",
+              "end_line"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "element"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "rebuild_knowledge_vectors",
+      "name": "Rebuild Knowledge vectors",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
+      },
+      "execution": "background"
+    },
+    {
+      "id": "run_cultivation",
+      "name": "Run Knowledge cultivation",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "cultivate_from_scratch",
+              "refresh_cultivation",
+              "deepen_abstraction",
+              "synthesize_nucleus",
+              "diagnose_on_request"
+            ],
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "additionalProperties": false,
+            "properties": {
+              "abstraction_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "c4_artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "diagnostics_created": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "nucleus_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "report_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id",
+              "mode",
+              "project_root",
+              "artifact_ids",
+              "abstraction_ids",
+              "c4_artifact_ids",
+              "nucleus_ids",
+              "report_ids",
+              "diagnostics_created",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_cultivation_run",
+      "name": "Get Knowledge cultivation run",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "additionalProperties": false,
+            "properties": {
+              "abstraction_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "c4_artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "diagnostics_created": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "nucleus_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "report_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id",
+              "mode",
+              "project_root",
+              "artifact_ids",
+              "abstraction_ids",
+              "c4_artifact_ids",
+              "nucleus_ids",
+              "report_ids",
+              "diagnostics_created",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "ensure_c4_nucleus",
+      "name": "Ensure C4 nucleus",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refresh": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry_failed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {},
+              "created": {},
+              "model": {},
+              "provider_id": {},
+              "status": {
+                "const": "ready"
+              },
+              "failed_element_ids": {},
+              "failure_reason": {}
+            },
+            "required": [
+              "status",
+              "created",
+              "artifact",
+              "provider_id",
+              "model"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {},
+              "missing_element_ids": {},
+              "pending_element_ids": {},
+              "request_id": {},
+              "status": {
+                "const": "pending"
+              },
+              "submitted": {},
+              "target_fingerprint": {},
+              "target_path": {},
+              "failed_element_ids": {}
+            },
+            "required": [
+              "status",
+              "request_id",
+              "target_fingerprint",
+              "missing_element_ids",
+              "pending_element_ids",
+              "submitted",
+              "artifact_id",
+              "target_path"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {},
+              "reason": {},
+              "reason_code": {},
+              "status": {
+                "const": "not_ready"
+              },
+              "target_fingerprint": {},
+              "target_path": {}
+            },
+            "required": [
+              "status",
+              "reason_code",
+              "reason",
+              "target_fingerprint",
+              "artifact_id",
+              "target_path"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "missing_element_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_element_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "submitted": {
+            "type": "integer"
+          },
+          "target_fingerprint": {
+            "type": "string"
+          },
+          "target_path": {
+            "type": "string"
+          },
+          "failed_element_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "failure_reason": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "debug_c4_nucleus",
+      "name": "Debug C4 nucleus",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "functionalArtifacts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "projectRoot": {
+            "type": "string"
+          },
+          "report": {
+            "type": "object"
+          },
+          "reportTarget": {
+            "type": "object"
+          },
+          "requestedTarget": {
+            "type": "object"
+          },
+          "scope": {
+            "type": "object"
+          },
+          "status": {
+            "const": "ok"
+          }
+        },
+        "required": [
+          "status",
+          "projectRoot",
+          "requestedTarget",
+          "reportTarget",
+          "scope",
+          "functionalArtifacts",
+          "report"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.list_dependents",
+      "name": "Assistant Knowledge dependents",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_kind",
+          "target_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "metadata": {},
+                "project_root": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "content",
+                "tags",
+                "dependencies",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.search",
+      "name": "Assistant Knowledge search",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "knowledge_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "vector",
+              "lexical"
+            ],
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "score"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "results"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.list_for_element",
+      "name": "Assistant Knowledge listing",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "semantic_element_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "metadata": {},
+                "project_root": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "content",
+                "tags",
+                "dependencies",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.get",
+      "name": "Assistant Knowledge read",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.find_elements",
+      "name": "Assistant semantic element search",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "include_inactive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "elements": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "element_kind": {
+                  "type": "string"
+                },
+                "end_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parent_element_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "start_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "semantic_element_id",
+                "element_kind",
+                "name",
+                "path",
+                "parent_element_id",
+                "start_line",
+                "end_line"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "elements",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "knowledge.get_element",
+      "name": "Assistant semantic element read",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "semantic_element_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element": {
+            "additionalProperties": false,
+            "properties": {
+              "element_kind": {
+                "type": "string"
+              },
+              "end_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "parent_element_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "start_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "semantic_element_id",
+              "element_kind",
+              "name",
+              "path",
+              "parent_element_id",
+              "start_line",
+              "end_line"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "element"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "project_knowledge",
+      "name": "Project Knowledge",
+      "kind": "command",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "changesSince": {
+            "type": "integer"
+          },
+          "projectRoot": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "projectRoot",
+          "changesSince"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "elements": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "changeMarker": {
+                  "type": "string"
+                },
+                "children": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "contentMd5": {
+                  "type": "string"
+                },
+                "elementId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "linkTargets": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elementId": {
+                        "type": "string"
+                      },
+                      "heading": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "notePathHint": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "elementId",
+                      "title",
+                      "notePathHint",
+                      "heading"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "markdown": {
+                  "type": "string"
+                },
+                "ownership": {
+                  "type": "object"
+                },
+                "pathHint": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "object"
+                },
+                "sourceId": {
+                  "type": "string"
+                },
+                "sourceRefs": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "space": {
+                  "type": "string"
+                },
+                "syncToken": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "writePolicy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "elementId",
+                "space",
+                "kind",
+                "title",
+                "markdown",
+                "contentMd5",
+                "pathHint",
+                "sourceId",
+                "sourceRefs",
+                "syncToken",
+                "changeMarker",
+                "ownership",
+                "writePolicy",
+                "children",
+                "artifacts",
+                "linkTargets",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "generatedAt": {
+            "type": "string"
+          },
+          "projectRoot": {
+            "type": "string"
+          },
+          "spaces": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "spaceId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "writePolicy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "spaceId",
+                "title",
+                "status",
+                "writePolicy"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "syncToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "projectRoot",
+          "generatedAt",
+          "syncToken",
+          "spaces",
+          "elements"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.manifest",
+      "name": "Knowledge manifest",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/manifest",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "generatedAt": {
+            "type": "string"
+          },
+          "projects": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "displayName": {
+                  "type": "string"
+                },
+                "granularities": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "sourceId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sourceId",
+                "displayName",
+                "status",
+                "granularities"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "generatedAt",
+          "projects"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.setup",
+      "name": "Knowledge setup",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/setup",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "mcpBaseUrl": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "origin": {
+            "const": "lumvise-mcp"
+          },
+          "projects": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schemaVersion": {
+            "const": 1
+          },
+          "vaultId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "vaultId",
+          "origin",
+          "mode",
+          "createdAt",
+          "mcpBaseUrl",
+          "projects"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.export",
+      "name": "Knowledge projection export",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/export",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "elements": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "changeMarker": {
+                  "type": "string"
+                },
+                "children": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "contentMd5": {
+                  "type": "string"
+                },
+                "elementId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "linkTargets": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elementId": {
+                        "type": "string"
+                      },
+                      "heading": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "notePathHint": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "elementId",
+                      "title",
+                      "notePathHint",
+                      "heading"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "markdown": {
+                  "type": "string"
+                },
+                "ownership": {
+                  "type": "object"
+                },
+                "pathHint": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "object"
+                },
+                "sourceId": {
+                  "type": "string"
+                },
+                "sourceRefs": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "space": {
+                  "type": "string"
+                },
+                "syncToken": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "writePolicy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "elementId",
+                "space",
+                "kind",
+                "title",
+                "markdown",
+                "contentMd5",
+                "pathHint",
+                "sourceId",
+                "sourceRefs",
+                "syncToken",
+                "changeMarker",
+                "ownership",
+                "writePolicy",
+                "children",
+                "artifacts",
+                "linkTargets",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "generatedAt": {
+            "type": "string"
+          },
+          "projectRoot": {
+            "type": "string"
+          },
+          "spaces": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "spaceId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "writePolicy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "spaceId",
+                "title",
+                "status",
+                "writePolicy"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "syncToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "projectRoot",
+          "generatedAt",
+          "syncToken",
+          "spaces",
+          "elements"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.page",
+      "name": "Knowledge projection page",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/page",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "changeMarker": {
+            "type": "string"
+          },
+          "children": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "contentMd5": {
+            "type": "string"
+          },
+          "elementId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "linkTargets": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "elementId": {
+                  "type": "string"
+                },
+                "heading": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "notePathHint": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "elementId",
+                "title",
+                "notePathHint",
+                "heading"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "ownership": {
+            "type": "object"
+          },
+          "pathHint": {
+            "type": "string"
+          },
+          "properties": {
+            "type": "object"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "sourceRefs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "space": {
+            "type": "string"
+          },
+          "syncToken": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "writePolicy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "elementId",
+          "space",
+          "kind",
+          "title",
+          "markdown",
+          "contentMd5",
+          "pathHint",
+          "sourceId",
+          "sourceRefs",
+          "syncToken",
+          "changeMarker",
+          "ownership",
+          "writePolicy",
+          "children",
+          "artifacts",
+          "linkTargets",
+          "properties"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.sync",
+      "name": "Knowledge Obsidian sync",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/knowledge/sync",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "baseRevision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "changedPages": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "changeMarker": {
+                  "type": "string"
+                },
+                "children": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "contentMd5": {
+                  "type": "string"
+                },
+                "elementId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "linkTargets": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elementId": {
+                        "type": "string"
+                      },
+                      "heading": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "notePathHint": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "elementId",
+                      "title",
+                      "notePathHint",
+                      "heading"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "markdown": {
+                  "type": "string"
+                },
+                "ownership": {
+                  "type": "object"
+                },
+                "pathHint": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "object"
+                },
+                "sourceId": {
+                  "type": "string"
+                },
+                "sourceRefs": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "space": {
+                  "type": "string"
+                },
+                "syncToken": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "writePolicy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "elementId",
+                "space",
+                "kind",
+                "title",
+                "markdown",
+                "contentMd5",
+                "pathHint",
+                "sourceId",
+                "sourceRefs",
+                "syncToken",
+                "changeMarker",
+                "ownership",
+                "writePolicy",
+                "children",
+                "artifacts",
+                "linkTargets",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "deletedPageIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "fullReset": {
+            "type": "boolean"
+          },
+          "generatedAt": {
+            "type": "string"
+          },
+          "pageHashes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "schemaVersion": {
+            "const": 1
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "spaces": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "spaceId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "writePolicy": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "spaceId",
+                "title",
+                "status",
+                "writePolicy"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "syncToken": {
+            "type": "string"
+          },
+          "targetRevision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "sourceId",
+          "baseRevision",
+          "targetRevision",
+          "fullReset",
+          "generatedAt",
+          "syncToken",
+          "spaces",
+          "pageHashes",
+          "changedPages",
+          "deletedPageIds"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.c4_nucleus",
+      "name": "Knowledge C4 nucleus",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/knowledge/c4-nucleus",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifactId": {},
+              "created": {},
+              "status": {
+                "const": "ready"
+              },
+              "targetPath": {},
+              "failedElementIds": {}
+            },
+            "required": [
+              "status",
+              "created",
+              "artifactId",
+              "targetPath"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifactId": {},
+              "missingElementIds": {},
+              "pendingElementIds": {},
+              "requestId": {},
+              "status": {
+                "const": "pending"
+              },
+              "targetFingerprint": {},
+              "targetPath": {},
+              "failedElementIds": {}
+            },
+            "required": [
+              "status",
+              "requestId",
+              "targetFingerprint",
+              "missingElementIds",
+              "pendingElementIds",
+              "artifactId",
+              "targetPath"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifactId": {},
+              "reason": {},
+              "reasonCode": {},
+              "status": {
+                "const": "not_ready"
+              },
+              "targetFingerprint": {},
+              "targetPath": {}
+            },
+            "required": [
+              "status",
+              "reasonCode",
+              "reason",
+              "targetFingerprint",
+              "artifactId",
+              "targetPath"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "missingElementIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pendingElementIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reasonCode": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "targetFingerprint": {
+            "type": "string"
+          },
+          "targetPath": {
+            "type": "string"
+          },
+          "failedElementIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.c4_action",
+      "name": "Knowledge C4 action",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/c4-nucleus-action",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "action",
+          "method",
+          "path",
+          "query"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.c4_debug",
+      "name": "Knowledge C4 diagnostics",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/c4-debug",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "functionalArtifacts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "projectRoot": {
+            "type": "string"
+          },
+          "report": {
+            "type": "object"
+          },
+          "reportTarget": {
+            "type": "object"
+          },
+          "requestedTarget": {
+            "type": "object"
+          },
+          "scope": {
+            "type": "object"
+          },
+          "status": {
+            "const": "ok"
+          }
+        },
+        "required": [
+          "status",
+          "projectRoot",
+          "requestedTarget",
+          "reportTarget",
+          "scope",
+          "functionalArtifacts",
+          "report"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.write",
+      "name": "Knowledge write",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/knowledge/write",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.artifacts.create",
+      "name": "Create Knowledge artifact",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/knowledge/artifacts",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.artifacts.update",
+      "name": "Update Knowledge artifact",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/knowledge/artifacts/update",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "semantic_element_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "semantic_element"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "target_kind": {
+                              "const": "artifact"
+                            }
+                          },
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "knowledge_type": {
+                "enum": [
+                  "specification",
+                  "issue",
+                  "task_assignment",
+                  "definition",
+                  "annotation",
+                  "report",
+                  "decision",
+                  "manual_note",
+                  "derived_summary"
+                ],
+                "type": "string"
+              },
+              "metadata": {},
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "semantic_element_id",
+              "knowledge_type",
+              "title",
+              "content",
+              "tags",
+              "dependencies",
+              "metadata"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.artifacts.delete",
+      "name": "Delete Knowledge artifact",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/knowledge/artifacts/delete",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.resolve_target",
+      "name": "Knowledge target resolution",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/knowledge/resolve-target",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element": {
+            "additionalProperties": false,
+            "properties": {
+              "element_kind": {
+                "type": "string"
+              },
+              "end_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "parent_element_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "start_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "semantic_element_id",
+              "element_kind",
+              "name",
+              "path",
+              "parent_element_id",
+              "start_line",
+              "end_line"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "element"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.events",
+      "name": "Knowledge live events",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/events",
+      "stream_mode": "server_sent_events",
+      "sse_policy": {
+        "max_events_per_poll": 100,
+        "poll_interval_ms": 100,
+        "heartbeat_interval_ms": 15000,
+        "max_backoff_ms": 5000
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_events": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "done": {
+            "type": "boolean"
+          },
+          "events": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "data": {},
+                "event": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "retry_ms": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "event",
+                "data"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "events",
+          "next_cursor",
+          "done"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http.knowledge.projection_artifacts",
+      "name": "Knowledge projection artifacts",
+      "kind": "http_route",
+      "method": "GET",
+      "path_template": "/api/knowledge/projection-artifacts",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "knowledge_type": {
+                  "enum": [
+                    "specification",
+                    "issue",
+                    "task_assignment",
+                    "definition",
+                    "annotation",
+                    "report",
+                    "decision",
+                    "manual_note",
+                    "derived_summary"
+                  ],
+                  "type": "string"
+                },
+                "metadata": {},
+                "project_root": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "knowledge_type",
+                "title",
+                "content",
+                "tags",
+                "dependencies",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "trigger.semantic_element_upserted",
+      "name": "Semantic graph changes",
+      "kind": "storage_trigger",
+      "event_kinds": [
+        "semantic.element.upserted",
+        "semantic.element.deleted"
+      ],
+      "entity_kinds": [],
+      "delivery": {
+        "max_attempts": 5,
+        "initial_backoff_ms": 250,
+        "max_backoff_ms": 30000,
+        "dead_letter_max_entries": 1000,
+        "dead_letter_retention_seconds": 604800
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "type": "integer"
+          },
+          "changed": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "disposition": {
+                  "enum": [
+                    "upserted",
+                    "removal"
+                  ],
+                  "type": "string"
+                },
+                "entity_id": {
+                  "type": "string"
+                },
+                "entity_kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "entity_id",
+                "entity_kind",
+                "disposition"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "target_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_root",
+          "base_revision",
+          "target_revision",
+          "changed"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledged": {
+            "type": "boolean"
+          },
+          "events": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "acknowledged",
+          "events"
+        ],
+        "type": "object"
+      },
+      "execution": "background"
+    },
+    {
+      "id": "poll_functional_artifact_generation",
+      "name": "Consume generated functional artifacts",
+      "kind": "recurring_task",
+      "interval_seconds": 5,
+      "delivery": {
+        "max_attempts": 5,
+        "initial_backoff_ms": 250,
+        "max_backoff_ms": 30000,
+        "dead_letter_max_entries": 1000,
+        "dead_letter_retention_seconds": 604800
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_id": {
+            "type": "string"
+          },
+          "scheduled_at_unix_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "scheduled_at_unix_seconds"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "type": "integer"
+          },
+          "pending": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "completed"
+        ],
+        "type": "object"
+      },
+      "execution": "background"
+    }
+  ],
+  "host_capabilities": [
+    {
+      "id": "storage.plugin",
+      "version": "^1.0"
+    },
+    {
+      "id": "storage.semantic",
+      "version": "^1.2.0"
+    },
+    {
+      "id": "plugin.invoke",
+      "version": "^1.0"
+    },
+    {
+      "id": "neural.embed",
+      "version": "^1.0"
+    },
+    {
+      "id": "neural.llm",
+      "version": "^1.0"
+    },
+    {
+      "id": "runtime.project_execution",
+      "version": "^1.0"
+    }
+  ]
+}

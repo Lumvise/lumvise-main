@@ -1,0 +1,977 @@
+#!/usr/bin/env python3
+"""Build Community or Full macOS installers from explicit source workspaces."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import plistlib
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+import zipfile
+
+
+TARGET = "aarch64-apple-darwin"
+MINIMUM_MACOS = "14.0"
+WORKSPACE = Path(__file__).resolve().parent.parent
+BASE_TOOLS = (
+    "cargo",
+    "rustc",
+    "cmake",
+    "protoc",
+    "xcrun",
+    "codesign",
+    "hdiutil",
+    "otool",
+    "lipo",
+)
+FULL_TOOLS = ("npm", "sips", "iconutil")
+NOTARIZATION_TOOLS = ("ditto", "spctl")
+NATIVE_SYMBOL_TOOLS = ("dsymutil", "dwarfdump", "strip")
+BASE_PLUGIN_IDS = {"builtin.knowledge", "builtin.semantic"}
+FULL_PRIVATE_PLUGIN_IDS = {"builtin.assistant", "builtin.canvas"}
+FORBIDDEN_PAYLOAD_SUFFIXES = {".map", ".rs", ".ts", ".tsx", ".jsx", ".md"}
+NOTICE_SUBTREES = {
+    ("Contents", "Resources", "licenses", "third-party-desktop"),
+    ("Contents", "Resources", "licenses", "third-party-notices"),
+}
+
+
+class MacOSInstaller:
+    """Build one edition, e.g. `MacOSInstaller(core, key, out, True).build()`."""
+
+    def __init__(
+        self,
+        core_workspace: Path,
+        key: Path,
+        output: Path,
+        ad_hoc: bool,
+        edition: str = "community",
+        private_workspace: Path | None = None,
+        diagnostics_dir: Path | None = None,
+        third_party_notices: Path | None = None,
+        target_dir: Path | None = None,
+        plugin_release: Path | None = None,
+    ) -> None:
+        self.core_workspace = core_workspace.resolve()
+        self.private_workspace = (
+            private_workspace.resolve()
+            if edition == "full" and private_workspace is not None
+            else None
+        )
+        self.edition = edition
+        self.key = key.resolve()
+        self.output = output.resolve()
+        self.target_dir = (target_dir or self.build_workspace / "target").resolve()
+        self.diagnostics_dir = (
+            diagnostics_dir or self.target_dir / "lumvise-release-diagnostics"
+        ).resolve()
+        self.plugin_release = plugin_release.resolve() if plugin_release else None
+        self.third_party_notices = (
+            third_party_notices.resolve() if third_party_notices is not None else None
+        )
+        self.ad_hoc = ad_hoc
+        self.environment = os.environ.copy()
+        self.identity = (
+            "-" if ad_hoc else self.environment.get("APPLE_SIGNING_IDENTITY", "")
+        )
+        self.profile = self.environment.get("APPLE_NOTARY_PROFILE", "")
+        self.configure_environment()
+
+    @property
+    def build_workspace(self) -> Path:
+        if self.edition == "full" and self.private_workspace is not None:
+            return self.private_workspace
+        return self.core_workspace
+
+    def configure_environment(self) -> None:
+        self.environment.update(
+            APPLE_SIGNING_IDENTITY=self.identity,
+            MACOSX_DEPLOYMENT_TARGET=MINIMUM_MACOS,
+            CARGO_TARGET_DIR=str(self.target_dir),
+            CARGO_PROFILE_RELEASE_DEBUG="line-tables-only",
+            LUMVISE_RELEASE_DIAGNOSTICS_DIR=str(self.diagnostics_dir),
+        )
+        # A developer's canary or dry-run setting must never enter a release build.
+        for variable in (
+            "VITE_LUMVISE_ASSISTANT_E2E",
+            "VITE_LUMVISE_BROWSER_CANARY",
+            "CARGO_FEATURE_ASSISTANT_E2E",
+            "LUMVISE_DRY_RUN",
+            "LUMVISE_RELEASE_DIAGNOSTICS_DIR",
+        ):
+            self.environment.pop(variable, None)
+        self.environment["LUMVISE_RELEASE_DIAGNOSTICS_DIR"] = str(self.diagnostics_dir)
+        self.environment["PATH"] = (
+            f"{Path.home()}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:{os.environ['PATH']}"
+        )
+
+    def command(self, *arguments: str | Path) -> str:
+        """Execute a checked build step; e.g. `command('hdiutil', 'verify', dmg)`."""
+        argv = [str(argument) for argument in arguments]
+        print(f"+ {shlex.join(argv)}", flush=True)
+        result = subprocess.run(
+            argv,
+            cwd=self.core_workspace,
+            env=self.environment,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        if result.stdout:
+            print(result.stdout, end="", flush=True)
+        result.check_returncode()
+        return result.stdout
+
+    def preflight(self) -> None:
+        self.validate_inputs()
+        if (platform.system(), platform.machine()) != ("Darwin", "arm64"):
+            raise ValueError(
+                f"host {platform.system()}/{platform.machine()}; expected an Apple Silicon Mac"
+            )
+        for tool in self.required_tools():
+            if not shutil.which(tool, path=self.environment["PATH"]):
+                raise ValueError(
+                    f"missing command {tool!r}; expected it on PATH (see README.md#macos-builds)"
+                )
+        self.check_native_symbol_tools()
+
+    def required_tools(self) -> tuple[str, ...]:
+        tools = BASE_TOOLS
+        if self.edition == "full":
+            tools += FULL_TOOLS
+        if not self.ad_hoc:
+            tools += NOTARIZATION_TOOLS
+        return tools
+
+    def check_native_symbol_tools(self) -> None:
+        for tool in NATIVE_SYMBOL_TOOLS:
+            found = self.command("xcrun", "--find", tool).strip()
+            if not found:
+                raise ValueError(f"xcrun could not find {tool!r}; expected Xcode tool")
+
+    def validate_inputs(self) -> None:
+        if self.edition not in ("community", "full"):
+            raise ValueError(f"edition {self.edition!r}; expected community or full")
+        self.validate_workspace_inputs()
+        if (
+            self.third_party_notices is not None
+            and not self.third_party_notices.is_dir()
+        ):
+            raise ValueError(
+                f"third-party notices {self.third_party_notices}; expected reviewed notice directory"
+            )
+        if not self.ad_hoc and not (
+            self.identity.startswith("Developer ID Application:") and self.profile
+        ):
+            raise ValueError(
+                "expected APPLE_SIGNING_IDENTITY='Developer ID Application: …' and APPLE_NOTARY_PROFILE; use --ad-hoc only for local testing"
+            )
+        if not self.ad_hoc:
+            self.validate_release_notices()
+        if self.output.exists() and (
+            not self.output.is_dir() or any(self.output.iterdir())
+        ):
+            raise ValueError(
+                f"output {self.output}; expected a missing or empty directory"
+            )
+        if self.directories_overlap(self.output, self.diagnostics_dir):
+            raise ValueError(
+                f"diagnostics directory {self.diagnostics_dir}; expected a path outside installer output {self.output}"
+            )
+        self.validate_plugin_key()
+
+    def validate_release_notices(self) -> None:
+        if self.third_party_notices is None:
+            raise ValueError("official build; expected --third-party-notices inventory")
+        path = self.third_party_notices / "inventory.json"
+        packages = json.loads(path.read_text()).get("packages")
+        if not isinstance(packages, list) or not packages:
+            raise ValueError(f"notice inventory {path}; expected nonempty packages")
+        for package in packages:
+            files = package.get("notice_files", [])
+            if package.get("missing_license_text") is not False or not files:
+                raise ValueError(
+                    f"notice package {package.get('id')!r}; expected license text"
+                )
+            for name in files:
+                notice = (self.third_party_notices / name).resolve()
+                if (
+                    not notice.is_relative_to(self.third_party_notices)
+                    or not notice.is_file()
+                ):
+                    raise ValueError(
+                        f"notice file {name!r}; expected included license text"
+                    )
+
+    def validate_workspace_inputs(self) -> None:
+        core_files = (
+            "Cargo.toml",
+            "crates/mcp-app-adapter/Cargo.toml",
+            "crates/plugin/tooling/builtin-release/Cargo.toml",
+            "LICENSE",
+            "LICENSES",
+        )
+        self.require_paths(self.core_workspace, core_files)
+        if self.edition != "full":
+            return
+        if self.private_workspace is None:
+            raise ValueError("--private-workspace is required for --edition full")
+        private_files = (
+            "Cargo.toml",
+            "crates/desktop-product/Cargo.toml",
+            "crates/desktop-shell/tauri.conf.json",
+            "crates/desktop-shell/icons/icon.png",
+            "crates/frontend-core/renderer/package.json",
+            "crates/plugin/builtins/canvas/renderer/package.json",
+            "LICENSE",
+            "distribution/third-party-desktop",
+        )
+        self.require_paths(self.private_workspace, private_files)
+
+    @staticmethod
+    def require_paths(root: Path, paths: tuple[str, ...]) -> None:
+        for relative in paths:
+            candidate = root / relative
+            if not candidate.exists():
+                raise ValueError(
+                    f"workspace path {candidate}; expected required source input"
+                )
+
+    @staticmethod
+    def directories_overlap(first: Path, second: Path) -> bool:
+        return first == second or first in second.parents or second in first.parents
+
+    def validate_plugin_key(self) -> None:
+        key_bytes = self.key.read_bytes()
+        if len(key_bytes) != 32:
+            key_bytes = key_bytes.strip()
+        valid_hex = len(key_bytes) == 64 and all(
+            byte in b"0123456789abcdefABCDEF" for byte in key_bytes
+        )
+        if self.key.stat().st_mode & 0o077 or not (len(key_bytes) == 32 or valid_hex):
+            raise ValueError(
+                f"key {self.key}; expected 32 raw bytes or 64 hex characters with mode 600"
+            )
+
+    def build(self) -> Path:
+        """Publish a verified DMG and checksum; e.g. `installer.build()`."""
+        self.preflight()
+        if self.ad_hoc:
+            print("Local test installer: ad-hoc signed, not notarized.", flush=True)
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".macos-installer-", dir=self.output.parent
+        ) as temporary:
+            staging = Path(temporary)
+            self.compile_release(staging / "builtins")
+            app = self.assemble_app(staging)
+            self.audit_payload(app, staging / "inspection")
+            self.collect_native_diagnostics(app)
+            self.audit_binary(app / "Contents/MacOS/lumvise")
+            self.sign_app(app, staging)
+            if not self.ad_hoc:
+                self.notarize_app(app, staging)
+            dmg = self.create_dmg(app, staging)
+            self.publish(app, dmg)
+        print(f"Installer: {self.output / dmg.name}")
+        return self.output / dmg.name
+
+    def compile_release(self, builtins: Path) -> None:
+        if self.edition == "full":
+            self.compile_private_renderers()
+        if self.plugin_release is not None:
+            self.compile_builtins(builtins)
+            self.compile_app()
+        else:
+            self.compile_app()
+            self.compile_builtins(builtins)
+        if self.edition == "full":
+            self.verify_renderer_diagnostics()
+
+    def compile_private_renderers(self) -> None:
+        if self.private_workspace is None:
+            raise ValueError("--private-workspace is required for Full renderer builds")
+        for relative in (
+            "crates/frontend-core/renderer",
+            "crates/plugin/builtins/canvas/renderer",
+        ):
+            renderer = self.private_workspace / relative
+            self.command("npm", "ci", "--prefix", renderer)
+            self.command("npm", "run", "build", "--prefix", renderer)
+            if relative == "crates/frontend-core/renderer":
+                (renderer / "assets/.lumvise-build-mode").write_text("production")
+
+    def compile_app(self) -> None:
+        if self.edition == "community":
+            self.command(
+                "cargo",
+                "build",
+                "--release",
+                "--locked",
+                "--manifest-path",
+                self.core_workspace / "Cargo.toml",
+                "-p",
+                "lumvise-mcp-app-adapter",
+                "--features",
+                "native-vector",
+                "--bin",
+                "lumvise",
+                "--target",
+                TARGET,
+            )
+            return
+        if self.private_workspace is None:
+            raise ValueError("--private-workspace is required for Full builds")
+        self.command(
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--manifest-path",
+            self.private_workspace / "Cargo.toml",
+            "-p",
+            "lumvise-desktop-product",
+            "--features",
+            "native-voice,native-vector",
+            "--bin",
+            "lumvise",
+            "--target",
+            TARGET,
+        )
+
+    def compile_builtins(self, builtins: Path) -> None:
+        if self.plugin_release is not None:
+            self.verify_plugin_release()
+            shutil.copytree(self.plugin_release, builtins)
+            return
+        workspaces = [self.core_workspace]
+        if (
+            self.edition == "full"
+            and self.private_workspace is not None
+            and self.private_workspace != self.core_workspace
+        ):
+            workspaces.append(self.private_workspace)
+        arguments: list[str | Path] = [
+            "cargo",
+            "run",
+            "--release",
+            "--locked",
+            "--manifest-path",
+            self.core_workspace / "Cargo.toml",
+            "-p",
+            "lumvise-builtin-plugin-release",
+            "--",
+        ]
+        for workspace in workspaces:
+            arguments.extend(("--workspace", workspace))
+        composition = "minimal" if self.edition == "community" else "full"
+        arguments.extend(
+            (
+                "--target-dir",
+                self.target_dir,
+                "--composition",
+                composition,
+                self.key,
+                builtins,
+                TARGET,
+            )
+        )
+        self.command(*arguments)
+
+    def verify_plugin_release(self) -> None:
+        if self.plugin_release is None:
+            raise ValueError("prepared plugin release; expected a release directory")
+        self.command(
+            "cargo",
+            "run",
+            "--release",
+            "--locked",
+            "--manifest-path",
+            self.core_workspace / "Cargo.toml",
+            "-p",
+            "lumvise-builtin-plugin-release",
+            "--",
+            "--verify-release",
+            self.key,
+            self.plugin_release,
+            TARGET,
+        )
+
+    def verify_renderer_diagnostics(self) -> None:
+        if self.private_workspace is None:
+            raise ValueError("--private-workspace is required to verify renderer maps")
+        renderer_outputs = {
+            "host": self.private_workspace / "crates/frontend-core/renderer/assets",
+            "canvas": self.private_workspace
+            / "crates/plugin/builtins/canvas/views/workspace",
+        }
+        for component, output in renderer_outputs.items():
+            manifest_path = self.diagnostics_dir / component / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("component") != component or not manifest.get("bundles"):
+                raise ValueError(
+                    f"diagnostic manifest {manifest_path}; expected nonempty {component} bundle records"
+                )
+            for bundle in manifest["bundles"]:
+                self.verify_diagnostic_bundle(component, output, bundle)
+            harnesses = [
+                path
+                for path in output.rglob("*")
+                if path.is_file()
+                and (
+                    "canary" in path.name.lower() or "testharness" in path.name.lower()
+                )
+            ]
+            if harnesses:
+                raise ValueError(
+                    f"renderer output {output}; expected no canary or test harness assets"
+                )
+
+    def verify_diagnostic_bundle(
+        self, component: str, output: Path, record: dict[str, str]
+    ) -> None:
+        bundle = output / record["bundle"]
+        source_map = self.diagnostics_dir / component / record["map"]
+        if not bundle.is_file() or not source_map.is_file():
+            raise ValueError(
+                f"diagnostic record {component}/{record['bundle']}; expected emitted bundle and retained map"
+            )
+        bundle_hash = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        map_hash = hashlib.sha256(source_map.read_bytes()).hexdigest()
+        if bundle_hash != record["bundleSha256"] or map_hash != record["mapSha256"]:
+            raise ValueError(
+                f"diagnostic record {component}/{record['bundle']}; expected bundle/map hashes to match emitted files"
+            )
+        if any(output.rglob("*.map")):
+            raise ValueError(
+                f"renderer output {output}; expected all source maps removed"
+            )
+
+    def assemble_app(self, staging: Path) -> Path:
+        app = staging / "image" / self.app_bundle_name
+        contents = app / "Contents"
+        (contents / "MacOS").mkdir(parents=True)
+        resources = contents / "Resources"
+        resources.mkdir()
+        shutil.copy2(
+            self.executable_path,
+            contents / "MacOS/lumvise",
+        )
+        (contents / "MacOS/lumvise").chmod(0o755)
+        shutil.copytree(staging / "builtins", resources / "builtins")
+        self.copy_licenses(resources)
+        if self.edition == "full":
+            self.create_icon(resources, staging)
+        self.write_metadata(contents)
+        (contents / "PkgInfo").write_bytes(b"APPL????")
+        return app
+
+    @property
+    def executable_path(self) -> Path:
+        return self.target_dir / TARGET / "release/lumvise"
+
+    @property
+    def app_bundle_name(self) -> str:
+        return "Lumvise Community.app" if self.edition == "community" else "Lumvise.app"
+
+    def copy_licenses(self, resources: Path) -> None:
+        licenses = resources / "licenses"
+        licenses.mkdir()
+        shutil.copy2(self.core_workspace / "LICENSE", licenses / "LICENSE")
+        shutil.copytree(self.core_workspace / "LICENSES", licenses / "LICENSES")
+        if self.edition == "full":
+            if self.private_workspace is None:
+                raise ValueError("--private-workspace is required for Full licenses")
+            shutil.copy2(
+                self.private_workspace / "LICENSE",
+                licenses / "proprietary-LICENSE",
+            )
+            self.copy_reviewed_tree(
+                self.private_workspace / "distribution/third-party-desktop",
+                licenses / "third-party-desktop",
+            )
+        if self.third_party_notices is not None:
+            self.copy_reviewed_tree(
+                self.third_party_notices,
+                licenses / "third-party-notices",
+            )
+
+    @staticmethod
+    def copy_reviewed_tree(source: Path, destination: Path) -> None:
+        if not any(source.rglob("*")):
+            raise ValueError(f"notice directory {source}; expected reviewed files")
+        shutil.copytree(source, destination)
+
+    def write_metadata(self, contents: Path) -> None:
+        version = tomllib.loads((self.build_workspace / "Cargo.toml").read_text())[
+            "workspace"
+        ]["package"]["version"]
+        config: dict[str, object] = {}
+        if self.edition == "full":
+            if self.private_workspace is None:
+                raise ValueError(
+                    "--private-workspace is required for Full app metadata"
+                )
+            config = json.loads(
+                (
+                    self.private_workspace / "crates/desktop-shell/tauri.conf.json"
+                ).read_text()
+            )
+            if (
+                not isinstance(config.get("identifier"), str)
+                or not config["identifier"]
+            ):
+                raise ValueError(
+                    f"desktop config identity {config.get('identifier')!r}; expected nonempty bundle identifier"
+                )
+        community = self.edition == "community"
+        display_name = "Lumvise Community" if community else "Lumvise"
+        metadata = {
+            "CFBundleName": display_name,
+            "CFBundleDisplayName": display_name,
+            "CFBundleIdentifier": (
+                "com.lumvise.community" if community else config["identifier"]
+            ),
+            "CFBundleExecutable": "lumvise",
+            "CFBundlePackageType": "APPL",
+            "CFBundleInfoDictionaryVersion": "6.0",
+            "CFBundleVersion": version,
+            "CFBundleShortVersionString": version,
+            "LSMinimumSystemVersion": MINIMUM_MACOS,
+            "NSHighResolutionCapable": True,
+        }
+        if not community:
+            metadata["CFBundleIconFile"] = "Lumvise.icns"
+            metadata["NSMicrophoneUsageDescription"] = (
+                "Lumvise uses your microphone for voice conversations when you enable voice input."
+            )
+        (contents / "Info.plist").write_bytes(plistlib.dumps(metadata))
+
+    def create_icon(self, resources: Path, staging: Path) -> None:
+        if self.private_workspace is None:
+            raise ValueError("--private-workspace is required for Full app icon")
+        iconset = staging / "Lumvise.iconset"
+        iconset.mkdir()
+        source = self.private_workspace / "crates/desktop-shell/icons/icon.png"
+        for size in (16, 32, 128, 256, 512):
+            for scale, suffix in ((1, ""), (2, "@2x")):
+                self.command(
+                    "sips",
+                    "-z",
+                    str(size * scale),
+                    str(size * scale),
+                    source,
+                    "--out",
+                    iconset / f"icon_{size}x{size}{suffix}.png",
+                )
+        self.command(
+            "iconutil", "-c", "icns", iconset, "-o", resources / "Lumvise.icns"
+        )
+
+    def audit_binary(self, binary: Path) -> None:
+        architecture = self.command("lipo", "-archs", binary).strip()
+        if architecture != "arm64":
+            raise ValueError(
+                f"binary {binary} has architecture {architecture!r}; expected arm64"
+            )
+        for line in self.command("otool", "-L", binary).splitlines()[1:]:
+            dependency = line.strip().split(" (", 1)[0]
+            if not dependency.startswith(("/usr/lib/", "/System/Library/")):
+                raise ValueError(
+                    f"binary {binary} links {dependency!r}; expected only macOS system libraries (bundle this dependency before distributing)"
+                )
+
+    def collect_native_diagnostics(self, app: Path) -> None:
+        binary = app / "Contents/MacOS/lumvise"
+        destination_root = self.diagnostics_dir / "native/app"
+        destination_root.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{self.edition}-", dir=destination_root)
+        )
+        try:
+            dsym = staging / "Lumvise.dSYM"
+            binary_uuid = self.binary_uuid(binary)
+            self.command("xcrun", "dsymutil", "-o", dsym, binary)
+            dwarf = dsym / "Contents/Resources/DWARF/lumvise"
+            if not dwarf.is_file():
+                raise ValueError(f"dSYM {dsym}; expected DWARF/lumvise output")
+            dsym_uuid = self.binary_uuid(dwarf)
+            if binary_uuid != dsym_uuid:
+                raise ValueError(
+                    f"dSYM UUID {dsym_uuid!r}; expected executable UUID {binary_uuid!r}"
+                )
+            self.command("xcrun", "strip", "-S", "-x", binary)
+            stripped_uuid = self.binary_uuid(binary)
+            if stripped_uuid != binary_uuid:
+                raise ValueError(
+                    f"stripped executable UUID {stripped_uuid!r}; expected retained UUID {binary_uuid!r}"
+                )
+            (staging / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "edition": self.edition,
+                        "executableSha256": hashlib.sha256(
+                            binary.read_bytes()
+                        ).hexdigest(),
+                        "uuid": binary_uuid,
+                        "dSYM": "Lumvise.dSYM",
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            self.replace_native_diagnostics(staging, destination_root / self.edition)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+    def binary_uuid(self, binary: Path) -> str:
+        result = self.command("xcrun", "dwarfdump", "--uuid", binary)
+        match = re.search(r"UUID: ([0-9A-Fa-f-]+) \(arm64\)", result)
+        if match is None:
+            raise ValueError(f"dwarfdump output for {binary}; expected an arm64 UUID")
+        return match.group(1).lower()
+
+    @staticmethod
+    def replace_native_diagnostics(staging: Path, destination: Path) -> None:
+        backup = destination.with_name(f".{destination.name}.previous")
+        moved_previous = False
+        if destination.exists():
+            if backup.exists():
+                shutil.rmtree(backup)
+            destination.rename(backup)
+            moved_previous = True
+        try:
+            staging.rename(destination)
+        except OSError:
+            if moved_previous:
+                backup.rename(destination)
+            raise
+        if moved_previous:
+            shutil.rmtree(backup)
+
+    def audit_payload(self, app: Path, inspection: Path) -> None:
+        inspection.mkdir()
+        self.audit_private_payload_files(app)
+        builtins = app / "Contents/Resources/builtins"
+        index = json.loads((builtins / "builtins-release.json").read_text())
+        composition = "minimal" if self.edition == "community" else "full"
+        artifacts = index.get("artifacts", [])
+        if index.get("composition") != composition or not artifacts:
+            raise ValueError(
+                f"release composition {index.get('composition')!r}; expected nonempty {composition} release"
+            )
+        plugin_ids = [artifact["plugin_id"] for artifact in artifacts]
+        if len(plugin_ids) != len(set(plugin_ids)):
+            raise ValueError(f"release plugin IDs {plugin_ids!r}; expected unique IDs")
+        expected_plugin_ids = BASE_PLUGIN_IDS if self.edition == "community" else None
+        if expected_plugin_ids is not None and set(plugin_ids) != expected_plugin_ids:
+            raise ValueError(
+                f"Community plugin IDs {sorted(plugin_ids)!r}; expected {sorted(BASE_PLUGIN_IDS)!r}"
+            )
+        full_required_ids = BASE_PLUGIN_IDS | FULL_PRIVATE_PLUGIN_IDS
+        if self.edition == "full" and not full_required_ids <= set(plugin_ids):
+            raise ValueError(
+                f"Full plugin IDs {sorted(plugin_ids)!r}; expected public base and private Assistant/Canvas IDs"
+            )
+        indexed_archives = {artifact["archive_path"] for artifact in artifacts}
+        actual_archives = {
+            path.relative_to(builtins).as_posix() for path in builtins.rglob("*.lvp")
+        }
+        if indexed_archives != actual_archives:
+            raise ValueError(
+                f"release archives {sorted(actual_archives)!r}; expected exactly indexed files {sorted(indexed_archives)!r}"
+            )
+        for artifact in artifacts:
+            archive_path = self.release_archive_path(builtins, artifact["archive_path"])
+            with zipfile.ZipFile(archive_path) as archive:
+                self.audit_archive_names(artifact["archive_path"], archive.namelist())
+                manifest = json.loads(archive.read("manifest.json"))
+                if manifest.get("plugin_id") != artifact["plugin_id"]:
+                    raise ValueError(
+                        f"plugin archive {artifact['archive_path']}; expected manifest ID {artifact['plugin_id']!r}"
+                    )
+                binary = inspection / f"{artifact['plugin_id']}.binary"
+                binary.write_bytes(archive.read(manifest["targets"][TARGET]))
+                self.audit_binary(binary)
+                self.command("codesign", "--verify", "--strict", binary)
+
+    def audit_private_payload_files(self, app: Path) -> None:
+        for path in app.rglob("*"):
+            relative = path.relative_to(app)
+            legal_subtree = self.is_notice_subtree(relative)
+            if path.is_dir() and path.name.lower().endswith(".dsym"):
+                raise ValueError(
+                    f"payload path {relative}; expected private dSYM outside app"
+                )
+            if not path.is_file():
+                continue
+            if (
+                (
+                    path.suffix.lower() in FORBIDDEN_PAYLOAD_SUFFIXES
+                    and not legal_subtree
+                )
+                or path.suffix.lower() == ".map"
+                or "dwarf" in {part.lower() for part in relative.parts}
+                or "canary" in path.name.lower()
+                or "testharness" in path.name.lower()
+            ):
+                raise ValueError(
+                    f"payload path {relative}; expected no sources, maps, or test harnesses"
+                )
+
+    @staticmethod
+    def is_notice_subtree(relative: Path) -> bool:
+        parts = relative.parts
+        return any(parts[: len(subtree)] == subtree for subtree in NOTICE_SUBTREES)
+
+    @classmethod
+    def audit_archive_names(cls, archive_path: str, names: list[str]) -> None:
+        forbidden = [
+            name
+            for name in names
+            if Path(name).suffix.lower() in FORBIDDEN_PAYLOAD_SUFFIXES
+            or any(
+                part.lower() == "dwarf" or part.lower().endswith(".dsym")
+                for part in Path(name).parts
+            )
+            or "canary" in name.lower()
+            or "testharness" in name.lower()
+        ]
+        if forbidden:
+            raise ValueError(
+                f"plugin archive {archive_path}; forbidden source/map/symbol/test files {forbidden!r}"
+            )
+
+    @staticmethod
+    def release_archive_path(root: Path, relative: str) -> Path:
+        archive = Path(relative)
+        if archive.is_absolute() or ".." in archive.parts:
+            raise ValueError(
+                f"archive path {relative!r}; expected relative path beneath release root"
+            )
+        return root / archive
+
+    def sign_app(self, app: Path, staging: Path) -> None:
+        options = [] if self.ad_hoc else ["--options", "runtime", "--timestamp"]
+        entitlements: list[str | Path] = []
+        if self.edition == "full":
+            entitlement_file = staging / "entitlements.plist"
+            entitlement_file.write_bytes(
+                plistlib.dumps({"com.apple.security.device.audio-input": True})
+            )
+            entitlements = ["--entitlements", entitlement_file]
+        self.command(
+            "codesign",
+            "--force",
+            "--sign",
+            self.identity,
+            *options,
+            *entitlements,
+            app,
+        )
+        self.command("codesign", "--verify", "--deep", "--strict", app)
+        # Signing changes executable bytes; diagnostics must identify the shipped payload.
+        manifest = self.diagnostics_dir / "native/app" / self.edition / "manifest.json"
+        record = json.loads(manifest.read_text())
+        record["executableSha256"] = hashlib.sha256(
+            (app / "Contents/MacOS/lumvise").read_bytes()
+        ).hexdigest()
+        manifest.write_text(json.dumps(record, indent=2) + "\n")
+
+    def notarize_app(self, app: Path, staging: Path) -> None:
+        archive = staging / "Lumvise-notarization.zip"
+        self.command("ditto", "-c", "-k", "--keepParent", app, archive)
+        self.notarize(archive, app, staging / "app-notarization.json")
+        self.command("spctl", "--assess", "--type", "execute", "--verbose=2", app)
+
+    def notarize(self, upload: Path, staple: Path, receipt: Path) -> None:
+        response = self.command(
+            "xcrun",
+            "notarytool",
+            "submit",
+            upload,
+            "--keychain-profile",
+            self.profile,
+            "--wait",
+            "--output-format",
+            "json",
+        )
+        receipt.write_text(response)
+        result = json.loads(response)
+        if result.get("status") != "Accepted":
+            raise ValueError(
+                f"notarization {result!r}; expected Accepted (retrieve details with xcrun notarytool log <id> --keychain-profile <profile>)"
+            )
+        self.command("xcrun", "stapler", "staple", staple)
+        self.command("xcrun", "stapler", "validate", staple)
+
+    def create_dmg(self, app: Path, staging: Path) -> Path:
+        version = plistlib.loads((app / "Contents/Info.plist").read_bytes())[
+            "CFBundleShortVersionString"
+        ]
+        suffix = "-adhoc" if self.ad_hoc else ""
+        edition = "Community" if self.edition == "community" else "Full"
+        dmg = staging / f"Lumvise-{edition}-{version}-macos-arm64{suffix}.dmg"
+        self.create_image(app, dmg)
+        if not self.ad_hoc:
+            self.command("codesign", "--sign", self.identity, "--timestamp", dmg)
+            self.notarize(dmg, dmg, staging / "dmg-notarization.json")
+            self.command(
+                "spctl",
+                "--assess",
+                "--type",
+                "open",
+                "--context",
+                "context:primary-signature",
+                dmg,
+            )
+        return dmg
+
+    def create_image(self, app: Path, dmg: Path) -> None:
+        (app.parent / "Applications").symlink_to("/Applications")
+        volume = "Lumvise Community" if self.edition == "community" else "Lumvise"
+        instructions = self.install_instructions()
+        (app.parent / "Install.txt").write_text(instructions)
+        self.command(
+            "hdiutil",
+            "create",
+            "-volname",
+            volume,
+            "-srcfolder",
+            app.parent,
+            "-format",
+            "UDZO",
+            "-fs",
+            "HFS+",
+            dmg,
+        )
+        self.command("hdiutil", "verify", dmg)
+
+    def install_instructions(self) -> str:
+        if self.edition == "community":
+            return (
+                "Lumvise Community is headless and provides the Lumvise MCP server.\n"
+                "Drag Lumvise Community.app to Applications, then add this server to your MCP client configuration:\n"
+                "{\n"
+                '  "mcpServers": {\n'
+                '    "lumvise": {\n'
+                '      "command": "/Applications/Lumvise Community.app/Contents/MacOS/lumvise",\n'
+                '      "args": ["mcp", "--project-root", "/absolute/path/to/project"]\n'
+                "    }\n"
+                "  }\n"
+                "}\n"
+            )
+        return (
+            "Drag Lumvise.app to Applications, then open Lumvise from Applications.\n"
+        )
+
+    def publish(self, app: Path, dmg: Path) -> None:
+        ready = dmg.parent / "ready"
+        ready.mkdir()
+        with dmg.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        (ready / f"{dmg.name}.sha256").write_text(f"{digest}  {dmg.name}\n")
+        for receipt in dmg.parent.glob("*-notarization.json"):
+            receipt.rename(ready / receipt.name)
+        app.rename(ready / app.name)
+        dmg.rename(ready / dmg.name)
+        ready.rename(self.output)
+
+
+def installer_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build the Apple Silicon Lumvise Community or Full app and DMG."
+    )
+    parser.add_argument("key", type=Path, help="protected Ed25519 plugin signing key")
+    parser.add_argument(
+        "--edition",
+        choices=("community", "full"),
+        default="community",
+        help="product edition to build (default: community)",
+    )
+    parser.add_argument(
+        "--core-workspace",
+        type=Path,
+        default=WORKSPACE,
+        help="public core checkout (default: this script's workspace)",
+    )
+    parser.add_argument(
+        "--private-workspace",
+        type=Path,
+        help="private product checkout; required for --edition full",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=WORKSPACE / "dist/macos",
+        help="missing or empty directory (default: dist/macos)",
+    )
+    parser.add_argument(
+        "--diagnostics-dir",
+        type=Path,
+        help="private maps, symbols, and hash manifests (default: selected workspace target)",
+    )
+    parser.add_argument(
+        "--target-dir",
+        type=Path,
+        help="Rust build cache (default: selected workspace/target)",
+    )
+    parser.add_argument(
+        "--plugin-release",
+        type=Path,
+        help="prepared signed release bundle to verify and package instead of compiling plugins",
+    )
+    parser.add_argument(
+        "--third-party-notices",
+        type=Path,
+        help="reviewed dependency notice tree to include",
+    )
+    parser.add_argument(
+        "--ad-hoc",
+        action="store_true",
+        help="local testing only; skip Apple notarization",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    """CLI entrypoint; e.g. `scripts/build-macos-installer KEY --edition community`."""
+    args = installer_arguments()
+    try:
+        MacOSInstaller(
+            core_workspace=args.core_workspace,
+            key=args.key,
+            output=args.output_dir,
+            ad_hoc=args.ad_hoc,
+            edition=args.edition,
+            private_workspace=args.private_workspace,
+            diagnostics_dir=args.diagnostics_dir,
+            third_party_notices=args.third_party_notices,
+            target_dir=args.target_dir,
+            plugin_release=args.plugin_release,
+        ).build()
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        subprocess.CalledProcessError,
+        zipfile.BadZipFile,
+    ) as error:
+        print(f"macOS installer failed: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

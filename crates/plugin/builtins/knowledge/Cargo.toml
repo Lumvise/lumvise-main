@@ -1,0 +1,36 @@
+[package]
+name = "lumvise-plugin-knowledge"
+version = "0.1.42"
+edition.workspace = true
+rust-version.workspace = true
+license = "LGPL-3.0-only"
+
+[dependencies]
+chrono.workspace = true
+hex = "0.4"
+lumvise-contracts.workspace = true
+lumvise-plugin-protocol.workspace = true
+lumvise-plugin-package.workspace = true
+lumvise-plugin-sdk.workspace = true
+md5.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+
+[dev-dependencies]
+lumvise-plugin-sdk = { workspace = true, features = ["test-support"] }
+ed25519-dalek = "2.1"
+lumvise-app-core.workspace = true
+lumvise-db-core.workspace = true
+lumvise-resource-routing.workspace = true
+lumvise-plugin-runtime.workspace = true
+sha2 = "0.10"
+tempfile.workspace = true
+
+[[bin]]
+name = "lumvise-plugin-knowledge"
+path = "src/main.rs"
+
+[[bin]]
+name = "knowledge-test-semantic-plugin"
+path = "tests/fixtures/semantic_plugin.rs"

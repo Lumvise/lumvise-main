@@ -1,0 +1,14 @@
+{
+  "content": "## Functional Component Map\n\n```mermaid\nflowchart LR\n  %% C4Container\n  c0[\"<a class='internal-link is-unresolved' href='Lumvise Knowledge/repo/Nuclei/services/embedding.rs/C4 Architecture'>Embedding | API</a>\"]\n  c1[\"<a class='internal-link is-unresolved' href='Lumvise Knowledge/repo/Nuclei/src/gateway.rs/C4 Architecture'>Gateway &lt;HTTP&gt;</a>\"]\n  c2[\"<a class='internal-link is-unresolved' href='Lumvise Knowledge/repo/Nuclei/src/storage.rs/C4 Architecture'>Storage &amp; Index</a>\"]\n  c1 -->|routes to x1| c0\n  c1 -->|calls x1| c2\n```\n\n## Component Jobs\n\n### [Embedding | API](<Lumvise Knowledge/repo/Project/services/embedding.rs#Embedding - API>)\n\n_Not generated yet — this component's functional summary is still queued._\n\n### [Gateway <HTTP>](<Lumvise Knowledge/repo/Project/src/gateway.rs>)\n\n_Not generated yet — this component's functional summary is still queued._\n\n### [Storage & Index](<Lumvise Knowledge/repo/Project/src/storage.rs>)\n\n_Not generated yet — this component's functional summary is still queued._",
+  "missing_functional_element_ids": [
+    "service:embedding",
+    "file:gateway",
+    "file:storage"
+  ],
+  "projection": {
+    "contentMd5": "fnv1a64:f1d1aef13ca9ebcd",
+    "markdown": "## Functional Component Map\n\n```mermaid\nflowchart LR\n  %% C4Container\n  c0[\"<a class='internal-link is-unresolved' href='Lumvise Knowledge/repo/Nuclei/services/embedding.rs/C4 Architecture'>Embedding | API</a>\"]\n  c1[\"<a class='internal-link is-unresolved' href='Lumvise Knowledge/repo/Nuclei/src/gateway.rs/C4 Architecture'>Gateway &lt;HTTP&gt;</a>\"]\n  c2[\"<a class='internal-link is-unresolved' href='Lumvise Knowledge/repo/Nuclei/src/storage.rs/C4 Architecture'>Storage &amp; Index</a>\"]\n  c1 -->|routes to x1| c0\n  c1 -->|calls x1| c2\n```\n\n## Component Jobs\n\n### [Embedding | API](<Lumvise Knowledge/repo/Project/services/embedding.rs#Embedding - API>)\n\n_Not generated yet — this component's functional summary is still queued._\n\n### [Gateway <HTTP>](<Lumvise Knowledge/repo/Project/src/gateway.rs>)\n\n_Not generated yet — this component's functional summary is still queued._\n\n### [Storage & Index](<Lumvise Knowledge/repo/Project/src/storage.rs>)\n\n_Not generated yet — this component's functional summary is still queued._",
+    "pathHint": "src/C4 Architecture.md",
+    "title": "C4 Architecture (report)"
+  }
+}

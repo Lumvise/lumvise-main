@@ -1,0 +1,16 @@
+[package]
+name = "lumvise-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+## Exposes the host-call transport seam so plugin crates can drive lifecycle
+## code against an in-process test host from their own unit tests.
+test-support = []
+
+[dependencies]
+lumvise-plugin-protocol.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

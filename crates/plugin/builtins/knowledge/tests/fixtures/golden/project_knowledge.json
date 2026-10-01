@@ -1,0 +1,130 @@
+{
+  "elements": [
+    {
+      "artifacts": [
+        {
+          "artifactId": "functional-run",
+          "contentMd5": "86c6e952d7975581da18d34eecf5089d",
+          "markdown": "##### Job (`responsibility`)\n\nRoutes requests to storage.\n\n##### Receives (`input`)\n\n- request\n\n##### Outcome (`output`)\n\nStored response.\n\n##### Effects (`side-effect`)\n\n- Writes state.\n\n##### Interface (`interface`)\n\n```text\nfn run(request: Request) -> Result<Response>\n```",
+          "ownerElementId": "fn:run",
+          "ownerKind": "function",
+          "ownerTitle": "run",
+          "title": "Functional meaning: run"
+        }
+      ],
+      "changeMarker": "projection:ac79b26d46540c893bd7594979a68c55",
+      "children": [
+        {
+          "elementId": "fn:run",
+          "kind": "function",
+          "pathHint": "src/lib.rs/run",
+          "sourceRefs": [
+            {
+              "entityId": "fn:run",
+              "entityKind": "semantic_element",
+              "lineEnd": 3,
+              "lineStart": 1,
+              "path": "src/lib.rs"
+            }
+          ],
+          "title": "run"
+        }
+      ],
+      "contentMd5": "ac79b26d46540c893bd7594979a68c55",
+      "elementId": "file:src/lib.rs",
+      "kind": "file",
+      "markdown": "# lib.rs\n\nSource: `src/lib.rs`\n\n[Generate C4 report](obsidian://lumvise-c4?sourceId=%2Frepo&elementId=file%3Asrc%2Flib.rs)\n\n## Calls\n\n- `fn:run` -> `file:src/store.rs` (calls)\n\n## Semantic Elements\n\n### run\n- Kind: `function`\n- Element ID: `fn:run`\n- Project context: [[src/lib.rs/run|run]]\n\n#### Artifacts\n\n##### Job (`responsibility`)\n\nRoutes requests to storage.\n\n##### Receives (`input`)\n\n- request\n\n##### Outcome (`output`)\n\nStored response.\n\n##### Effects (`side-effect`)\n\n- Writes state.\n\n##### Interface (`interface`)\n\n```text\nfn run(request: Request) -> Result<Response>\n```",
+      "ownership": {
+        "content": "lumvise",
+        "source": "lumvise"
+      },
+      "pathHint": "src/lib.rs",
+      "properties": {},
+      "sourceId": "/repo",
+      "sourceRefs": [
+        {
+          "entityId": "file:src/lib.rs",
+          "entityKind": "semantic_element",
+          "lineEnd": 3,
+          "lineStart": 1,
+          "path": "src/lib.rs"
+        }
+      ],
+      "space": "project",
+      "syncToken": "projection:ac79b26d46540c893bd7594979a68c55",
+      "title": "lib.rs",
+      "writePolicy": "annotation",
+      "linkTargets": [
+        {
+          "elementId": "file:src/lib.rs",
+          "heading": null,
+          "notePathHint": "src/lib.rs",
+          "title": "lib.rs"
+        },
+        {
+          "elementId": "file:src/store.rs",
+          "heading": null,
+          "notePathHint": "src/store.rs",
+          "title": "store.rs"
+        },
+        {
+          "elementId": "fn:run",
+          "heading": "run",
+          "notePathHint": "src/lib.rs",
+          "title": "run"
+        }
+      ]
+    },
+    {
+      "artifacts": [],
+      "changeMarker": "projection:91b6c4ff2036a5e54d806795396d6dcc",
+      "children": [],
+      "contentMd5": "91b6c4ff2036a5e54d806795396d6dcc",
+      "elementId": "file:src/store.rs",
+      "kind": "file",
+      "markdown": "# store.rs\n\nSource: `src/store.rs`\n\n[Generate C4 report](obsidian://lumvise-c4?sourceId=%2Frepo&elementId=file%3Asrc%2Fstore.rs)",
+      "ownership": {
+        "content": "lumvise",
+        "source": "lumvise"
+      },
+      "pathHint": "src/store.rs",
+      "properties": {},
+      "sourceId": "/repo",
+      "sourceRefs": [
+        {
+          "entityId": "file:src/store.rs",
+          "entityKind": "semantic_element",
+          "lineEnd": 3,
+          "lineStart": 1,
+          "path": "src/store.rs"
+        }
+      ],
+      "space": "project",
+      "syncToken": "projection:91b6c4ff2036a5e54d806795396d6dcc",
+      "title": "store.rs",
+      "writePolicy": "annotation",
+      "linkTargets": [
+        {
+          "elementId": "file:src/store.rs",
+          "heading": null,
+          "notePathHint": "src/store.rs",
+          "title": "store.rs"
+        }
+      ]
+    }
+  ],
+  "spaces": [
+    {
+      "spaceId": "project",
+      "status": "ready",
+      "title": "Project",
+      "writePolicy": "annotation"
+    },
+    {
+      "spaceId": "implementation",
+      "status": "ready",
+      "title": "Implementation",
+      "writePolicy": "generated"
+    }
+  ]
+}

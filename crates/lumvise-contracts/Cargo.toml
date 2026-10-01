@@ -1,0 +1,16 @@
+[package]
+name = "lumvise-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Crate sources live at the package root (lib.rs beside Cargo.toml) instead of src/.
+# TODO: `git mv *.rs src/` once the working tree is committed, then drop this override.
+[lib]
+path = "lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars = "0.8.22"

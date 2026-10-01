@@ -1,0 +1,9 @@
+Query assets adapted from codeprysm-core 0.1.0, crates/codeprysm-core/queries/*-tags.scm.
+Upstream: https://github.com/codeprysm/codeprysm
+Revision: 37cec7455412cf8a63652076a1887e74d7125f2e
+Copyright (c) 2024-2025 Andrey Markelov. MIT License: see LICENSE.
+Local Rust changes: narrow method declaration ranges and restrict methods to impl/trait bodies; capture qualified calls.
+Local Rust coverage: constants, statics and bodyless function declarations share the syntax pass.
+Local C# change: capture unqualified method calls as well as member calls.
+Test-scope overlays are not included; extraction returns language structure, not test classification.
+json.scm is an original Lumvise query, not an upstream CodePrysm asset.

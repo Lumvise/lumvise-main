@@ -1,0 +1,6 @@
+{
+  "project_note_link": "[Route <request>](<Lumvise Knowledge/repo/Project/src/gateway.rs#route-request>)",
+  "report_path": "src/gateway.rs/C4 Architecture.md",
+  "target_path": "src/gateway.rs/route-request",
+  "text": "Returns Result&lt;Vec&lt;Value&gt;&gt; &amp; status; then routes / output."
+}

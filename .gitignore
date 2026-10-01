@@ -1,0 +1,45 @@
+/target
+node_modules/
+dist/
+.DS_Store
+.fastembed_cache
+.lumvise
+.lumwise
+.scratch
+opencode.json
+documentation/*
+crates/frontend-core/renderer/browser-tests/artifacts/
+
+# Environment files can hold credentials; reviewed templates remain trackable.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Local authentication and signing material stays outside source control.
+.secrets/
+secrets.local.*
+credentials.json
+credentials.local.*
+.npmrc
+.pypirc
+.netrc
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# Machine-specific agent settings can contain credentials and private paths.
+.claude/settings.local.json
+.codex/config.toml
+.mcp.local.json
+
+# Regenerable Python bytecode is never a release input.
+__pycache__/
+*.pyc

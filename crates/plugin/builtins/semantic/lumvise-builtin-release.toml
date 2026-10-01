@@ -1,0 +1,10 @@
+package = "lumvise-plugin-semantic"
+binary = "lumvise-plugin-semantic"
+plugin_id = "builtin.semantic"
+plugin_version = "0.1.27"
+publisher_id = "lumvise.builtin"
+key_id = "lumvise.release.1"
+protocol_min = 6
+protocol_max = 6
+payload_pattern = "plugins/builtin.semantic/{target}/semantic"
+manifest_template = "lumvise-plugin-manifest.json"

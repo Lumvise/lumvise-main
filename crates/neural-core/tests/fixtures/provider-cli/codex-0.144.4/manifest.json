@@ -1,0 +1,6 @@
+{
+  "provider": "codex",
+  "cli_version": "codex-cli 0.144.4",
+  "capture_command": "codex exec --json -o <file> <prompt>",
+  "captured_event_contract": ["thread.started", "turn.started", "item.completed", "turn.completed", "error"]
+}

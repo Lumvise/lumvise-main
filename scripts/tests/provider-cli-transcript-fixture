@@ -1,0 +1,55 @@
+#!/bin/sh
+set -eu
+
+provider=''
+mode='success'
+root=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fixture-provider) provider="$2"; shift 2 ;;
+    --fixture-mode) mode="$2"; shift 2 ;;
+    --fixture-root) root="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+
+[ -n "$provider" ] || { echo 'missing --fixture-provider' >&2; exit 64; }
+[ -f "$root/manifest.json" ] || { echo "missing transcript manifest: $root" >&2; exit 65; }
+
+case " $* " in
+  *' autocompact='*) echo 'retired Codex autocompact option' >&2; exit 66 ;;
+  *' __lumvise_'*) echo 'rejected Gemini sentinel option' >&2; exit 67 ;;
+esac
+
+if [ "$mode" = 'nonzero' ]; then
+  echo "$provider fixture process failure" >&2
+  exit 23
+fi
+
+if [ "$provider" = 'codex' ]; then
+  output=''
+  previous=''
+  for argument in "$@"; do
+    [ "$previous" = '-o' ] && output="$argument"
+    previous="$argument"
+  done
+  [ -n "$output" ] || { echo 'missing Codex -o output path' >&2; exit 68; }
+  [ "$mode" = 'malformed' ] || cp "$root/final.txt" "$output"
+  cat "$root/$mode.jsonl"
+  exit 0
+fi
+
+format=''
+previous=''
+for argument in "$@"; do
+  [ "$previous" = '--output-format' ] && format="$argument"
+  previous="$argument"
+done
+[ -n "$format" ] || { echo 'missing Gemini output format' >&2; exit 69; }
+if [ "$mode" = 'malformed' ]; then
+  printf 'not-json\n'
+elif [ "$format" = 'stream-json' ]; then
+  cat "$root/$mode.jsonl"
+else
+  cat "$root/$mode.json"
+fi

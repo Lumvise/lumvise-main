@@ -1,0 +1,11 @@
+SPDX-License-Identifier: LGPL-3.0-only
+
+Copyright (c) 2026 the Lumvise copyright holders.
+
+The first-party source in this directory is licensed under the GNU Lesser
+General Public License, version 3 only. The full license text is supplied at
+../../../../LICENSES/LGPL-3.0-only.txt, together with its incorporated GNU
+General Public License terms at ../../../../LICENSES/GPL-3.0-only.txt.
+
+Third-party material retains its own notices and licenses. This notice does
+not change the MIT license of the Lumvise plugin SDK, protocol or core.

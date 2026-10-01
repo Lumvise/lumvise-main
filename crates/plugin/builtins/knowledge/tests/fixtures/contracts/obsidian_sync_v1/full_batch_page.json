@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "sourceId": "/repo",
+  "baseRevision": 40,
+  "targetRevision": 42,
+  "fullReset": false,
+  "generatedAt": "2026-07-16T10:00:00Z",
+  "syncToken": "revision:42:page:1",
+  "spaces": [
+    {
+      "spaceId": "project",
+      "title": "Project",
+      "status": "ready",
+      "writePolicy": "annotation"
+    },
+    {
+      "spaceId": "nuclei",
+      "title": "Nuclei",
+      "status": "ready",
+      "writePolicy": "generated"
+    }
+  ],
+  "pageHashes": {
+    "file:src/billing.rs": "md5:billing"
+  },
+  "changedPages": [
+    {
+      "elementId": "file:src/billing.rs",
+      "space": "project",
+      "kind": "file",
+      "title": "billing.rs",
+      "markdown": "# billing.rs\n\n## Semantic Elements\n",
+      "contentMd5": "md5:billing",
+      "pathHint": "src/billing.rs.md",
+      "sourceId": "/repo",
+      "sourceRefs": [
+        {
+          "entityKind": "semantic_element",
+          "entityId": "file:src/billing.rs",
+          "path": "src/billing.rs",
+          "lineStart": 1,
+          "lineEnd": 80
+        }
+      ],
+      "syncToken": "projection:md5:billing",
+      "changeMarker": "projection:md5:billing",
+      "ownership": {
+        "content": "lumvise",
+        "source": "lumvise"
+      },
+      "writePolicy": "annotation",
+      "children": [],
+      "artifacts": [
+        {
+          "artifactId": "artifact:billing-job",
+          "title": "Job",
+          "markdown": "Calculate the final invoice value.",
+          "ownerElementId": "fn:calculate_invoice",
+          "ownerTitle": "calculate_invoice",
+          "ownerKind": "function",
+          "contentMd5": "md5:artifact"
+        }
+      ],
+      "linkTargets": [
+        {
+          "elementId": "fn:calculate_invoice",
+          "title": "calculate_invoice",
+          "notePathHint": "src/billing.rs.md",
+          "heading": "calculate_invoice"
+        }
+      ],
+      "properties": {}
+    }
+  ],
+  "deletedPageIds": [
+    "file:src/retired_billing.rs"
+  ]
+}

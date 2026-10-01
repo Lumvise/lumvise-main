@@ -1,0 +1,12 @@
+{
+  "effects": [
+    "Propagates fallible operations to the caller.",
+    "Serializes or shapes structured data."
+  ],
+  "job": "Function `render`: builds structured JSON data for callers.",
+  "outcome": "Returns `Result<String, Error>`, carrying the success value or an error.",
+  "receives": [
+    "Parameter `input: Result<Vec<Value>, Error>`."
+  ],
+  "source_interface": "pub fn render(input: Result<Vec<Value>, Error>) -> Result<String, Error>"
+}

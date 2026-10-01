@@ -1,0 +1,3791 @@
+{
+  "schema_version": 1,
+  "publisher": {
+    "publisher_id": "lumvise.builtin",
+    "key_id": "lumvise.release.1"
+  },
+  "plugin_id": "builtin.semantic",
+  "plugin_version": "0.1.27",
+  "protocol": {
+    "min": 6,
+    "max": 6
+  },
+  "targets": {},
+  "files": {},
+  "exports": [
+    {
+      "id": "manifest",
+      "name": "Semantic manifest",
+      "description": "",
+      "kind": "command",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "exports": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plugin_id",
+          "protocol",
+          "exports"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_semantic_tree",
+      "name": "Get semantic tree",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "include_inactive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic_element_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "element": {
+            "additionalProperties": false,
+            "properties": {
+              "element_kind": {
+                "type": "string"
+              },
+              "end_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "parent_element_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "start_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "semantic_element_id",
+              "element_kind",
+              "name",
+              "path",
+              "parent_element_id",
+              "start_line",
+              "end_line"
+            ],
+            "type": "object"
+          },
+          "node": {
+            "additionalProperties": false,
+            "properties": {
+              "children": {
+                "items": {
+                  "$ref": "#/$defs/node"
+                },
+                "type": "array"
+              },
+              "element": {
+                "$ref": "#/$defs/element"
+              }
+            },
+            "required": [
+              "element",
+              "children"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "commit_version": {
+            "type": "integer"
+          },
+          "max_depth": {
+            "type": "integer"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "roots": {
+            "items": {
+              "$ref": "#/$defs/node"
+            },
+            "type": "array"
+          },
+          "semantic_element_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_nodes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_root",
+          "semantic_element_id",
+          "total_nodes",
+          "max_depth",
+          "roots",
+          "commit_version",
+          "published_at"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_dependency_tree",
+      "name": "Get dependency tree",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "dependencies",
+                  "dependents",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "include_descendants": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "include_inactive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic_element_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "semantic_element_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "$defs": {
+          "branch": {
+            "additionalProperties": false,
+            "properties": {
+              "cycle": {
+                "type": "boolean"
+              },
+              "node": {
+                "$ref": "#/$defs/node"
+              },
+              "relationship": {
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "relationship_kind": {
+                    "type": "string"
+                  },
+                  "source_element_id": {
+                    "type": "string"
+                  },
+                  "target_element_id": {
+                    "type": "string"
+                  },
+                  "target_label": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "target_locator": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "source_element_id",
+                  "target_element_id",
+                  "relationship_kind",
+                  "label",
+                  "target_label",
+                  "target_locator"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "relationship",
+              "node",
+              "cycle"
+            ],
+            "type": "object"
+          },
+          "element": {
+            "additionalProperties": false,
+            "properties": {
+              "element_kind": {
+                "type": "string"
+              },
+              "end_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "parent_element_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "start_line": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "semantic_element_id",
+              "element_kind",
+              "name",
+              "path",
+              "parent_element_id",
+              "start_line",
+              "end_line"
+            ],
+            "type": "object"
+          },
+          "node": {
+            "additionalProperties": false,
+            "properties": {
+              "dependencies": {
+                "items": {
+                  "$ref": "#/$defs/branch"
+                },
+                "type": "array"
+              },
+              "dependents": {
+                "items": {
+                  "$ref": "#/$defs/branch"
+                },
+                "type": "array"
+              },
+              "element": {
+                "$ref": "#/$defs/element"
+              }
+            },
+            "required": [
+              "element",
+              "dependencies",
+              "dependents"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "commit_version": {
+            "type": "integer"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "max_depth": {
+            "type": "integer"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "root": {
+            "$ref": "#/$defs/node"
+          },
+          "semantic_element_id": {
+            "type": "string"
+          },
+          "total_nodes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_root",
+          "semantic_element_id",
+          "direction",
+          "total_nodes",
+          "max_depth",
+          "commit_version",
+          "published_at",
+          "root"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_element_at_location",
+      "name": "Get semantic element at location",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "include_inactive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "line": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "path",
+          "line"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "element_kind": {
+                  "type": "string"
+                },
+                "end_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parent_element_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "start_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "semantic_element_id",
+                "element_kind",
+                "name",
+                "path",
+                "parent_element_id",
+                "start_line",
+                "end_line"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "commit_version": {
+            "type": "integer"
+          },
+          "element": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "element_kind": {
+                    "type": "string"
+                  },
+                  "end_line": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "parent_element_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "semantic_element_id": {
+                    "type": "string"
+                  },
+                  "start_line": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "semantic_element_id",
+                  "element_kind",
+                  "name",
+                  "path",
+                  "parent_element_id",
+                  "start_line",
+                  "end_line"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "line": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project_root",
+          "path",
+          "line",
+          "semantic_element_id",
+          "element",
+          "candidates",
+          "commit_version",
+          "published_at"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "search_semantic_elements",
+      "name": "Search semantic elements",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "include_inactive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_count": {
+            "type": "integer"
+          },
+          "index_state": {
+            "enum": [
+              "missing",
+              "stale",
+              "rebuilding",
+              "ready",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "vector",
+              "lexical_fallback"
+            ],
+            "type": "string"
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "element": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "element_kind": {
+                      "type": "string"
+                    },
+                    "end_line": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "parent_element_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "semantic_element_id": {
+                      "type": "string"
+                    },
+                    "start_line": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "semantic_element_id",
+                    "element_kind",
+                    "name",
+                    "path",
+                    "parent_element_id",
+                    "start_line",
+                    "end_line"
+                  ],
+                  "type": "object"
+                },
+                "score": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "element",
+                "score"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query",
+          "project_root",
+          "mode",
+          "index_state",
+          "candidate_count",
+          "results"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "rebuild_search_index",
+      "name": "Rebuild semantic search index",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "commit_version": {
+            "type": "integer"
+          },
+          "index_state": {
+            "enum": [
+              "rebuilding",
+              "ready"
+            ],
+            "type": "string"
+          },
+          "indexed_nodes": {
+            "type": "integer"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "index_state",
+          "indexed_nodes",
+          "commit_version",
+          "published_at"
+        ],
+        "type": "object"
+      },
+      "execution": "background"
+    },
+    {
+      "id": "ingest_index_batch",
+      "name": "Ingest semantic index batch",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ingestion_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ingestion_page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ingestion_page_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "provider_instance_id": {
+            "type": "string"
+          },
+          "removed_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "replace_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "semantic_artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "artifact_kind": {
+                  "type": "string"
+                },
+                "content": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_size_bytes": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "metadata": {
+                  "anyOf": [
+                    {},
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "searchable_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "semantic_element_id",
+                "artifact_kind",
+                "title"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "semantic_elements": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content_fingerprint": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "end_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "metadata": {
+                  "anyOf": [
+                    {},
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "parent_element_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "semantic_element_name": {
+                  "type": "string"
+                },
+                "semantic_element_type": {
+                  "type": "string"
+                },
+                "semantic_source_id": {
+                  "type": "string"
+                },
+                "start_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "semantic_source_id",
+                "semantic_element_id",
+                "path",
+                "semantic_element_type",
+                "semantic_element_name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "semantic_relationships": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "relationship_kind": {
+                  "type": "string"
+                },
+                "relationship_label": {
+                  "type": "string"
+                },
+                "source_element_id": {
+                  "type": "string"
+                },
+                "target_element_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "target_label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "target_locator": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "source_element_id",
+                "relationship_kind",
+                "relationship_label"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "semantic_sources": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "root_path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "root_uri": {
+                  "type": "string"
+                },
+                "semantic_source_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "semantic_source_id",
+                "kind",
+                "name",
+                "root_uri"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider_instance_id",
+          "project_root",
+          "semantic_sources",
+          "semantic_elements",
+          "semantic_relationships"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "ingestion_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ingestion_status": {
+            "type": "string"
+          },
+          "semantic_artifacts_removed": {
+            "type": "integer"
+          },
+          "semantic_artifacts_upserted": {
+            "type": "integer"
+          },
+          "semantic_elements_upserted": {
+            "type": "integer"
+          },
+          "semantic_relationships_upserted": {
+            "type": "integer"
+          },
+          "semantic_sources_upserted": {
+            "type": "integer"
+          },
+          "snapshot_freshness": {
+            "additionalProperties": false,
+            "properties": {
+              "active_ingestion_job_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "latest_completed_snapshot": {
+                "anyOf": [
+                  {},
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "latest_completed_snapshot",
+              "active_ingestion_job_id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "accepted",
+          "semantic_sources_upserted",
+          "semantic_elements_upserted",
+          "semantic_relationships_upserted",
+          "semantic_artifacts_upserted",
+          "semantic_artifacts_removed",
+          "ingestion_job_id",
+          "ingestion_status",
+          "snapshot_freshness"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "record_index_log",
+      "name": "Record semantic index log",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "index_log_id": {
+            "type": "string"
+          },
+          "metrics": {},
+          "plugin_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_instance_id": {
+            "type": "string"
+          },
+          "semantic_source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider_instance_id",
+          "index_log_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "index_log": {
+            "additionalProperties": false,
+            "properties": {
+              "completed_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "content_fingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "index_log_id": {
+                "type": "string"
+              },
+              "metrics": {},
+              "plugin_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "project_root": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "provider_instance_id": {
+                "type": "string"
+              },
+              "semantic_source_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "started_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider_instance_id",
+              "semantic_source_id",
+              "plugin_id",
+              "project_root",
+              "index_log_id",
+              "status",
+              "metrics",
+              "content_fingerprint",
+              "error",
+              "started_at",
+              "completed_at",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "index_log"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "latest_index_log",
+      "name": "Get latest semantic index log",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "index_log": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "completed_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "content_fingerprint": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "index_log_id": {
+                    "type": "string"
+                  },
+                  "metrics": {},
+                  "plugin_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "project_root": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "provider_instance_id": {
+                    "type": "string"
+                  },
+                  "semantic_source_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "started_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider_instance_id",
+                  "semantic_source_id",
+                  "plugin_id",
+                  "project_root",
+                  "index_log_id",
+                  "status",
+                  "metrics",
+                  "content_fingerprint",
+                  "error",
+                  "started_at",
+                  "completed_at",
+                  "created_at",
+                  "updated_at"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "index_log"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "graph_providers",
+      "name": "List semantic graph providers",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "providers": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "dashboardUrl": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "displayName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "lastSeenAt": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "projectRoot": {
+                  "type": "string"
+                },
+                "providerInstanceIds": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "registeredAt": {
+                  "type": "string"
+                },
+                "semanticGraphUrl": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "displayName",
+                "projectRoot",
+                "dashboardUrl",
+                "semanticGraphUrl",
+                "registeredAt",
+                "lastSeenAt",
+                "status",
+                "providerInstanceIds"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "semantic_graph",
+      "name": "Project semantic graph",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "granularity": {
+            "enum": [
+              "file",
+              "class",
+              "function",
+              "method",
+              "property"
+            ],
+            "type": "string"
+          },
+          "includeExternal": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "includeFirstNeighbors": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projectRoot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "providerId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recursive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "granularity"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "commitVersion": {
+            "type": "integer"
+          },
+          "dashboardUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "edges": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "linkType": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "relationship_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "relationship_label": {
+                  "type": "string"
+                },
+                "samples": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "weight": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "source",
+                "target",
+                "relationship_label",
+                "relationship_kind",
+                "linkType",
+                "weight",
+                "samples"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "generatedAt": {
+            "type": "string"
+          },
+          "granularity": {
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "artifactId": {
+                        "type": "string"
+                      },
+                      "artifactKind": {
+                        "type": "string"
+                      },
+                      "contentRef": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "contentSizeBytes": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "text": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "artifactId",
+                      "artifactKind",
+                      "title",
+                      "text",
+                      "contentRef",
+                      "contentSizeBytes"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "codeSize": {
+                  "type": "integer"
+                },
+                "commentCount": {
+                  "type": "integer"
+                },
+                "connectionStrength": {
+                  "type": "integer"
+                },
+                "dataSemanticArtifactCount": {
+                  "type": "integer"
+                },
+                "depth": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "isContainer": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "lineEnd": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lineStart": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "parentId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "parentLabel": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semanticArtifactCount": {
+                  "type": "integer"
+                },
+                "stableRef": {
+                  "type": "string"
+                },
+                "summary": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "kind",
+                "parentId",
+                "parentLabel",
+                "depth",
+                "isContainer",
+                "path",
+                "lineStart",
+                "lineEnd",
+                "codeSize",
+                "connectionStrength",
+                "semanticArtifactCount",
+                "commentCount",
+                "dataSemanticArtifactCount",
+                "summary",
+                "artifacts",
+                "stableRef"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "projectRoot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "providerId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "providerName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publishedAt": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "app-owned-index"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "targetPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "providerId",
+          "providerName",
+          "dashboardUrl",
+          "projectRoot",
+          "targetPath",
+          "granularity",
+          "source",
+          "generatedAt",
+          "summary",
+          "nodes",
+          "edges",
+          "commitVersion",
+          "publishedAt"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "create_semantic_snapshot",
+      "name": "Create semantic PZ snapshot",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "failure": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "project_id",
+          "project_root",
+          "status",
+          "result",
+          "failure"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "semantic_snapshot_status",
+      "name": "Get semantic PZ snapshot status",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "failure": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "project_id",
+          "project_root",
+          "status",
+          "result",
+          "failure"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "cancel_semantic_snapshot",
+      "name": "Cancel semantic PZ snapshot",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "failure": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "project_id",
+          "project_root",
+          "status",
+          "result",
+          "failure"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "project_element_counts",
+      "name": "Count project elements",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "commit_version": {
+            "type": "integer"
+          },
+          "elements_by_kind": {
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "total_elements": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "commit_version",
+          "published_at",
+          "total_elements",
+          "elements_by_kind"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "semantic_context",
+      "name": "Get full-fidelity semantic context",
+      "description": "",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "include_descendants": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "record_kind": {
+            "enum": [
+              "elements",
+              "relationships",
+              "artifacts"
+            ],
+            "type": "string"
+          },
+          "root_element_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project_root",
+          "record_kind"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "artifact_kind": {
+                  "type": "string"
+                },
+                "content": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "content_size_bytes": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "metadata": {},
+                "project_root": {
+                  "type": "string"
+                },
+                "searchable_text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "project_root",
+                "artifact_id",
+                "semantic_element_id",
+                "artifact_kind",
+                "title",
+                "content_ref",
+                "content",
+                "searchable_text",
+                "content_size_bytes",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "commit_version": {
+            "type": "integer"
+          },
+          "elements": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content_fingerprint": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "element_kind": {
+                  "type": "string"
+                },
+                "end_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lifecycle": {
+                  "type": "string"
+                },
+                "metadata": {},
+                "name": {
+                  "type": "string"
+                },
+                "parent_element_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "project_root": {
+                  "type": "string"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "semantic_source_id": {
+                  "type": "string"
+                },
+                "start_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "project_root",
+                "semantic_element_id",
+                "semantic_source_id",
+                "path",
+                "element_kind",
+                "name",
+                "parent_element_id",
+                "content_fingerprint",
+                "start_line",
+                "end_line",
+                "lifecycle",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "record_kind": {
+            "enum": [
+              "elements",
+              "relationships",
+              "artifacts"
+            ],
+            "type": "string"
+          },
+          "relationships": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "lifecycle": {
+                  "type": "string"
+                },
+                "metadata": {},
+                "project_root": {
+                  "type": "string"
+                },
+                "relationship_kind": {
+                  "type": "string"
+                },
+                "source_element_id": {
+                  "type": "string"
+                },
+                "target_element_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "project_root",
+                "source_element_id",
+                "target_element_id",
+                "relationship_kind",
+                "label",
+                "lifecycle",
+                "metadata"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "record_kind",
+          "elements",
+          "relationships",
+          "artifacts",
+          "commit_version",
+          "published_at"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http_semantic_context",
+      "name": "Semantic context over HTTP",
+      "description": "",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/context",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http_search_context",
+      "name": "Search context over HTTP",
+      "description": "",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/search/context",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "http_semantic_relationship_tree",
+      "name": "Semantic relationship tree over HTTP",
+      "description": "",
+      "kind": "http_route",
+      "method": "POST",
+      "path_template": "/api/semantic-relationship-tree",
+      "stream_mode": "buffered",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "trigger.semantic_element_upserted",
+      "name": "Semantic element upserted",
+      "description": "",
+      "kind": "storage_trigger",
+      "event_kinds": [
+        "semantic.element.upserted",
+        "semantic.element.deleted"
+      ],
+      "entity_kinds": [
+        "semantic_element"
+      ],
+      "delivery": {
+        "max_attempts": 5,
+        "initial_backoff_ms": 250,
+        "max_backoff_ms": 30000,
+        "dead_letter_max_entries": 1000,
+        "dead_letter_retention_seconds": 604800
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "type": "integer"
+          },
+          "changed": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "disposition": {
+                  "enum": [
+                    "upserted",
+                    "removal"
+                  ],
+                  "type": "string"
+                },
+                "entity_id": {
+                  "type": "string"
+                },
+                "entity_kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "entity_id",
+                "entity_kind",
+                "disposition"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "target_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_root",
+          "base_revision",
+          "target_revision",
+          "changed"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledged": {
+            "type": "boolean"
+          },
+          "processed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "acknowledged",
+          "processed"
+        ],
+        "type": "object"
+      },
+      "execution": "background"
+    },
+    {
+      "id": "trigger.semantic_artifact_upserted",
+      "name": "Semantic artifact upserted",
+      "description": "",
+      "kind": "storage_trigger",
+      "event_kinds": [
+        "semantic.artifact.upserted",
+        "semantic.artifact.deleted"
+      ],
+      "entity_kinds": [
+        "semantic_artifact"
+      ],
+      "delivery": {
+        "max_attempts": 5,
+        "initial_backoff_ms": 250,
+        "max_backoff_ms": 30000,
+        "dead_letter_max_entries": 1000,
+        "dead_letter_retention_seconds": 604800
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "type": "integer"
+          },
+          "changed": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "disposition": {
+                  "enum": [
+                    "upserted",
+                    "removal"
+                  ],
+                  "type": "string"
+                },
+                "entity_id": {
+                  "type": "string"
+                },
+                "entity_kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "entity_id",
+                "entity_kind",
+                "disposition"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "target_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_root",
+          "base_revision",
+          "target_revision",
+          "changed"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledged": {
+            "type": "boolean"
+          },
+          "processed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "acknowledged",
+          "processed"
+        ],
+        "type": "object"
+      },
+      "execution": "background"
+    },
+    {
+      "id": "search_graph",
+      "name": "search graph",
+      "description": "Ranked symbol search with regex name/path filters and stable offset pagination.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "case_sensitive": {
+            "type": "boolean"
+          },
+          "element_kind": {
+            "type": "string"
+          },
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name_pattern": {
+            "type": "string"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path_pattern": {
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_code_snippet",
+      "name": "get code snippet",
+      "description": "Read current source for an indexed element; reports index/source fingerprint agreement.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "context_lines": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "semantic_element_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "semantic_element_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "search_code",
+      "name": "search code",
+      "description": "Ranked text or regex search of indexed files with innermost symbol context.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "case_sensitive": {
+            "type": "boolean"
+          },
+          "element_kind": {
+            "type": "string"
+          },
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name_pattern": {
+            "type": "string"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path_pattern": {
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "regex": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_root",
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "commit_version": {
+            "type": "integer"
+          },
+          "failure_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failures": {
+            "items": {
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "error"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "matches": {
+            "items": {
+              "properties": {
+                "element": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "line": {
+                  "type": "integer"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "integer"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "text",
+                "element",
+                "score"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_offset": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "source_revision": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "matches",
+          "failures",
+          "failure_count",
+          "total",
+          "offset",
+          "next_offset",
+          "source_revision",
+          "commit_version",
+          "published_at"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_graph_schema",
+      "name": "get graph schema",
+      "description": "Summarize observed element kinds, edge labels and public fields.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "trace_path",
+      "name": "trace path",
+      "description": "Trace calls with direction, depth and edge-label filters; unknown receivers are excluded.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "default": "outbound",
+            "enum": [
+              "inbound",
+              "outbound",
+              "both"
+            ],
+            "type": "string"
+          },
+          "element_kind": {
+            "type": "string"
+          },
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "max_depth": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path_pattern": {
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "relationship_labels": {
+            "default": [
+              "calls"
+            ],
+            "description": "Empty array includes all non-containment relationships.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "semantic_element_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "semantic_element_id"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_git_impact",
+      "name": "get git impact",
+      "description": "Read git changes against a base commit and find transitive callers at file granularity.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "max_depth": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path_pattern": {
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "relationship_labels": {
+            "default": [
+              "calls"
+            ],
+            "description": "Empty array includes all non-containment relationships.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_graph_metrics",
+      "name": "get graph metrics",
+      "description": "Report fan-in/out hotspots, cyclic components and heuristic dead-code candidates.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "element_kind": {
+            "type": "string"
+          },
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name_pattern": {
+            "type": "string"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path_pattern": {
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "relationship_labels": {
+            "default": [
+              "calls"
+            ],
+            "description": "Empty array includes all non-containment relationships.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "caveat": {
+            "type": "string"
+          },
+          "commit_version": {
+            "type": "integer"
+          },
+          "cycles": {
+            "additionalProperties": false,
+            "properties": {
+              "matches": {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "next_offset": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "matches",
+              "total",
+              "offset",
+              "next_offset"
+            ],
+            "type": "object"
+          },
+          "dead_code_candidates": {
+            "additionalProperties": false,
+            "properties": {
+              "matches": {
+                "items": {
+                  "properties": {
+                    "element_kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "semantic_element_id": {
+                      "type": "string"
+                    },
+                    "start_line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "semantic_element_id",
+                    "name",
+                    "path",
+                    "element_kind",
+                    "start_line"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_offset": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "matches",
+              "total",
+              "offset",
+              "next_offset"
+            ],
+            "type": "object"
+          },
+          "edge_count": {
+            "type": "integer"
+          },
+          "element_count": {
+            "type": "integer"
+          },
+          "hotspots": {
+            "additionalProperties": false,
+            "properties": {
+              "matches": {
+                "items": {
+                  "properties": {
+                    "fan_in": {
+                      "type": "integer"
+                    },
+                    "fan_out": {
+                      "type": "integer"
+                    },
+                    "semantic_element_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "semantic_element_id",
+                    "fan_in",
+                    "fan_out"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_offset": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "matches",
+              "total",
+              "offset",
+              "next_offset"
+            ],
+            "type": "object"
+          },
+          "published_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "element_count",
+          "edge_count",
+          "hotspots",
+          "cycles",
+          "dead_code_candidates",
+          "caveat",
+          "commit_version",
+          "published_at"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "check_index_coverage",
+      "name": "check index coverage",
+      "description": "Report per-file parser coverage, syntax recovery and resolution outcomes; old indexes require reindexing.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path_pattern": {
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "ingest_runtime_trace",
+      "name": "ingest runtime trace",
+      "description": "Replace one named runtime trace of observed calls between indexed IDs; preserve static extraction.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "edges": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "default": 1,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "source_element_id": {
+                  "type": "string"
+                },
+                "target_element_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source_element_id",
+                "target_element_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "expected_commit_version": {
+            "description": "Reject stale pagination when the static index changes.",
+            "type": "integer"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "trace_id",
+          "edges"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "foreground"
+    }
+  ],
+  "host_capabilities": [
+    {
+      "id": "project.source",
+      "version": "^1.0"
+    },
+    {
+      "id": "storage.plugin",
+      "version": "^1.0"
+    },
+    {
+      "id": "storage.semantic",
+      "version": "^1.3.0"
+    },
+    {
+      "id": "semantic.snapshot",
+      "version": "^1.0"
+    },
+    {
+      "id": "neural.embed",
+      "version": "^1.0"
+    }
+  ]
+}

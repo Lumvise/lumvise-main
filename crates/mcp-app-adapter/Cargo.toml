@@ -1,0 +1,28 @@
+[package]
+name = "lumvise-mcp-app-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lumvise-app-core.workspace = true
+lumvise-mcp-core.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+[dev-dependencies]
+tempfile.workspace = true
+[[bin]]
+name = "lumvise"
+path = "src/bin/lumvise.rs"
+
+[features]
+default = []
+desktop-app = ["lumvise-app-core/desktop-app"]
+native-voice = ["lumvise-app-core/native-voice"]
+assistant-e2e = ["lumvise-app-core/assistant-e2e"]
+native-vector = ["lumvise-app-core/native-vector"]

@@ -1,0 +1,4 @@
+{"type":"init","timestamp":"2026-07-16T00:00:00.000Z","session_id":"gemini-fixture-session","model":"gemini-2.5-flash"}
+{"type":"message","timestamp":"2026-07-16T00:00:00.100Z","role":"assistant","content":"fixture ","delta":true}
+{"type":"message","timestamp":"2026-07-16T00:00:00.200Z","role":"assistant","content":"gemini response","delta":true}
+{"type":"result","timestamp":"2026-07-16T00:00:00.300Z","status":"success","stats":{}}

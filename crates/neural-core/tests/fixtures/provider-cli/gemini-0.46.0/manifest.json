@@ -1,0 +1,6 @@
+{
+  "provider": "gemini",
+  "cli_version": "0.46.0",
+  "capture_command": "gemini --prompt <prompt> --output-format stream-json",
+  "captured_event_contract": ["init", "message", "result", "error"]
+}

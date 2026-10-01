@@ -1,0 +1,14 @@
+mod artifact_blob_coordinator;
+mod artifact_vectors;
+mod change_hooks;
+mod db_core;
+mod db_core_lifecycle;
+mod element_name_vectors;
+mod media_artifacts;
+mod media_modalities;
+mod persistent_graph_cow;
+mod plugin_data;
+mod plugin_deliveries;
+mod pz_snapshot;
+mod semantic_index_performance;
+mod sql_connection_concurrency;

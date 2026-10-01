@@ -1,0 +1,40 @@
+[package]
+name = "lumvise-resource-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+assistant-e2e = ["lumvise-neural-core/assistant-e2e"]
+
+[dependencies]
+bincode.workspace = true
+bytes.workspace = true
+h2.workspace = true
+http.workspace = true
+lumvise-db-core.workspace = true
+lumvise-neural-core.workspace = true
+lumvise-resource-routing.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+url.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+base64 = "0.22"
+jsonwebtoken.workspace = true
+rcgen = { version = "0.14", features = ["pem"] }
+reqwest.workspace = true
+serde.workspace = true
+tempfile.workspace = true

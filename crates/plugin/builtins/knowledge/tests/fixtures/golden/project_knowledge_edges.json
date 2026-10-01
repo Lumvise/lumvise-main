@@ -1,0 +1,216 @@
+{
+  "elements": [
+    {
+      "artifacts": [],
+      "changeMarker": "projection:4b794603d98b715aeadf5aecf6916e30",
+      "children": [
+        {
+          "elementId": "directory:guides",
+          "kind": "directory",
+          "pathHint": "docs/guides",
+          "sourceRefs": [
+            {
+              "entityId": "directory:guides",
+              "entityKind": "semantic_element",
+              "lineEnd": 3,
+              "lineStart": 1,
+              "path": "docs/guides"
+            }
+          ],
+          "title": "guides"
+        },
+        {
+          "elementId": "file:context",
+          "kind": "file",
+          "pathHint": "CONTEXT.md",
+          "sourceRefs": [
+            {
+              "entityId": "file:context",
+              "entityKind": "semantic_element",
+              "lineEnd": 3,
+              "lineStart": 1,
+              "path": "CONTEXT.md"
+            }
+          ],
+          "title": "CONTEXT.md"
+        }
+      ],
+      "contentMd5": "4b794603d98b715aeadf5aecf6916e30",
+      "elementId": "folder:docs",
+      "kind": "folder",
+      "markdown": "# docs\n\nSource: `docs`\n\n[Generate C4 report](obsidian://lumvise-c4?sourceId=%2Frepo&elementId=folder%3Adocs)\n\n## Semantic Elements\n\n### guides\n- Kind: `directory`\n- Element ID: `directory:guides`\n- Project context: [[docs/guides|guides]]\n- C4 action: [Generate C4 report](obsidian://lumvise-c4?sourceId=%2Frepo&elementId=directory%3Aguides)\n- Artifacts: `@artifacts`\n\n### CONTEXT.md\n- Kind: `file`\n- Element ID: `file:context`\n- Project context: [[CONTEXT|CONTEXT.md]]\n- C4 action: [Generate C4 report](obsidian://lumvise-c4?sourceId=%2Frepo&elementId=file%3Acontext)",
+      "ownership": {
+        "content": "lumvise",
+        "source": "lumvise"
+      },
+      "pathHint": "docs",
+      "properties": {},
+      "sourceId": "/repo",
+      "sourceRefs": [
+        {
+          "entityId": "folder:docs",
+          "entityKind": "semantic_element",
+          "lineEnd": 3,
+          "lineStart": 1,
+          "path": "docs"
+        }
+      ],
+      "space": "project",
+      "syncToken": "projection:4b794603d98b715aeadf5aecf6916e30",
+      "title": "docs",
+      "writePolicy": "annotation",
+      "linkTargets": [
+        {
+          "elementId": "file:context",
+          "heading": null,
+          "notePathHint": "CONTEXT.md",
+          "title": "CONTEXT.md"
+        }
+      ]
+    },
+    {
+      "artifacts": [
+        {
+          "artifactId": "functional-guides",
+          "contentMd5": "cad42406f0480a9279b60ccf6be90b16",
+          "markdown": "##### Job (`responsibility`)\n\nMaintains guide hierarchy.\n\n##### Receives (`input`)\n\n- documents\n\n##### Outcome (`output`)\n\nGuides grouped.\n\n##### Effects (`side-effect`)\n\n- Writes index.\n\n##### Interface (`interface`)\n\n```text\nfn group(documents: &[Document])\n```",
+          "ownerElementId": "directory:guides",
+          "ownerKind": "directory",
+          "ownerTitle": "guides",
+          "title": "Guide job"
+        }
+      ],
+      "changeMarker": "projection:e229d21f6b371f5fe699b2d4aa791e62",
+      "children": [],
+      "contentMd5": "e229d21f6b371f5fe699b2d4aa791e62",
+      "elementId": "directory:guides",
+      "kind": "directory",
+      "markdown": "# guides\n\nSource: `docs/guides`\n\n[Generate C4 report](obsidian://lumvise-c4?sourceId=%2Frepo&elementId=directory%3Aguides)",
+      "ownership": {
+        "content": "lumvise",
+        "source": "lumvise"
+      },
+      "pathHint": "docs/guides",
+      "properties": {},
+      "sourceId": "/repo",
+      "sourceRefs": [
+        {
+          "entityId": "directory:guides",
+          "entityKind": "semantic_element",
+          "lineEnd": 3,
+          "lineStart": 1,
+          "path": "docs/guides"
+        }
+      ],
+      "space": "project",
+      "syncToken": "projection:e229d21f6b371f5fe699b2d4aa791e62",
+      "title": "guides",
+      "writePolicy": "annotation",
+      "linkTargets": []
+    },
+    {
+      "artifacts": [
+        {
+          "artifactId": "functional-markdown",
+          "contentMd5": "4bac931f90bf53c8f48d9e60bc87194b",
+          "markdown": "##### Function (`definition`)\n\nExplains repeated Markdown sections.\n\n##### Transformation (`transformation`)\n\nConverts context into guidance.",
+          "ownerElementId": "markdown:first",
+          "ownerKind": "markdown",
+          "ownerTitle": "Repeated",
+          "title": "Markdown job"
+        }
+      ],
+      "changeMarker": "projection:872c509c874796884ff1dd2148ee65af",
+      "children": [
+        {
+          "elementId": "markdown:first",
+          "kind": "markdown",
+          "pathHint": "CONTEXT.md/Repeated/markdown-1",
+          "sourceRefs": [
+            {
+              "entityId": "markdown:first",
+              "entityKind": "semantic_element",
+              "lineEnd": 3,
+              "lineStart": 1,
+              "path": "CONTEXT.md"
+            }
+          ],
+          "title": "Repeated"
+        },
+        {
+          "elementId": "markdown:second",
+          "kind": "markdown",
+          "pathHint": "CONTEXT.md/Repeated/markdown-1-1a5ff2ac531868e9",
+          "sourceRefs": [
+            {
+              "entityId": "markdown:second",
+              "entityKind": "semantic_element",
+              "lineEnd": 3,
+              "lineStart": 1,
+              "path": "CONTEXT.md"
+            }
+          ],
+          "title": "Repeated"
+        }
+      ],
+      "contentMd5": "872c509c874796884ff1dd2148ee65af",
+      "elementId": "file:context",
+      "kind": "file",
+      "markdown": "# CONTEXT.md\n\nSource: `CONTEXT.md`\n\n[Generate C4 report](obsidian://lumvise-c4?sourceId=%2Frepo&elementId=file%3Acontext)\n\n## Semantic Elements\n\n### Repeated\n- Kind: `markdown`\n- Element ID: `markdown:first`\n- Project context: [[CONTEXT.md/Repeated/markdown-1|Repeated]]\n\n#### Artifacts\n\n##### Function (`definition`)\n\nExplains repeated Markdown sections.\n\n##### Transformation (`transformation`)\n\nConverts context into guidance.\n\n### Repeated\n- Kind: `markdown`\n- Element ID: `markdown:second`\n- Project context: [[CONTEXT.md/Repeated/markdown-1-1a5ff2ac531868e9|Repeated]]",
+      "ownership": {
+        "content": "lumvise",
+        "source": "lumvise"
+      },
+      "pathHint": "CONTEXT.md",
+      "properties": {},
+      "sourceId": "/repo",
+      "sourceRefs": [
+        {
+          "entityId": "file:context",
+          "entityKind": "semantic_element",
+          "lineEnd": 3,
+          "lineStart": 1,
+          "path": "CONTEXT.md"
+        }
+      ],
+      "space": "project",
+      "syncToken": "projection:872c509c874796884ff1dd2148ee65af",
+      "title": "CONTEXT.md",
+      "writePolicy": "annotation",
+      "linkTargets": [
+        {
+          "elementId": "file:context",
+          "heading": null,
+          "notePathHint": "CONTEXT.md",
+          "title": "CONTEXT.md"
+        },
+        {
+          "elementId": "markdown:first",
+          "heading": "Repeated",
+          "notePathHint": "CONTEXT.md",
+          "title": "Repeated"
+        },
+        {
+          "elementId": "markdown:second",
+          "heading": "Repeated",
+          "notePathHint": "CONTEXT.md",
+          "title": "Repeated"
+        }
+      ]
+    }
+  ],
+  "spaces": [
+    {
+      "spaceId": "project",
+      "status": "ready",
+      "title": "Project",
+      "writePolicy": "annotation"
+    },
+    {
+      "spaceId": "implementation",
+      "status": "ready",
+      "title": "Implementation",
+      "writePolicy": "generated"
+    }
+  ]
+}

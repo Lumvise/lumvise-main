@@ -1,0 +1,385 @@
+{
+  "obSyncBatchV1": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "KnowledgeArtifactV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "contentMd5": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "ownerElementId": {
+            "type": "string"
+          },
+          "ownerKind": {
+            "type": "string"
+          },
+          "ownerTitle": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifactId",
+          "contentMd5",
+          "markdown",
+          "ownerElementId",
+          "ownerKind",
+          "ownerTitle",
+          "title"
+        ],
+        "type": "object"
+      },
+      "KnowledgeElementChildV1": {
+        "additionalProperties": false,
+        "properties": {
+          "elementId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "pathHint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourceRefs": {
+            "items": {
+              "$ref": "#/definitions/KnowledgeSourceRefV1"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "elementId",
+          "kind",
+          "sourceRefs",
+          "title"
+        ],
+        "type": "object"
+      },
+      "KnowledgeLinkTargetV1": {
+        "additionalProperties": false,
+        "properties": {
+          "elementId": {
+            "type": "string"
+          },
+          "heading": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notePathHint": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "elementId",
+          "notePathHint",
+          "title"
+        ],
+        "type": "object"
+      },
+      "KnowledgeOwnerV1": {
+        "enum": [
+          "lumvise",
+          "obsidian"
+        ],
+        "type": "string"
+      },
+      "KnowledgeOwnershipV1": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "$ref": "#/definitions/KnowledgeOwnerV1"
+          },
+          "source": {
+            "$ref": "#/definitions/KnowledgeOwnerV1"
+          }
+        },
+        "required": [
+          "content",
+          "source"
+        ],
+        "type": "object"
+      },
+      "KnowledgeSourceRefV1": {
+        "additionalProperties": false,
+        "properties": {
+          "entityId": {
+            "type": "string"
+          },
+          "entityKind": {
+            "type": "string"
+          },
+          "lineEnd": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lineStart": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entityId",
+          "entityKind",
+          "path"
+        ],
+        "type": "object"
+      },
+      "KnowledgeSpaceV1": {
+        "additionalProperties": false,
+        "properties": {
+          "spaceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "writePolicy": {
+            "$ref": "#/definitions/KnowledgeWritePolicyV1"
+          }
+        },
+        "required": [
+          "spaceId",
+          "status",
+          "title",
+          "writePolicy"
+        ],
+        "type": "object"
+      },
+      "KnowledgeWritePolicyV1": {
+        "enum": [
+          "annotation",
+          "readonly",
+          "generated"
+        ],
+        "type": "string"
+      },
+      "ProjectedPageV1": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/definitions/KnowledgeArtifactV1"
+            },
+            "type": "array"
+          },
+          "changeMarker": {
+            "type": "string"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/definitions/KnowledgeElementChildV1"
+            },
+            "type": "array"
+          },
+          "contentMd5": {
+            "type": "string"
+          },
+          "elementId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "linkTargets": {
+            "items": {
+              "$ref": "#/definitions/KnowledgeLinkTargetV1"
+            },
+            "type": "array"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "ownership": {
+            "$ref": "#/definitions/KnowledgeOwnershipV1"
+          },
+          "pathHint": {
+            "type": "string"
+          },
+          "properties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "sourceRefs": {
+            "items": {
+              "$ref": "#/definitions/KnowledgeSourceRefV1"
+            },
+            "type": "array"
+          },
+          "space": {
+            "type": "string"
+          },
+          "syncToken": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "writePolicy": {
+            "$ref": "#/definitions/KnowledgeWritePolicyV1"
+          }
+        },
+        "required": [
+          "artifacts",
+          "changeMarker",
+          "children",
+          "contentMd5",
+          "elementId",
+          "kind",
+          "linkTargets",
+          "markdown",
+          "ownership",
+          "pathHint",
+          "properties",
+          "sourceId",
+          "sourceRefs",
+          "space",
+          "syncToken",
+          "title",
+          "writePolicy"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "baseRevision": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "changedPages": {
+        "items": {
+          "$ref": "#/definitions/ProjectedPageV1"
+        },
+        "type": "array"
+      },
+      "deletedPageIds": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "fullReset": {
+        "type": "boolean"
+      },
+      "generatedAt": {
+        "type": "string"
+      },
+      "pageHashes": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "schemaVersion": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "sourceId": {
+        "type": "string"
+      },
+      "spaces": {
+        "items": {
+          "$ref": "#/definitions/KnowledgeSpaceV1"
+        },
+        "type": "array"
+      },
+      "syncToken": {
+        "type": "string"
+      },
+      "targetRevision": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "changedPages",
+      "deletedPageIds",
+      "fullReset",
+      "generatedAt",
+      "pageHashes",
+      "schemaVersion",
+      "sourceId",
+      "spaces",
+      "syncToken",
+      "targetRevision"
+    ],
+    "title": "ObsidianSyncBatchV1",
+    "type": "object"
+  },
+  "obSyncRequestV1": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "appliedRevision": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "contentHashes": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": {},
+        "type": "object"
+      },
+      "schemaVersion": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "sourceId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "schemaVersion",
+      "sourceId"
+    ],
+    "title": "ObsidianSyncRequestV1",
+    "type": "object"
+  }
+}
