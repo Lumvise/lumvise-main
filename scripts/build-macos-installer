@@ -19,6 +19,7 @@ import tempfile
 import tomllib
 import zipfile
 
+from macos_release import MacOSRelease
 
 TARGET = "aarch64-apple-darwin"
 MINIMUM_MACOS = "14.0"
@@ -68,6 +69,7 @@ class MacOSInstaller:
         third_party_notices: Path | None = None,
         target_dir: Path | None = None,
         plugin_release: Path | None = None,
+        resume_from: Path | None = None,
     ) -> None:
         self.core_workspace = core_workspace.resolve()
         self.private_workspace = (
@@ -92,6 +94,8 @@ class MacOSInstaller:
             "-" if ad_hoc else self.environment.get("APPLE_SIGNING_IDENTITY", "")
         )
         self.profile = self.environment.get("APPLE_NOTARY_PROFILE", "")
+        self.resume_from = resume_from.resolve() if resume_from else None
+        self.release = MacOSRelease(self.command, self.identity, self.profile, ad_hoc)
         self.configure_environment()
 
     @property
@@ -275,23 +279,37 @@ class MacOSInstaller:
         self.preflight()
         if self.ad_hoc:
             print("Local test installer: ad-hoc signed, not notarized.", flush=True)
-        self.output.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=".macos-installer-", dir=self.output.parent
-        ) as temporary:
-            staging = Path(temporary)
-            self.compile_release(staging / "builtins")
-            app = self.assemble_app(staging)
-            self.audit_payload(app, staging / "inspection")
-            self.collect_native_diagnostics(app)
-            self.audit_binary(app / "Contents/MacOS/lumvise")
-            self.sign_app(app, staging)
-            if not self.ad_hoc:
-                self.notarize_app(app, staging)
+        with self.release.staging(self.output, self.resume_from) as staging:
+            app = self._prepare_release_app(staging)
+            self.release.notarize_app(app, staging)
             dmg = self.create_dmg(app, staging)
             self.publish(app, dmg)
         print(f"Installer: {self.output / dmg.name}")
         return self.output / dmg.name
+
+    def _prepare_release_app(self, staging: Path) -> Path:
+        if self.resume_from is not None:
+            return self._resume_signed_app(staging)
+        self.compile_release(staging / "builtins")
+        app = self.assemble_app(staging)
+        self.audit_payload(app, staging / "inspection")
+        self.collect_native_diagnostics(app)
+        self.audit_binary(app / "Contents/MacOS/lumvise")
+        self.sign_app(app, staging)
+        return app
+
+    def _resume_signed_app(self, staging: Path) -> Path:
+        app = staging / "image" / self.app_bundle_name
+        requirement = (
+            [] if self.ad_hoc else ["--test-requirement", DEVELOPER_ID_REQUIREMENT]
+        )
+        self.command("codesign", "--verify", "--deep", "--strict", *requirement, app)
+        with tempfile.TemporaryDirectory(
+            prefix="resume-inspection-", dir=staging
+        ) as inspection:
+            self.audit_payload(app, Path(inspection) / "plugins")
+        self.audit_binary(app / "Contents/MacOS/lumvise")
+        return app
 
     def compile_release(self, builtins: Path) -> None:
         if self.edition == "full":
@@ -799,33 +817,6 @@ class MacOSInstaller:
         ).hexdigest()
         manifest.write_text(json.dumps(record, indent=2) + "\n")
 
-    def notarize_app(self, app: Path, staging: Path) -> None:
-        archive = staging / "Lumvise-notarization.zip"
-        self.command("ditto", "-c", "-k", "--keepParent", app, archive)
-        self.notarize(archive, app, staging / "app-notarization.json")
-        self.command("spctl", "--assess", "--type", "execute", "--verbose=2", app)
-
-    def notarize(self, upload: Path, staple: Path, receipt: Path) -> None:
-        response = self.command(
-            "xcrun",
-            "notarytool",
-            "submit",
-            upload,
-            "--keychain-profile",
-            self.profile,
-            "--wait",
-            "--output-format",
-            "json",
-        )
-        receipt.write_text(response)
-        result = json.loads(response)
-        if result.get("status") != "Accepted":
-            raise ValueError(
-                f"notarization {result!r}; expected Accepted (retrieve details with xcrun notarytool log <id> --keychain-profile <profile>)"
-            )
-        self.command("xcrun", "stapler", "staple", staple)
-        self.command("xcrun", "stapler", "validate", staple)
-
     def create_dmg(self, app: Path, staging: Path) -> Path:
         version = plistlib.loads((app / "Contents/Info.plist").read_bytes())[
             "CFBundleShortVersionString"
@@ -833,19 +824,9 @@ class MacOSInstaller:
         suffix = "-adhoc" if self.ad_hoc else ""
         edition = "Community" if self.edition == "community" else "Full"
         dmg = staging / f"Lumvise-{edition}-{version}-macos-arm64{suffix}.dmg"
-        self.create_image(app, dmg)
-        if not self.ad_hoc:
-            self.command("codesign", "--sign", self.identity, "--timestamp", dmg)
-            self.notarize(dmg, dmg, staging / "dmg-notarization.json")
-            self.command(
-                "spctl",
-                "--assess",
-                "--type",
-                "open",
-                "--context",
-                "context:primary-signature",
-                dmg,
-            )
+        if not dmg.exists():
+            self.create_image(app, dmg)
+        self.release.notarize_dmg(dmg, staging)
         return dmg
 
     def create_image(self, app: Path, dmg: Path) -> None:
@@ -948,6 +929,11 @@ def installer_arguments() -> argparse.Namespace:
         help="reviewed dependency notice tree to include",
     )
     parser.add_argument(
+        "--resume-from",
+        type=Path,
+        help="retained staging directory; reuse signed uploads and Apple submission IDs",
+    )
+    parser.add_argument(
         "--ad-hoc",
         action="store_true",
         help="local testing only; skip Apple notarization",
@@ -970,6 +956,7 @@ def main() -> int:
             third_party_notices=args.third_party_notices,
             target_dir=args.target_dir,
             plugin_release=args.plugin_release,
+            resume_from=args.resume_from,
         ).build()
     except (
         OSError,

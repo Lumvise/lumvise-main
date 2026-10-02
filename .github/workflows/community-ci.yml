@@ -29,7 +29,7 @@ jobs:
           cargo test --locked -p lumvise-mcp-app-adapter --test community_runtime
       - name: Test installer and notice tooling when present
         run: |
-          for test_file in test_macos_installer.py test_third_party_notices.py; do
+          for test_file in test_macos_installer.py test_macos_release.py test_third_party_notices.py; do
             if [ -f "scripts/tests/$test_file" ]; then
               PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$test_file"
             fi

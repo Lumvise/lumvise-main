@@ -25,7 +25,8 @@ LOADER = importlib.machinery.SourceFileLoader("macos_installer", str(SCRIPT))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 assert SPEC is not None
 installer = importlib.util.module_from_spec(SPEC)
-LOADER.exec_module(installer)
+with patch.object(sys, "path", [str(SCRIPT.parent), *sys.path]):
+    LOADER.exec_module(installer)
 
 
 class FakeBuildTools(installer.MacOSInstaller):
@@ -36,6 +37,7 @@ class FakeBuildTools(installer.MacOSInstaller):
         self.linked_library = "/usr/lib/libSystem.B.dylib"
         self.architecture = "arm64"
         self.fail_command = ""
+        self.fail_wait_for = ""
         self.extra_plugin_ids: list[str] = []
         self.omit_canvas = False
         self.image_instructions = ""
@@ -80,6 +82,18 @@ class FakeBuildTools(installer.MacOSInstaller):
             Path(argv[argv.index("--out") + 1]).write_bytes(b"icon")
         if command == "iconutil":
             Path(argv[-1]).write_bytes(b"icns")
+        if command == "ditto" and argv[1:4] == ("-c", "-k", "--keepParent"):
+            app = Path(argv[4])
+            with zipfile.ZipFile(argv[-1], "w") as archive:
+                for source in app.rglob("*"):
+                    if source.is_file():
+                        archive.write(source, f"{app.name}/{source.relative_to(app)}")
+        if command == "xcrun" and argv[1:3] == ("notarytool", "wait"):
+            submission = argv[3]
+            submission_kind = "app" if submission.endswith("app") else "dmg"
+            if self.fail_wait_for == submission_kind:
+                self.fail_wait_for = ""
+                raise subprocess.CalledProcessError(1, argv)
         if command == "codesign" and "--force" in argv and argv[-1].endswith(".app"):
             binary = Path(argv[-1]) / "Contents/MacOS/lumvise"
             binary.write_bytes(binary.read_bytes() + b":signed")
@@ -100,10 +114,11 @@ class FakeBuildTools(installer.MacOSInstaller):
             return f"/Xcode/Toolchain/usr/bin/{argv[2]}\n"
         if command == "xcrun" and argv[1:3] == ("dwarfdump", "--uuid"):
             return f"UUID: 01234567-89AB-CDEF-0123-456789ABCDEF (arm64) {argv[-1]}\n"
-        if "notarytool" in argv:
-            return json.dumps(
-                {"id": "fixture-submission", "status": self.notary_status}
-            )
+        if argv[:3] == ("xcrun", "notarytool", "submit"):
+            submission_kind = "app" if Path(argv[3]).suffix == ".zip" else "dmg"
+            return json.dumps({"id": f"fixture-submission-{submission_kind}"})
+        if argv[:3] == ("xcrun", "notarytool", "wait"):
+            return json.dumps({"id": argv[3], "status": self.notary_status})
         return ""
 
     def stage_renderer_diagnostics(self, renderer: Path) -> None:
@@ -248,9 +263,12 @@ class MacOSInstallerTests(unittest.TestCase):
         plugin_release: Path | None = None,
         ad_hoc: bool = True,
         third_party_notices: Path | None = None,
+        resume_from: Path | None = None,
+        output: Path | None = None,
+        signing_identity: str = "Developer ID Application: Fixture (TEAM)",
     ) -> FakeBuildTools:
         environment = {
-            "APPLE_SIGNING_IDENTITY": "Developer ID Application: Fixture (TEAM)",
+            "APPLE_SIGNING_IDENTITY": signing_identity,
             "APPLE_NOTARY_PROFILE": "fixture-profile",
             "LUMVISE_DRY_RUN": "1",
             "VITE_LUMVISE_ASSISTANT_E2E": "1",
@@ -262,13 +280,14 @@ class MacOSInstallerTests(unittest.TestCase):
                 core_workspace=core or self.core,
                 private_workspace=private,
                 key=self.key,
-                output=self.output,
+                output=output or self.output,
                 ad_hoc=ad_hoc,
                 edition=edition,
                 diagnostics_dir=diagnostics,
                 third_party_notices=third_party_notices,
                 target_dir=target_dir,
                 plugin_release=plugin_release,
+                resume_from=resume_from,
             )
 
     def test_cli_help_exposes_editions_and_explicit_workspaces(self) -> None:
@@ -281,6 +300,7 @@ class MacOSInstallerTests(unittest.TestCase):
         self.assertIn("--third-party-notices", result.stdout)
         self.assertIn("--target-dir", result.stdout)
         self.assertIn("--plugin-release", result.stdout)
+        self.assertIn("--resume-from", result.stdout)
         with patch.object(
             sys,
             "argv",
@@ -296,6 +316,8 @@ class MacOSInstallerTests(unittest.TestCase):
                 str(self.root / "release-cache"),
                 "--plugin-release",
                 str(self.root / "prepared-release"),
+                "--resume-from",
+                str(self.root / "staging"),
             ],
         ):
             arguments = installer.installer_arguments()
@@ -304,6 +326,7 @@ class MacOSInstallerTests(unittest.TestCase):
         self.assertTrue(arguments.ad_hoc)
         self.assertEqual(arguments.target_dir, self.root / "release-cache")
         self.assertEqual(arguments.plugin_release, self.root / "prepared-release")
+        self.assertEqual(arguments.resume_from, self.root / "staging")
 
     def test_public_icon_png_is_a_required_input(self) -> None:
         build = self.make_builder("community")
@@ -640,20 +663,211 @@ class MacOSInstallerTests(unittest.TestCase):
             "full", private=self.private, ad_hoc=False, third_party_notices=self.notices
         )
         dmg = build.build()
-        uploads = [call for call in build.calls if "notarytool" in call]
+        submissions = [
+            call
+            for call in build.calls
+            if call[:3] == ("xcrun", "notarytool", "submit")
+        ]
+        waits = [
+            call for call in build.calls if call[:3] == ("xcrun", "notarytool", "wait")
+        ]
         staples = [call for call in build.calls if "staple" in call]
-        self.assertEqual(len(uploads), 2)
-        self.assertTrue(uploads[0][3].endswith(".zip"))
-        self.assertTrue(uploads[1][3].endswith(".dmg"))
+        self.assertEqual(len(submissions), 2)
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(submissions[0][3].endswith(".zip"))
+        self.assertTrue(submissions[1][3].endswith(".dmg"))
+        self.assertEqual(waits[0][3], "fixture-submission-app")
+        self.assertEqual(waits[1][3], "fixture-submission-dmg")
         self.assertEqual(len(staples), 2)
         dmg_build = next(
             call for call in build.calls if call[:2] == ("hdiutil", "create")
         )
         self.assertLess(build.calls.index(staples[0]), build.calls.index(dmg_build))
+        self.assertLess(build.calls.index(submissions[0]), build.calls.index(waits[0]))
+        self.assertLess(build.calls.index(waits[0]), build.calls.index(dmg_build))
+        self.assertLess(build.calls.index(dmg_build), build.calls.index(submissions[1]))
+        self.assertLess(build.calls.index(submissions[1]), build.calls.index(waits[1]))
         app_signing = next(call for call in build.calls if "--entitlements" in call)
         self.assertIn("runtime", app_signing)
         self.assertIn("--timestamp", app_signing)
         self.assertNotIn("adhoc", dmg.name)
+
+    def test_app_wait_resume_reuses_submission_for_both_editions(self) -> None:
+        for edition in ("community", "full"):
+            with self.subTest(edition=edition):
+                output = self.root / f"dist-{edition}"
+                initial = self._notarized_builder(edition, output=output)
+                stage = self._interrupt_at_wait(initial, "app")
+                app_upload = self._staged_upload(stage, ".zip")
+                self.assertFalse(output.exists())
+                with zipfile.ZipFile(app_upload) as archive:
+                    signed_executable = archive.read(
+                        f"{'Lumvise Community' if edition == 'community' else 'Lumvise'}.app/Contents/MacOS/lumvise"
+                    )
+                self.assertTrue(signed_executable.endswith(b":signed"))
+
+                resumed = self._notarized_builder(
+                    edition, output=output, resume_from=stage
+                )
+                resumed.build()
+
+                self.assertEqual(
+                    [
+                        Path(path).suffix
+                        for path in self._submitted_uploads(initial.calls)
+                    ],
+                    [".zip"],
+                )
+                self.assertEqual(
+                    [
+                        Path(path).suffix
+                        for path in self._submitted_uploads(resumed.calls)
+                    ],
+                    [".dmg"],
+                )
+                self.assertIn("fixture-submission-app", self._waited_ids(initial.calls))
+                self.assertIn("fixture-submission-app", self._waited_ids(resumed.calls))
+                self.assertFalse(self._has_app_build_or_sign(resumed.calls))
+                self.assertFalse(any(call[0] == "ditto" for call in resumed.calls))
+                self.assertFalse(stage.exists())
+
+    def test_dmg_wait_resume_does_not_repeat_build_sign_or_submission(self) -> None:
+        build = self._notarized_builder("full", output=self.root / "dist-dmg")
+        stage = self._interrupt_at_wait(build, "dmg")
+        self.assertEqual(
+            [Path(path).suffix for path in self._submitted_uploads(build.calls)],
+            [".zip", ".dmg"],
+        )
+
+        resumed = self._notarized_builder(
+            "full", output=build.output, resume_from=stage
+        )
+        resumed.build()
+
+        self.assertEqual(self._submitted_uploads(resumed.calls), [])
+        self.assertIn("fixture-submission-dmg", self._waited_ids(resumed.calls))
+        self.assertFalse(self._has_app_build_or_sign(resumed.calls))
+        self.assertFalse(any(call[0] == "ditto" for call in resumed.calls))
+        self.assertFalse(
+            any(call[:2] == ("hdiutil", "create") for call in resumed.calls)
+        )
+        self.assertFalse(
+            any(
+                call[0] == "codesign" and ("--sign" in call or "--force" in call)
+                for call in resumed.calls
+            )
+        )
+        self.assertFalse(stage.exists())
+
+    def test_resume_rejects_changed_upload_before_notary_wait(self) -> None:
+        build = self._notarized_builder("community", output=self.root / "dist-digest")
+        stage = self._interrupt_at_wait(build, "app")
+        self._staged_upload(stage, ".zip").write_bytes(b"changed signed upload")
+        resumed = self._notarized_builder(
+            "community", output=build.output, resume_from=stage
+        )
+
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            resumed.build()
+
+        self.assertEqual(self._submitted_uploads(resumed.calls), [])
+        self.assertEqual(self._waited_ids(resumed.calls), [])
+        self.assertFalse(build.output.exists())
+
+    def test_failed_wait_retains_signed_stage_without_publishing(self) -> None:
+        build = self._notarized_builder("community", output=self.root / "dist-retained")
+        stage = self._interrupt_at_wait(build, "app")
+
+        app_upload = self._staged_upload(stage, ".zip")
+        self.assertTrue(app_upload.is_file())
+        with zipfile.ZipFile(app_upload) as archive:
+            self.assertTrue(
+                archive.read("Lumvise Community.app/Contents/MacOS/lumvise").endswith(
+                    b":signed"
+                )
+            )
+        self.assertFalse(build.output.exists())
+
+    def test_resume_rejects_output_and_signing_identity_mismatch(self) -> None:
+        output = self.root / "dist-identity"
+        build = self._notarized_builder("community", output=output)
+        stage = self._interrupt_at_wait(build, "app")
+        wrong_output = self._notarized_builder(
+            "community", output=self.root / "other-dist", resume_from=stage
+        )
+        with self.assertRaises(ValueError):
+            wrong_output.build()
+
+        wrong_identity = self._notarized_builder(
+            "community",
+            output=output,
+            resume_from=stage,
+            signing_identity="Developer ID Application: Other (TEAM)",
+        )
+        with self.assertRaises(ValueError):
+            wrong_identity.build()
+        self.assertTrue(stage.is_dir())
+        self.assertFalse(output.exists())
+
+    def _notarized_builder(
+        self,
+        edition: str,
+        *,
+        output: Path,
+        resume_from: Path | None = None,
+        signing_identity: str = "Developer ID Application: Fixture (TEAM)",
+    ) -> FakeBuildTools:
+        return self.make_builder(
+            edition,
+            private=self.private if edition == "full" else None,
+            ad_hoc=False,
+            third_party_notices=self.notices,
+            output=output,
+            resume_from=resume_from,
+            signing_identity=signing_identity,
+        )
+
+    def _interrupt_at_wait(self, build: FakeBuildTools, kind: str) -> Path:
+        before = set(build.output.parent.glob(".macos-installer-*"))
+        build.fail_wait_for = kind
+        with self.assertRaises(subprocess.CalledProcessError):
+            build.build()
+        retained = set(build.output.parent.glob(".macos-installer-*")) - before
+        self.assertEqual(len(retained), 1)
+        return retained.pop()
+
+    @staticmethod
+    def _staged_upload(stage: Path, suffix: str) -> Path:
+        uploads = list(stage.glob(f"*{suffix}"))
+        if len(uploads) != 1:
+            raise AssertionError(f"staging {stage}; expected one {suffix} upload")
+        return uploads[0]
+
+    @staticmethod
+    def _submitted_uploads(calls: list[tuple[str, ...]]) -> list[str]:
+        return [
+            call[3] for call in calls if call[:3] == ("xcrun", "notarytool", "submit")
+        ]
+
+    @staticmethod
+    def _waited_ids(calls: list[tuple[str, ...]]) -> list[str]:
+        return [
+            call[3] for call in calls if call[:3] == ("xcrun", "notarytool", "wait")
+        ]
+
+    @staticmethod
+    def _has_app_build_or_sign(calls: list[tuple[str, ...]]) -> bool:
+        return any(
+            call[:2] == ("cargo", "build")
+            or (call[:2] == ("cargo", "run") and "--composition" in call)
+            or call[0] == "npm"
+            or (
+                call[0] == "codesign"
+                and ("--sign" in call or "--force" in call)
+                and call[-1].endswith(".app")
+            )
+            for call in calls
+        )
 
     def test_rejected_notarization_or_command_never_publishes(self) -> None:
         build = self.make_builder(

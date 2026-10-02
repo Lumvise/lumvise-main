@@ -334,6 +334,34 @@ New signatures change plugin archive bytes: use a new plugin patch version for
 a newly signed release. Reuse the same prepared signed archives when packaging
 that release again; official builds reject ad-hoc plugin signatures.
 
+### Resume an interrupted notarization
+
+If a build fails after the app has been signed, the installer prints a retained
+staging path. Keep that directory and repeat the same command with the same
+edition, key, notices, output path, and other arguments, adding
+`--resume-from '/path/printed/by/the/installer'`. Keep
+`APPLE_SIGNING_IDENTITY` and `APPLE_NOTARY_PROFILE` set as for the original
+command. For example, retry the Community command above as:
+
+```sh
+./scripts/build-macos-installer "$HOME/.config/lumvise/plugin-release.key" \
+  --third-party-notices target/community-notices \
+  --output-dir dist/community-signed \
+  --resume-from '/path/printed/by/the/installer'
+```
+
+The staging directory retains the signed app, upload archives, DMG when
+created, and notarization receipts. Receipts save Apple's submission ID and the
+upload's SHA-256 before waiting; retries check the retained bytes and resume
+that submission without uploading it again. The installer reuses the signed
+plugin archives already in the app. To inspect a submission, use
+`xcrun notarytool info ID --keychain-profile lumvise-notary` or retrieve its log
+with `xcrun notarytool log ID --keychain-profile lumvise-notary`.
+
+Resume applies only after a signed app exists. If the failure happened earlier,
+diagnose it and make a fresh build. Resume also requires the original output
+path, signing identity, and ad-hoc setting to match.
+
 Rust build artifacts use the selected workspace's `target` directory by
 default. To share a build cache across checkouts, add `--target-dir` followed by
 the cache directory path. If you already have a signed Community plugin release
