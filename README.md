@@ -312,6 +312,28 @@ texts as errors and includes corresponding source for copyleft dependencies.
 Review its inventory, then pass `--third-party-notices target/community-notices`
 to the installer command. Private application sources are not required.
 
+For packages distributed as native binaries, a reviewed license override can
+include `source_archive` with `file` (a relative `.tar.gz` path), `sha256`, and
+an HTTPS `source_url`. The collector verifies and copies that upstream source
+archive, preserving its provenance, instead of archiving the installed binary.
+
+With your Developer ID Application certificate and private key in Keychain, and
+notarization credentials stored as `lumvise-notary`, build a signed installer:
+
+```sh
+export APPLE_SIGNING_IDENTITY='Developer ID Application: Your Company (TEAMID)'
+export APPLE_NOTARY_PROFILE='lumvise-notary'
+./scripts/build-macos-installer "$HOME/.config/lumvise/plugin-release.key" \
+  --third-party-notices target/community-notices \
+  --output-dir dist/community-signed
+```
+
+This signs the plugin executables before sealing their archives, signs and
+notarizes the app and DMG, staples Apple's tickets, and checks Gatekeeper.
+New signatures change plugin archive bytes: use a new plugin patch version for
+a newly signed release. Reuse the same prepared signed archives when packaging
+that release again; official builds reject ad-hoc plugin signatures.
+
 Rust build artifacts use the selected workspace's `target` directory by
 default. To share a build cache across checkouts, add `--target-dir` followed by
 the cache directory path. If you already have a signed Community plugin release

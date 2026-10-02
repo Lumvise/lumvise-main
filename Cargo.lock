@@ -3030,7 +3030,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-knowledge"
-version = "0.1.42"
+version = "0.1.43"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -3108,7 +3108,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-semantic"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "chrono",
  "ed25519-dalek",

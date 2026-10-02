@@ -41,6 +41,11 @@ NOTARIZATION_TOOLS = ("ditto", "spctl")
 NATIVE_SYMBOL_TOOLS = ("dsymutil", "dwarfdump", "strip")
 BASE_PLUGIN_IDS = {"builtin.knowledge", "builtin.semantic"}
 FULL_PRIVATE_PLUGIN_IDS = {"builtin.assistant", "builtin.canvas"}
+DEVELOPER_ID_REQUIREMENT = (
+    "=anchor apple generic and "
+    "certificate 1[field.1.2.840.113635.100.6.2.6] exists and "
+    "certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+)
 FORBIDDEN_PAYLOAD_SUFFIXES = {".map", ".rs", ".ts", ".tsx", ".jsx", ".md"}
 NOTICE_SUBTREES = {
     ("Contents", "Resources", "licenses", "third-party-desktop"),
@@ -703,7 +708,13 @@ class MacOSInstaller:
                 binary = inspection / f"{artifact['plugin_id']}.binary"
                 binary.write_bytes(archive.read(manifest["targets"][TARGET]))
                 self.audit_binary(binary)
-                self.command("codesign", "--verify", "--strict", binary)
+                # Prepared archives may still contain ad-hoc signed preview payloads.
+                requirement = (
+                    []
+                    if self.ad_hoc
+                    else ["--test-requirement", DEVELOPER_ID_REQUIREMENT]
+                )
+                self.command("codesign", "--verify", "--strict", *requirement, binary)
 
     def audit_private_payload_files(self, app: Path) -> None:
         for path in app.rglob("*"):

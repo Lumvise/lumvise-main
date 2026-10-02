@@ -1,7 +1,7 @@
 package = "lumvise-plugin-knowledge"
 binary = "lumvise-plugin-knowledge"
 plugin_id = "builtin.knowledge"
-plugin_version = "0.1.42"
+plugin_version = "0.1.43"
 publisher_id = "lumvise.builtin"
 key_id = "lumvise.release.1"
 protocol_min = 6

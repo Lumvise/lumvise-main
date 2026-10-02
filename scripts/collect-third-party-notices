@@ -532,10 +532,31 @@ def validate_override(
         raise ValueError(
             f"override {identity!r}; expected nonempty files and sha256 mappings"
         )
-    return {
+    override = {
         "source_url": source_url,
         "files": validate_override_files(directory, identity, names, digests),
     }
+    if "source_archive" in item:
+        override["source_archive"] = validate_source_override(
+            directory, identity, item["source_archive"]
+        )
+    return override
+
+
+def validate_source_override(
+    directory: Path, identity: str, value: object
+) -> dict[str, object]:
+    if not isinstance(value, dict) or not is_pinned_https_url(value.get("source_url")):
+        raise ValueError(
+            f"override {identity!r} source_archive; expected an HTTPS source_url"
+        )
+    name = override_relative_path(identity, value.get("file"), notice_text=False)
+    if not name.endswith(".tar.gz"):
+        raise ValueError(
+            f"override {identity!r} source file {name!r}; expected .tar.gz"
+        )
+    verified = verified_override_file(directory, identity, name, value.get("sha256"))
+    return {**verified, "source_url": value["source_url"]}
 
 
 def is_pinned_https_url(value: object) -> bool:
@@ -564,7 +585,9 @@ def validate_override_files(
     ]
 
 
-def override_relative_path(identity: str, value: object) -> str:
+def override_relative_path(
+    identity: str, value: object, *, notice_text: bool = True
+) -> str:
     if not isinstance(value, str):
         raise ValueError(
             f"override {identity!r} file {value!r}; expected a relative path"
@@ -579,7 +602,7 @@ def override_relative_path(identity: str, value: object) -> str:
         raise ValueError(
             f"override {identity!r} file {value!r}; expected a normalized relative path"
         )
-    if not relative.name.lower().startswith(TEXT_PREFIXES):
+    if notice_text and not relative.name.lower().startswith(TEXT_PREFIXES):
         raise ValueError(
             f"override {identity!r} file {value!r}; expected a license or notice text filename"
         )
@@ -692,13 +715,34 @@ def package_inventory_item(
     item["missing_license_text"] = not assets
     if not assets:
         missing.append(str(record["id"]))
-    if bool(record["source_archive"]):
-        archive_rel = rel.with_name(f"{rel.name}.tar.gz")
-        write_source_archive(root, output / "sources" / archive_rel)
-        item["source_archive"] = f"sources/{archive_rel.as_posix()}"
+    item.update(write_package_sources(record, rel, root, output, override))
     if override:
         item["license_override"] = override_provenance(override, rel)
     return item
+
+
+def write_package_sources(
+    record: dict[str, object],
+    rel: PurePosixPath,
+    root: Path,
+    output: Path,
+    override: dict[str, object] | None,
+) -> dict[str, object]:
+    source = override.get("source_archive") if override else None
+    if not record["source_archive"] and source is None:
+        return {}
+    relative = PurePosixPath("sources") / rel.with_name(f"{rel.name}.tar.gz")
+    target = output / relative
+    result: dict[str, object] = {"source_archive": relative.as_posix()}
+    if isinstance(source, dict):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_unambiguous_bytes(source["contents"], target)
+        result["source_override"] = {
+            key: source[key] for key in ("source_url", "sha256")
+        }
+        return result
+    write_source_archive(root, target)
+    return result
 
 
 def override_provenance(

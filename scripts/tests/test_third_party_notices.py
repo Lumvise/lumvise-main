@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import hashlib
+import io
 import json
 from pathlib import Path
 import tarfile
@@ -268,6 +269,118 @@ class ThirdPartyNoticeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "normalized relative path"):
             notices.load_license_overrides([directory], notices.npm_records([self.npm]))
 
+    def test_cli_uses_digest_verified_source_archive_override(self) -> None:
+        package_root, override_root, archive_bytes, source_bytes, source_url = (
+            self._source_archive_fixture()
+        )
+        output = self.root / "source-override-out"
+
+        result = notices.main(
+            [
+                "--npm-root",
+                str(self.npm),
+                "--license-overrides",
+                str(override_root),
+                "--output",
+                str(output),
+            ]
+        )
+
+        self.assertEqual(result, 0)
+        archive = output / "sources/npm/lightningcss/1.0.0.tar.gz"
+        self.assertEqual(archive.read_bytes(), archive_bytes)
+        with tarfile.open(archive, "r:gz") as source_archive:
+            names = source_archive.getnames()
+            self.assertEqual(
+                source_archive.extractfile("src/index.js").read(), source_bytes
+            )
+        self.assertNotIn("lightningcss.darwin-arm64.node", names)
+        inventory = json.loads((output / "inventory.json").read_text())
+        record = next(
+            item
+            for item in inventory["packages"]
+            if item["id"] == "npm:lightningcss@1.0.0"
+        )
+        self.assertEqual(
+            record["source_override"],
+            {
+                "source_url": source_url,
+                "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+            },
+        )
+        self.assertIn(
+            "packages/npm/lightningcss/1.0.0/notices/LICENSE",
+            record["notice_files"],
+        )
+        self.assertEqual(
+            (output / "packages/npm/lightningcss/1.0.0/notices/LICENSE").read_text(),
+            "actual MPL text\n",
+        )
+        self.assertEqual(
+            record["license_override"]["source_url"],
+            "https://github.com/example/project/blob/0123456789abcdef0123456789abcdef01234567/LICENSE",
+        )
+        self.assertTrue((package_root / "lightningcss.darwin-arm64.node").is_file())
+
+    def test_rejects_invalid_source_archive_override(self) -> None:
+        invalid_fields = [
+            ("digest", "sha256", "0" * 64),
+            ("traversal", "file", "../upstream.tar.gz"),
+            ("absolute", "file", "/tmp/upstream.tar.gz"),
+            (
+                "http",
+                "source_url",
+                "http://github.com/example/project/archive/0123456789abcdef0123456789abcdef01234567.tar.gz",
+            ),
+            ("filename", "file", "upstream/source.zip"),
+        ]
+        for label, field, value in invalid_fields:
+            with self.subTest(label=label):
+                _, override_root, _, _, _ = self._source_archive_fixture()
+                manifest_path = override_root / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                source_archive = manifest["npm:lightningcss@1.0.0"]["source_archive"]
+                source_archive[field] = value
+                manifest["npm:lightningcss@1.0.0"]["source_archive"] = source_archive
+                manifest_path.write_text(json.dumps(manifest))
+                self.assertEqual(
+                    notices.main(
+                        [
+                            "--npm-root",
+                            str(self.npm),
+                            "--license-overrides",
+                            str(override_root),
+                            "--output",
+                            str(self.root / f"invalid-{label}"),
+                        ]
+                    ),
+                    2,
+                )
+
+    def test_source_archive_override_is_optional(self) -> None:
+        package_root = self._lightningcss_package(include_native_binary=False)
+        output = self.root / "generated-source-out"
+        result = notices.main(["--npm-root", str(self.npm), "--output", str(output)])
+
+        self.assertEqual(result, 0)
+        archive = output / "sources/npm/lightningcss/1.0.0.tar.gz"
+        with tarfile.open(archive, "r:gz") as source_archive:
+            self.assertEqual(
+                source_archive.extractfile("src/index.js").read(),
+                b"export const source = true;\n",
+            )
+            self.assertNotIn(
+                "lightningcss.darwin-arm64.node", source_archive.getnames()
+            )
+        inventory = json.loads((output / "inventory.json").read_text())
+        record = next(
+            item
+            for item in inventory["packages"]
+            if item["id"] == "npm:lightningcss@1.0.0"
+        )
+        self.assertNotIn("source_override", record)
+        self.assertTrue((package_root / "src/index.js").is_file())
+
     def _override_root(self, contents: str) -> Path:
         directory = self.root / "overrides"
         text = directory / "texts/COPYING"
@@ -283,6 +396,63 @@ class ThirdPartyNoticeTests(unittest.TestCase):
         }
         (directory / "manifest.json").write_text(json.dumps(manifest))
         return directory
+
+    def _lightningcss_package(self, *, include_native_binary: bool = True) -> Path:
+        self._write_npm(
+            "lightningcss", "1.0.0", "MPL-2.0", "LICENSE", "actual MPL text\n"
+        )
+        self._write_npm(
+            "nested-only", "3.0.0", "MIT", "LICENSE", "nested MIT text\n", nested=True
+        )
+        package_root = self.npm / "node_modules/lightningcss"
+        (package_root / "src").mkdir(exist_ok=True)
+        (package_root / "src/index.js").write_bytes(b"export const source = true;\n")
+        if include_native_binary:
+            (package_root / "lightningcss.darwin-arm64.node").write_bytes(
+                b"native binary"
+            )
+        return package_root
+
+    def _source_archive_fixture(
+        self,
+    ) -> tuple[Path, Path, bytes, bytes, str]:
+        package_root = self._lightningcss_package()
+        directory = (
+            self.root
+            / f"source overrides {len(list(self.root.glob('source overrides *')))}"
+        )
+        source_bytes = b"export const source = true;\n"
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            member = tarfile.TarInfo("src/index.js")
+            member.size = len(source_bytes)
+            archive.addfile(member, io.BytesIO(source_bytes))
+        archive_bytes = buffer.getvalue()
+        source_archive_path = directory / "upstream/source.tar.gz"
+        source_archive_path.parent.mkdir(parents=True, exist_ok=True)
+        source_archive_path.write_bytes(archive_bytes)
+        license_path = directory / "texts/LICENSE"
+        license_path.parent.mkdir()
+        license_path.write_text("upstream MPL text\n")
+        source_url = "https://github.com/example/lightningcss/archive/0123456789abcdef0123456789abcdef01234567.tar.gz"
+        manifest = {
+            "npm:lightningcss@1.0.0": {
+                "files": ["texts/LICENSE"],
+                "source_url": "https://github.com/example/project/blob/0123456789abcdef0123456789abcdef01234567/LICENSE",
+                "sha256": {
+                    "texts/LICENSE": hashlib.sha256(
+                        license_path.read_bytes()
+                    ).hexdigest()
+                },
+                "source_archive": {
+                    "file": "upstream/source.tar.gz",
+                    "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                    "source_url": source_url,
+                },
+            }
+        }
+        (directory / "manifest.json").write_text(json.dumps(manifest))
+        return package_root, directory, archive_bytes, source_bytes, source_url
 
     def _assert_override(self, output: Path) -> None:
         target = (

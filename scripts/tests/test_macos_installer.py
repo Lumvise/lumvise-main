@@ -40,6 +40,7 @@ class FakeBuildTools(installer.MacOSInstaller):
         self.omit_canvas = False
         self.image_instructions = ""
         self.prepared_signature_valid = True
+        self.plugin_developer_id = True
         self.include_release_map = False
         self.include_release_source = False
         self.include_release_harness = False
@@ -53,6 +54,12 @@ class FakeBuildTools(installer.MacOSInstaller):
         self.calls.append(argv)
         command = Path(argv[0]).name
         if command == self.fail_command:
+            raise subprocess.CalledProcessError(1, argv)
+        if (
+            command == "codesign"
+            and "--test-requirement" in argv
+            and not self.plugin_developer_id
+        ):
             raise subprocess.CalledProcessError(1, argv)
         if command == "npm" and argv[1:3] == ("run", "build"):
             self.stage_renderer_diagnostics(Path(argv[argv.index("--prefix") + 1]))
@@ -658,6 +665,27 @@ class MacOSInstallerTests(unittest.TestCase):
         ):
             build.build()
         self.assertFalse(self.output.exists())
+
+    def test_official_build_rejects_ad_hoc_plugins_before_notarization(self) -> None:
+        for edition in ("community", "full"):
+            with self.subTest(edition=edition):
+                build = self.make_builder(
+                    edition,
+                    private=self.private,
+                    ad_hoc=False,
+                    third_party_notices=self.notices,
+                )
+                build.plugin_developer_id = False
+                with self.assertRaises(subprocess.CalledProcessError):
+                    build.build()
+                self.assertFalse(any("notarytool" in call for call in build.calls))
+                self.assertFalse(self.output.exists())
+
+    def test_local_build_allows_ad_hoc_plugin_signatures(self) -> None:
+        build = self.make_builder("community")
+        build.plugin_developer_id = False
+        self.assertTrue(build.build().is_file())
+        self.assertFalse(any("--test-requirement" in call for call in build.calls))
 
     def test_official_build_requires_complete_included_license_texts(self) -> None:
         build = self.make_builder("community", ad_hoc=False)
