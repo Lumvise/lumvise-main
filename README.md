@@ -9,7 +9,7 @@ context attached to your code. Lumvise combines an interactive desktop experienc
 with a shared local knowledge core that AI tools can access through the
 Model Context Protocol (MCP).
 
-[Download the macOS preview](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1-preview.1) ·
+[Download for macOS](https://github.com/Lumvise/lumvise-main/releases/latest) ·
 [Explore a graph online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fhuggingface__safetensors%2F.lv%2Fgraph.pz) ·
 [Choose an edition](#choose-an-edition) · [Demo projects](demos/) ·
 [Contributing](#contributing)
@@ -58,17 +58,16 @@ no desktop window; Full also supports MCP access.
 This repository contains the Community source. The full application's
 proprietary source and internal implementation documentation stay private.
 
-### macOS development preview
+### Signed macOS release
 
-The [latest development preview](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1-preview.2)
-includes **Full and Community DMGs for Apple Silicon Macs running macOS 14 or
-newer**. This release provides macOS installers only.
+[Download Lumvise v0.1.1](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1)
+for **Apple Silicon Macs running macOS 14 or newer**. Full and Community DMGs
+are available; this release provides macOS installers only.
 
-These DMGs are **ad-hoc signed, without an Apple Developer ID signature or
-Apple notarization**. macOS may block downloaded copies. Each download includes
-a SHA-256 checksum file; the release notes identify the exact builds and
-validation performed. Developer ID signing and notarization are deferred to a
-later release.
+Both editions are **Developer ID signed and Apple-notarized**, with notarization
+tickets stapled to the apps and DMGs. Each download includes a matching SHA-256
+checksum file. The release notes identify the source commit and completed
+signature, Gatekeeper, integrity, and packaged command-line checks.
 
 ## Build from source
 
