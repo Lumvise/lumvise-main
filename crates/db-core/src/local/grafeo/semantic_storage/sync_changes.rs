@@ -88,7 +88,7 @@ fn element_changes_are_large(
 pub(super) fn record_sync_changes(
     _collector: &mut ChangeCollector,
     _project_root: &str,
-    _remaps: &[crate::local::grafeo::matching::IdentityRemap],
+    _remaps: &[crate::domain::matching::SemanticIdentityRemap],
 ) -> Result<()> {
     Ok(())
 }

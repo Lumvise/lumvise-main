@@ -1,4 +1,6 @@
 use super::*;
+#[path = "tests/document_conversion.rs"]
+mod document_conversion;
 use lumvise_frontend_core::{AppSettingsPatch, AssistantEngine};
 use lumvise_neural_core::llm_providers::contract::{LlmProvider, LlmStreamEventSink};
 use lumvise_neural_core::llm_providers::{
@@ -400,6 +402,7 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
             "runtime.assistant_engine_availability",
             "runtime.audio_session",
             "runtime.background_job",
+            "runtime.document_conversion_options",
             "runtime.exclusive_lane",
             "runtime.project_execution",
             "runtime.scoped_mcp",
@@ -410,7 +413,7 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
             "storage.semantic",
         ]
     );
-    assert_eq!(host["storage.semantic"], semver::Version::new(1, 3, 0));
+    assert_eq!(host["storage.semantic"], semver::Version::new(1, 4, 0));
     assert!(
         host.iter()
             .filter(|(id, _)| **id != "storage.semantic")
@@ -429,6 +432,7 @@ fn every_cataloged_service_capability_reaches_an_adapter() {
         definition.route == HostCapabilityRoute::Services
             && definition.id != ASSISTANT_ENGINE_AVAILABILITY
             && definition.id != SPEECH_AVAILABILITY
+            && definition.id != crate::plugin::host_capability_catalog::DOCUMENT_CONVERSION_OPTIONS
     }) {
         let error = services
             .invoke("plugin.test", definition.id, json!({}))
@@ -512,6 +516,46 @@ fn speech_availability_reports_ready_when_both_are_installed() {
 
     assert_eq!(result["available"], true);
     assert_eq!(result["missing"], json!([]));
+}
+
+#[test]
+fn speech_preferences_gate_installed_services_independently() {
+    let app = crate::AppCore::in_memory()
+        .unwrap()
+        .with_speech_recognizer(Arc::new(InstalledRecognizer))
+        .with_speech_synthesizer(Arc::new(StreamingSynthesizer));
+    for (input, output) in [(false, true), (true, false), (false, false), (true, true)] {
+        app.frontend()
+            .apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionEnabled(input))
+            .unwrap();
+        app.frontend()
+            .apply_app_settings_patch(&AppSettingsPatch::SpeechSynthesisEnabled(output))
+            .unwrap();
+        let availability = app
+            .plugin_host_services
+            .invoke("plugin.test", SPEECH_AVAILABILITY, json!({}))
+            .unwrap();
+        assert_eq!(availability["speech_to_text"], input);
+        assert_eq!(availability["text_to_speech"], output);
+        assert_eq!(app.voice2text_service().is_some(), input);
+        assert_eq!(app.text2voice_service().is_some(), output);
+    }
+}
+
+#[test]
+fn disabled_synthesis_refuses_playback_before_creating_a_segment() {
+    let services = services();
+    services.install_speech_synthesizer(Arc::new(StreamingSynthesizer));
+    services
+        .frontend
+        .lock()
+        .unwrap()
+        .apply_app_settings_patch(&AppSettingsPatch::SpeechSynthesisEnabled(false));
+    let error = services.invoke("plugin.test", TEXT_TO_SPEECH, json!({
+        "playback_id": "setup-disabled", "session_id": "setup-test", "text": "Hello", "close": true
+    })).unwrap_err();
+    assert!(error.to_string().contains("disabled"));
+    assert!(services.playback_owners.lock().unwrap().is_empty());
 }
 
 #[test]

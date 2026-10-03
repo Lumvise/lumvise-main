@@ -21,7 +21,7 @@ lumvise-resource-routing.workspace = true
 lumvise-plugin-package.workspace = true
 lumvise-plugin-protocol.workspace = true
 lumvise-plugin-runtime.workspace = true
-lumvise-project-indexer = { path = "../project-indexer" }
+lumvise-project-indexer = { path = "../project-indexer", default-features = false }
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 prost.workspace = true
@@ -42,7 +42,8 @@ windows-sys.workspace = true
 widestring = "1.2"
 
 [features]
-default = []
+default = ["document-ml"]
+document-ml = ["lumvise-project-indexer/document-ml"]
 assistant-e2e = ["lumvise-frontend-core/assistant-e2e", "lumvise-resource-routing/assistant-e2e"]
 # Desktop Settings exposes managed embeddings, so every desktop build needs their runtime.
 desktop-app = ["lumvise-frontend-core/desktop-app", "native-vector"]

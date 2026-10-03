@@ -1,27 +1,10 @@
 use super::*;
-
-pub(crate) fn project(
-    graph: &GrafeoDB,
+pub(crate) fn project_general(
+    rows: BatchedGraphRows,
     request: &SemanticGraphProjectionRequest,
     commit_version: i64,
     published_at: String,
 ) -> Result<SemanticGraphProjection> {
-    if request.granularity == SemanticGraphGranularity::File {
-        return project_file(graph, request, commit_version, published_at);
-    }
-    project_general(graph, request, commit_version, published_at)
-}
-pub(super) fn project_general(
-    graph: &GrafeoDB,
-    request: &SemanticGraphProjectionRequest,
-    commit_version: i64,
-    published_at: String,
-) -> Result<SemanticGraphProjection> {
-    let rows_started = Instant::now();
-    let rows = read_batched_rows(graph, &request.project_root);
-    metrics::histogram!("lumvise_db_renderer_graph_projection_stage_seconds", "stage" => "batched_rows")
-        .record(rows_started.elapsed().as_secs_f64());
-
     let all = rows.all;
     let all_by_id = rows.all_by_id;
     let relationships = rows.relationships;
@@ -114,7 +97,7 @@ pub(super) fn project_general(
     })
 }
 
-pub(super) fn graph_nodes(
+pub(crate) fn graph_nodes(
     elements: &[ProjectionElement],
     edges: &BTreeMap<String, SemanticGraphEdge>,
     artifacts: &HashMap<String, Vec<ProjectionArtifact>>,
@@ -183,7 +166,7 @@ pub(super) fn graph_nodes(
         .collect()
 }
 
-pub(super) fn add_edge(
+pub(crate) fn add_edge(
     edges: &mut BTreeMap<String, SemanticGraphEdge>,
     source: &str,
     target: &str,
@@ -212,7 +195,7 @@ pub(super) fn add_edge(
     );
 }
 
-pub(super) fn first_neighbor_ids(
+pub(crate) fn first_neighbor_ids(
     visible: &HashSet<String>,
     relationships: &[SemanticRelationship],
 ) -> BTreeSet<String> {
@@ -234,7 +217,7 @@ pub(super) fn first_neighbor_ids(
     neighbors
 }
 
-pub(super) fn visible_ancestor(
+pub(crate) fn visible_ancestor(
     element_id: &str,
     visible: &HashSet<String>,
     parents: &HashMap<&str, &str>,
@@ -252,7 +235,7 @@ pub(super) fn visible_ancestor(
     }
 }
 
-pub(super) fn in_scope(
+pub(crate) fn in_scope(
     element: &ProjectionElement,
     request: &SemanticGraphProjectionRequest,
 ) -> bool {
@@ -270,7 +253,7 @@ pub(super) fn in_scope(
                 .starts_with(&format!("{}/", path.trim_end_matches('/')))
 }
 
-pub(super) fn matches_granularity(
+pub(crate) fn matches_granularity(
     element: &ProjectionElement,
     granularity: SemanticGraphGranularity,
     include_external: bool,
@@ -290,15 +273,15 @@ pub(super) fn matches_granularity(
     kinds.contains(&element.element_kind.as_str())
 }
 
-pub(super) fn is_contains(relationship: &SemanticRelationship) -> bool {
+pub(crate) fn is_contains(relationship: &SemanticRelationship) -> bool {
     relationship.relationship_kind == "contains" || relationship.label == "contains"
 }
 
-pub(super) fn is_external(element: &ProjectionElement) -> bool {
+pub(crate) fn is_external(element: &ProjectionElement) -> bool {
     element.element_kind == "external" || element.metadata["external"].as_bool() == Some(true)
 }
 
-pub(super) fn depth(id: &str, parents: &HashMap<&str, &str>) -> usize {
+pub(crate) fn depth(id: &str, parents: &HashMap<&str, &str>) -> usize {
     let mut current = parents.get(id).copied();
     let mut seen = HashSet::new();
     let mut depth = 0;
@@ -312,7 +295,7 @@ pub(super) fn depth(id: &str, parents: &HashMap<&str, &str>) -> usize {
     depth
 }
 
-pub(super) fn code_size(start: Option<i64>, end: Option<i64>) -> usize {
+pub(crate) fn code_size(start: Option<i64>, end: Option<i64>) -> usize {
     match (start, end) {
         (Some(start), Some(end)) if end >= start => (end - start + 1) as usize,
         _ => 1,

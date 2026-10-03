@@ -1,31 +1,41 @@
-use crate::local::fingerprint::{
+use crate::domain::fingerprint::fingerprint_algorithm;
+use crate::domain::fingerprint::{
     fingerprint_hamming_distance, fingerprints_match_exactly, parse_content_fingerprint,
 };
-use crate::local::grafeo::media::fingerprint_algorithm;
 use crate::{SemanticElement, SemanticMatchEvidence};
 use chrono::Utc;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const MAX_SIMHASH_DISTANCE: u32 = 12;
 
+impl SemanticStructureReconciliation {
+    /// Preserves existing identities while reconciling authoritative structure.
+    /// Example: `SemanticStructureReconciliation::between(&existing, &incoming)`.
+    pub fn between(existing: &[SemanticElement], incoming: &[SemanticElement]) -> Self {
+        reconcile_semantic_elements(existing, incoming)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct IdentityRemap {
+/// One preserved identity from an authoritative structure reconciliation.
+pub struct SemanticIdentityRemap {
     pub incoming_id: String,
     pub resolved_id: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ReconciledElements {
+/// Engine-neutral structure identity decision; publication belongs to the adapter.
+pub struct SemanticStructureReconciliation {
     pub active_elements: Vec<SemanticElement>,
     pub inactive_element_ids: Vec<String>,
-    pub remaps: Vec<IdentityRemap>,
+    pub remaps: Vec<SemanticIdentityRemap>,
 }
 
 pub(crate) fn reconcile_semantic_elements(
     existing_elements: &[SemanticElement],
     incoming_elements: &[SemanticElement],
-) -> ReconciledElements {
+) -> SemanticStructureReconciliation {
     let index = ExistingElementIndex::new(existing_elements);
     let mut remap_by_incoming = BTreeMap::new();
     let mut remaps = Vec::new();
@@ -44,7 +54,7 @@ pub(crate) fn reconcile_semantic_elements(
         ));
     }
     let active_ids = element_ids(&active_elements);
-    ReconciledElements {
+    SemanticStructureReconciliation {
         active_elements,
         inactive_element_ids: inactive_ids(existing_elements, &active_ids),
         remaps,
@@ -56,7 +66,7 @@ pub(crate) struct IdentityRemapIndex<'a> {
 }
 
 impl<'a> IdentityRemapIndex<'a> {
-    pub(crate) fn new(remaps: &'a [IdentityRemap]) -> Self {
+    pub(crate) fn new(remaps: &'a [SemanticIdentityRemap]) -> Self {
         Self {
             resolved_by_incoming: remaps
                 .iter()
@@ -92,7 +102,7 @@ fn reconcile_one_element(
 fn record_resolution_remap(
     resolution: ElementResolution,
     remap_by_incoming: &mut BTreeMap<String, String>,
-    remaps: &mut Vec<IdentityRemap>,
+    remaps: &mut Vec<SemanticIdentityRemap>,
     used_reused_ids: &mut BTreeSet<String>,
 ) -> SemanticElement {
     if let Some(remap) = resolution.remap {
@@ -306,7 +316,7 @@ fn matching_fingerprint_algorithm(element: &SemanticElement) -> Option<&str> {
 #[derive(Debug)]
 struct ElementResolution {
     element: SemanticElement,
-    remap: Option<IdentityRemap>,
+    remap: Option<SemanticIdentityRemap>,
 }
 
 impl ElementResolution {
@@ -368,8 +378,8 @@ impl<'a> MatchCandidate<'a> {
         })
     }
 
-    fn remap(&self, incoming: &SemanticElement) -> IdentityRemap {
-        IdentityRemap {
+    fn remap(&self, incoming: &SemanticElement) -> SemanticIdentityRemap {
+        SemanticIdentityRemap {
             incoming_id: incoming.semantic_element_id.clone(),
             resolved_id: self.element.semantic_element_id.clone(),
             reason: self.reason.to_string(),

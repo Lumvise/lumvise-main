@@ -42,6 +42,10 @@ use crate::AppCore;
 use lumvise_neural_core::managed_models::{
     ManagedModelCatalogEntry, ManagedModelKind, ModelRuntimeAdapter,
 };
+#[cfg(any(test, feature = "desktop-app"))]
+use lumvise_neural_core::managed_models::{
+    ManagedModelManager, ManagedModelSnapshot, ModelSuitability,
+};
 use std::path::Path;
 use std::sync::Weak;
 
@@ -49,6 +53,106 @@ use std::sync::Weak;
 const KOKORO_DEFAULT_VOICE: &str = "af_sky";
 #[cfg(feature = "native-voice")]
 const KOKORO_DEFAULT_SPEED: f32 = 0.9;
+
+#[cfg(any(test, feature = "desktop-app"))]
+pub(super) fn supported_model_snapshot(manager: &ManagedModelManager) -> ManagedModelSnapshot {
+    let mut snapshot = manager.snapshot();
+    for model in &mut snapshot.models {
+        let Some(entry) = manager.catalog_entry(&model.model_id) else {
+            continue;
+        };
+        if let Err(reason) = require_model_runtime(&entry) {
+            model.suitability = ModelSuitability::Unsupported;
+            model.explanation = Some(reason);
+        }
+    }
+    snapshot
+}
+
+#[cfg(test)]
+mod setup_capability_tests {
+    use super::*;
+    use lumvise_neural_core::managed_models::{
+        HttpModelDownloader, RuntimeHardwareProbe, builtin_catalog,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn setup_catalog_marks_missing_build_runtimes_unsupported() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = Arc::new(AppCoreModelRuntimeAdapter::new(Weak::new()));
+        let manager = ManagedModelManager::new(
+            root.path(),
+            builtin_catalog(),
+            Arc::new(HttpModelDownloader::default()),
+            Arc::new(RuntimeHardwareProbe),
+            adapter,
+        )
+        .unwrap();
+        for model in supported_model_snapshot(&manager).models {
+            let entry = manager.catalog_entry(&model.model_id).unwrap();
+            if let Err(reason) = require_model_runtime(&entry) {
+                assert_eq!(model.suitability, ModelSuitability::Unsupported);
+                assert_eq!(model.explanation, Some(reason));
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_speech_runtime_is_rejected_before_assets_are_loaded() {
+        let adapter = AppCoreModelRuntimeAdapter::new(Weak::new());
+        for entry in builtin_catalog()
+            .into_iter()
+            .filter(|entry| entry.kind != ManagedModelKind::Vector)
+        {
+            assert_eq!(
+                require_model_runtime(&entry).is_ok(),
+                cfg!(feature = "native-voice")
+            );
+            if !cfg!(feature = "native-voice") {
+                let error = adapter
+                    .activate(&entry, Path::new("missing-assets"))
+                    .unwrap_err();
+                assert!(error.contains(&entry.id));
+                assert!(error.contains("native-voice"));
+            }
+        }
+    }
+
+    #[test]
+    fn disabling_embeddings_never_requires_a_native_runtime() {
+        let entry = builtin_catalog()
+            .into_iter()
+            .find(|entry| entry.disabled)
+            .unwrap();
+        assert!(require_model_runtime(&entry).is_ok());
+        let app = Arc::new(AppCore::in_memory().unwrap());
+        AppCoreModelRuntimeAdapter::new(Arc::downgrade(&app))
+            .activate(&entry, Path::new("unused"))
+            .unwrap();
+    }
+}
+
+pub(super) fn require_model_runtime(entry: &ManagedModelCatalogEntry) -> Result<(), String> {
+    let supported = match entry.kind {
+        ManagedModelKind::Vector => entry.disabled || cfg!(feature = "native-vector"),
+        ManagedModelKind::SpeechToText | ManagedModelKind::TextToSpeech => {
+            cfg!(feature = "native-voice")
+        }
+    };
+    if supported {
+        return Ok(());
+    }
+    Err(format!(
+        "model `{}` requires a {} runtime included in this app build",
+        entry.id,
+        if entry.kind == ManagedModelKind::Vector {
+            "native-vector"
+        } else {
+            "native-voice"
+        }
+    ))
+}
 
 /// Production runtime adapter installed once at App Core startup.
 ///
@@ -76,6 +180,7 @@ impl ModelRuntimeAdapter for AppCoreModelRuntimeAdapter {
         entry: &ManagedModelCatalogEntry,
         published_path: &Path,
     ) -> Result<(), String> {
+        require_model_runtime(entry)?;
         let app = self.app()?;
         match entry.kind {
             ManagedModelKind::Vector => activate_vector(&app, entry, published_path),
@@ -126,10 +231,16 @@ fn activate_vector(
 
 #[cfg(not(feature = "native-vector"))]
 fn activate_vector(
-    _app: &AppCore,
-    _entry: &ManagedModelCatalogEntry,
+    app: &AppCore,
+    entry: &ManagedModelCatalogEntry,
     _published_path: &Path,
 ) -> Result<(), String> {
+    if entry.disabled {
+        return app
+            .plugin_endpoints()
+            .clear_plugin_vectorizer()
+            .map_err(|error| error.to_string());
+    }
     Err("native-vector feature is disabled".to_string())
 }
 

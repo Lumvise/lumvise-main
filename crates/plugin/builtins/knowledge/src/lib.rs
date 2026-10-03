@@ -27,6 +27,7 @@ mod search;
 mod semantic;
 mod semantic_context;
 mod storage;
+mod transfer;
 
 use lumvise_plugin_package::PluginManifest;
 use lumvise_plugin_sdk::{PluginApplication, PluginContext, PluginError};
@@ -34,19 +35,19 @@ use serde_json::{Value, json};
 
 pub use artifact::{KnowledgeArtifact, KnowledgeKind};
 pub use manifest::{
-    ARTIFACT_GENERATION_POLL_EXPORT_ID, ASSISTANT_FIND_ELEMENTS_EXPORT_ID,
-    ASSISTANT_GET_ELEMENT_EXPORT_ID, ASSISTANT_GET_EXPORT_ID, ASSISTANT_LIST_DEPENDENTS_EXPORT_ID,
-    ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID, CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID,
-    DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID, ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID,
-    GET_CULTIVATION_RUN_EXPORT_ID, GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID,
-    HTTP_C4_DEBUG_EXPORT_ID, HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID,
-    HTTP_DELETE_ARTIFACT_EXPORT_ID, HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID,
-    HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID, HTTP_PROJECTION_ARTIFACTS_EXPORT_ID,
-    HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID, HTTP_SYNC_EXPORT_ID,
-    HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_ALL_EXPORT_ID,
+    APPLY_TRANSFER_EXPORT_ID, ARTIFACT_GENERATION_POLL_EXPORT_ID,
+    ASSISTANT_FIND_ELEMENTS_EXPORT_ID, ASSISTANT_GET_ELEMENT_EXPORT_ID, ASSISTANT_GET_EXPORT_ID,
+    ASSISTANT_LIST_DEPENDENTS_EXPORT_ID, ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID,
+    CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID, DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID,
+    ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID, GET_CULTIVATION_RUN_EXPORT_ID,
+    GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID, HTTP_C4_DEBUG_EXPORT_ID,
+    HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID, HTTP_DELETE_ARTIFACT_EXPORT_ID,
+    HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID, HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID,
+    HTTP_PROJECTION_ARTIFACTS_EXPORT_ID, HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID,
+    HTTP_SYNC_EXPORT_ID, HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_ALL_EXPORT_ID,
     LIST_DEPENDENTS_EXPORT_ID, LIST_EXPORT_ID, MANIFEST_EXPORT_ID, PACKAGE_PROTOCOL_VERSION,
-    PLUGIN_ID, PROJECTION_EXPORT_ID, REBUILD_EXPORT_ID, RUN_CULTIVATION_EXPORT_ID,
-    SEARCH_EXPORT_ID, UPDATE_EXPORT_ID,
+    PLUGIN_ID, PREVIEW_TRANSFER_EXPORT_ID, PROJECTION_EXPORT_ID, REBUILD_EXPORT_ID,
+    RUN_CULTIVATION_EXPORT_ID, SEARCH_EXPORT_ID, UPDATE_EXPORT_ID,
 };
 
 /// Creates canonical signed package metadata for offline `.lvp` tooling.
@@ -89,12 +90,7 @@ pub(crate) fn create(input: Value, context: &mut PluginContext<'_>) -> Result<Va
         parse(input, "Knowledge create request")?;
     let element = storage::required_semantic_element(context, &request.semantic_element_id)?;
     let mut artifact = artifact::create(request)?;
-    if artifact.project_root.is_none() {
-        artifact.project_root = Some(element_project_root(
-            &element,
-            &artifact.semantic_element_id,
-        )?);
-    }
+    attach_project_scope(&mut artifact, &element)?;
     storage::put_knowledge(context, &artifact)?;
     Ok(json!({"artifact": artifact}))
 }
@@ -119,15 +115,43 @@ fn element_project_root(element: &Value, semantic_element_id: &str) -> Result<St
         })
 }
 
+fn attach_project_scope(
+    artifact: &mut KnowledgeArtifact,
+    element: &Value,
+) -> Result<(), PluginError> {
+    let owner = element_project_root(element, &artifact.semantic_element_id)?;
+    if let Some(declared) = artifact.project_root.as_deref() {
+        if declared != owner {
+            return Err(PluginError::new(
+                "knowledge_project_mismatch",
+                format!(
+                    "artifact `{}` declares project `{declared}`; expected anchor project `{owner}`",
+                    artifact.artifact_id
+                ),
+                false,
+            ));
+        }
+    }
+    artifact.project_root = Some(owner);
+    Ok(())
+}
+
 fn update(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let request: lumvise_contracts::UpdateKnowledgeArtifactRequestV2 =
         parse(input, "Knowledge update request")?;
     artifact::require(&request.artifact_id, "artifact_id")?;
-    if let Some(semantic_element_id) = request.semantic_element_id.as_deref() {
-        storage::required_semantic_element(context, semantic_element_id)?;
-    }
     let current = required_artifact(context, &request.artifact_id)?;
-    let artifact = artifact::update(current, request)?;
+    let requested_project = request.project_root.clone();
+    let changed_anchor = request.semantic_element_id.is_some();
+    let validate_scope = changed_anchor || requested_project.is_some();
+    let mut artifact = artifact::update(current, request)?;
+    if changed_anchor {
+        artifact.project_root = requested_project;
+    }
+    if validate_scope {
+        let element = storage::required_semantic_element(context, &artifact.semantic_element_id)?;
+        attach_project_scope(&mut artifact, &element)?;
+    }
     storage::put_knowledge(context, &artifact)?;
     Ok(json!({"artifact": artifact}))
 }

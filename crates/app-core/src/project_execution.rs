@@ -6,6 +6,7 @@
 
 mod activity;
 mod local;
+mod removal;
 mod semantic_artifact;
 pub use semantic_artifact::SemanticArtifactTask;
 

@@ -52,9 +52,17 @@ pub struct TreeSitterProjectParser {
     engines: BTreeMap<SyntaxLanguage, SyntaxEngine>,
     metrics: SyntaxParserMetrics,
     blocks: BlockSettings,
+    documents: Arc<crate::DocumentConverter>,
 }
 
 impl TreeSitterProjectParser {
+    /// Shares document conversion and its lazy PDF models across parser workers.
+    /// Example: `parser.with_document_converter(Arc::clone(&converter))`.
+    pub fn with_document_converter(mut self, documents: Arc<crate::DocumentConverter>) -> Self {
+        self.documents = documents;
+        self
+    }
+
     /// Overrides the generic text fallback bounds; other fields stay default.
     /// Example: `TreeSitterProjectParser::default().with_block_settings(settings)`.
     pub fn with_block_settings(mut self, blocks: BlockSettings) -> Self {
@@ -77,21 +85,7 @@ impl TreeSitterProjectParser {
             &document.markdown,
             SyntaxLanguage::Markdown,
         )?;
-        let heading_starts: Vec<_> = parsed
-            .definitions
-            .iter()
-            .map(|definition| definition.span.start)
-            .collect();
-        crate::documents::extend_sections(&document.markdown, &mut parsed.definitions);
-        // Plain paragraphs and tables are meaningful even when a converter emits no headings.
-        parsed.definitions.extend(
-            text_blocks(&document.markdown, &self.blocks)
-                .into_iter()
-                .filter(|block| !heading_starts.contains(&block.span.start)),
-        );
-        for definition in &mut parsed.definitions {
-            definition.kind = "markdown_section".into();
-        }
+        extend_document_definitions(&document, &self.blocks, &mut parsed.definitions);
         parsed.document = Some(document.provenance);
         self.metrics.trees_parsed += 1;
         Ok(parsed)
@@ -112,7 +106,7 @@ impl TreeSitterProjectParser {
 impl ProjectFileParser for TreeSitterProjectParser {
     fn parse(&mut self, path: &str, bytes: &[u8]) -> Result<ParsedFile, ScanError> {
         if SyntaxLanguage::for_path(path).is_none() {
-            match crate::convert_document(path, bytes) {
+            match self.documents.convert(path, bytes) {
                 Ok(Some(document)) => return self.parse_document(path, document),
                 Err(error) => {
                     return Ok(ParsedFile {
@@ -152,6 +146,47 @@ impl ProjectFileParser for TreeSitterProjectParser {
         self.metrics.trees_parsed += 1;
         Ok(parsed)
     }
+}
+
+fn extend_document_definitions(
+    document: &crate::ConvertedDocument,
+    settings: &BlockSettings,
+    definitions: &mut Vec<IndexedDefinition>,
+) {
+    let heading_starts: Vec<_> = definitions.iter().map(|item| item.span.start).collect();
+    let figures = &document.provenance.figures;
+    let figure_spans: Vec<_> = figures.iter().map(|figure| figure.span).collect();
+    crate::documents::extend_sections(&document.markdown, definitions);
+    // Plain paragraphs and tables are meaningful even when a converter emits no headings.
+    definitions.extend(
+        text_blocks(&document.markdown, settings)
+            .into_iter()
+            .filter(|block| {
+                !heading_starts.contains(&block.span.start) && !figure_spans.contains(&block.span)
+            }),
+    );
+    for definition in definitions.iter_mut() {
+        definition.kind = "markdown_section".into();
+    }
+    definitions.extend(
+        figures
+            .iter()
+            .map(|figure| document_image_definition(&document.markdown, figure)),
+    );
+}
+
+fn document_image_definition(source: &str, figure: &crate::DocumentFigure) -> IndexedDefinition {
+    block_definition(
+        "document_image",
+        &figure.caption,
+        figure.span.start,
+        source[..figure.span.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count(),
+        figure.span.end,
+        source[..figure.span.end].lines().count(),
+    )
 }
 
 /// Splits any text into blank-line-separated block definitions so every text

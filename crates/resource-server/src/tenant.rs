@@ -51,6 +51,21 @@ pub trait TenantPersistenceFactory: Send + Sync {
     fn open(&self, database_path: &Path) -> Result<TenantAdapters, TenantOpenError>;
 }
 
+/// Builds server-owned adapters bound to a verified principal and client.
+///
+/// Unlike tenant-local storage, shared project stores must authorize every
+/// operation against current membership. Implementations must keep that check
+/// inside the returned adapters; a cached account identity is not a role grant.
+/// Example: a private hub factory returns separate PostgreSQL and FalkorDB adapters.
+pub trait PrincipalPersistenceFactory: Send + Sync {
+    fn open(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        client_instance_id: &str,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> Result<Arc<TenantAdapters>, TenantOpenError>;
+}
+
 #[derive(Default)]
 pub struct LocalTenantPersistenceFactory;
 

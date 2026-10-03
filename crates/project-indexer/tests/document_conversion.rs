@@ -14,7 +14,12 @@ fn documents_convert_before_semantic_extraction_and_native_grammars_keep_precede
         ("notes.ipynb", br##"{"cells":[{"cell_type":"markdown","source":["# Field report\n","Coastal observations."]}]}"##.as_slice()),
     ] {
         let parsed = parser.parse(path, bytes).unwrap();
-        assert_eq!(parsed.document.as_ref().unwrap().converter, "anytomd", "{path}");
+        let expected_converter = if path.ends_with(".ipynb") {
+            "anytomd"
+        } else {
+            "docling"
+        };
+        assert_eq!(parsed.document.as_ref().unwrap().converter, expected_converter, "{path}");
         assert!(!parsed.definitions.is_empty(), "{path}");
         assert!(parsed.definitions.iter().all(|definition| definition.kind == "markdown_section"));
     }

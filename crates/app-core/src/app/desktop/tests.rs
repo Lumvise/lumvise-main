@@ -93,6 +93,26 @@ fn desktop_settings_bridge_persists_host_voice_patch() {
 }
 
 #[test]
+fn desktop_settings_snapshot_restores_completed_setup_and_independent_speech() {
+    let app = Arc::new(AppCore::in_memory().unwrap());
+    let bridge = AppCoreDesktopBridge::without_runtime(Arc::clone(&app));
+    bridge
+        .apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionEnabled(false))
+        .unwrap();
+    bridge
+        .apply_app_settings_patch(&AppSettingsPatch::SetupCompleted(true))
+        .unwrap();
+    let restored =
+        super::super::provider_startup::persisted_app_settings(app.relational.as_ref()).unwrap();
+    assert!(restored.setup_completed && restored.speech_synthesis_enabled);
+    assert!(!restored.speech_recognition_enabled);
+    assert_eq!(bridge.app_settings_snapshot().unwrap(), restored);
+    let mut projection = lumvise_frontend_core::FrontendCore::default();
+    projection.restore_app_settings(restored.clone());
+    assert_eq!(projection.app_settings(), &restored);
+}
+
+#[test]
 fn desktop_settings_bridge_restores_hidden_bulb_through_startup_delegate() {
     let app = Arc::new(AppCore::in_memory().unwrap());
     let bridge = AppCoreDesktopBridge::without_runtime(app.clone());

@@ -27,7 +27,7 @@ use lumvise_resource_routing::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::tenant::{TenantAdapterCache, TenantKey, TenantOpenError};
+use crate::tenant::{PrincipalPersistenceFactory, TenantAdapterCache, TenantKey, TenantOpenError};
 
 /// The protocol-to-owned-persistence seam belongs to the server, not to DB
 /// Core. It prevents HTTP/Protobuf shapes from leaking into persistence
@@ -93,6 +93,7 @@ pub struct DispatchResources {
     pub speech_recognizer: Option<Arc<dyn SpeechRecognizer>>,
     pub speech_synthesizer: Option<Arc<dyn SpeechSynthesizer>>,
     pub tenants: Arc<TenantAdapterCache>,
+    pub principal_factory: Option<Arc<dyn PrincipalPersistenceFactory>>,
     pub persistence_codec: Arc<dyn PersistenceProtocolCodec>,
 }
 
@@ -198,7 +199,13 @@ impl ResourceDispatcher {
             )
         });
         let tenant = requires_persistence
-            .then(|| self.tenant(&TenantKey::from(principal)))
+            .then(|| {
+                self.tenant(
+                    principal,
+                    &request.client_instance_id,
+                    &InvocationControl::from_deadline_unix_ms(request.deadline_unix_ms),
+                )
+            })
             .transpose()?;
         let semantic_ready = tenant
             .as_ref()
@@ -309,9 +316,13 @@ impl ResourceDispatcher {
         principal: &AuthenticatedPrincipal,
         envelopes: Vec<InvocationEnvelopeV1>,
     ) -> Vec<InvocationEnvelopeV1> {
+        let request_id = envelopes
+            .first()
+            .map(|envelope| envelope.request_id.clone())
+            .unwrap_or_default();
         match self.invoke_inner(principal, envelopes) {
             Ok(envelopes) => envelopes,
-            Err(error) => vec![response_envelope(String::new(), terminal_from_error(error))],
+            Err(error) => vec![response_envelope(request_id, terminal_from_error(error))],
         }
     }
 
@@ -369,7 +380,14 @@ impl ResourceDispatcher {
             .lock()
             .expect("active invocation mutex poisoned")
             .insert(key.clone(), control.clone());
-        let result = self.dispatch_operation(principal, start, &control, &key.request_id);
+        let chunks = envelopes
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                Some(Payload::BinaryChunk(chunk)) => Some(chunk),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let result = self.dispatch_operation(principal, start, &chunks, &control, &key.request_id);
         self.active
             .lock()
             .expect("active invocation mutex poisoned")
@@ -381,6 +399,7 @@ impl ResourceDispatcher {
         &self,
         principal: &AuthenticatedPrincipal,
         start: &InvocationStartV1,
+        chunks: &[&TypedBinaryChunkV1],
         control: &InvocationControl,
         request_id: &str,
     ) -> Result<Vec<InvocationEnvelopeV1>, DispatchError> {
@@ -404,6 +423,11 @@ impl ResourceDispatcher {
                 ),
             )]);
         }
+        if !chunks.is_empty() && !matches!(start.operation, Some(Operation::SemanticOperation(_))) {
+            return Err(DispatchError::Invalid(
+                "binary archive chunks require a semantic archive operation".into(),
+            ));
+        }
         match start.operation.as_ref() {
             Some(Operation::SpeechToTextStream(operation)) => {
                 return self.transcribe_stream(operation, control, request_id);
@@ -413,6 +437,7 @@ impl ResourceDispatcher {
             }
             _ => {}
         }
+        let mut binary_response = None;
         let terminal = match start
             .operation
             .as_ref()
@@ -424,16 +449,20 @@ impl ResourceDispatcher {
                 ));
             }
             Operation::SemanticOperation(operation) => {
-                let tenant = self.tenant(&TenantKey::from(principal))?;
+                let tenant = self.tenant(principal, &start.client_instance_id, control)?;
                 let owned = self
                     .resources
                     .persistence_codec
                     .decode_semantic(operation)
                     .map_err(DispatchError::Invalid)?;
-                let result = tenant
-                    .semantic
-                    .execute(owned, control)
-                    .map_err(|error| DispatchError::Adapter(error.to_string()))?;
+                let (result, archive) = crate::archive_transfer::execute(
+                    tenant.semantic.as_ref(),
+                    owned,
+                    chunks,
+                    control,
+                )
+                .map_err(DispatchError::Persistence)?;
+                binary_response = archive;
                 let result = self
                     .resources
                     .persistence_codec
@@ -446,7 +475,7 @@ impl ResourceDispatcher {
                 )
             }
             Operation::RelationalOperation(operation) => {
-                let tenant = self.tenant(&TenantKey::from(principal))?;
+                let tenant = self.tenant(principal, &start.client_instance_id, control)?;
                 let owned = self
                     .resources
                     .persistence_codec
@@ -455,7 +484,7 @@ impl ResourceDispatcher {
                 let result = tenant
                     .relational
                     .execute(owned, control)
-                    .map_err(|error| DispatchError::Adapter(error.to_string()))?;
+                    .map_err(DispatchError::Persistence)?;
                 let result = self
                     .resources
                     .persistence_codec
@@ -476,13 +505,41 @@ impl ResourceDispatcher {
                 return Err(DispatchError::UnsupportedStreamOperation);
             }
         };
-        Ok(vec![response_envelope(request_id.into(), terminal)])
+        let mut envelopes = Vec::new();
+        if let Some(bytes) = binary_response {
+            envelopes.push(InvocationEnvelopeV1 {
+                protocol_major: lumvise_resource_routing::protocol::PROTOCOL_MAJOR,
+                protocol_minor: PROTOCOL_MINOR,
+                request_id: request_id.into(),
+                sequence: 0,
+                payload: Some(Payload::BinaryChunk(TypedBinaryChunkV1 {
+                    type_name: lumvise_resource_routing::protocol::PZ_ARCHIVE_CHUNK_TYPE.into(),
+                    bytes,
+                    metadata_json: None,
+                    final_chunk: true,
+                })),
+            });
+        }
+        let mut terminal = response_envelope(request_id.into(), terminal);
+        terminal.sequence = envelopes.len() as u64;
+        envelopes.push(terminal);
+        Ok(envelopes)
     }
 
-    fn tenant(&self, key: &TenantKey) -> Result<Arc<crate::tenant::TenantAdapters>, DispatchError> {
+    fn tenant(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        client_instance_id: &str,
+        control: &InvocationControl,
+    ) -> Result<Arc<crate::tenant::TenantAdapters>, DispatchError> {
+        if let Some(factory) = &self.resources.principal_factory {
+            return factory
+                .open(principal, client_instance_id, control)
+                .map_err(DispatchError::Tenant);
+        }
         self.resources
             .tenants
-            .get_or_open(key)
+            .get_or_open(&TenantKey::from(principal))
             .map_err(DispatchError::Tenant)
     }
 
@@ -826,6 +883,10 @@ fn terminal(
 }
 
 fn terminal_from_error(error: DispatchError) -> InvocationTerminalV1 {
+    let outcome_unknown = matches!(
+        &error,
+        DispatchError::Persistence(lumvise_db_core::DbError::UnresolvedCommit { .. })
+    ) || matches!(&error, DispatchError::Persistence(lumvise_db_core::DbError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut);
     let (status, retryable) = match error {
         DispatchError::DeadlineExceeded => (InvocationTerminalStatusV1::DeadlineExceeded, false),
         DispatchError::UnsupportedMajor
@@ -841,14 +902,19 @@ fn terminal_from_error(error: DispatchError) -> InvocationTerminalV1 {
         DispatchError::NotConfigured(_) | DispatchError::Tenant(_) => {
             (InvocationTerminalStatusV1::Unavailable, true)
         }
-        DispatchError::Adapter(_) | DispatchError::Internal(_) => {
+        DispatchError::Persistence(lumvise_db_core::DbError::Io(ref error))
+            if error.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            (InvocationTerminalStatusV1::DeadlineExceeded, false)
+        }
+        DispatchError::Adapter(_) | DispatchError::Internal(_) | DispatchError::Persistence(_) => {
             (InvocationTerminalStatusV1::Failed, false)
         }
     };
     InvocationTerminalV1 {
         status: status as i32,
         retryable,
-        outcome_unknown: false,
+        outcome_unknown,
         error_code: Some(error.code().into()),
         message: Some(error.to_string()),
         result: None,
@@ -879,6 +945,8 @@ pub enum DispatchError {
     Tenant(#[from] TenantOpenError),
     #[error("owning adapter failed: {0}")]
     Adapter(String),
+    #[error("owning persistence failed: {0}")]
+    Persistence(lumvise_db_core::DbError),
     #[error("central server persistence codec failed: {0}")]
     Internal(String),
     #[error("streaming operation has no server dispatch implementation")]
@@ -899,6 +967,10 @@ impl DispatchError {
             Self::NotConfigured(_) => "not_configured",
             Self::Tenant(_) => "tenant_unavailable",
             Self::Adapter(_) => "adapter_failed",
+            Self::Persistence(lumvise_db_core::DbError::UnresolvedCommit { .. }) => {
+                "commit_outcome_unknown"
+            }
+            Self::Persistence(_) => "persistence_failed",
             Self::Internal(_) => "internal",
             Self::UnsupportedStreamOperation => "unsupported_stream_operation",
         }

@@ -9,7 +9,9 @@ use lumvise_plugin_package::{
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
+mod guidance;
 mod schema;
+mod transfer_schema;
 
 use schema::{
     array, artifact_dependency, boolean, closed_object, integer, knowledge_kind, nullable, number,
@@ -34,6 +36,10 @@ pub const DELETE_EXPORT_ID: &str = "delete_knowledge";
 pub const GET_EXPORT_ID: &str = "get_knowledge";
 /// Lists artifacts owned by one semantic element.
 pub const LIST_EXPORT_ID: &str = "list_knowledge_for_element";
+/// Previews explicit cross-project artifact transfer candidates without writing.
+pub const PREVIEW_TRANSFER_EXPORT_ID: &str = "preview_knowledge_transfer";
+/// Copies only selected, currently eligible artifacts to destination elements.
+pub const APPLY_TRANSFER_EXPORT_ID: &str = "apply_knowledge_transfer";
 
 /// Lists every Knowledge artifact, optionally filtered.
 pub const LIST_ALL_EXPORT_ID: &str = "list_knowledge";
@@ -109,6 +115,11 @@ pub const ELEMENT_TRIGGER_EXPORT_ID: &str = "trigger.semantic_element_upserted";
 
 const ALL_MCP_EXPORTS: &[(&str, &str)] = &[
     (MANIFEST_EXPORT_ID, "Knowledge manifest"),
+    (PREVIEW_TRANSFER_EXPORT_ID, "Preview Knowledge transfer"),
+    (
+        APPLY_TRANSFER_EXPORT_ID,
+        "Apply selected Knowledge transfer",
+    ),
     (LIST_DEPENDENTS_EXPORT_ID, "List Knowledge dependents"),
     (CREATE_EXPORT_ID, "Create Knowledge"),
     (ASSISTANT_CREATE_EXPORT_ID, "Assistant Knowledge create"),
@@ -148,6 +159,8 @@ const ALL_MCP_EXPORTS: &[(&str, &str)] = &[
 
 #[derive(Clone, Copy)]
 enum Invocation {
+    PreviewTransfer,
+    ApplyTransfer,
     Manifest,
     Projection,
     Create,
@@ -190,6 +203,8 @@ struct InvocationDefinition {
 }
 
 const INVOCATIONS: &[InvocationDefinition] = &[
+    invocation(PREVIEW_TRANSFER_EXPORT_ID, Invocation::PreviewTransfer),
+    invocation(APPLY_TRANSFER_EXPORT_ID, Invocation::ApplyTransfer),
     invocation(MANIFEST_EXPORT_ID, Invocation::Manifest),
     invocation(PROJECTION_EXPORT_ID, Invocation::Projection),
     invocation(CREATE_EXPORT_ID, Invocation::Create),
@@ -430,7 +445,7 @@ fn http_exports() -> Vec<ExportDescriptor> {
     ]
     .into_iter()
     .map(|(id, name, method, path, stream_mode)| ExportDescriptor {
-        description: String::new(),
+        description: guidance::description(id).into(),
         id: id.into(),
         name: name.into(),
         surface: ExportSurface::HttpRoute {
@@ -462,7 +477,7 @@ fn trigger_exports() -> Vec<ExportDescriptor> {
     vec![ExportDescriptor {
         id: crate::ELEMENT_TRIGGER_EXPORT_ID.into(),
         name: "Semantic graph changes".into(),
-        description: String::new(),
+        description: guidance::description(crate::ELEMENT_TRIGGER_EXPORT_ID).into(),
         surface: ExportSurface::StorageTrigger {
             event_kinds: vec![
                 "semantic.element.upserted".into(),
@@ -490,7 +505,7 @@ fn background_delivery_policy() -> BackgroundDeliveryPolicy {
 
 fn descriptor(id: &str, name: &str, surface: ExportSurface) -> ExportDescriptor {
     ExportDescriptor {
-        description: String::new(),
+        description: guidance::description(id).into(),
         id: id.into(),
         name: name.into(),
         surface,
@@ -511,7 +526,7 @@ fn descriptor(id: &str, name: &str, surface: ExportSurface) -> ExportDescriptor 
 fn host_capabilities() -> Vec<HostCapabilityRequirement> {
     [
         ("storage.plugin", "^1.0"),
-        ("storage.semantic", "^1.2.0"),
+        ("storage.semantic", "^1.4.0"),
         ("plugin.invoke", "^1.0"),
         ("neural.embed", "^1.0"),
         ("neural.llm", "^1.0"),
@@ -528,6 +543,11 @@ fn host_capabilities() -> Vec<HostCapabilityRequirement> {
 fn input_schema(id: &str) -> Value {
     use crate::*;
     let schema = match id {
+        PREVIEW_TRANSFER_EXPORT_ID => id_input("project_root"),
+        APPLY_TRANSFER_EXPORT_ID => closed_object(
+            &["project_root", "transfer_ids"],
+            json!({"project_root": string(), "transfer_ids": array(string())}),
+        ),
         MANIFEST_EXPORT_ID => closed_object(&[], json!({})),
         PROJECTION_EXPORT_ID => closed_object(
             &["projectRoot", "changesSince"],
@@ -617,6 +637,8 @@ fn with_scoped_identity(mut schema: Value) -> Value {
 fn output_schema(id: &str) -> Value {
     use crate::*;
     match id {
+        PREVIEW_TRANSFER_EXPORT_ID => transfer_schema::preview(),
+        APPLY_TRANSFER_EXPORT_ID => transfer_schema::applied(),
         MANIFEST_EXPORT_ID => closed_object(
             &["plugin_id", "protocol", "exports"],
             json!({"plugin_id": string(), "protocol": integer(), "exports": array(string())}),
@@ -1068,6 +1090,8 @@ fn invoke_artifact(
     projection_cache: &crate::projection::ProjectProjectionCache,
 ) -> Result<Value, PluginError> {
     match invocation {
+        Invocation::PreviewTransfer => crate::transfer::preview(input, context),
+        Invocation::ApplyTransfer => crate::transfer::apply(input, context),
         Invocation::Create => crate::create(input, context),
         Invocation::Update => crate::update(input, context),
         Invocation::Delete => crate::delete(input, context),

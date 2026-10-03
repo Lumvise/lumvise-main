@@ -200,11 +200,18 @@ impl<'app> FrontendInteractionEndpoints<'app> {
     /// assert_eq!(record.scope, "frontend");
     /// ```
     pub fn apply_app_settings_patch(&self, patch: &AppSettingsPatch) -> Result<SettingRecord> {
-        {
-            let mut frontend = self.lock_frontend()?;
-            frontend.apply_app_settings_patch(patch);
-        }
-        self.persist_app_settings()
+        let mut frontend = self.lock_frontend()?;
+        let mut proposed = frontend.app_settings().clone();
+        proposed.apply_app_settings_patch(patch);
+        let value = serde_json::to_value(&proposed).map_err(serialized_settings_error)?;
+        // Publish only durable preferences. A failed Finish must not leak its
+        // completion flag into a later, unrelated settings save.
+        let record =
+            self.app
+                .database()
+                .set_setting(FRONTEND_SETTINGS_SCOPE, APP_SETTINGS_KEY, &value)?;
+        frontend.restore_app_settings(proposed);
+        Ok(record)
     }
 
     /// Retrieves frontend App Settings from SQL or current memory state.
@@ -232,8 +239,9 @@ impl<'app> FrontendInteractionEndpoints<'app> {
     /// assert_eq!(record.key, "app_settings");
     /// ```
     pub fn persist_app_settings(&self) -> Result<SettingRecord> {
-        let value = serde_json::to_value(self.lock_frontend()?.app_settings())
-            .map_err(serialized_settings_error)?;
+        let frontend = self.lock_frontend()?;
+        let value =
+            serde_json::to_value(frontend.app_settings()).map_err(serialized_settings_error)?;
         self.app
             .database()
             .set_setting(FRONTEND_SETTINGS_SCOPE, APP_SETTINGS_KEY, &value)

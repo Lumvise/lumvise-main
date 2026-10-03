@@ -15,7 +15,7 @@ pub(crate) fn tool_catalog(bridge_tools: &[Value]) -> Result<Vec<McpTool>, serde
 fn discover_app_plugins_tool() -> Value {
     json!({
         "name": "discover_app_plugins",
-        "description": "Discover plugin capabilities from the currently linked Lumvise app.",
+        "description": "Discover the currently linked Lumvise app's installed plugin capabilities and their plugin-owned workflow guidance. Call at startup/resume and after plugin changes; use each capability's description and input schema. Check freshness and availability=ready: stopped plugins may remain listed as unavailable, and a stale inventory does not prove a tool is ready. Missing plugins are not available; session-scoped tools require their active scope.",
         "inputSchema": object_schema(Vec::<&'static str>::new())
     })
 }

@@ -4,6 +4,7 @@
 //! converts protocol values, and delegates to the selected semantic persistence
 //! boundary through owned requests and results.
 
+mod attachment_copy;
 mod controlled;
 pub(super) use controlled::invoke_controlled;
 
@@ -29,6 +30,11 @@ const NUCLEUS_PLUGIN_ID: &str = "builtin.nucleus";
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum SemanticStorageRequest {
+    CopyArtifactAttachment {
+        source_artifact_id: String,
+        target_artifact_id: String,
+        content_ref: String,
+    },
     SyncStructure {
         project_root: String,
         elements: Vec<SemanticElement>,
@@ -230,6 +236,16 @@ fn dispatch(
     request: SemanticStorageRequest,
 ) -> lumvise_db_core::Result<Value> {
     match request {
+        SemanticStorageRequest::CopyArtifactAttachment {
+            source_artifact_id,
+            target_artifact_id,
+            content_ref,
+        } => attachment_copy::copy_attachment(
+            semantic,
+            &source_artifact_id,
+            &target_artifact_id,
+            &content_ref,
+        ),
         SemanticStorageRequest::SyncStructure {
             project_root,
             elements,
@@ -684,7 +700,8 @@ fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), Ho
         | SemanticStorageRequest::StoreElementNameVectors { .. }
         | SemanticStorageRequest::StoreArtifactTextVectors { .. }
         | SemanticStorageRequest::ProjectRendererGraph { .. } => plugin_id == SEMANTIC_PLUGIN_ID,
-        SemanticStorageRequest::ProjectArtifacts { .. }
+        SemanticStorageRequest::CopyArtifactAttachment { .. }
+        | SemanticStorageRequest::ProjectArtifacts { .. }
         | SemanticStorageRequest::ElementsByIdsIncludingInactive { .. }
         | SemanticStorageRequest::CandidateSourceElements { .. } => {
             plugin_id == KNOWLEDGE_PLUGIN_ID

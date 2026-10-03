@@ -18,6 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::Utc;
 use lumvise_contracts::IndexBatchRequest;
@@ -74,13 +75,23 @@ pub(crate) type ProjectImportSessions = BTreeMap<(PathBuf, String), ProjectImpor
 pub(crate) struct ProjectImportSession {
     indexer: ProjectIndexer<FilesystemProjectSource, ParallelTreeSitterProjectParser>,
     projection: SemanticIndexProjection,
+    document_converter: Arc<lumvise_project_indexer::DocumentConverter>,
 }
 
-fn import_session(root: &Path) -> Result<ProjectImportSession, HttpResponse> {
+fn import_session(
+    root: &Path,
+    converter: Arc<lumvise_project_indexer::DocumentConverter>,
+) -> Result<ProjectImportSession, HttpResponse> {
     Ok(ProjectImportSession {
+        document_converter: Arc::clone(&converter),
         indexer: ProjectIndexer::new(
             FilesystemProjectSource::open(root).map_err(scan_failure)?,
-            ParallelTreeSitterProjectParser::new(parser_workers()).map_err(scan_failure)?,
+            ParallelTreeSitterProjectParser::new_with_document_converter(
+                parser_workers(),
+                Default::default(),
+                converter,
+            )
+            .map_err(scan_failure)?,
         ),
         projection: SemanticIndexProjection::new(root, PROVIDER_INSTANCE_ID)
             .map_err(scan_failure)?,
@@ -117,7 +128,7 @@ pub(super) fn refresh_local_projects(app: &AppCore) -> Result<(), String> {
                 continue;
             }
         }
-        if let Err(response) = import(
+        if let Err(response) = import_project(
             app,
             ImportInput {
                 folder_path: root.into(),
@@ -125,6 +136,7 @@ pub(super) fn refresh_local_projects(app: &AppCore) -> Result<(), String> {
                 replace_paths: None,
                 source: None,
             },
+            true,
         ) {
             tracing::error!(event = "project_refresh_failed", project_root = root,
                 error = %String::from_utf8_lossy(response.buffered_bytes().unwrap_or_default()));
@@ -169,6 +181,14 @@ pub(crate) fn project_import_response(app: &AppCore, request: &HttpRequest) -> H
 
 /// Scans one folder into the semantic database and reports the import result.
 fn import(app: &AppCore, input: ImportInput) -> Result<Value, HttpResponse> {
+    import_project(app, input, false)
+}
+
+fn import_project(
+    app: &AppCore,
+    input: ImportInput,
+    existing_only: bool,
+) -> Result<Value, HttpResponse> {
     let started_at = Utc::now().to_rfc3339();
     let root = canonical_root(&input.folder_path)?;
     let project_root = input
@@ -183,16 +203,35 @@ fn import(app: &AppCore, input: ImportInput) -> Result<Value, HttpResponse> {
             "project import sessions poisoned; expected available importer",
         )
     })?;
+    // The refresh catalog is read before this lock. Recheck inside the same
+    // lifecycle gate as removal so an old catalog cannot resurrect a project.
+    if existing_only && !project_is_indexed(app, &project_root)? {
+        return Ok(finished(&project_root, 0, 0, 0, Vec::new(), &started_at));
+    }
+    let converter = super::document_conversion::converter(app)
+        .map_err(|error| error_response("500 Internal Server Error", error))?;
+    let mut configuration_changed = false;
     let session = match sessions.entry((root.clone(), project_root.clone())) {
-        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-        std::collections::btree_map::Entry::Vacant(entry) => entry.insert(import_session(&root)?),
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            if !Arc::ptr_eq(&entry.get().document_converter, &converter) {
+                entry.insert(import_session(&root, converter)?);
+                configuration_changed = true;
+            }
+            entry.into_mut()
+        }
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(import_session(&root, converter)?)
+        }
     };
     let ProjectImportSession {
         indexer,
         projection,
+        ..
     } = session;
     let scope = match &input.replace_paths {
-        Some(paths) if !paths.is_empty() => ScanScope::Paths(paths.clone()),
+        Some(paths) if !paths.is_empty() && !configuration_changed => {
+            ScanScope::Paths(paths.clone())
+        }
         _ => ScanScope::Full,
     };
     let scan = indexer.prepare(scope).map_err(scan_failure)?;
@@ -669,6 +708,23 @@ fn semantic(app: &AppCore, export_id: &str, input: Value) -> Result<Value, Strin
     }
 }
 
+fn project_is_indexed(app: &AppCore, project_root: &str) -> Result<bool, HttpResponse> {
+    let result = app
+        .semantic
+        .execute(
+            SemanticOperation::ProjectRoots,
+            &InvocationControl::sixty_seconds(),
+        )
+        .map_err(|error| error_response("500 Internal Server Error", error.to_string()))?;
+    match result {
+        SemanticResult::ProjectRoots(roots) => Ok(roots.iter().any(|root| root == project_root)),
+        other => Err(error_response(
+            "500 Internal Server Error",
+            format!("invalid project catalog `{other:?}`; expected ProjectRoots"),
+        )),
+    }
+}
+
 fn record_index_log(app: &AppCore, entry: Value) -> Result<Value, String> {
     semantic(app, RECORD_INDEX_LOG_EXPORT_ID, entry)
 }
@@ -678,353 +734,4 @@ fn scan_failure(error: ScanError) -> HttpResponse {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::AppCore;
-    use std::fs;
-    use tempfile::TempDir;
-
-    fn credentialed_app() -> AppCore {
-        let app = AppCore::in_memory().expect("in-memory app");
-        app.install_bridge_credential_store(std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )))
-        .expect("credential store");
-        app.set_bridge_credential(Some("project-import-test".into()), u64::MAX)
-            .expect("credential");
-        app
-    }
-
-    fn request(body: Value) -> HttpRequest {
-        HttpRequest {
-            method: "POST".to_string(),
-            path: PROJECT_IMPORT_ENDPOINT.to_string(),
-            query: std::collections::BTreeMap::new(),
-            authorization: Some("Bearer project-import-test".to_string()),
-            body: serde_json::to_vec(&body).expect("body serializes"),
-        }
-    }
-
-    fn response_body(response: &HttpResponse) -> Value {
-        serde_json::from_slice(response.buffered_bytes().expect("buffered body"))
-            .expect("response body is JSON")
-    }
-
-    /// Fixture tree: one `.rs`, one root `.md`, a gitignored file, and the
-    /// `.gitignore` naming it.
-    fn fixture_tree() -> TempDir {
-        let directory = TempDir::new().unwrap();
-        let root = directory.path();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(
-            root.join("src/main.rs"),
-            "fn main() {\n    helper();\n}\n\nfn helper() {}\n",
-        )
-        .unwrap();
-        fs::write(root.join("README.md"), "# Guide\n").unwrap();
-        fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
-        fs::write(root.join("ignored.txt"), "hidden\n").unwrap();
-        directory
-    }
-
-    #[test]
-    fn rejects_missing_folder_path() {
-        let app = credentialed_app();
-        for body in [
-            json!({}),
-            json!({"folderPath": "   "}),
-            json!({"folderPath": 7}),
-        ] {
-            let response = project_import_response(&app, &request(body));
-            assert_eq!(response.status, "400 Bad Request");
-        }
-    }
-
-    #[test]
-    fn rejects_file_instead_of_directory() {
-        let app = credentialed_app();
-        let directory = TempDir::new().unwrap();
-        let file = directory.path().join("note.txt");
-        fs::write(&file, "x").unwrap();
-        let response = project_import_response(
-            &app,
-            &request(json!({"folderPath": file.to_string_lossy()})),
-        );
-        assert_eq!(response.status, "400 Bad Request");
-        let body = response_body(&response);
-        assert!(body.to_string().contains("is not a directory"));
-    }
-
-    #[test]
-    fn rejects_missing_credential() {
-        let app = credentialed_app();
-        let mut unauthenticated = request(json!({"folderPath": "/tmp"}));
-        unauthenticated.authorization = None;
-        assert_eq!(
-            project_import_response(&app, &unauthenticated).status,
-            "401 Unauthorized"
-        );
-    }
-
-    #[test]
-    fn scans_fixture_and_names_ignored_paths() {
-        let directory = fixture_tree();
-        let root = directory.path().canonicalize().unwrap();
-        let mut indexer = ProjectIndexer::new(
-            FilesystemProjectSource::open(&root).unwrap(),
-            ParallelTreeSitterProjectParser::new(2).unwrap(),
-        );
-        let scan = indexer.prepare(ScanScope::Full).unwrap();
-        assert!(scan.is_full_snapshot());
-        let files_scanned = scan
-            .changed_files()
-            .filter(|file| file.entry.kind == SourceKind::File)
-            .count();
-        // src/main.rs, README.md, .gitignore — `ignored.txt` is excluded.
-        assert_eq!(files_scanned, 3);
-
-        let mut projection = SemanticIndexProjection::new(&root, PROVIDER_INSTANCE_ID).unwrap();
-        let batch = projection.project(&scan).unwrap();
-        let elements_upserted = batch.semantic_elements.len();
-        assert!(elements_upserted > 0);
-        assert!(batch.semantic_elements.iter().any(|element| {
-            element.path == "src/main.rs" && element.semantic_element_type == "file"
-        }));
-        assert!(
-            batch
-                .semantic_elements
-                .iter()
-                .any(|element| element.path == "README.md")
-        );
-
-        let skipped = collect_excluded(&root, &accepted_paths(&scan));
-        let skipped_paths: BTreeSet<&str> = skipped.iter().map(|(path, _)| path.as_str()).collect();
-        assert!(skipped_paths.contains("ignored.txt"));
-        assert!(!skipped_paths.contains("src/main.rs"));
-
-        // The route's response numbers come from exactly these values.
-        let result = finished(
-            root.to_string_lossy().as_ref(),
-            files_scanned,
-            elements_upserted,
-            batch.semantic_relationships.len(),
-            skipped,
-            "started",
-        );
-        assert_eq!(result["filesScanned"], json!(3));
-        assert_eq!(result["elementsUpserted"], json!(elements_upserted));
-        let skipped = result["skipped"].as_array().unwrap();
-        assert_eq!(skipped.len(), 1);
-        assert_eq!(skipped[0]["path"], json!("ignored.txt"));
-    }
-
-    #[test]
-    fn full_snapshot_pages_carry_no_replace_paths() {
-        let directory = fixture_tree();
-        let root = directory.path().canonicalize().unwrap();
-        let mut indexer = ProjectIndexer::new(
-            FilesystemProjectSource::open(&root).unwrap(),
-            ParallelTreeSitterProjectParser::new(2).unwrap(),
-        );
-        let scan = indexer.prepare(ScanScope::Full).unwrap();
-        let mut projection = SemanticIndexProjection::new(&root, PROVIDER_INSTANCE_ID).unwrap();
-        let batch = projection.project(&scan).unwrap();
-        let pages = snapshot_pages(&batch, "job", true);
-        assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0]["replace_paths"], json!([]));
-        assert_eq!(pages[0]["ingestion_page_count"], json!(1));
-        assert_eq!(
-            pages[0]["semantic_sources"]
-                .as_array()
-                .expect("source upsert")
-                .len(),
-            1
-        );
-        assert_eq!(pages[0]["ingestion_job_id"], json!("job"));
-        assert_eq!(pages[0]["ingestion_page_index"], json!(0));
-    }
-
-    /// Publication needs the compiled `builtin.semantic` plugin, which an
-    /// in-memory app has no install of; the route must fail closed with a
-    /// message naming the missing tool instead of reporting success.
-    #[test]
-    fn publication_failure_fails_closed_when_semantic_plugin_is_absent() {
-        let app = credentialed_app();
-        let directory = fixture_tree();
-        let response = project_import_response(
-            &app,
-            &request(json!({"folderPath": directory.path().to_string_lossy()})),
-        );
-        assert_eq!(response.status, "500 Internal Server Error");
-        let body = response_body(&response);
-        let message = body.to_string();
-        assert!(
-            message.contains("builtin.semantic/ingest_index_batch unavailable"),
-            "unexpected failure message: {message}"
-        );
-        let mut sessions = app.project_import_sessions.lock().unwrap();
-        assert_eq!(sessions.len(), 1);
-        let retry = sessions
-            .values_mut()
-            .next()
-            .unwrap()
-            .indexer
-            .prepare(ScanScope::Full)
-            .unwrap();
-        assert!(
-            retry.is_full_snapshot(),
-            "failed publication must remain retryable"
-        );
-    }
-
-    #[test]
-    fn retained_import_session_detects_edits_renames_and_removals() {
-        let directory = fixture_tree();
-        let mut session = import_session(directory.path()).ok().unwrap();
-        let initial = session.indexer.prepare(ScanScope::Full).unwrap();
-        session.indexer.commit(initial).unwrap();
-        let unchanged = session.indexer.prepare(ScanScope::Full).unwrap();
-        assert!(!unchanged.needs_publication());
-        session.indexer.commit(unchanged).unwrap();
-        fs::rename(
-            directory.path().join("src/main.rs"),
-            directory.path().join("src/renamed.rs"),
-        )
-        .unwrap();
-        fs::write(directory.path().join("README.md"), "# Updated guide\n").unwrap();
-        let changed = session.indexer.prepare(ScanScope::Full).unwrap();
-        let batch = session.projection.project(&changed).unwrap();
-        assert!(!changed.is_full_snapshot());
-        assert!(batch.removed_paths.contains(&"src/main.rs".to_string()));
-        assert!(
-            batch
-                .semantic_elements
-                .iter()
-                .any(|element| element.path == "src/renamed.rs")
-        );
-        assert!(
-            batch
-                .semantic_elements
-                .iter()
-                .any(|element| element.semantic_element_name == "Updated guide")
-        );
-    }
-
-    #[test]
-    fn pz_source_without_snapshot_reports_missing_archive() {
-        let app = credentialed_app();
-        let directory = fixture_tree();
-        let response = project_import_response(
-            &app,
-            &request(json!({
-                "folderPath": directory.path().to_string_lossy(),
-                "source": "pz",
-            })),
-        );
-        assert_eq!(response.status, "404 Not Found");
-        let message = response_body(&response).to_string();
-        assert!(
-            message.contains("project has no linked snapshot at") && message.contains("graph.pz"),
-            "unexpected failure message: {message}"
-        );
-    }
-
-    #[test]
-    fn unknown_import_source_is_rejected() {
-        let app = credentialed_app();
-        let directory = fixture_tree();
-        let response = project_import_response(
-            &app,
-            &request(json!({
-                "folderPath": directory.path().to_string_lossy(),
-                "source": "zip",
-            })),
-        );
-        assert_eq!(response.status, "400 Bad Request");
-        let message = response_body(&response).to_string();
-        assert!(
-            message.contains("invalid import source `zip`") && message.contains("expected"),
-            "unexpected failure message: {message}"
-        );
-    }
-
-    /// End-to-end PZ import: folder import -> `CreatePzSnapshot` -> PZ route
-    /// import -> the refresh poller must leave the restored elements in place.
-    /// Needs the real `ImportPzSnapshot` implementation; the db-core stub
-    /// ("PZ import pending implementation") fails this test.
-    #[test]
-    fn pz_import_publishes_snapshot_structure_and_fails_closed_without_index_log() {
-        // The in-memory app has no compiled `builtin.semantic`, so the
-        // provenance log cannot be written; the route must still publish the
-        // archive through DB Core and then report the missing provenance.
-        let app = credentialed_app();
-        let control = InvocationControl::sixty_seconds();
-        app.semantic
-            .execute(
-                SemanticOperation::SyncStructure {
-                    project_root: "/seed".into(),
-                    elements: vec![lumvise_db_core::SemanticElement {
-                        project_root: "/seed".into(),
-                        semantic_element_id: "seed-file".into(),
-                        semantic_source_id: "seed-source".into(),
-                        path: "src/main.rs".into(),
-                        element_kind: "file".into(),
-                        name: "main.rs".into(),
-                        parent_element_id: None,
-                        content_fingerprint: None,
-                        start_line: None,
-                        end_line: None,
-                        lifecycle: "active".into(),
-                        match_evidence: None,
-                        metadata: json!({}),
-                    }],
-                    relationships: vec![],
-                },
-                &control,
-            )
-            .unwrap();
-        let linked = TempDir::new().unwrap();
-        let archive = linked.path().join(".lv").join("graph.pz");
-        fs::create_dir_all(archive.parent().unwrap()).unwrap();
-        app.semantic
-            .execute(
-                SemanticOperation::CreatePzSnapshot {
-                    project_root: "/seed".into(),
-                    output_path: archive.to_string_lossy().into_owned(),
-                },
-                &control,
-            )
-            .unwrap();
-        let project_root = linked
-            .path()
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-
-        let response = project_import_response(
-            &app,
-            &request(json!({"folderPath": project_root, "source": "pz"})),
-        );
-
-        assert_eq!(response.status, "500 Internal Server Error");
-        let message = response_body(&response).to_string();
-        assert!(
-            message.contains("completion log failed"),
-            "unexpected failure message: {message}"
-        );
-        match app
-            .semantic
-            .execute(
-                SemanticOperation::ProjectElementCounts { project_root },
-                &control,
-            )
-            .unwrap()
-        {
-            SemanticResult::ProjectElementCounts { total_elements, .. } => {
-                assert_eq!(total_elements, 1)
-            }
-            other => panic!("unexpected element counts result: {other:?}"),
-        }
-    }
-}
+mod tests;

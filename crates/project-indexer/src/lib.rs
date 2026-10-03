@@ -18,7 +18,8 @@ mod session;
 mod source;
 
 pub use documents::{
-    ConvertedDocument, DocumentPage, DocumentProvenance, convert_document, is_document_path,
+    ConvertedDocument, DocumentConversionOptions, DocumentConverter, DocumentFigure, DocumentImage,
+    DocumentPage, DocumentProvenance, convert_document, is_document_path,
 };
 pub use filesystem::FilesystemProjectSource;
 pub use fingerprints::SourceFingerprint;

@@ -33,55 +33,17 @@ pub(super) fn validate_duplicate_repair_inputs(
 }
 
 pub(crate) fn validate_element(element: &SemanticElement) -> Result<()> {
-    require_non_empty(&element.project_root, "non-empty project root")?;
-    require_non_empty(
-        &element.semantic_element_id,
-        "non-empty semantic element id",
-    )?;
-    require_non_empty(&element.semantic_source_id, "non-empty semantic source id")?;
-    require_non_empty(&element.path, "non-empty semantic element path")?;
-    require_non_empty(&element.element_kind, "non-empty semantic element kind")?;
-    require_non_empty(&element.name, "non-empty semantic element name")?;
-    if let Some(fingerprint) = element.content_fingerprint.as_deref()
-        && parse_content_fingerprint(fingerprint).is_none()
-    {
-        return Err(DbError::invalid_value(
-            fingerprint,
-            "versioned fp1:<16-hex-simhash>:<exact-hash> content fingerprint",
-        ));
-    }
-    Ok(())
+    element.validate()
 }
-
 pub(crate) fn validate_artifact(artifact: &SemanticArtifact) -> Result<()> {
-    validate_artifact_shell(artifact)?;
-    require_non_empty(
-        &artifact.semantic_element_id,
-        "non-empty semantic element id",
-    )
+    artifact.validate()
 }
-
+#[cfg(test)]
 pub(crate) fn validate_artifact_shell(artifact: &SemanticArtifact) -> Result<()> {
-    require_non_empty(&artifact.artifact_id, "non-empty semantic artifact id")?;
-    require_non_empty(&artifact.artifact_kind, "non-empty semantic artifact kind")?;
-    require_non_empty(&artifact.title, "non-empty semantic artifact title")
+    artifact.validate_shell()
 }
-
 pub(super) fn validate_relationship(relationship: &SemanticRelationship) -> Result<()> {
-    require_non_empty(&relationship.project_root, "non-empty project root")?;
-    require_non_empty(
-        &relationship.source_element_id,
-        "non-empty source semantic element id",
-    )?;
-    require_non_empty(
-        &relationship.target_element_id,
-        "non-empty target semantic element id",
-    )?;
-    require_non_empty(
-        &relationship.relationship_kind,
-        "non-empty relationship kind",
-    )?;
-    require_non_empty(&relationship.label, "non-empty relationship label")
+    relationship.validate()
 }
 pub(super) fn validate_partition_write_inputs(
     element_changes: &[SemanticElement],
@@ -111,33 +73,20 @@ pub(super) fn validate_semantic_sync_inputs(
 }
 
 pub(super) fn validate_partition(partition: &SemanticPartition) -> Result<()> {
-    require_non_empty(&partition.project_root, "non-empty project root")?;
-    if let Some(empty) = partition
-        .replace_paths
-        .iter()
-        .find(|path| path.trim().is_empty())
-    {
-        return Err(DbError::invalid_value(
-            empty,
-            "non-empty semantic replace path",
-        ));
-    }
-    if !partition.replace_paths.is_empty() {
-        return Ok(());
-    }
-    Err(DbError::invalid_value(
-        "[]",
-        "at least one semantic replace path",
-    ))
+    partition.validate()
 }
 
 pub(super) fn elements_in_partition(
     elements: &[SemanticElement],
     replace_paths: &[String],
 ) -> Vec<SemanticElement> {
+    let partition = SemanticPartition {
+        project_root: String::new(),
+        replace_paths: replace_paths.to_vec(),
+    };
     elements
         .iter()
-        .filter(|element| path_is_in_partition(&element.path, replace_paths))
+        .filter(|element| partition.contains_path(&element.path))
         .cloned()
         .collect()
 }
@@ -165,18 +114,8 @@ pub(super) fn incoming_partition_paths(
         .collect()
 }
 
-pub(super) fn path_is_in_partition(path: &str, replace_paths: &[String]) -> bool {
-    replace_paths.iter().any(|replace_path| {
-        path == replace_path || path.starts_with(&partition_prefix(replace_path))
-    })
-}
-
-pub(super) fn partition_prefix(path: &str) -> String {
-    format!("{}/", path.trim_end_matches('/'))
-}
-
 pub(super) fn owned_partition_source_ids(
-    reconciled: &crate::local::grafeo::matching::ReconciledElements,
+    reconciled: &crate::domain::matching::SemanticStructureReconciliation,
     inactive_elements: &[SemanticElement],
 ) -> BTreeSet<String> {
     reconciled

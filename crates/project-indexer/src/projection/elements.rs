@@ -57,7 +57,7 @@ fn file_element(source: &str, file: &ScannedFile) -> Result<SemanticElementUpser
         start_line: (!folder).then_some(1),
         end_line: file_end_line(file)?,
         metadata: Some(
-            serde_json::json!({ "kind": if folder { "directory" } else { file_kind(path) }, "bytes": file.byte_len, "extraction": super::coverage::extraction(file), "fingerprint_algorithm": fingerprint.map(|value| value.algorithm), "markdown_alias": file.parsed.document.as_ref().map(|doc| { let mut metadata = doc.metadata(); metadata["content"] = serde_json::json!(file.parsed.source.as_deref()); metadata }).or_else(|| file.parsed.conversion_error.as_ref().map(|reason| serde_json::json!({"status":"unavailable", "reason":reason}))) }),
+            serde_json::json!({ "kind": if folder { "directory" } else { file_kind(path) }, "bytes": file.byte_len, "extraction": super::coverage::extraction(file), "fingerprint_algorithm": fingerprint.map(|value| value.algorithm), "markdown_alias": file.parsed.document.as_ref().map(|doc| { let mut metadata = doc.file_metadata(); metadata["content"] = serde_json::json!(file.parsed.source.as_deref()); metadata }).or_else(|| file.parsed.conversion_error.as_ref().map(|reason| serde_json::json!({"status":"unavailable", "reason":reason}))) }),
         ),
     })
 }

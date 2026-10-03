@@ -16,6 +16,9 @@ use std::{
 #[cfg(target_os = "macos")]
 use tempfile::TempDir;
 
+#[cfg(target_os = "macos")]
+mod document_assets;
+
 /// Immutable signed identity supplied to an OS-specific process sandbox.
 #[derive(Clone, Copy, Debug)]
 pub struct PluginSandboxRequest<'package> {
@@ -186,16 +189,18 @@ fn prepare_platform_command(
     let cached = cache_executable(&mut source, execution_cache, request)?;
     let package_root = canonical_package_root(request)?;
     let mut command = Command::new(sandbox_program);
+    let assets = document_assets::DocumentModelAssets::for_plugin(request.plugin_id, |name| {
+        std::env::var_os(name)
+    });
     command
         .env_clear()
         .current_dir(&package_root)
-        .arg("-p")
-        .arg(MACOS_SANDBOX_PROFILE)
         .arg("-D")
         .arg(format!("PACKAGE_ROOT={}", package_root.display()))
         .arg("-D")
-        .arg(format!("EXECUTION_ROOT={}", execution_cache.display()))
-        .arg(cached);
+        .arg(format!("EXECUTION_ROOT={}", execution_cache.display()));
+    assets.apply(&mut command, MACOS_SANDBOX_PROFILE);
+    command.arg(cached);
     Ok(command)
 }
 

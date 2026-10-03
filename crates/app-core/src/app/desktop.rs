@@ -398,6 +398,12 @@ impl DesktopSemanticGraphBridge for PendingDesktopBridge {
 }
 
 impl DesktopSettingsBridge for PendingDesktopBridge {
+    fn app_settings_snapshot(&self) -> Result<lumvise_frontend_core::AppSettings, String> {
+        self.with_ready("app_settings_snapshot", |delegate| {
+            delegate.app_settings_snapshot()
+        })
+    }
+
     fn bulb_visible(&self) -> Result<bool, String> {
         self.with_ready("bulb_visible", |delegate| delegate.bulb_visible())
     }
@@ -561,6 +567,13 @@ impl DesktopWhiteboardBridge for PendingDesktopBridge {
 }
 
 impl DesktopSettingsBridge for AppCoreDesktopBridge {
+    fn app_settings_snapshot(&self) -> Result<lumvise_frontend_core::AppSettings, String> {
+        self.app
+            .frontend()
+            .app_settings()
+            .map_err(|error| error.to_string())
+    }
+
     fn bulb_visible(&self) -> Result<bool, String> {
         self.app
             .frontend()
@@ -597,7 +610,7 @@ impl DesktopSettingsBridge for AppCoreDesktopBridge {
     }
 
     fn refresh_assistant_provider_catalog(&self) -> Result<AssistantProviderCatalog, String> {
-        let sync = super::provider_startup::synchronize_llm_providers(self.app.relational.as_ref())
+        let sync = super::provider_startup::refresh_llm_inventory(self.app.relational.as_ref())
             .map_err(|error| error.to_string())?;
         let catalog = assistant_provider_catalog(&sync.catalog);
         self.app
@@ -699,8 +712,11 @@ impl DesktopSettingsBridge for AppCoreDesktopBridge {
             .managed_models()
             .ok_or_else(|| "managed models are not installed".to_string())?;
         let mut snapshot =
-            serde_json::to_value(manager.snapshot()).map_err(|error| error.to_string())?;
+            serde_json::to_value(super::managed_models::supported_model_snapshot(&manager))
+                .map_err(|error| error.to_string())?;
         snapshot["storageRoot"] = json!(manager.models_root().display().to_string());
+        snapshot["speechToTextReady"] = json!(self.app.voice2text_service().is_some());
+        snapshot["textToSpeechReady"] = json!(self.app.text2voice_service().is_some());
         Ok(snapshot)
     }
 
@@ -709,6 +725,10 @@ impl DesktopSettingsBridge for AppCoreDesktopBridge {
             .app
             .managed_models()
             .ok_or_else(|| "managed models are not installed".to_string())?;
+        let entry = manager
+            .catalog_entry(&model_id)
+            .ok_or_else(|| format!("model `{model_id}`: expected known managed model id"))?;
+        super::managed_models::require_model_runtime(&entry)?;
         let status = manager
             .select(&model_id)
             .map_err(|error| error.to_string())?;
@@ -716,14 +736,7 @@ impl DesktopSettingsBridge for AppCoreDesktopBridge {
     }
 
     fn retry_managed_model(&self, model_id: String) -> Result<serde_json::Value, String> {
-        let manager = self
-            .app
-            .managed_models()
-            .ok_or_else(|| "managed models are not installed".to_string())?;
-        let status = manager
-            .retry(&model_id)
-            .map_err(|error| error.to_string())?;
-        serde_json::to_value(status).map_err(|error| error.to_string())
+        self.select_managed_model(model_id)
     }
 
     fn provider_credential_status(&self) -> Result<serde_json::Value, String> {

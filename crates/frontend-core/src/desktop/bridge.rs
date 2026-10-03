@@ -1,7 +1,12 @@
-use crate::{AppSettingsPatch, AssistantProviderCatalog, WorkArea};
+use crate::{AppSettings, AppSettingsPatch, AssistantProviderCatalog, WorkArea};
 use lumvise_db_core::{CompactSemanticGraphProjection, SemanticGraphGranularity};
 
 pub trait DesktopSettingsBridge: std::fmt::Debug + Send + Sync {
+    /// Reads durable preferences after startup, e.g. `bridge.app_settings_snapshot()`.
+    fn app_settings_snapshot(&self) -> Result<AppSettings, String> {
+        Err("app settings snapshot bridge is not configured".into())
+    }
+
     /// Reads the saved launcher preference after startup, e.g. `bridge.bulb_visible()`.
     fn bulb_visible(&self) -> Result<bool, String> {
         Ok(true)

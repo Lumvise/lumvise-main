@@ -6,8 +6,7 @@ use crate::SemanticDependencyDirection;
 use std::collections::HashMap;
 
 pub(super) fn select_dependency_records(
-    store: &super::super::graph_store::GraphStore,
-    graph: &GrafeoDB,
+    graph: &dyn GraphViewSource,
     root_id: &str,
     direction: SemanticDependencyDirection,
     max_depth: usize,
@@ -25,11 +24,12 @@ pub(super) fn select_dependency_records(
             "dependency max_depth from 0 through 128",
         ));
     }
-    let root = semantic_element_by_id_selective(graph, root_id)
+    let root = graph
+        .element(root_id)
         .filter(|element| include_inactive || element.lifecycle == "active")
         .ok_or_else(|| DbError::invalid_value(root_id, "existing semantic element"))?;
     let count = if include_descendants {
-        store.scope_element_count(graph, &root.project_root, include_inactive)
+        graph.scope_count(&root.project_root, include_inactive)
     } else {
         1
     };
@@ -45,7 +45,7 @@ pub(super) fn select_dependency_records(
 }
 
 struct DependencySelection<'graph> {
-    graph: &'graph GrafeoDB,
+    graph: &'graph dyn GraphViewSource,
     project_root: String,
     include_descendants: bool,
     include_inactive: bool,
@@ -55,7 +55,7 @@ struct DependencySelection<'graph> {
 
 impl<'graph> DependencySelection<'graph> {
     fn new(
-        graph: &'graph GrafeoDB,
+        graph: &'graph dyn GraphViewSource,
         root: &SemanticElement,
         include_descendants: bool,
         include_inactive: bool,
@@ -94,7 +94,7 @@ impl<'graph> DependencySelection<'graph> {
     }
 
     fn include_element(&mut self, id: &str) -> bool {
-        let Some(element) = semantic_element_by_id_selective(self.graph, id).filter(|element| {
+        let Some(element) = self.graph.element(id).filter(|element| {
             element.project_root == self.project_root
                 && (self.include_inactive || element.lifecycle == "active")
         }) else {
@@ -112,9 +112,9 @@ impl<'graph> DependencySelection<'graph> {
         let scope = self.descendant_scope(id);
         let mut neighbors = HashSet::new();
         let graph_direction = match direction {
-            SemanticDependencyDirection::Dependencies => Direction::Outgoing,
-            SemanticDependencyDirection::Dependents => Direction::Incoming,
-            SemanticDependencyDirection::Both => Direction::Both,
+            SemanticDependencyDirection::Dependencies => SemanticDependencyDirection::Dependencies,
+            SemanticDependencyDirection::Dependents => SemanticDependencyDirection::Dependents,
+            SemanticDependencyDirection::Both => SemanticDependencyDirection::Both,
         };
         for id in scope {
             for edge in semantic_edges(self.graph, &self.project_root, &id, graph_direction) {
@@ -141,9 +141,12 @@ impl<'graph> DependencySelection<'graph> {
         }
         let mut pending = vec![id.to_owned()];
         while let Some(parent) = pending.pop() {
-            for edge in
-                structural_edges(self.graph, &self.project_root, &parent, Direction::Outgoing)
-            {
+            for edge in structural_edges(
+                self.graph,
+                &self.project_root,
+                &parent,
+                SemanticDependencyDirection::Dependencies,
+            ) {
                 if ids.insert(edge.target_element_id.clone()) {
                     pending.push(edge.target_element_id.clone());
                 }

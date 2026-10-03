@@ -232,6 +232,7 @@ class MacOSInstaller:
             "assets/lumvise-icon.png",
             "LICENSE",
             "LICENSES",
+            "distribution/AI-RISK-NOTICE.txt",
         )
         self.require_paths(self.core_workspace, core_files)
         if self.edition != "full":
@@ -512,6 +513,10 @@ class MacOSInstaller:
         licenses = resources / "licenses"
         licenses.mkdir()
         shutil.copy2(self.core_workspace / "LICENSE", licenses / "LICENSE")
+        shutil.copy2(
+            self.core_workspace / "distribution/AI-RISK-NOTICE.txt",
+            licenses / "AI-RISK-NOTICE.txt",
+        )
         shutil.copytree(self.core_workspace / "LICENSES", licenses / "LICENSES")
         if self.edition == "full":
             if self.private_workspace is None:
@@ -832,6 +837,7 @@ class MacOSInstaller:
     def create_image(self, app: Path, dmg: Path) -> None:
         (app.parent / "Applications").symlink_to("/Applications")
         volume = "Lumvise Community" if self.edition == "community" else "Lumvise"
+        self.copy_installation_legal_documents(app.parent)
         instructions = self.install_instructions()
         (app.parent / "Install.txt").write_text(instructions)
         self.command(
@@ -849,10 +855,28 @@ class MacOSInstaller:
         )
         self.command("hdiutil", "verify", dmg)
 
+    def copy_installation_legal_documents(self, image_root: Path) -> None:
+        """Copy the notice and edition license visible at the DMG root."""
+        shutil.copy2(
+            self.core_workspace / "distribution/AI-RISK-NOTICE.txt",
+            image_root / "AI-RISK-NOTICE.txt",
+        )
+        if self.edition == "community":
+            shutil.copy2(self.core_workspace / "LICENSE", image_root / "LICENSE.txt")
+            return
+        if self.private_workspace is None:
+            raise ValueError(
+                "--private-workspace is required for Full installation documents"
+            )
+        shutil.copy2(
+            self.private_workspace / "LICENSE", image_root / "FULL-LICENSE.txt"
+        )
+
     def install_instructions(self) -> str:
         if self.edition == "community":
             return (
                 "Lumvise Community is headless and provides the Lumvise MCP server.\n"
+                "Read AI-RISK-NOTICE.txt and LICENSE.txt before installing.\n"
                 "Drag Lumvise Community.app to Applications, then add this server to your MCP client configuration:\n"
                 "{\n"
                 '  "mcpServers": {\n'
@@ -864,6 +888,9 @@ class MacOSInstaller:
                 "}\n"
             )
         return (
+            "On first launch, review the license and risk notice, then explicitly "
+            "choose Agree and continue to use Lumvise Full. Decline and exit leaves "
+            "it stopped.\n"
             "Drag Lumvise.app to Applications, then open Lumvise from Applications.\n"
         )
 

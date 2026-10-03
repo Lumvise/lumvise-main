@@ -5,7 +5,7 @@
     "key_id": "lumvise.release.1"
   },
   "plugin_id": "builtin.knowledge",
-  "plugin_version": "0.1.43",
+  "plugin_version": "0.1.45",
   "protocol": {
     "min": 6,
     "max": 6
@@ -43,6 +43,158 @@
           "plugin_id",
           "protocol",
           "exports"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground",
+      "description": "Inspect Knowledge's packaged export IDs; invoke only tools present in the enabled tool catalog. Agent workflow: search/read existing project knowledge, store readable anchored tasks/checkpoints, re-read on resume, then update completion with verified evidence. Other plugins are not enabled by this manifest."
+    },
+    {
+      "id": "preview_knowledge_transfer",
+      "name": "Preview Knowledge transfer",
+      "description": "Read-only preview of eligible artifact copies into explicit destination project_root. Review source_project_root, source_artifact_id, target_semantic_element_id, exact_match/simhash_distance and already_copied before selecting transfer_ids. Content fingerprints indicate similarity, not project identity or permission; indexing does not apply transfers automatically.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "already_copied": {
+                  "type": "boolean"
+                },
+                "exact_match": {
+                  "type": "boolean"
+                },
+                "knowledge_type": {
+                  "type": "string"
+                },
+                "simhash_distance": {
+                  "type": "integer"
+                },
+                "source_artifact_id": {
+                  "type": "string"
+                },
+                "source_project_root": {
+                  "type": "string"
+                },
+                "source_semantic_element_id": {
+                  "type": "string"
+                },
+                "target_name": {
+                  "type": "string"
+                },
+                "target_path": {
+                  "type": "string"
+                },
+                "target_semantic_element_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "transfer_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "already_copied",
+                "exact_match",
+                "knowledge_type",
+                "simhash_distance",
+                "source_artifact_id",
+                "source_project_root",
+                "source_semantic_element_id",
+                "target_name",
+                "target_path",
+                "target_semantic_element_id",
+                "title",
+                "transfer_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "existing_artifact_count": {
+            "type": "integer"
+          },
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "existing_artifact_count",
+          "candidates"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "apply_knowledge_transfer",
+      "name": "Apply selected Knowledge transfer",
+      "description": "Apply only reviewed transfer_ids from a fresh preview for explicit destination project_root. Revalidates current eligibility/destination scope and copies artifacts with provenance, referenced attachments and eligible structured reference remapping; source artifacts remain. Completed copies are skipped; interrupted copies may need retry, so inspect copied_artifact_ids/already_copied_artifact_ids and read results. This is not an atomic batch or lease/claim operation; preview similarity is not project identity.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "transfer_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_root",
+          "transfer_ids"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "already_copied_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "copied_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "skipped_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_root",
+          "copied_artifact_ids",
+          "already_copied_artifact_ids",
+          "skipped_count"
         ],
         "type": "object"
       },
@@ -197,7 +349,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "List artifacts with explicit dependency edges to target_kind/target_id (semantic_element or artifact). Verify returned project scope and inspect affected records before a change; an empty list says nothing about undocumented dependencies."
     },
     {
       "id": "create_knowledge",
@@ -438,7 +591,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content; for tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "knowledge.create",
@@ -689,7 +843,8 @@
         "type": "object"
       },
       "execution": "foreground",
-      "scope": "assistant_session"
+      "scope": "assistant_session",
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content; for tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "update_knowledge",
@@ -975,7 +1130,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
     },
     {
       "id": "knowledge.update",
@@ -1271,7 +1427,8 @@
         "type": "object"
       },
       "execution": "foreground",
-      "scope": "assistant_session"
+      "scope": "assistant_session",
+      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
     },
     {
       "id": "delete_knowledge",
@@ -1309,7 +1466,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Delete an artifact by artifact_id with explicit project_root matching its stored scope. Read it first and inspect dependents; deleting a scoped C4 report also forgets its refresh intent. Preserve human guidance unless removal is intended."
     },
     {
       "id": "get_knowledge",
@@ -1453,7 +1611,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. Restore tasks/checkpoints/handoffs by reconciling their status, owner, blockers and evidence with current source/tests before resuming; saved completion text alone is not verification."
     },
     {
       "id": "list_knowledge_for_element",
@@ -1600,7 +1759,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read artifacts attached to one existing semantic_element_id from the current project. This ID-only request has no project_root field: verify each returned artifact's project_root. Inspect nearby human instructions/tasks before editing; use get_knowledge for focused checkpoint/handoff restoration."
     },
     {
       "id": "list_knowledge",
@@ -1811,7 +1971,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "List full artifacts with explicit current project_root and optional semantic_element_ids/type/tags/limit. Review readable task status/owner/blockers and nearby instructions before creating duplicates; a result limit can omit records."
     },
     {
       "id": "search_knowledge",
@@ -1941,7 +2102,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Search readable project knowledge with explicit current project_root and optional narrow semantic_element_id/type filters before creating or changing a record. Results contain IDs/titles/scores, not full content: follow with get_knowledge to restore instructions, tasks or checkpoints. Inspect vector/lexical mode; no result is not proof that related knowledge never existed."
     },
     {
       "id": "find_semantic_elements",
@@ -2074,7 +2236,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Find semantic owners for a narrow artifact anchor with explicit current project_root. This delegates to compiled Semantic and requires that plugin to be enabled/available; inspect returned IDs rather than inventing an anchor."
     },
     {
       "id": "get_semantic_element",
@@ -2158,7 +2321,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read an existing semantic_element_id for anchor inspection. This ID-only request has no project_root field; use an ID already discovered within the current project. The public element view omits project_root, so retain and verify the originating discovery scope."
     },
     {
       "id": "rebuild_knowledge_vectors",
@@ -2193,7 +2357,8 @@
         ],
         "type": "object"
       },
-      "execution": "background"
+      "execution": "background",
+      "description": "Rebuild search vectors for existing artifacts with explicit project_root. Inspect returned job status/vectors_rebuilt, including unavailable embedding capability; this does not regenerate source knowledge or prove task completion."
     },
     {
       "id": "run_cultivation",
@@ -2314,7 +2479,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Run the requested cultivation mode within explicit project_root and optional target_id/target_path. Inspect the returned run and generated artifacts; generated summaries do not replace human acceptance criteria or verified task evidence."
     },
     {
       "id": "get_cultivation_run",
@@ -2404,7 +2570,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read a stored run by run_id and verify its project_root/mode/artifact IDs. This ID-only request has no project_root field; a recorded run is not evidence that every generated artifact or implementation task is complete."
     },
     {
       "id": "ensure_c4_nucleus",
@@ -2746,7 +2913,8 @@
         },
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Ensure a scoped C4 report for explicit project_root and a target_id or target_path. refresh/retry_failed may request generation work; inspect returned pending/failed state and read generated content before relying on it."
     },
     {
       "id": "debug_c4_nucleus",
@@ -2823,7 +2991,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Diagnose a scoped C4 nucleus without mutation using explicit project_root and optional target_id/target_path. Inspect functional artifacts and report state before requesting generation; diagnostics are not task completion."
     },
     {
       "id": "knowledge.list_dependents",
@@ -2984,7 +3153,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "List artifacts with explicit dependency edges to target_kind/target_id (semantic_element or artifact). Verify returned project scope and inspect affected records before a change; an empty list says nothing about undocumented dependencies."
     },
     {
       "id": "knowledge.search",
@@ -3124,7 +3294,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Search readable project knowledge with explicit current project_root and optional narrow semantic_element_id/type filters before creating or changing a record. Results contain IDs/titles/scores, not full content: follow with get_knowledge to restore instructions, tasks or checkpoints. Inspect vector/lexical mode; no result is not proof that related knowledge never existed."
     },
     {
       "id": "knowledge.list_for_element",
@@ -3281,7 +3452,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read artifacts attached to one existing semantic_element_id from the current project. This ID-only request has no project_root field: verify each returned artifact's project_root. Inspect nearby human instructions/tasks before editing; use get_knowledge for focused checkpoint/handoff restoration."
     },
     {
       "id": "knowledge.get",
@@ -3435,7 +3607,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. Restore tasks/checkpoints/handoffs by reconciling their status, owner, blockers and evidence with current source/tests before resuming; saved completion text alone is not verification."
     },
     {
       "id": "knowledge.find_elements",
@@ -3578,7 +3751,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Find semantic owners for a narrow artifact anchor with explicit current project_root. This delegates to compiled Semantic and requires that plugin to be enabled/available; inspect returned IDs rather than inventing an anchor."
     },
     {
       "id": "knowledge.get_element",
@@ -3672,7 +3846,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read an existing semantic_element_id for anchor inspection. This ID-only request has no project_root field; use an ID already discovered within the current project. The public element view omits project_root, so retain and verify the originating discovery scope."
     },
     {
       "id": "project_knowledge",
@@ -3862,7 +4037,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read the canonical project Knowledge projection using projectRoot and changesSince. Preserve revision/scope when consuming it; readable artifacts remain the source of task/checkpoint content."
     },
     {
       "id": "http.knowledge.manifest",
@@ -3944,7 +4120,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "List indexed project sourceId values for Knowledge HTTP consumers. Select the exact current project root; display names/fingerprints do not identify a project."
     },
     {
       "id": "http.knowledge.setup",
@@ -4029,7 +4206,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read Obsidian setup metadata for the selected sourceId query scope; this does not create artifacts or enable other plugins."
     },
     {
       "id": "http.knowledge.export",
@@ -4236,7 +4414,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Export the selected sourceId project's Knowledge projection through an HTTP envelope. Retain project/revision context for subsequent reads."
     },
     {
       "id": "http.knowledge.page",
@@ -4391,7 +4570,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read one projected element page with sourceId and elementId/element_id query scope; do not confuse document hashes with project identity."
     },
     {
       "id": "http.knowledge.sync",
@@ -4635,7 +4815,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read versioned Obsidian projection changes from a schema-v1 JSON body using sourceId, appliedRevision and contentHashes. Reconcile the returned revision/change batch; it is projection synchronization, not a task ownership claim."
     },
     {
       "id": "http.knowledge.c4_nucleus",
@@ -4790,7 +4971,8 @@
         },
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "HTTP adapter for scoped C4 report generation. Supply current project_root and target_id/target_path in the JSON body, then inspect pending/failed generation before trusting the report."
     },
     {
       "id": "http.knowledge.c4_action",
@@ -4853,7 +5035,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read the scoped C4 action descriptor; obtaining its method/path/query does not execute generation."
     },
     {
       "id": "http.knowledge.c4_debug",
@@ -4931,7 +5114,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Read scoped C4 diagnostics with project_root and target_id/target_path in the HTTP query without mutation."
     },
     {
       "id": "http.knowledge.write",
@@ -5096,7 +5280,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "HTTP create adapter: put the same readable title/content, explicit project_root and existing semantic anchor as create_knowledge in the JSON body; search/read existing records first."
     },
     {
       "id": "http.knowledge.artifacts.create",
@@ -5261,7 +5446,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content; for tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "http.knowledge.artifacts.update",
@@ -5426,7 +5612,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
     },
     {
       "id": "http.knowledge.artifacts.delete",
@@ -5481,7 +5668,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "HTTP delete adapter: read the artifact first, then supply artifact_id and matching project_root in the JSON body. Inspect dependents before intended removal."
     },
     {
       "id": "http.knowledge.resolve_target",
@@ -5586,7 +5774,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Resolve a JSON-body semantic_element_id to its public anchor view. Retain the current project discovery scope because this view omits project_root."
     },
     {
       "id": "http.knowledge.events",
@@ -5695,7 +5884,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "Consume Knowledge live-event pages and retain the returned cursor; this feed is not project-filtered, so verify event/artifact scope. Events prompt a fresh artifact read; they are not a task lease or authoritative completion evidence."
     },
     {
       "id": "http.knowledge.projection_artifacts",
@@ -5863,7 +6053,8 @@
         ],
         "type": "object"
       },
-      "execution": "foreground"
+      "execution": "foreground",
+      "description": "List stored Knowledge artifacts through the HTTP projection-artifact route. Verify each artifact's project_root before treating it as current project guidance."
     },
     {
       "id": "trigger.semantic_element_upserted",
@@ -5945,7 +6136,8 @@
         ],
         "type": "object"
       },
-      "execution": "background"
+      "execution": "background",
+      "description": "Runtime-delivered semantic-change trigger invalidates projections and refreshes report intents. It does not automatically apply cross-project transfers; agents should not fabricate deliveries."
     },
     {
       "id": "poll_functional_artifact_generation",
@@ -5991,7 +6183,8 @@
         ],
         "type": "object"
       },
-      "execution": "background"
+      "execution": "background",
+      "description": "Recurring runtime consumer stores completed generated functional artifacts. Inspect pending/completed generation state; it is not an implementation-task scheduler or atomic claim service."
     }
   ],
   "host_capabilities": [
@@ -6001,7 +6194,7 @@
     },
     {
       "id": "storage.semantic",
-      "version": "^1.2.0"
+      "version": "^1.4.0"
     },
     {
       "id": "plugin.invoke",

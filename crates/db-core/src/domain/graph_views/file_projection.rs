@@ -17,7 +17,7 @@ pub(crate) fn slice_file_projection(
     }
 }
 
-pub(super) fn scoped_file_nodes<'a>(
+pub(crate) fn scoped_file_nodes<'a>(
     projection: &'a SemanticGraphProjection,
     request: &SemanticGraphProjectionRequest,
 ) -> HashSet<&'a str> {
@@ -30,7 +30,7 @@ pub(super) fn scoped_file_nodes<'a>(
         .collect()
 }
 
-pub(super) fn visible_file_nodes<'a>(
+pub(crate) fn visible_file_nodes<'a>(
     projection: &'a SemanticGraphProjection,
     request: &SemanticGraphProjectionRequest,
     scoped: &HashSet<&'a str>,
@@ -58,7 +58,7 @@ pub(super) fn visible_file_nodes<'a>(
     visible
 }
 
-pub(super) fn sliced_file_edges(
+pub(crate) fn sliced_file_edges(
     projection: &SemanticGraphProjection,
     visible: &HashSet<&str>,
 ) -> Vec<SemanticGraphEdge> {
@@ -72,7 +72,7 @@ pub(super) fn sliced_file_edges(
         .collect()
 }
 
-pub(super) fn sliced_file_nodes(
+pub(crate) fn sliced_file_nodes(
     projection: &SemanticGraphProjection,
     visible: &HashSet<&str>,
     edges: &[SemanticGraphEdge],
@@ -90,7 +90,7 @@ pub(super) fn sliced_file_nodes(
         .collect()
 }
 
-pub(super) fn file_projection_strengths(edges: &[SemanticGraphEdge]) -> HashMap<&str, u64> {
+pub(crate) fn file_projection_strengths(edges: &[SemanticGraphEdge]) -> HashMap<&str, u64> {
     let mut strengths = HashMap::new();
     for edge in edges {
         *strengths.entry(edge.source.as_str()).or_default() += edge.weight;
@@ -99,14 +99,12 @@ pub(super) fn file_projection_strengths(edges: &[SemanticGraphEdge]) -> HashMap<
     strengths
 }
 
-pub(super) fn project_file(
-    graph: &GrafeoDB,
+pub(crate) fn project_file(
+    rows: BatchedGraphRows,
     request: &SemanticGraphProjectionRequest,
     commit_version: i64,
     published_at: String,
 ) -> Result<SemanticGraphProjection> {
-    let started = Instant::now();
-    let rows = read_batched_rows(graph, &request.project_root);
     let file_by_path = rows
         .all
         .iter()
@@ -131,11 +129,6 @@ pub(super) fn project_file(
             .then(left.start_line.cmp(&right.start_line))
             .then(left.semantic_element_id.cmp(&right.semantic_element_id))
     });
-    metrics::histogram!(
-        "lumvise_db_renderer_graph_projection_stage_seconds",
-        "stage" => "file_scope"
-    )
-    .record(started.elapsed().as_secs_f64());
     let nodes = graph_nodes(&elements, &edges, &rows.artifacts_by_element);
     Ok(SemanticGraphProjection {
         commit_version,
@@ -146,7 +139,7 @@ pub(super) fn project_file(
     })
 }
 
-pub(super) fn raw_path_in_scope(path: &str, request: &SemanticGraphProjectionRequest) -> bool {
+pub(crate) fn raw_path_in_scope(path: &str, request: &SemanticGraphProjectionRequest) -> bool {
     let Some(target) = request
         .target_path
         .as_deref()
@@ -159,7 +152,7 @@ pub(super) fn raw_path_in_scope(path: &str, request: &SemanticGraphProjectionReq
         || request.recursive && path.starts_with(&format!("{}/", target.trim_end_matches('/')))
 }
 
-pub(super) fn file_projection_edges(
+pub(crate) fn file_projection_edges(
     request: &SemanticGraphProjectionRequest,
     rows: &BatchedGraphRows,
     file_by_path: &HashMap<&str, &str>,
@@ -180,7 +173,7 @@ pub(super) fn file_projection_edges(
     (visible, edges)
 }
 
-pub(super) fn add_file_relationship(
+pub(crate) fn add_file_relationship(
     relationship: &SemanticRelationship,
     request: &SemanticGraphProjectionRequest,
     all_by_id: &HashMap<String, ProjectionElement>,
@@ -229,7 +222,7 @@ pub(super) fn add_file_relationship(
     add_edge(edges, source, target, relationship);
 }
 
-pub(super) fn file_endpoint<'a>(
+pub(crate) fn file_endpoint<'a>(
     all_by_id: &'a HashMap<String, ProjectionElement>,
     file_by_path: &HashMap<&str, &'a str>,
     semantic_id: &str,
@@ -245,7 +238,7 @@ pub(super) fn file_endpoint<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn update_file_visibility(
+pub(crate) fn update_file_visibility(
     request: &SemanticGraphProjectionRequest,
     all_by_id: &HashMap<String, ProjectionElement>,
     source: &str,

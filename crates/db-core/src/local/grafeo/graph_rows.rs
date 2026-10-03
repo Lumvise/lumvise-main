@@ -214,10 +214,6 @@ pub(crate) struct ElementUpsertPlan {
     properties: Vec<(&'static str, GrafeoValue)>,
 }
 
-pub(crate) struct ElementInsertPlan {
-    properties: Vec<(&'static str, GrafeoValue)>,
-}
-
 impl ElementUpsertPlan {
     pub(crate) fn relationship_node_id(&self, semantic_element_id: &str) -> NodeId {
         self.existing_node_ids
@@ -251,10 +247,8 @@ pub(crate) struct ArtifactUpsertPlan {
     vector_properties: Option<Vec<(&'static str, GrafeoValue)>>,
 }
 
-pub(crate) struct ProjectSnapshotDeletePlan {
+pub(crate) struct ProjectRelationshipResetPlan {
     relationship_edge_ids: Vec<EdgeId>,
-    element_node_ids: Vec<NodeId>,
-    element_vector_node_ids: Vec<NodeId>,
 }
 
 pub(crate) struct ArtifactDeletionPlan {

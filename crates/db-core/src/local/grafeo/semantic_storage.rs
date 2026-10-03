@@ -1,19 +1,18 @@
+use crate::domain::artifact_content::SEARCHABLE_ARTIFACT_TEXT_LIMIT_BYTES;
+use crate::domain::matching::reconcile_semantic_elements;
 use crate::interface::ProjectSnapshotScope;
 use crate::local::clock::Clock;
-use crate::local::fingerprint::parse_content_fingerprint;
-use crate::local::grafeo::blob_refs::SEARCHABLE_ARTIFACT_TEXT_LIMIT_BYTES;
 use crate::local::grafeo::change_hooks::ChangeBuffer;
 use crate::local::grafeo::graph_row_projection::semantic_element_from_node;
 use crate::local::grafeo::graph_rows::{
-    ChangeCollector, DuplicateElementRepair, ElementInsertPlan, ElementUpsertPlan,
-    ProjectSnapshotDeletePlan, RelationshipWritePlan, apply_element_insert, apply_element_upsert,
-    apply_project_snapshot_delete, apply_relationship_write, artifact_dependents,
-    artifact_vector_from_node, artifacts_by_ids_selective, candidate_elements_by_identity_keys,
-    element_name_vector_from_node, elements_by_ids_selective, nodes_by_label_and_property,
-    prepare_element_insert, prepare_element_upsert, prepare_project_snapshot_delete,
-    prepare_relationship_sync, prepare_relationship_upserts, project_artifacts_selective,
-    semantic_artifact_by_id, semantic_artifacts_for_elements, semantic_element_by_id,
-    semantic_element_node_id_for, semantic_elements_for_paths_including_inactive,
+    ChangeCollector, DuplicateElementRepair, ElementUpsertPlan, ProjectRelationshipResetPlan,
+    RelationshipWritePlan, apply_element_upsert, apply_project_relationship_reset,
+    apply_relationship_write, artifact_dependents, artifact_vector_from_node,
+    artifacts_by_ids_selective, candidate_elements_by_identity_keys, element_name_vector_from_node,
+    elements_by_ids_selective, nodes_by_label_and_property, prepare_element_upsert,
+    prepare_project_relationship_reset, prepare_relationship_sync, prepare_relationship_upserts,
+    project_artifacts_selective, semantic_artifact_by_id, semantic_artifacts_for_elements,
+    semantic_element_by_id, semantic_elements_for_paths_including_inactive,
     semantic_elements_for_project_including_inactive, semantic_relationships_for_project_edges,
     semantic_relationships_from_many_native_edges, semantic_relationships_from_native_edges,
     semantic_relationships_touching_elements,
@@ -24,7 +23,6 @@ use crate::local::grafeo::graph_rows::{
 };
 use crate::local::grafeo::graph_store::GraphStore;
 use crate::local::grafeo::graph_store::GraphTransaction;
-use crate::local::grafeo::matching::{IdentityRemapIndex, reconcile_semantic_elements};
 use crate::local::grafeo::media::artifacts_for_element_with_inheritance;
 #[cfg(test)]
 use crate::local::grafeo::media::{active_media_element, annotation_for_media_element};
@@ -50,7 +48,7 @@ use std::time::Instant;
 use tokio::sync::broadcast;
 
 struct PartitionSyncPlan {
-    reconciled: crate::local::grafeo::matching::ReconciledElements,
+    reconciled: crate::domain::matching::SemanticStructureReconciliation,
     inactive_elements: Vec<SemanticElement>,
     element_changes: Vec<SemanticElement>,
     relationships: Vec<SemanticRelationship>,
@@ -63,8 +61,8 @@ struct PreparedDelta {
 }
 
 struct PreparedSnapshot {
-    delete_plan: ProjectSnapshotDeletePlan,
-    element_plans: Vec<ElementInsertPlan>,
+    relationship_reset: ProjectRelationshipResetPlan,
+    element_plans: Vec<ElementUpsertPlan>,
     relationship_plan: RelationshipWritePlan,
 }
 
@@ -83,7 +81,7 @@ enum PreparedStructureMutation {
 
 struct PreparedStructureSync {
     report: SemanticBatchSyncReport,
-    remaps: Vec<crate::local::grafeo::matching::IdentityRemap>,
+    remaps: Vec<crate::domain::matching::SemanticIdentityRemap>,
     mutation: PreparedStructureMutation,
 }
 

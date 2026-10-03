@@ -1,0 +1,39 @@
+Lumvise — AI and automation risk notice
+Version: 2026-10-03
+
+Read this notice before enabling an assistant, agent, model or external tool.
+
+AI output is not a guarantee
+Models and the engine can misunderstand instructions, context and permissions.
+They can produce inaccurate, incomplete or misleading information, code, graph
+relationships and recommendations, even when the output sounds confident.
+Review important results and verify them independently. Do not rely on Lumvise
+as the sole basis for medical, legal, financial or other high-stakes decisions.
+
+Actions can have real consequences
+Agents and connected tools may read, change or delete files, run commands,
+send information, make external changes or incur provider charges within the
+access you grant. Mistakes can cause data loss, disclosure, downtime or costs.
+Limit access, review proposed actions, maintain backups and use recoverable
+environments where appropriate. Do not grant access you are not authorized to
+grant. Third-party services have their own terms, charges and data practices;
+check these before sending personal, confidential or other sensitive material.
+
+Agreement is not action authorization
+Accepting a software license or acknowledging this notice does not itself
+authorize an agent to perform an action, access a resource, transmit data or
+spend money. Action permissions and any required approvals remain separate.
+No claim is made that every possible harmful action is detected or prevented.
+
+Licenses and mandatory rights
+The applicable software licenses contain warranty and liability provisions.
+This notice explains risks; it does not promise error-free operation or expand
+any exclusion of liability. Nothing in it excludes or limits rights, remedies
+or liability that applicable law does not permit to be excluded or limited,
+including mandatory consumer rights in the relevant jurisdiction.
+
+Community uses the MIT core and separately licensed components, including
+LGPL-covered plugins. Their licenses continue to govern their use, copying,
+modification and redistribution. This notice imposes no additional restriction
+on those rights. Full's proprietary components remain subject to the included
+proprietary license and any applicable separate written agreement.

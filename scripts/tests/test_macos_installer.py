@@ -41,6 +41,7 @@ class FakeBuildTools(installer.MacOSInstaller):
         self.extra_plugin_ids: list[str] = []
         self.omit_canvas = False
         self.image_instructions = ""
+        self.image_root: dict[str, str] = {}
         self.prepared_signature_valid = True
         self.plugin_developer_id = True
         self.include_release_map = False
@@ -100,6 +101,11 @@ class FakeBuildTools(installer.MacOSInstaller):
         if command == "hdiutil" and argv[1] == "create":
             source = Path(argv[argv.index("-srcfolder") + 1])
             self.image_instructions = (source / "Install.txt").read_text()
+            self.image_root = {
+                path.name: path.read_text()
+                for path in source.iterdir()
+                if path.is_file()
+            }
             Path(argv[-1]).write_bytes(b"distribution container")
         return self.command_output(command, argv)
 
@@ -224,6 +230,10 @@ class MacOSInstallerTests(unittest.TestCase):
         (root / "LICENSE").write_text("community license\n")
         (root / "LICENSES").mkdir(exist_ok=True)
         (root / "LICENSES/LGPL.txt").write_text("license text\n")
+        (root / "distribution/AI-RISK-NOTICE.txt").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "distribution/AI-RISK-NOTICE.txt").write_text("AI risk notice\n")
         (root / "assets").mkdir(exist_ok=True)
         (root / "assets/lumvise-icon.png").write_bytes(b"public company icon")
         if not private:
@@ -337,6 +347,22 @@ class MacOSInstallerTests(unittest.TestCase):
         ):
             build.preflight()
 
+    def test_missing_ai_risk_notice_is_rejected_for_both_editions(self) -> None:
+        for edition in ("community", "full"):
+            with self.subTest(edition=edition):
+                (self.core / "distribution/AI-RISK-NOTICE.txt").unlink()
+                build = self.make_builder(
+                    edition, private=self.private if edition == "full" else None
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "AI-RISK-NOTICE.txt.*required source input"
+                ):
+                    build.build()
+                self.assertFalse(build.calls)
+                (self.core / "distribution/AI-RISK-NOTICE.txt").write_text(
+                    "AI risk notice\n"
+                )
+
     def test_community_uses_public_inputs_only_and_minimal_plugins(self) -> None:
         private_unavailable = self.root / "private-must-not-be-read"
         build = self.make_builder("community", private=private_unavailable)
@@ -354,8 +380,16 @@ class MacOSInstallerTests(unittest.TestCase):
         self.assertEqual(
             (contents / "Resources/licenses/LICENSE").read_text(), "community license\n"
         )
+        self.assertEqual(
+            (contents / "Resources/licenses/AI-RISK-NOTICE.txt").read_text(),
+            "AI risk notice\n",
+        )
         self.assertFalse((contents / "Resources/licenses/proprietary-LICENSE").exists())
-        configuration = json.loads(build.image_instructions.split("\n", 2)[2])
+        self.assertEqual(build.image_root["AI-RISK-NOTICE.txt"], "AI risk notice\n")
+        self.assertEqual(build.image_root["LICENSE.txt"], "community license\n")
+        self.assertNotIn("FULL-LICENSE.txt", build.image_root)
+        self.assertIn("AI-RISK-NOTICE.txt", build.image_instructions)
+        configuration = json.loads(build.image_instructions.split("\n", 3)[3])
         server = configuration["mcpServers"]["lumvise"]
         self.assertEqual(
             server["command"],
@@ -439,6 +473,19 @@ class MacOSInstallerTests(unittest.TestCase):
         self.assertEqual(
             (licenses / "proprietary-LICENSE").read_text(), "proprietary license\n"
         )
+        self.assertEqual(
+            (licenses / "AI-RISK-NOTICE.txt").read_text(), "AI risk notice\n"
+        )
+        self.assertEqual(build.image_root["AI-RISK-NOTICE.txt"], "AI risk notice\n")
+        self.assertEqual(build.image_root["FULL-LICENSE.txt"], "proprietary license\n")
+        self.assertNotIn("LICENSE.txt", build.image_root)
+        self.assertIn(
+            "On first launch, review the license and risk notice",
+            build.image_instructions,
+        )
+        self.assertIn("choose Agree and continue", build.image_instructions)
+        self.assertIn("Decline and exit leaves it stopped", build.image_instructions)
+        self.assertNotIn("accepts", build.image_instructions)
         self.assertEqual(
             (licenses / "third-party-desktop/OFL.txt").read_text(), "OFL notice\n"
         )

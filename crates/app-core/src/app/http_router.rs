@@ -46,6 +46,10 @@ pub(crate) fn route_http_request(app: &AppCore, request: HttpRequest) -> HttpRes
     if request.method == "POST" && request.path == super::project_import::PROJECT_IMPORT_ENDPOINT {
         return super::project_import::project_import_response(app, &request);
     }
+    if request.method == "POST" && request.path == super::project_removal::PROJECT_REMOVAL_ENDPOINT
+    {
+        return super::project_removal::project_removal_response(app, &request);
+    }
     // Debug builds hand the local development UI a short-lived bridge
     // credential so it can run in an ordinary browser through the vite dev
     // proxy. Release builds never expose this route: the packaged app routes

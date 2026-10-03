@@ -190,12 +190,12 @@ pub fn widget_bounds_for_mode(work_area: WorkArea, surface_mode: SurfaceMode) ->
 
 /// Calculates the physical Settings window bounds for one active monitor.
 ///
-/// Settings targets 800×600 logical pixels. The target is converted to physical
+/// Settings targets 1040×760 logical pixels. The target is converted to physical
 /// pixels using the monitor scale factor, clamped to the monitor work area, and
 /// centered within that work area.
 pub fn settings_window_bounds(work_area: WorkArea) -> WidgetBounds {
-    let width = logical_to_physical(800, work_area.scale_factor).min(work_area.width);
-    let height = logical_to_physical(600, work_area.scale_factor).min(work_area.height);
+    let width = logical_to_physical(1040, work_area.scale_factor).min(work_area.width);
+    let height = logical_to_physical(760, work_area.scale_factor).min(work_area.height);
     let offset_x = u32_to_i32(work_area.width.saturating_sub(width) / 2);
     let offset_y = u32_to_i32(work_area.height.saturating_sub(height) / 2);
     WidgetBounds {

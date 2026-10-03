@@ -1,4 +1,4 @@
-use crate::local::grafeo::blob_refs::{searchable_artifact_text, unique_blob_content_ref};
+use crate::local::grafeo::blob_refs::unique_blob_content_ref;
 use crate::local::grafeo::graph_rows::{apply_artifact_upsert, prepare_artifact_upsert};
 use crate::local::grafeo::semantic_storage::{SemanticStorage, validate_artifact};
 use crate::local::sql::artifact_blobs::ArtifactBlobRepository;
@@ -64,9 +64,6 @@ impl<'db> SemanticStorage<'db> {
         media_type: &str,
         content: &[u8],
     ) -> Result<SemanticArtifact> {
-        let mut artifact = artifact.clone();
-        artifact.content_size_bytes = Some(content.len());
-        artifact.searchable_text = searchable_artifact_text(content);
         let content_ref = unique_blob_content_ref(&artifact.artifact_id);
         ArtifactBlobRepository::with_clock(self.conn, self.clock.clone()).put_blob(
             &content_ref,
@@ -74,9 +71,7 @@ impl<'db> SemanticStorage<'db> {
             media_type,
             content,
         )?;
-        artifact.content = None;
-        artifact.content_ref = Some(content_ref);
-        Ok(artifact)
+        Ok(artifact.with_blob_content(content_ref, content))
     }
 
     pub(crate) fn commit_staged_artifact_update(

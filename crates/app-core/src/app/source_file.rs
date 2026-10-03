@@ -48,6 +48,9 @@ pub(crate) fn source_file_response(app: &AppCore, request: &HttpRequest) -> Http
         Ok(file) => file,
         Err(failure) => return error_response(failure.status, failure.message),
     };
+    if let Some(reference) = non_empty(request, "image") {
+        return document_image_response(app, &canonical_file, &reference);
+    }
     if request.query.get("format").map(String::as_str) == Some("binary") {
         return match read_binary_source(&canonical_file) {
             Ok(bytes) => HttpResponse::buffered(
@@ -62,7 +65,7 @@ pub(crate) fn source_file_response(app: &AppCore, request: &HttpRequest) -> Http
             Err(failure) => error_response(failure.status, failure.message),
         };
     }
-    match converted_source_response(&canonical_root, &canonical_file) {
+    match converted_source_response(app, &canonical_root, &canonical_file) {
         Ok(Some(response)) => return response,
         Err(message) => return error_response("422 Unprocessable Entity", message),
         Ok(None) => {}
@@ -98,19 +101,74 @@ pub(crate) fn source_file_response(app: &AppCore, request: &HttpRequest) -> Http
     )
 }
 
-fn converted_source_response(root: &Path, file: &Path) -> Result<Option<HttpResponse>, String> {
+fn converted_source_response(
+    app: &AppCore,
+    root: &Path,
+    file: &Path,
+) -> Result<Option<HttpResponse>, String> {
+    let (byte_size, converted) = read_document(app, file)?;
+    Ok(converted.map(|document| json_response("200 OK", json!({
+        "project_root":root.to_string_lossy(), "path":file.to_string_lossy(),
+        "text":document.markdown, "truncated":false, "byte_size":byte_size, "representation":"markdown",
+        "conversion":{"converter":document.provenance.converter,"enhancement":document.provenance.enhancement,"warnings":document.provenance.warnings},
+        "images":document.provenance.figures.iter().map(|figure| json!({"reference":figure.reference,"caption":figure.caption,"page":figure.page})).collect::<Vec<_>>()
+    }))))
+}
+
+fn read_document(
+    app: &AppCore,
+    file: &Path,
+) -> Result<(usize, Option<lumvise_project_indexer::ConvertedDocument>), String> {
     // Only candidate documents need a complete read; ordinary text keeps its existing truncation limit.
     if !lumvise_project_indexer::is_document_path(&file.to_string_lossy()) {
-        return Ok(None);
+        return Ok((0, None));
     }
     let bytes = std::fs::read(file)
         .map_err(|error| format!("{}: expected readable document: {error}", file.display()))?;
-    let converted = lumvise_project_indexer::convert_document(&file.to_string_lossy(), &bytes)
+    let converted = super::document_conversion::converter(app)?
+        .convert(&file.to_string_lossy(), &bytes)
         .map_err(|error| error.to_string())?;
-    Ok(converted.map(|document| json_response("200 OK", json!({
-        "project_root":root.to_string_lossy(), "path":file.to_string_lossy(),
-        "text":document.markdown, "truncated":false, "byte_size":bytes.len(), "representation":"markdown"
-    }))))
+    Ok((bytes.len(), converted))
+}
+
+fn document_image_response(app: &AppCore, file: &Path, reference: &str) -> HttpResponse {
+    let image = match read_document(app, file) {
+        Ok((_, document)) => document.and_then(|document| {
+            document
+                .images
+                .into_iter()
+                .find(|image| image.reference == reference)
+        }),
+        Err(error) => return error_response("422 Unprocessable Entity", error),
+    };
+    image.map_or_else(
+        || {
+            error_response(
+                "404 Not Found",
+                format!(
+                    "image {reference}: expected an embedded image in {}",
+                    file.display()
+                ),
+            )
+        },
+        embedded_image_response,
+    )
+}
+
+fn embedded_image_response(image: lumvise_project_indexer::DocumentImage) -> HttpResponse {
+    HttpResponse::buffered(
+        "200 OK",
+        image.media_type,
+        image.bytes,
+        vec![
+            ("X-Content-Type-Options".into(), "nosniff".into()),
+            ("Cache-Control".into(), "no-store".into()),
+            (
+                "Content-Security-Policy".into(),
+                "sandbox; default-src 'none'".into(),
+            ),
+        ],
+    )
 }
 
 /// Reads complete media bytes through the same indexed-root guard as text previews.
@@ -388,6 +446,67 @@ mod tests {
         );
         std::fs::remove_dir_all(directory).unwrap();
         std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn document_images_are_served_as_binary_behind_the_existing_source_guard() {
+        let app = credentialed_app();
+        let directory = tempfile::tempdir().unwrap();
+        index_root(&app, directory.path());
+        let bytes =
+            include_bytes!("../../../project-indexer/tests/fixtures/documents/illustrated.docx");
+        std::fs::write(directory.path().join("report.docx"), bytes).unwrap();
+        let mut request = request(&directory.path().to_string_lossy(), "report.docx");
+        let metadata = source_file_response(&app, &request);
+        assert_eq!(metadata.status, "200 OK");
+        let payload: serde_json::Value =
+            serde_json::from_slice(metadata.buffered_bytes().unwrap()).unwrap();
+        let reference = payload["images"][0]["reference"].as_str().unwrap();
+        assert!(!payload.to_string().contains("base64"));
+        request.query.insert("image".into(), reference.into());
+        let image = source_file_response(&app, &request);
+        assert_eq!(image.status, "200 OK");
+        assert_eq!(image.content_type, "image/png");
+        assert_eq!(
+            image.buffered_bytes().unwrap(),
+            include_bytes!("../../../project-indexer/tests/fixtures/gradient.png")
+        );
+        request
+            .query
+            .insert("image".into(), "../../private.png".into());
+        assert_eq!(source_file_response(&app, &request).status, "404 Not Found");
+        request.authorization = None;
+        assert_eq!(
+            source_file_response(&app, &request).status,
+            "401 Unauthorized"
+        );
+    }
+
+    #[test]
+    fn preview_uses_the_runtime_document_opt_out() {
+        let app = credentialed_app();
+        app.frontend()
+            .apply_app_settings_patch(
+                &lumvise_frontend_core::AppSettingsPatch::DocumentEnhancementEnabled(false),
+            )
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        index_root(&app, directory.path());
+        let bytes = include_bytes!("../../../project-indexer/tests/fixtures/documents/report.pdf");
+        std::fs::write(directory.path().join("report.pdf"), bytes).unwrap();
+        let preview = source_file_response(
+            &app,
+            &request(&directory.path().to_string_lossy(), "report.pdf"),
+        );
+        let payload: serde_json::Value =
+            serde_json::from_slice(preview.buffered_bytes().unwrap()).unwrap();
+        let converted = super::super::document_conversion::converter(&app)
+            .unwrap()
+            .convert("report.pdf", bytes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload["text"], converted.markdown);
+        assert_eq!(payload["conversion"]["enhancement"], "disabled");
     }
 
     #[test]

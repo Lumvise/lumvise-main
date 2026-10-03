@@ -1110,8 +1110,8 @@ fn safe_join(root: &Path, relative: &str) -> std::result::Result<PathBuf, String
 
 fn runtime_acceleration() -> Vec<String> {
     let mut values = Vec::new();
-    #[cfg(target_os = "macos")]
-    values.push("metal".to_string());
+    // OS identity does not prove a usable accelerator on this machine/build.
+    // Backends still select their native device; recommendations stay conservative.
     if let Some(value) = std::env::var_os("LUMVISE_ACCELERATION") {
         values.extend(value.to_string_lossy().split(',').filter_map(|value| {
             let value = value.trim();

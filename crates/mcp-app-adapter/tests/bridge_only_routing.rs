@@ -313,6 +313,112 @@ fn tool_catalog_contains_only_bridge_meta_and_discovered_plugin_tools() {
 }
 
 #[test]
+fn plugin_owned_guidance_refreshes_through_discovery_and_disappears_with_its_capability() {
+    let mut original = plugin_surface();
+    original["capabilities"][0]["description"] = json!("Read the saved scene before editing.");
+    let mut revised = original.clone();
+    revised["generation"] = json!("fixture-generation-2");
+    revised["capabilities"][0]["description"] =
+        json!("Read the saved scene; preserve user edits and read back after saving.");
+    let removed =
+        json!({"generation":"fixture-generation-3", "freshness":"current", "capabilities":[]});
+    let bridge = FakeBridge::start(vec![
+        BridgeResponse::Json(original.clone()),
+        BridgeResponse::Json(revised.clone()),
+        BridgeResponse::Json(revised.clone()),
+        BridgeResponse::Json(removed),
+    ]);
+    let workspace = tempfile::tempdir().unwrap();
+    let (server, _owner) = server_for_bridge(&bridge.base_url, workspace.path());
+    assert_catalog_guidance(&server, &original["capabilities"][0]["description"]);
+    assert_eq!(discovered_surface(&server), revised);
+    assert_catalog_guidance(&server, &revised["capabilities"][0]["description"]);
+    let empty = response_value(
+        &server,
+        json!({"jsonrpc":"2.0", "id":4, "method":"tools/list"}),
+    );
+    assert_eq!(empty["result"]["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(bridge.finish().len(), 4);
+}
+
+#[test]
+fn discovery_marks_cached_guidance_stale_when_the_current_surface_cannot_be_read() {
+    let mut original = plugin_surface();
+    original["capabilities"][0]["description"] = json!("Read before saving a project diagram.");
+    let bridge = FakeBridge::start(vec![
+        BridgeResponse::Json(original.clone()),
+        BridgeResponse::Json(json!({"capabilities":"unreadable"})),
+    ]);
+    let workspace = tempfile::tempdir().unwrap();
+    let (server, _owner) = server_for_bridge(&bridge.base_url, workspace.path());
+    assert_eq!(discovered_surface(&server), original);
+    let stale = discovered_surface(&server);
+    assert_eq!(stale["freshness"], "stale");
+    assert_eq!(stale["capabilities"], original["capabilities"]);
+    assert!(
+        stale["catalog_error"]
+            .as_str()
+            .unwrap()
+            .contains("expected versioned catalog")
+    );
+    assert_eq!(bridge.finish().len(), 2);
+}
+
+fn discovered_surface(server: &lumvise_mcp_core::LumviseMcpServer) -> Value {
+    let response = response_value(
+        server,
+        json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"discover_app_plugins", "arguments":{}}}),
+    );
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn installed_but_unavailable_plugins_keep_their_guidance_and_explicit_readiness() {
+    let mut stopped = plugin_surface();
+    stopped["capabilities"][0]["description"] = json!("Read before updating the current project.");
+    stopped["capabilities"][0]["availability"] = json!("unavailable");
+    let bridge = FakeBridge::start(vec![
+        BridgeResponse::Json(stopped.clone()),
+        BridgeResponse::Json(stopped.clone()),
+    ]);
+    let workspace = tempfile::tempdir().unwrap();
+    let (server, _owner) = server_for_bridge(&bridge.base_url, workspace.path());
+    assert_eq!(discovered_surface(&server), stopped);
+    assert_catalog_guidance(&server, &stopped["capabilities"][0]["description"]);
+    assert_eq!(bridge.finish().len(), 2);
+}
+
+fn assert_catalog_guidance(server: &lumvise_mcp_core::LumviseMcpServer, expected: &Value) {
+    let catalog = response_value(
+        server,
+        json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"}),
+    );
+    let tools = catalog["result"]["tools"].as_array().unwrap();
+    let plugin = tools
+        .iter()
+        .find(|tool| tool["name"] == "app_plugin.plugin.example.run")
+        .unwrap();
+    assert_eq!(&plugin["description"], expected);
+    assert_eq!(plugin["inputSchema"], json!({"type":"object"}));
+    let discovery = tools
+        .iter()
+        .find(|tool| tool["name"] == "discover_app_plugins")
+        .unwrap();
+    assert!(
+        discovery["description"]
+            .as_str()
+            .unwrap()
+            .contains("stale inventory")
+    );
+    assert!(
+        discovery["description"]
+            .as_str()
+            .unwrap()
+            .contains("availability=ready")
+    );
+}
+
+#[test]
 fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_binding() {
     let completed = |output_json: &[u8]| AppBridgeInvocationResponseV1 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,

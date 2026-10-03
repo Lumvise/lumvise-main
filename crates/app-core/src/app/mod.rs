@@ -1,6 +1,7 @@
 mod canvas_files;
 #[cfg(feature = "desktop-app")]
 mod desktop;
+mod document_conversion;
 #[cfg(feature = "assistant-e2e")]
 pub(crate) mod e2e_control;
 #[cfg(feature = "desktop-app")]
@@ -14,6 +15,7 @@ mod plugin_background_driver;
 mod plugin_settings;
 mod project_execution_http;
 pub(crate) mod project_import;
+mod project_removal;
 mod provider_settings;
 mod provider_startup;
 pub(crate) mod resource_routing;

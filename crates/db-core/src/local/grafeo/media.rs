@@ -1,6 +1,8 @@
 #[cfg(test)]
 use crate::DbError;
-use crate::local::fingerprint::{fingerprint_hamming_distance, fingerprints_match_exactly};
+#[cfg(test)]
+use crate::domain::graph_views::media_kind;
+use crate::domain::graph_views::{MediaAssociationSource, artifact_inheritance_from_source};
 use crate::local::grafeo::graph_rows::{
     nodes_by_label_and_property, semantic_artifacts_for_element, semantic_element_by_id,
     semantic_element_from_node,
@@ -9,9 +11,9 @@ use crate::{Result, SemanticArtifact, SemanticElement};
 use grafeo::GrafeoDB;
 #[cfg(test)]
 use grafeo::Value as GrafeoValue;
+#[cfg(test)]
 use serde_json::{Value, json};
 
-const MEDIA_SIMHASH_MAX_DISTANCE: u32 = 12;
 #[cfg(test)]
 const PATH_PROPERTY: &str = "path";
 const PROJECT_ROOT_PROPERTY: &str = "project_root";
@@ -64,89 +66,29 @@ pub(crate) fn annotation_for_media_element(
     artifact
 }
 
+struct GrafeoMediaSource<'graph>(&'graph GrafeoDB);
 pub(crate) fn artifacts_for_element_with_inheritance(
     graph: &GrafeoDB,
-    semantic_element_id: &str,
+    id: &str,
 ) -> Result<Vec<SemanticArtifact>> {
-    let Some(target) = element_by_id(graph, semantic_element_id) else {
-        return Ok(Vec::new());
-    };
-    let direct = direct_artifacts_for_element(graph, semantic_element_id);
-    if !direct.is_empty() || !is_media_or_segment_element(&target) {
-        return Ok(direct);
+    artifact_inheritance_from_source(&GrafeoMediaSource(graph), id)
+}
+impl MediaAssociationSource for GrafeoMediaSource<'_> {
+    fn element(&self, id: &str) -> Option<SemanticElement> {
+        semantic_element_by_id(self.0, id)
     }
-    inherited_artifacts_for_media_element(graph, &target)
-}
-
-pub(crate) fn fingerprint_algorithm(element: &SemanticElement) -> Option<&str> {
-    element
-        .metadata
-        .get("fingerprint_algorithm")
-        .and_then(Value::as_str)
-}
-
-fn inherited_artifacts_for_media_element(
-    graph: &GrafeoDB,
-    target: &SemanticElement,
-) -> Result<Vec<SemanticArtifact>> {
-    let candidates = inherited_source_candidates(graph, target);
-    if candidates.len() != 1 {
-        return Ok(Vec::new());
+    fn candidates(&self, root: &str) -> Vec<SemanticElement> {
+        nodes_by_label_and_property(self.0, "SemanticElement", PROJECT_ROOT_PROPERTY, root)
+            .iter()
+            .filter_map(semantic_element_from_node)
+            .collect()
     }
-    let candidate = &candidates[0];
-    Ok(
-        direct_artifacts_for_element(graph, &candidate.element.semantic_element_id)
-            .into_iter()
-            .map(|artifact| inherited_artifact(artifact, target, candidate))
-            .collect(),
-    )
+    fn artifacts(&self, id: &str) -> Vec<SemanticArtifact> {
+        semantic_artifacts_for_element(self.0, id)
+    }
 }
-
-fn inherited_source_candidates(graph: &GrafeoDB, target: &SemanticElement) -> Vec<MediaCandidate> {
-    nodes_by_label_and_property(
-        graph,
-        "SemanticElement",
-        PROJECT_ROOT_PROPERTY,
-        &target.project_root,
-    )
-    .iter()
-    .filter_map(semantic_element_from_node)
-    .filter(|source| source.semantic_element_id != target.semantic_element_id)
-    .filter(|source| media_candidate_shape_matches(source, target))
-    .filter(|source| !direct_artifacts_for_element(graph, &source.semantic_element_id).is_empty())
-    .filter_map(|source| MediaCandidate::new(source, target))
-    .collect()
-}
-
-fn media_candidate_shape_matches(source: &SemanticElement, target: &SemanticElement) -> bool {
-    source.project_root == target.project_root
-        && source.element_kind == target.element_kind
-        && source.lifecycle == "active"
-        && media_kind(source) == media_kind(target)
-        && fingerprint_algorithm(source) == fingerprint_algorithm(target)
-}
-
-fn direct_artifacts_for_element(
-    graph: &GrafeoDB,
-    semantic_element_id: &str,
-) -> Vec<SemanticArtifact> {
-    semantic_artifacts_for_element(graph, semantic_element_id)
-}
-
-fn inherited_artifact(
-    mut artifact: SemanticArtifact,
-    target: &SemanticElement,
-    candidate: &MediaCandidate,
-) -> SemanticArtifact {
-    artifact.semantic_element_id = target.semantic_element_id.clone();
-    artifact.metadata["association_kind"] = json!("inherited");
-    artifact.metadata["association_confidence"] = json!(candidate.confidence);
-    artifact.metadata["association_precaution"] = json!(candidate.precaution);
-    artifact.metadata["inherited_from_semantic_element_id"] =
-        json!(candidate.element.semantic_element_id);
-    artifact
-}
-
+#[cfg(test)]
+use crate::domain::fingerprint::fingerprint_algorithm;
 #[cfg(test)]
 fn direct_annotation_metadata(
     mut metadata: Value,
@@ -175,10 +117,6 @@ fn direct_annotation_metadata(
     metadata
 }
 
-fn element_by_id(graph: &GrafeoDB, semantic_element_id: &str) -> Option<SemanticElement> {
-    semantic_element_by_id(graph, semantic_element_id)
-}
-
 #[cfg(test)]
 fn media_path_matches(element: &SemanticElement, project_root: &str, target_path: &str) -> bool {
     element.project_root == project_root
@@ -190,61 +128,4 @@ fn media_path_matches(element: &SemanticElement, project_root: &str, target_path
 #[cfg(test)]
 fn is_top_level_media_element(element: &SemanticElement) -> bool {
     media_kind(element).is_some()
-}
-
-fn media_kind(element: &SemanticElement) -> Option<&str> {
-    file_media_kind(element)
-}
-
-fn is_media_or_segment_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "image" | "audio" | "video" | "image_region" | "audio_segment" | "video_segment"
-    )
-}
-
-fn is_media_or_segment_element(element: &SemanticElement) -> bool {
-    media_kind(element).is_some() || is_media_or_segment_kind(&element.element_kind)
-}
-
-fn file_media_kind(element: &SemanticElement) -> Option<&str> {
-    (element.element_kind == "file")
-        .then(|| element.metadata.get("media_kind").and_then(Value::as_str))
-        .flatten()
-        .filter(|kind| matches!(*kind, "image" | "audio" | "video"))
-}
-
-#[derive(Debug)]
-struct MediaCandidate {
-    element: SemanticElement,
-    confidence: u8,
-    precaution: bool,
-}
-
-impl MediaCandidate {
-    fn new(element: SemanticElement, target: &SemanticElement) -> Option<Self> {
-        let left = element.content_fingerprint.as_deref()?;
-        let right = target.content_fingerprint.as_deref()?;
-        if fingerprints_match_exactly(left, right) {
-            return Some(Self::exact(element));
-        }
-        let distance = fingerprint_hamming_distance(left, right)?;
-        (distance <= MEDIA_SIMHASH_MAX_DISTANCE).then(|| Self::similar(element))
-    }
-
-    fn exact(element: SemanticElement) -> Self {
-        Self {
-            element,
-            confidence: 100,
-            precaution: false,
-        }
-    }
-
-    fn similar(element: SemanticElement) -> Self {
-        Self {
-            element,
-            confidence: 90,
-            precaution: true,
-        }
-    }
 }

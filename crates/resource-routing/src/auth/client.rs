@@ -210,6 +210,10 @@ impl BrowserLauncher for FixtureBrowserLauncher {
 
 /// OS credential-store implementation. This is the only production durable
 /// secret path and stores no access or ID token.
+///
+/// Persistent only on macOS (login Keychain via keyring's `apple-native`).
+/// Other platforms fall back to keyring's in-memory mock, so saved sign-ins
+/// are lost on quit there until a platform backend is enabled.
 pub struct KeyringCredentialStore;
 
 impl CredentialStore for KeyringCredentialStore {
@@ -636,4 +640,47 @@ pub enum OidcClientError {
     DeadlineExceeded,
     #[error("credential store error: {0}")]
     CredentialStore(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CredentialStore, KeyringCredentialStore};
+
+    fn uses_mock_backend() -> bool {
+        keyring::Entry::new("com.lumvise.backend-probe", "probe")
+            .unwrap()
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .is_some()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keyring_store_uses_the_login_keychain() {
+        assert!(
+            !uses_mock_backend(),
+            "keyring fell back to its in-memory mock; expected apple-native"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_keyring_store_is_documented_as_in_memory() {
+        assert!(
+            uses_mock_backend(),
+            "a persistent backend is now enabled; update the README and KeyringCredentialStore docs"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keyring_store_round_trips_through_a_fresh_entry() {
+        let service = format!("com.lumvise.test.{}", std::process::id());
+        let store = KeyringCredentialStore;
+        store.store(&service, "account", "refresh-secret").unwrap();
+        let loaded = store.load(&service, "account");
+        store.delete(&service, "account").unwrap();
+        assert_eq!(loaded.unwrap().as_deref(), Some("refresh-secret"));
+        assert_eq!(store.load(&service, "account").unwrap(), None);
+    }
 }

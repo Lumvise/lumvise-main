@@ -67,6 +67,15 @@ pub struct AssistantModelOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default)]
+    pub setup_completed: bool,
+    /// Prefer document layout and OCR models when available; basic conversion stays usable.
+    #[serde(default = "default_document_enhancement_enabled")]
+    pub document_enhancement_enabled: bool,
+    #[serde(default = "default_speech_enabled")]
+    pub speech_recognition_enabled: bool,
+    #[serde(default = "default_speech_enabled")]
+    pub speech_synthesis_enabled: bool,
     #[serde(default = "default_bulb_visible")]
     pub bulb_visible: bool,
     pub input_device_id: Option<String>,
@@ -89,6 +98,10 @@ pub struct AppSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppSettingsPatch {
+    SetupCompleted(bool),
+    DocumentEnhancementEnabled(bool),
+    SpeechRecognitionEnabled(bool),
+    SpeechSynthesisEnabled(bool),
     BulbVisible(bool),
     InputDevice(Option<String>),
     OutputDevice(Option<String>),
@@ -107,6 +120,10 @@ pub enum AppSettingsPatch {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            setup_completed: false,
+            document_enhancement_enabled: true,
+            speech_recognition_enabled: true,
+            speech_synthesis_enabled: true,
             bulb_visible: true,
             input_device_id: None,
             output_device_id: None,
@@ -129,6 +146,12 @@ impl AppSettings {
     /// and Assistant Surface keys are intentionally ignored.
     pub fn from_renderer_value(value: &Value) -> Self {
         let mut settings = Self {
+            setup_completed: value["setupCompleted"].as_bool().unwrap_or(false),
+            document_enhancement_enabled: value["documentEnhancementEnabled"]
+                .as_bool()
+                .unwrap_or(true),
+            speech_recognition_enabled: value["speechRecognitionEnabled"].as_bool().unwrap_or(true),
+            speech_synthesis_enabled: value["speechSynthesisEnabled"].as_bool().unwrap_or(true),
             input_device_id: optional_string_field(value, "inputDeviceId"),
             output_device_id: optional_string_field(value, "outputDeviceId"),
             ..Default::default()
@@ -159,6 +182,22 @@ impl AppSettings {
     /// Applies one durable App Settings patch and returns the renderer projection.
     pub fn apply_app_settings_patch(&mut self, patch: &AppSettingsPatch) -> Value {
         match patch {
+            AppSettingsPatch::DocumentEnhancementEnabled(value) => {
+                self.document_enhancement_enabled = *value;
+                json!({ "documentEnhancementEnabled": value })
+            }
+            AppSettingsPatch::SetupCompleted(value) => {
+                self.setup_completed = *value;
+                json!({ "setupCompleted": value })
+            }
+            AppSettingsPatch::SpeechRecognitionEnabled(value) => {
+                self.speech_recognition_enabled = *value;
+                json!({ "speechRecognitionEnabled": value })
+            }
+            AppSettingsPatch::SpeechSynthesisEnabled(value) => {
+                self.speech_synthesis_enabled = *value;
+                json!({ "speechSynthesisEnabled": value })
+            }
             AppSettingsPatch::BulbVisible(value) => {
                 self.bulb_visible = *value;
                 json!({ "bulbVisible": value })
@@ -338,6 +377,12 @@ impl FrontendCore {
         &self.settings
     }
 
+    /// Hydrates the desktop projection without changing active windows or sessions.
+    /// Example: `frontend.restore_app_settings(saved_preferences)` after startup.
+    pub fn restore_app_settings(&mut self, settings: AppSettings) {
+        self.settings = settings;
+    }
+
     pub fn assistant_provider_catalog(&self) -> &AssistantProviderCatalog {
         &self.assistant_provider_catalog
     }
@@ -380,6 +425,14 @@ fn default_bulb_visible() -> bool {
     true
 }
 
+fn default_speech_enabled() -> bool {
+    true
+}
+
+fn default_document_enhancement_enabled() -> bool {
+    true
+}
+
 fn optional_string_field(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -396,6 +449,29 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_enhancement_defaults_on_and_preserves_explicit_opt_out() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("document_enhancement_enabled");
+        let mut settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(settings.document_enhancement_enabled);
+        assert_eq!(
+            settings.apply_app_settings_patch(&AppSettingsPatch::DocumentEnhancementEnabled(false)),
+            json!({"documentEnhancementEnabled": false})
+        );
+        let restored: AppSettings =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert!(!restored.document_enhancement_enabled);
+        assert!(
+            !AppSettings::from_renderer_value(&json!({"documentEnhancementEnabled": false}))
+                .document_enhancement_enabled
+        );
+        assert!(AppSettings::from_renderer_value(&json!({})).document_enhancement_enabled);
+    }
 
     #[test]
     fn bulb_visibility_defaults_visible_and_round_trips_when_hidden() {

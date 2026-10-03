@@ -401,6 +401,42 @@ fn context_menu_patches_return_renderer_json() {
 }
 
 #[test]
+fn setup_preferences_round_trip_and_keep_speech_directions_independent() {
+    let mut core = FrontendCore::default();
+    assert!(!core.app_settings().setup_completed);
+    core.apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionEnabled(false));
+    core.apply_app_settings_patch(&AppSettingsPatch::SetupCompleted(true));
+    let saved = serde_json::to_value(core.app_settings()).unwrap();
+    let restored: AppSettings = serde_json::from_value(saved).unwrap();
+    assert!(restored.setup_completed);
+    assert!(!restored.speech_recognition_enabled);
+    assert!(restored.speech_synthesis_enabled);
+    let projection =
+        core.apply_app_settings_patch(&AppSettingsPatch::SpeechSynthesisEnabled(false));
+    assert_eq!(projection["speechSynthesisEnabled"], false);
+}
+
+#[test]
+fn setup_defaults_preserve_saved_speech_and_accept_renderer_preferences() {
+    let mut saved = serde_json::to_value(AppSettings::default()).unwrap();
+    for key in [
+        "setup_completed",
+        "speech_recognition_enabled",
+        "speech_synthesis_enabled",
+    ] {
+        saved.as_object_mut().unwrap().remove(key);
+    }
+    let restored: AppSettings = serde_json::from_value(saved).unwrap();
+    assert!(!restored.setup_completed);
+    assert!(restored.speech_recognition_enabled && restored.speech_synthesis_enabled);
+    let settings = AppSettings::from_renderer_value(&serde_json::json!({
+        "setupCompleted": true, "speechRecognitionEnabled": true, "speechSynthesisEnabled": false
+    }));
+    assert!(settings.setup_completed && settings.speech_recognition_enabled);
+    assert!(!settings.speech_synthesis_enabled);
+}
+
+#[test]
 fn quick_menu_contains_only_audio_controls() {
     let core = FrontendCore::default();
     let devices = AudioDeviceCatalog {
@@ -455,10 +491,10 @@ fn settings_window_uses_logical_target_at_unit_scale() {
     assert_eq!(
         bounds,
         WidgetBounds {
-            x: 420,
-            y: 190,
-            width: 800,
-            height: 600,
+            x: 300,
+            y: 110,
+            width: 1040,
+            height: 760,
         }
     );
 }
@@ -471,10 +507,10 @@ fn settings_window_scales_and_centers_with_offset_work_area() {
     assert_eq!(
         bounds,
         WidgetBounds {
-            x: -600,
-            y: 270,
-            width: 1200,
-            height: 900,
+            x: -780,
+            y: 150,
+            width: 1560,
+            height: 1140,
         }
     );
 }

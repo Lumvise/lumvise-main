@@ -11,7 +11,6 @@ mod graph_row_projection;
 pub(crate) mod graph_rows;
 pub(crate) mod graph_store;
 mod lifecycle;
-mod matching;
 mod media;
 mod project_counts;
 mod scoped_read;

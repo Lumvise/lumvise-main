@@ -365,7 +365,7 @@ fn column_type_matches(name: &str, actual: &DataType) -> bool {
     }
 }
 
-fn validate_manifest(manifest: &PzManifest) -> Result<()> {
+pub(super) fn validate_manifest(manifest: &PzManifest) -> Result<()> {
     if manifest.format_version != PZ_FORMAT_VERSION
         || uuid::Uuid::parse_str(&manifest.project_id).map(|u| u.get_version_num()) != Ok(4)
         || uuid::Uuid::parse_str(&manifest.snapshot_id).map(|u| u.get_version_num()) != Ok(7)

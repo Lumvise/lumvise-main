@@ -1,10 +1,14 @@
-use lumvise_db_core::{CentralizedPersistence, SemanticOperation, SemanticResult};
+use lumvise_db_core::{
+    CentralizedPersistence, RelationalOperation, RelationalPersistence, RelationalReadiness,
+    RelationalResult, SemanticOperation, SemanticPersistence, SemanticReadiness, SemanticResult,
+};
 use std::{
     collections::BTreeSet,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use lumvise_resource_routing::InvocationControl;
 use lumvise_resource_routing::{
     auth::AuthenticatedPrincipal,
     protocol::{
@@ -14,9 +18,14 @@ use lumvise_resource_routing::{
         invocation_terminal_v1::Result as TerminalResult,
     },
 };
+#[cfg(feature = "assistant-e2e")]
+use lumvise_resource_server::ServerNeuralConfig;
+use lumvise_resource_server::dispatch::DispatchError;
 use lumvise_resource_server::{
-    AccessTokenValidator, ResourceServer, ServerNeuralConfig, ServerResources,
+    AccessTokenValidator, PrincipalPersistenceFactory, ResourceServer, ServerResources,
+    TenantAdapters, TenantOpenError,
 };
+use std::sync::Mutex;
 
 struct FakeAuth;
 
@@ -61,6 +70,142 @@ fn invocation(request_id: &str, major: u32, deadline: u64) -> InvocationEnvelope
                 media_type: "audio/wav".into(),
                 model: None,
             })),
+        })),
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrincipalOpenCall {
+    principal: AuthenticatedPrincipal,
+    client_instance_id: String,
+    deadline_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PersistenceCall {
+    kind: &'static str,
+    subject: String,
+    deadline_unix_ms: u64,
+}
+
+struct FakePrincipalPersistenceFactory {
+    open_calls: Arc<Mutex<Vec<PrincipalOpenCall>>>,
+    persistence_calls: Arc<Mutex<Vec<PersistenceCall>>>,
+    fail: bool,
+}
+
+impl PrincipalPersistenceFactory for FakePrincipalPersistenceFactory {
+    fn open(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        client_instance_id: &str,
+        control: &InvocationControl,
+    ) -> Result<Arc<TenantAdapters>, TenantOpenError> {
+        self.open_calls.lock().unwrap().push(PrincipalOpenCall {
+            principal: principal.clone(),
+            client_instance_id: client_instance_id.into(),
+            deadline_unix_ms: control.deadline_unix_ms(),
+        });
+        if self.fail {
+            return Err(TenantOpenError::Open(
+                "injected principal store failure".into(),
+            ));
+        }
+        Ok(Arc::new(fake_adapters(
+            principal.subject.clone(),
+            Arc::clone(&self.persistence_calls),
+        )))
+    }
+}
+
+struct FakeSemanticPersistence {
+    subject: String,
+    calls: Arc<Mutex<Vec<PersistenceCall>>>,
+}
+
+impl SemanticPersistence for FakeSemanticPersistence {
+    fn execute(
+        &self,
+        operation: SemanticOperation,
+        control: &InvocationControl,
+    ) -> lumvise_db_core::PersistenceResult<SemanticResult> {
+        assert!(matches!(operation, SemanticOperation::SemanticRevision));
+        self.calls.lock().unwrap().push(PersistenceCall {
+            kind: "semantic",
+            subject: self.subject.clone(),
+            deadline_unix_ms: control.deadline_unix_ms(),
+        });
+        Ok(SemanticResult::SemanticRevision {
+            commit_version: if self.subject == "alice" { 11 } else { 22 },
+        })
+    }
+
+    fn readiness(&self) -> lumvise_db_core::PersistenceResult<SemanticReadiness> {
+        Ok(SemanticReadiness { ready: true })
+    }
+}
+
+struct FakeRelationalPersistence {
+    subject: String,
+    calls: Arc<Mutex<Vec<PersistenceCall>>>,
+}
+
+impl RelationalPersistence for FakeRelationalPersistence {
+    fn execute(
+        &self,
+        operation: RelationalOperation,
+        control: &InvocationControl,
+    ) -> lumvise_db_core::PersistenceResult<RelationalResult> {
+        assert!(matches!(
+            operation,
+            RelationalOperation::GetPersistentSetting { .. }
+        ));
+        self.calls.lock().unwrap().push(PersistenceCall {
+            kind: "relational",
+            subject: self.subject.clone(),
+            deadline_unix_ms: control.deadline_unix_ms(),
+        });
+        Ok(RelationalResult::PersistentSetting(None))
+    }
+
+    fn readiness(&self) -> lumvise_db_core::PersistenceResult<RelationalReadiness> {
+        Ok(RelationalReadiness { ready: true })
+    }
+}
+
+fn fake_adapters(subject: String, calls: Arc<Mutex<Vec<PersistenceCall>>>) -> TenantAdapters {
+    TenantAdapters {
+        semantic: Arc::new(FakeSemanticPersistence {
+            subject: subject.clone(),
+            calls: Arc::clone(&calls),
+        }),
+        relational: Arc::new(FakeRelationalPersistence { subject, calls }),
+    }
+}
+
+fn deadline_in(milliseconds: u64) -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + milliseconds
+}
+
+fn persistence_invocation(
+    request_id: &str,
+    client_instance_id: &str,
+    deadline_unix_ms: u64,
+    operation: Operation,
+) -> InvocationEnvelopeV1 {
+    InvocationEnvelopeV1 {
+        protocol_major: PROTOCOL_MAJOR,
+        protocol_minor: PROTOCOL_MINOR,
+        request_id: request_id.into(),
+        sequence: 0,
+        payload: Some(Payload::Start(InvocationStartV1 {
+            deadline_unix_ms,
+            client_instance_id: client_instance_id.into(),
+            operation: Some(operation),
         })),
     }
 }
@@ -261,6 +406,249 @@ fn internal_server_uses_the_binary_persistence_codec_by_default() {
     assert!(matches!(
         CentralizedPersistence::decode_semantic_result(result).unwrap(),
         SemanticResult::SemanticRevision { .. }
+    ));
+}
+
+#[test]
+fn principal_factory_receives_identity_client_and_deadline_for_all_persistence_paths() {
+    let temporary = tempfile::tempdir().unwrap();
+    let open_calls = Arc::new(Mutex::new(Vec::new()));
+    let persistence_calls = Arc::new(Mutex::new(Vec::new()));
+    let factory = Arc::new(FakePrincipalPersistenceFactory {
+        open_calls: Arc::clone(&open_calls),
+        persistence_calls: Arc::clone(&persistence_calls),
+        fail: false,
+    });
+    let mut resources = ServerResources::internal(
+        temporary.path().to_path_buf(),
+        Arc::new(FakeAuth),
+        None,
+        None,
+        None,
+    );
+    resources.principal_factory = Some(factory);
+    let server = ResourceServer::new(resources);
+    let dispatcher = server.dispatcher();
+    let alice = principal("alice", "tenant-a");
+    let bob = principal("bob", "tenant-a");
+    let readiness_deadline = deadline_in(50_000);
+    let alice_semantic_deadline = deadline_in(51_000);
+    let bob_semantic_deadline = deadline_in(52_000);
+    let relational_deadline = deadline_in(53_000);
+
+    let readiness = dispatcher
+        .readiness(
+            &alice,
+            ReadinessRequestV1 {
+                supported_majors: vec![PROTOCOL_MAJOR],
+                supported_minors: vec![PROTOCOL_MINOR],
+                deadline_unix_ms: readiness_deadline,
+                client_instance_id: "readiness-client".into(),
+                requested_capabilities: vec![
+                    ResourceCapabilityV1::GraphPersistence as i32,
+                    ResourceCapabilityV1::SqlPersistence as i32,
+                ],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        readiness
+            .capabilities
+            .iter()
+            .map(|entry| entry.status)
+            .collect::<Vec<_>>(),
+        vec![
+            CapabilityReadinessV1::Ready as i32,
+            CapabilityReadinessV1::Ready as i32,
+        ]
+    );
+
+    let semantic =
+        CentralizedPersistence::encode_semantic_operation(SemanticOperation::SemanticRevision)
+            .unwrap();
+    let alice_response = dispatcher.invoke(
+        &alice,
+        vec![persistence_invocation(
+            "semantic-alice",
+            "semantic-client",
+            alice_semantic_deadline,
+            Operation::SemanticOperation(semantic.clone()),
+        )],
+    );
+    let bob_response = dispatcher.invoke(
+        &bob,
+        vec![persistence_invocation(
+            "semantic-bob",
+            "semantic-client",
+            bob_semantic_deadline,
+            Operation::SemanticOperation(semantic),
+        )],
+    );
+    assert_eq!(
+        semantic_revision(alice_response),
+        11,
+        "Alice must receive her principal-specific persistence adapter"
+    );
+    assert_eq!(
+        semantic_revision(bob_response),
+        22,
+        "Bob must not reuse Alice's adapter even with the same tenant"
+    );
+
+    let relational = CentralizedPersistence::encode_relational_operation(
+        RelationalOperation::GetPersistentSetting {
+            scope: "app".into(),
+            key: "theme".into(),
+        },
+    )
+    .unwrap();
+    let relational_response = dispatcher.invoke(
+        &alice,
+        vec![persistence_invocation(
+            "relational-alice",
+            "relational-client",
+            relational_deadline,
+            Operation::RelationalOperation(relational),
+        )],
+    );
+    assert_completed(relational_response);
+
+    assert_eq!(
+        *open_calls.lock().unwrap(),
+        vec![
+            PrincipalOpenCall {
+                principal: alice.clone(),
+                client_instance_id: "readiness-client".into(),
+                deadline_unix_ms: readiness_deadline,
+            },
+            PrincipalOpenCall {
+                principal: alice.clone(),
+                client_instance_id: "semantic-client".into(),
+                deadline_unix_ms: alice_semantic_deadline,
+            },
+            PrincipalOpenCall {
+                principal: bob.clone(),
+                client_instance_id: "semantic-client".into(),
+                deadline_unix_ms: bob_semantic_deadline,
+            },
+            PrincipalOpenCall {
+                principal: alice,
+                client_instance_id: "relational-client".into(),
+                deadline_unix_ms: relational_deadline,
+            },
+        ]
+    );
+    assert_eq!(
+        *persistence_calls.lock().unwrap(),
+        vec![
+            PersistenceCall {
+                kind: "semantic",
+                subject: "alice".into(),
+                deadline_unix_ms: alice_semantic_deadline,
+            },
+            PersistenceCall {
+                kind: "semantic",
+                subject: "bob".into(),
+                deadline_unix_ms: bob_semantic_deadline,
+            },
+            PersistenceCall {
+                kind: "relational",
+                subject: "alice".into(),
+                deadline_unix_ms: relational_deadline,
+            },
+        ]
+    );
+}
+
+#[test]
+fn principal_factory_failure_never_falls_back_to_tenant_local_persistence() {
+    let temporary = tempfile::tempdir().unwrap();
+    let factory = Arc::new(FakePrincipalPersistenceFactory {
+        open_calls: Arc::new(Mutex::new(Vec::new())),
+        persistence_calls: Arc::new(Mutex::new(Vec::new())),
+        fail: true,
+    });
+    let mut resources = ServerResources::internal(
+        temporary.path().to_path_buf(),
+        Arc::new(FakeAuth),
+        None,
+        None,
+        None,
+    );
+    resources.principal_factory = Some(factory);
+    let server = ResourceServer::new(resources);
+    let dispatcher = server.dispatcher();
+    let alice = principal("alice", "tenant-a");
+    let local_path = dispatcher.tenant_database_path(&alice);
+
+    let readiness_error = dispatcher.readiness(
+        &alice,
+        ReadinessRequestV1 {
+            supported_majors: vec![PROTOCOL_MAJOR],
+            supported_minors: vec![PROTOCOL_MINOR],
+            deadline_unix_ms: future_deadline(),
+            client_instance_id: "desktop-a".into(),
+            requested_capabilities: vec![ResourceCapabilityV1::GraphPersistence as i32],
+        },
+    );
+    assert!(matches!(
+        readiness_error,
+        Err(DispatchError::Tenant(TenantOpenError::Open(message)))
+            if message == "injected principal store failure"
+    ));
+    assert!(!local_path.exists());
+
+    let operation =
+        CentralizedPersistence::encode_semantic_operation(SemanticOperation::SemanticRevision)
+            .unwrap();
+    let response = dispatcher.invoke(
+        &alice,
+        vec![persistence_invocation(
+            "factory-error",
+            "desktop-a",
+            future_deadline(),
+            Operation::SemanticOperation(operation),
+        )],
+    );
+    let Payload::Terminal(terminal) = response.payload.unwrap() else {
+        panic!("dispatch must return a terminal envelope");
+    };
+    assert_eq!(
+        terminal.status,
+        InvocationTerminalStatusV1::Unavailable as i32
+    );
+    assert_eq!(terminal.error_code.as_deref(), Some("tenant_unavailable"));
+    assert!(!local_path.exists());
+}
+
+fn semantic_revision(response: InvocationEnvelopeV1) -> i64 {
+    let Payload::Terminal(terminal) = response.payload.unwrap() else {
+        panic!("dispatch must return a terminal envelope");
+    };
+    assert_eq!(
+        terminal.status,
+        InvocationTerminalStatusV1::Completed as i32
+    );
+    let Some(TerminalResult::Semantic(result)) = terminal.result.as_ref() else {
+        panic!("semantic operation must return its typed result");
+    };
+    match CentralizedPersistence::decode_semantic_result(result).unwrap() {
+        SemanticResult::SemanticRevision { commit_version } => commit_version,
+        other => panic!("unexpected semantic result: {other:?}"),
+    }
+}
+
+fn assert_completed(response: InvocationEnvelopeV1) {
+    let Payload::Terminal(terminal) = response.payload.unwrap() else {
+        panic!("dispatch must return a terminal envelope");
+    };
+    assert_eq!(
+        terminal.status,
+        InvocationTerminalStatusV1::Completed as i32
+    );
+    assert!(matches!(
+        terminal.result,
+        Some(TerminalResult::Relational(_))
     ));
 }
 

@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["document-ml"]
+document-ml = ["docling/pdf", "dep:docling-pdf", "dep:time"]
+
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
 lumvise-contracts.workspace = true
@@ -26,6 +30,13 @@ rayon = "1"
 tree-sitter-md = "0.5"
 anytomd = { version = "1.3.1", default-features = false }
 lopdf = { version = "0.42", default-features = false }
+# 0.52.9 moves to ORT rc.13; FastEmbed 5.14 shares rc.12 with 0.52.8.
+# https://github.com/docling-project/docling.rs/commit/cfdad4ef107f723a1e57c40848a65b97763a9707
+docling = { version = "=0.52.8", default-features = false }
+docling-core = "=0.52.8"
+docling-pdf = { version = "=0.52.8", default-features = false, optional = true }
+# Docling's lopdf 0.44 uses BorrowedFormatItem::StringLiteral but declares only time 0.3.
+time = { version = "0.3.55", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

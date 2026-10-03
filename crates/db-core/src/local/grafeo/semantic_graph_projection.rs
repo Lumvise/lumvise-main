@@ -1,23 +1,32 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::time::Instant;
-
+use crate::domain::graph_views::{BatchedGraphRows, ProjectionArtifact, ProjectionElement};
 use crate::{
-    Result, SemanticGraphArtifactPreview, SemanticGraphEdge, SemanticGraphGranularity,
-    SemanticGraphNode, SemanticGraphProjection, SemanticGraphProjectionRequest,
-    SemanticRelationship,
+    Result, SemanticGraphProjection, SemanticGraphProjectionRequest, SemanticRelationship,
 };
 use grafeo::{EdgeId, GrafeoDB, NodeId, Value as GrafeoValue};
 use grafeo_core::graph::{Direction, GraphStore};
-
+use std::collections::{HashMap, HashSet};
 const EDGE_PROPERTIES: &[&str] = &["relationship_kind", "label"];
-mod file_projection;
-mod general_projection;
 mod row_decoding;
-
-pub(super) use file_projection::*;
-pub(super) use general_projection::*;
+pub(super) use crate::domain::graph_views::slice_file_projection;
 use row_decoding::*;
-
+pub(crate) fn project(
+    graph: &GrafeoDB,
+    request: &SemanticGraphProjectionRequest,
+    commit_version: i64,
+    published_at: String,
+) -> Result<SemanticGraphProjection> {
+    let started = std::time::Instant::now();
+    let rows = read_batched_rows(graph, &request.project_root);
+    if request.granularity != crate::SemanticGraphGranularity::File {
+        metrics::histogram!("lumvise_db_renderer_graph_projection_stage_seconds", "stage" => "batched_rows").record(started.elapsed().as_secs_f64());
+    }
+    let projection =
+        crate::domain::graph_views::project_projection(rows, request, commit_version, published_at);
+    if request.granularity == crate::SemanticGraphGranularity::File {
+        metrics::histogram!("lumvise_db_renderer_graph_projection_stage_seconds", "stage" => "file_scope").record(started.elapsed().as_secs_f64());
+    }
+    projection
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -25,7 +34,7 @@ mod tests {
         insert_relationship_edge_with_index, semantic_node_id_index,
     };
     use crate::local::runtime::DbCore;
-    use crate::{SemanticArtifact, SemanticElement};
+    use crate::{SemanticArtifact, SemanticElement, SemanticGraphGranularity};
     use serde_json::json;
 
     #[test]

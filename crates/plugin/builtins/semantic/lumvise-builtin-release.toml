@@ -1,7 +1,7 @@
 package = "lumvise-plugin-semantic"
 binary = "lumvise-plugin-semantic"
 plugin_id = "builtin.semantic"
-plugin_version = "0.1.28"
+plugin_version = "0.1.29"
 publisher_id = "lumvise.builtin"
 key_id = "lumvise.release.1"
 protocol_min = 6

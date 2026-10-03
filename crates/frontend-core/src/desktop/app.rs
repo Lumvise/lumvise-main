@@ -6,7 +6,7 @@ use super::bridge::{
 };
 use super::lifecycle::PendingDesktopLifecyclePort;
 use crate::{AppSettings, AppSettingsPatch, WorkArea};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Configures a desktop launch without depending on a native platform implementation.
 ///
@@ -37,7 +37,7 @@ impl Default for DesktopAppConfig {
             title: "Lumvise".to_string(),
             renderer_tool: None,
             show_in_taskbar: true,
-            settings_bridge: Arc::new(DemoSettingsBridge),
+            settings_bridge: Arc::new(DemoSettingsBridge::default()),
             semantic_graph_bridge: Arc::new(DemoSemanticGraphBridge),
             voice_bridge: Arc::new(DemoVoiceBridge),
             whiteboard_bridge: Arc::new(DemoWhiteboardBridge),
@@ -55,8 +55,20 @@ impl PartialEq for DesktopAppConfig {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct DemoSettingsBridge;
+#[derive(Debug, Default)]
+pub(super) struct DemoSettingsBridge {
+    settings: Mutex<AppSettings>,
+}
+
+impl DemoSettingsBridge {
+    fn app_settings_guard(&self) -> Result<MutexGuard<'_, AppSettings>, String> {
+        self.settings.lock().map_err(|error| {
+            format!(
+                "demo app settings mutex was poisoned: {error}; expected an available settings lock"
+            )
+        })
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct DemoSemanticGraphBridge;
@@ -68,7 +80,16 @@ pub(super) struct DemoVoiceBridge;
 pub(super) struct DemoWhiteboardBridge;
 
 impl DesktopSettingsBridge for DemoSettingsBridge {
-    fn apply_app_settings_patch(&self, _patch: &AppSettingsPatch) -> Result<(), String> {
+    fn app_settings_snapshot(&self) -> Result<AppSettings, String> {
+        Ok(self.app_settings_guard()?.clone())
+    }
+
+    fn bulb_visible(&self) -> Result<bool, String> {
+        Ok(self.app_settings_snapshot()?.bulb_visible)
+    }
+
+    fn apply_app_settings_patch(&self, patch: &AppSettingsPatch) -> Result<(), String> {
+        self.app_settings_guard()?.apply_app_settings_patch(patch);
         Ok(())
     }
 }
@@ -163,6 +184,8 @@ impl DesktopWhiteboardBridge for DemoWhiteboardBridge {
 
 #[cfg(test)]
 mod tests {
+    use super::{AppSettings, AppSettingsPatch, DemoSettingsBridge, DesktopSettingsBridge};
+
     #[test]
     fn desktop_config_preserves_launch_defaults_and_default_bridges() {
         let config = super::DesktopAppConfig::default();
@@ -179,5 +202,56 @@ mod tests {
                 .synthesize_speech("demo".into(), "hello".into(), None, None)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn desktop_config_demo_settings_snapshot_retains_patches() {
+        let config = super::DesktopAppConfig::default();
+        let bridge = config.settings_bridge;
+        let initial = bridge.app_settings_snapshot().unwrap();
+        assert_eq!(initial, config.settings);
+        for patch in [
+            AppSettingsPatch::BulbVisible(false),
+            AppSettingsPatch::SpeechSynthesisEnabled(false),
+        ] {
+            bridge.apply_app_settings_patch(&patch).unwrap();
+        }
+        let snapshot = bridge.app_settings_snapshot().unwrap();
+        assert!(!snapshot.bulb_visible);
+        assert!(snapshot.speech_recognition_enabled);
+        assert!(!snapshot.speech_synthesis_enabled);
+        assert!(!bridge.bulb_visible().unwrap());
+    }
+
+    #[test]
+    fn desktop_config_demo_settings_keeps_instances_and_snapshots_independent() {
+        let bridge = DemoSettingsBridge::default();
+        let mut snapshot = bridge.app_settings_snapshot().unwrap();
+        snapshot.bulb_visible = false;
+        assert!(bridge.app_settings_snapshot().unwrap().bulb_visible);
+        bridge
+            .apply_app_settings_patch(&AppSettingsPatch::BulbVisible(false))
+            .unwrap();
+        let separate = super::DesktopAppConfig::default().settings_bridge;
+        assert_eq!(
+            separate.app_settings_snapshot().unwrap(),
+            AppSettings::default()
+        );
+    }
+
+    #[test]
+    fn desktop_config_demo_settings_rejects_poisoned_snapshot_and_patch() {
+        let bridge = DemoSettingsBridge::default();
+        let _ = std::panic::catch_unwind(|| {
+            let _settings = bridge.settings.lock().unwrap();
+            panic!("poison demo settings for regression coverage");
+        });
+        let snapshot_error = bridge.app_settings_snapshot().unwrap_err();
+        let patch_error = bridge
+            .apply_app_settings_patch(&AppSettingsPatch::BulbVisible(false))
+            .unwrap_err();
+        assert!(snapshot_error.contains("poisoned"));
+        assert!(snapshot_error.contains("expected an available settings lock"));
+        assert_eq!(snapshot_error, patch_error);
     }
 }

@@ -1,4 +1,6 @@
+mod guidance;
 mod schemas;
+pub(crate) use guidance::analysis_description;
 use lumvise_plugin_protocol::CURRENT_PROTOCOL_VERSION;
 use schemas::*;
 use std::collections::BTreeMap;
@@ -510,7 +512,7 @@ fn trigger_exports() -> Vec<ExportDescriptor> {
     ]
     .into_iter()
     .map(|(id, name, event_kinds, entity_kind)| ExportDescriptor {
-        description: String::new(),
+        description: guidance::description(id).into(),
         id: id.into(),
         name: name.into(),
         surface: ExportSurface::StorageTrigger {
@@ -607,7 +609,7 @@ fn descriptor(
 ) -> ExportDescriptor {
     let export = definition(invocation);
     ExportDescriptor {
-        description: String::new(),
+        description: guidance::description(export.id).into(),
         id: export.id.into(),
         name: export.name.into(),
         surface,

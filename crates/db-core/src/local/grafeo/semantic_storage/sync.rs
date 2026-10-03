@@ -204,82 +204,22 @@ impl<'db> SemanticStorage<'db> {
     }
 }
 
-pub(super) fn remap_relationships(
-    relationships: &[SemanticRelationship],
-    remaps: &IdentityRemapIndex<'_>,
-) -> Vec<SemanticRelationship> {
-    relationships
-        .iter()
-        .cloned()
-        .map(|mut relationship| {
-            relationship.source_element_id = remaps.resolve(&relationship.source_element_id);
-            relationship.target_element_id = remaps.resolve(&relationship.target_element_id);
-            relationship
-        })
-        .collect()
-}
-
 pub(super) fn normalized_relationships(
     project_root: &str,
     elements: &[SemanticElement],
     relationships: &[SemanticRelationship],
-    remaps: &[crate::local::grafeo::matching::IdentityRemap],
+    remaps: &[crate::domain::matching::SemanticIdentityRemap],
 ) -> Vec<SemanticRelationship> {
-    let remap_index = IdentityRemapIndex::new(remaps);
-    let mut normalized = BTreeMap::new();
-    for relationship in remap_relationships(relationships, &remap_index) {
-        normalized.insert(relationship_key(&relationship), relationship);
-    }
-    for relationship in
-        contains_relationships_from_parent_hints(project_root, elements, &remap_index)
-    {
-        normalized
-            .entry(relationship_key(&relationship))
-            .or_insert(relationship);
-    }
-    normalized.into_values().collect()
-}
-
-pub(super) fn contains_relationships_from_parent_hints(
-    project_root: &str,
-    elements: &[SemanticElement],
-    remaps: &IdentityRemapIndex<'_>,
-) -> Vec<SemanticRelationship> {
-    elements
-        .iter()
-        .filter_map(|element| contains_relationship_from_parent_hint(project_root, element, remaps))
-        .collect()
-}
-
-pub(super) fn contains_relationship_from_parent_hint(
-    project_root: &str,
-    element: &SemanticElement,
-    remaps: &IdentityRemapIndex<'_>,
-) -> Option<SemanticRelationship> {
-    let parent_id = element.parent_element_id.as_deref()?;
-    Some(SemanticRelationship {
-        project_root: project_root.to_string(),
-        source_element_id: remaps.resolve(parent_id),
-        target_element_id: remaps.resolve(&element.semantic_element_id),
-        relationship_kind: "contains".to_string(),
-        label: "contains".to_string(),
-        metadata: serde_json::json!({ "derived_from": "parent_element_id" }),
-    })
-}
-
-pub(super) fn relationship_key(
-    relationship: &SemanticRelationship,
-) -> (String, String, String, String) {
-    (
-        relationship.source_element_id.clone(),
-        relationship.target_element_id.clone(),
-        relationship.relationship_kind.clone(),
-        relationship.label.clone(),
+    crate::domain::relationships::normalized_relationships(
+        project_root,
+        elements,
+        relationships,
+        remaps,
     )
 }
 
 pub(super) fn semantic_sync_report(
-    reconciled: &crate::local::grafeo::matching::ReconciledElements,
+    reconciled: &crate::domain::matching::SemanticStructureReconciliation,
     relationship_count: usize,
 ) -> SemanticBatchSyncReport {
     SemanticBatchSyncReport {
@@ -331,21 +271,14 @@ pub(super) fn prepare_snapshot_write(
         .iter()
         .chain(inactive_elements.iter())
         .collect::<Vec<_>>();
-    let replacement_element_ids = elements
+    let element_plans = elements
         .iter()
-        .map(|element| element.semantic_element_id.clone())
-        .collect::<HashSet<_>>();
-    let known_node_ids = planned_element_node_ids(elements.iter().copied());
+        .map(|element| prepare_element_upsert(database, element))
+        .collect::<Result<Vec<_>>>()?;
+    let known_node_ids = planned_upsert_node_ids(elements.iter().copied(), &element_plans);
     Ok(PreparedSnapshot {
-        delete_plan: prepare_project_snapshot_delete(
-            database,
-            project_root,
-            &replacement_element_ids,
-        ),
-        element_plans: elements
-            .iter()
-            .map(|element| prepare_element_insert(element))
-            .collect::<Result<Vec<_>>>()?,
+        relationship_reset: prepare_project_relationship_reset(database, project_root),
+        element_plans,
         relationship_plan: prepare_relationship_upserts(database, relationships, &known_node_ids)?,
     })
 }
@@ -358,13 +291,15 @@ pub(super) fn apply_prepared_snapshot(
     plan: PreparedSnapshot,
 ) -> Result<BTreeMap<String, NodeId>> {
     let relationship_changes = plan.relationship_plan.changed_element_node_ids().clone();
-    apply_project_snapshot_delete(graph, plan.delete_plan);
+    // Rebuild only semantic relationships: native element identities anchor
+    // artifact ownership/dependencies, and vectors follow delta-sync semantics.
+    apply_project_relationship_reset(graph, plan.relationship_reset);
     for (element, element_plan) in active_elements
         .iter()
         .chain(inactive_elements.iter())
         .zip(plan.element_plans)
     {
-        apply_element_insert(graph, element, commit_version, element_plan)?;
+        apply_element_upsert(graph, element, commit_version, element_plan)?;
     }
     apply_relationship_write(graph, plan.relationship_plan)?;
     Ok(relationship_changes)
@@ -425,7 +360,7 @@ pub(super) fn prepare_full_structure_sync(
         &inactive_elements,
         &relationships,
     )?;
-    // Repair retains native nodes and their attachments; snapshot replacement deletes them.
+    // Duplicate repair owns attachment rebinding; the bulk path preserves unique native nodes.
     let mutation = if duplicate_element_ids(&existing).is_empty()
         && should_replace_snapshot(&existing, &element_changes)
     {
@@ -608,7 +543,7 @@ pub(super) fn prepare_delta_write(
         .iter()
         .map(|element| prepare_element_upsert(database, element))
         .collect::<Result<Vec<_>>>()?;
-    let known_node_ids = planned_upsert_node_ids(elements, &element_plans);
+    let known_node_ids = planned_upsert_node_ids(elements.iter(), &element_plans);
     let duplicate_repair = DuplicateElementRepair::prepare(database, &element_plans);
     let relationship_plan = prepare_relationship_sync(
         database,
@@ -638,30 +573,16 @@ pub(super) fn apply_prepared_delta(
     Ok(relationship_changes)
 }
 
-pub(super) fn planned_upsert_node_ids(
-    elements: &[SemanticElement],
+pub(super) fn planned_upsert_node_ids<'a>(
+    elements: impl Iterator<Item = &'a SemanticElement>,
     plans: &[ElementUpsertPlan],
 ) -> BTreeMap<String, NodeId> {
     elements
-        .iter()
         .zip(plans)
         .map(|(element, plan)| {
             (
                 element.semantic_element_id.clone(),
                 plan.relationship_node_id(&element.semantic_element_id),
-            )
-        })
-        .collect()
-}
-
-pub(super) fn planned_element_node_ids<'a>(
-    elements: impl Iterator<Item = &'a SemanticElement>,
-) -> BTreeMap<String, NodeId> {
-    elements
-        .map(|element| {
-            (
-                element.semantic_element_id.clone(),
-                semantic_element_node_id_for(&element.semantic_element_id),
             )
         })
         .collect()
@@ -722,4 +643,130 @@ pub(super) fn relationships_for_sources(
         .filter(|relationship| source_ids.contains(&relationship.source_element_id))
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod snapshot_rollback_tests {
+    use super::*;
+    use crate::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    use lumvise_resource_routing::InvocationControl;
+
+    #[test]
+    fn cancellation_after_bulk_snapshot_apply_rolls_back_native_nodes_and_attachments() {
+        let persistence = LocalPersistence::in_memory().unwrap();
+        let control = InvocationControl::sixty_seconds();
+        let original = snapshot_element();
+        persistence
+            .execute(
+                SemanticOperation::SyncStructure {
+                    project_root: "/snapshot-rollback".into(),
+                    elements: vec![original.clone()],
+                    relationships: vec![],
+                },
+                &control,
+            )
+            .unwrap();
+        let artifact = crate::SemanticArtifact {
+            artifact_id: "note".into(),
+            semantic_element_id: "owner".into(),
+            artifact_kind: "note".into(),
+            title: "Note".into(),
+            content_ref: None,
+            content: Some("Note".into()),
+            searchable_text: None,
+            content_size_bytes: None,
+            dependencies: vec![crate::ArtifactDependency {
+                target: crate::ArtifactDependencyTarget::SemanticElement {
+                    semantic_element_id: "owner".into(),
+                },
+            }],
+            metadata: serde_json::json!({}),
+        };
+        persistence
+            .execute(
+                SemanticOperation::UpsertArtifact {
+                    artifact,
+                    media_type: "text/plain".into(),
+                },
+                &control,
+            )
+            .unwrap();
+        let storage = persistence
+            .core
+            .storage_manager()
+            .semantic_storage()
+            .with_control(control.clone());
+        let before = native_attachment_state(&storage);
+        let mut renamed = original.clone();
+        renamed.name = "Changed".into();
+        let elements = vec![renamed];
+        let initial = storage
+            .graph
+            .plan(|database| {
+                prepare_snapshot_write(database, "/snapshot-rollback", &elements, &[], &[])
+            })
+            .unwrap();
+        let failure = storage.commit_prepared_graph_write(
+            initial,
+            |database| prepare_snapshot_write(database, "/snapshot-rollback", &elements, &[], &[]),
+            |graph, revision, _collector, plan| {
+                apply_prepared_snapshot(graph, &elements, &[], revision, plan)?;
+                assert!(
+                    graph.get_node(before.0).is_some(),
+                    "bulk sync must retain the native owner node"
+                );
+                // Cancel after native writes, so the enclosing commit must roll back.
+                control.cancel();
+                Ok(())
+            },
+        );
+        assert!(failure.is_err());
+        assert_eq!(native_attachment_state(&storage), before);
+        let observed = persistence
+            .execute(
+                SemanticOperation::Element {
+                    semantic_element_id: "owner".into(),
+                },
+                &InvocationControl::sixty_seconds(),
+            )
+            .unwrap();
+        assert!(matches!(observed, SemanticResult::Element(Some(element)) if element == original));
+    }
+    fn native_attachment_state(
+        storage: &SemanticStorage<'_>,
+    ) -> (NodeId, Vec<(NodeId, NodeId, String)>) {
+        storage.graph.read(|database| {
+            let owner = database
+                .find_nodes_by_property("semantic_element_id", &grafeo::Value::from("owner"))
+                .into_iter()
+                .find(|node_id| {
+                    database
+                        .get_node(*node_id)
+                        .is_some_and(|node| node.has_label("SemanticElement"))
+                })
+                .unwrap();
+            let edges = database
+                .iter_edges()
+                .map(|edge| (edge.src, edge.dst, edge.edge_type.to_string()))
+                .collect();
+            (owner, edges)
+        })
+    }
+    fn snapshot_element() -> SemanticElement {
+        SemanticElement {
+            project_root: "/snapshot-rollback".into(),
+            semantic_element_id: "owner".into(),
+            semantic_source_id: "fixture".into(),
+            path: "owner.rs".into(),
+            element_kind: "file".into(),
+            name: "Original".into(),
+            parent_element_id: None,
+            content_fingerprint: None,
+            start_line: None,
+            end_line: None,
+            lifecycle: "active".into(),
+            match_evidence: None,
+            metadata: serde_json::json!({}),
+        }
+    }
 }

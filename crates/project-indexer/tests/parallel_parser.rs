@@ -1,9 +1,19 @@
 use lumvise_project_indexer::{
-    FilesystemProjectSource, ParallelTreeSitterProjectParser, ParsedFile, ProjectFileParser,
-    ProjectIndexer, ScanError, ScanScope, SemanticIndexProjection, SourceParseInput,
-    TreeSitterProjectParser,
+    BlockSettings, DocumentConversionOptions, DocumentConverter, FilesystemProjectSource,
+    ParallelTreeSitterProjectParser, ParsedFile, ProjectFileParser, ProjectIndexer, ScanError,
+    ScanScope, SemanticIndexProjection, SourceParseInput, TreeSitterProjectParser,
 };
-use std::{fs, num::NonZeroUsize};
+use std::{
+    fs,
+    num::NonZeroUsize,
+    sync::{Arc, mpsc},
+    thread,
+    time::Duration,
+};
+
+const MANY_SHEETS: &[u8] = include_bytes!("fixtures/documents/many_sheets.xlsx");
+const REPORT_DOCX: &[u8] = include_bytes!("fixtures/documents/report.docx");
+const REPORT_PDF: &[u8] = include_bytes!("fixtures/documents/report.pdf");
 
 #[test]
 fn workers_preserve_sequential_results_and_reuse_a_bounded_number_of_engines() {
@@ -156,5 +166,84 @@ fn incomplete_batch_results_fail_without_acknowledging_any_source_changes() {
             .expect("expected incomplete parser output to fail");
         assert_eq!(error.path, "0");
         assert_eq!(error.reason, "expected 2 ordered parser results");
+    }
+}
+
+/// Docling forks Rayon work per sheet; on a syntax worker that fork could steal a
+/// sibling parse for the worker's own locked parser and never return.
+#[test]
+fn mixed_document_batches_finish_beside_a_shared_preview_converter() {
+    within_deadline(|| {
+        let converter = Arc::new(DocumentConverter::new(DocumentConversionOptions {
+            enhancement_enabled: false,
+        }));
+        let fixtures: Vec<(String, Vec<u8>)> = (0..32)
+            .flat_map(|index| {
+                [
+                    (format!("sheets{index}.xlsx"), MANY_SHEETS.to_vec()),
+                    (
+                        format!("code{index}.rs"),
+                        format!("fn item{index}() {{ target(); }}").into_bytes(),
+                    ),
+                ]
+            })
+            .chain([
+                ("report.pdf".into(), REPORT_PDF.to_vec()),
+                ("report.docx".into(), REPORT_DOCX.to_vec()),
+            ])
+            .collect();
+        let inputs: Vec<_> = fixtures
+            .iter()
+            .map(|(path, bytes)| SourceParseInput { path, bytes })
+            .collect();
+        let expected = TreeSitterProjectParser::default()
+            .with_document_converter(Arc::clone(&converter))
+            .parse_batch(&inputs)
+            .unwrap();
+        let mut parallel = ParallelTreeSitterProjectParser::new_with_document_converter(
+            4,
+            BlockSettings::default(),
+            Arc::clone(&converter),
+        )
+        .unwrap();
+        let preview = {
+            let converter = Arc::clone(&converter);
+            thread::spawn(move || {
+                (0..8)
+                    .map(|_| {
+                        converter
+                            .convert("report.pdf", REPORT_PDF)
+                            .unwrap()
+                            .unwrap()
+                    })
+                    .last()
+                    .unwrap()
+            })
+        };
+        for _ in 0..4 {
+            assert_eq!(parallel.parse_batch(&inputs).unwrap(), expected);
+        }
+        assert!(
+            preview
+                .join()
+                .unwrap()
+                .markdown
+                .contains("Ocean measurements")
+        );
+    });
+}
+
+/// Fails instead of hanging; a deadlocked worker is abandoned to process exit.
+fn within_deadline(work: impl FnOnce() + Send + 'static) {
+    let (done, finished) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        work();
+        let _ = done.send(());
+    });
+    if let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(Duration::from_secs(90)) {
+        panic!("document batch deadlocked in nested Rayon scheduling");
+    }
+    if let Err(panic) = worker.join() {
+        std::panic::resume_unwind(panic);
     }
 }

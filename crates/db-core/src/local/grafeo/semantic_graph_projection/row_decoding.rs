@@ -1,37 +1,4 @@
 use super::*;
-
-#[derive(Clone)]
-pub(super) struct ProjectionElement {
-    pub(super) semantic_element_id: String,
-    pub(super) path: String,
-    pub(super) element_kind: String,
-    pub(super) name: String,
-    pub(super) start_line: Option<i64>,
-    pub(super) end_line: Option<i64>,
-    pub(super) lifecycle: String,
-    pub(super) metadata: serde_json::Value,
-}
-
-pub(super) struct BatchedGraphRows {
-    pub(super) all: Vec<ProjectionElement>,
-    pub(super) all_by_id: HashMap<String, ProjectionElement>,
-    pub(super) relationships: Vec<SemanticRelationship>,
-    pub(super) artifacts_by_element: HashMap<String, Vec<ProjectionArtifact>>,
-}
-
-#[derive(Clone)]
-pub(super) struct ProjectionArtifact {
-    pub(super) artifact_id: String,
-    pub(super) semantic_element_id: String,
-    pub(super) artifact_kind: String,
-    pub(super) title: String,
-    pub(super) content_ref: Option<String>,
-    pub(super) content: Option<String>,
-    pub(super) searchable_text: Option<String>,
-    pub(super) content_size_bytes: Option<usize>,
-    pub(super) metadata: serde_json::Value,
-}
-
 struct NodePropertyColumns {
     rows: Vec<HashMap<String, GrafeoValue>>,
 }
@@ -201,7 +168,7 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
             let Some(artifact) = artifact else {
                 continue;
             };
-            if artifact.metadata_association_is_inherited() {
+            if artifact.metadata["association_kind"] == "inherited" {
                 continue;
             }
             let Some(owner) = artifact_nodes.get(&node_id) else {
@@ -256,12 +223,6 @@ pub(super) fn projection_artifact_from_properties<'a>(
             .and_then(|value| usize::try_from(value).ok()),
         metadata: json_value(property("metadata_json")),
     })
-}
-
-impl ProjectionArtifact {
-    fn metadata_association_is_inherited(&self) -> bool {
-        self.metadata["association_kind"] == "inherited"
-    }
 }
 
 pub(super) fn value_string(value: Option<&GrafeoValue>) -> Option<String> {

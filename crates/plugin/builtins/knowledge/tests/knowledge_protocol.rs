@@ -12,17 +12,18 @@ use lumvise_db_core::{
     SemanticElement, SemanticOperation, SemanticPersistence, SemanticResult,
 };
 use lumvise_plugin_knowledge::{
-    ASSISTANT_FIND_ELEMENTS_EXPORT_ID, ASSISTANT_GET_ELEMENT_EXPORT_ID, ASSISTANT_GET_EXPORT_ID,
-    ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID, CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID,
-    DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID, ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID,
-    GET_CULTIVATION_RUN_EXPORT_ID, GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID,
-    HTTP_C4_DEBUG_EXPORT_ID, HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID,
-    HTTP_DELETE_ARTIFACT_EXPORT_ID, HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID,
-    HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID, HTTP_PROJECTION_ARTIFACTS_EXPORT_ID,
-    HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID, HTTP_SYNC_EXPORT_ID,
-    HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_EXPORT_ID, MANIFEST_EXPORT_ID,
-    PACKAGE_PROTOCOL_VERSION, PLUGIN_ID, PROJECTION_EXPORT_ID, REBUILD_EXPORT_ID,
-    RUN_CULTIVATION_EXPORT_ID, SEARCH_EXPORT_ID, UPDATE_EXPORT_ID, package_manifest_source,
+    APPLY_TRANSFER_EXPORT_ID, ASSISTANT_FIND_ELEMENTS_EXPORT_ID, ASSISTANT_GET_ELEMENT_EXPORT_ID,
+    ASSISTANT_GET_EXPORT_ID, ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID,
+    CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID, DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID,
+    ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID, GET_CULTIVATION_RUN_EXPORT_ID,
+    GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID, HTTP_C4_DEBUG_EXPORT_ID,
+    HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID, HTTP_DELETE_ARTIFACT_EXPORT_ID,
+    HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID, HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID,
+    HTTP_PROJECTION_ARTIFACTS_EXPORT_ID, HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID,
+    HTTP_SYNC_EXPORT_ID, HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_EXPORT_ID,
+    MANIFEST_EXPORT_ID, PACKAGE_PROTOCOL_VERSION, PLUGIN_ID, PREVIEW_TRANSFER_EXPORT_ID,
+    PROJECTION_EXPORT_ID, REBUILD_EXPORT_ID, RUN_CULTIVATION_EXPORT_ID, SEARCH_EXPORT_ID,
+    UPDATE_EXPORT_ID, package_manifest_source,
 };
 use lumvise_plugin_package::{
     BuildPackageRequest, ExecutionMode, ExportDescriptor, ExportSurface, HostCompatibility,
@@ -884,12 +885,20 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         "warm search must reuse stored vectors without writes"
     );
 
+    broker.sync_elements("/other", vec![test_element("element-other", "/other")]);
+    let mismatched = system.invoke(PLUGIN_ID, CREATE_EXPORT_ID, serde_json::json!({
+        "artifact_id":"wrong-project", "semantic_element_id":"element-a", "project_root":"/other",
+        "knowledge_type":"definition", "title":"Invalid scope", "content":"Must not appear in either project"
+    })).unwrap();
+    assert!(
+        matches!(mismatched, WireOutcome::Failed { error } if error.code == "knowledge_project_mismatch")
+    );
     let pathed = system
         .invoke(
             PLUGIN_ID,
             "knowledge.create",
             serde_json::json!({
-                "artifact_id": "artifact-path", "semantic_element_id": "element-a",
+                "artifact_id": "artifact-path", "semantic_element_id": "element-other",
                 "knowledge_type": "definition", "title": "Pathed",
                 "content": "Pathed unique content", "tags": ["vault"],
                 "path": "notes/deep.md", "project_root": "/other",
@@ -1235,7 +1244,7 @@ fn signed_runtime_degrades_plugin_when_output_breaks_declared_contract() {
 }
 
 #[test]
-fn storage_trigger_inherits_knowledge_across_related_projects_via_bounded_candidates() {
+fn knowledge_transfer_requires_explicit_selection_and_is_idempotent() {
     const TARGET: &str = "knowledge-inheritance-host";
     let workspace = tempfile::tempdir().expect("inheritance workspace");
     let executable = std::fs::read(env!("CARGO_BIN_EXE_lumvise-plugin-knowledge"))
@@ -1283,93 +1292,255 @@ fn storage_trigger_inherits_knowledge_across_related_projects_via_bounded_candid
         .start(PLUGIN_ID)
         .expect("start packaged Knowledge binary");
 
-    let created = system
-        .invoke(
-            PLUGIN_ID,
+    for (artifact_id, title) in [
+        ("source-artifact-a", "Shared A"),
+        ("source-artifact-b", "Shared B"),
+    ] {
+        let metadata = if artifact_id == "source-artifact-a" {
+            serde_json::json!({"files": {"image": {
+                "contentRef": "canvas-file:source-artifact-a:image"
+            }}})
+        } else {
+            serde_json::json!({})
+        };
+        assert_succeeds(
+            &system,
             CREATE_EXPORT_ID,
             serde_json::json!({
-                "artifact_id": "source-artifact", "semantic_element_id": "shared-fn",
-                "knowledge_type": "definition", "title": "Shared",
-                "content": "Shared knowledge", "project_root": "/source-project"
+                "artifact_id": artifact_id, "semantic_element_id": "shared-fn",
+                "knowledge_type": "definition", "title": title,
+                "content": format!("{title} knowledge"), "project_root": "/source-project",
+                "metadata": metadata
             }),
-        )
-        .expect("create source Knowledge");
-    assert!(matches!(created, WireOutcome::Succeeded { .. }));
-
-    let project_roots_before = broker.semantic_operation_count("project_roots");
-    let project_artifacts_before = broker.semantic_operation_count("project_artifacts");
-    let candidate_before = broker.semantic_operation_count("candidate_source_elements");
-    let artifacts_for_elements_before = broker.semantic_operation_count("artifacts_for_elements");
-
+        );
+    }
+    let blob = SemanticPersistence::execute(
+        broker.persistence.as_ref(),
+        SemanticOperation::ArtifactBlobPut {
+            content_ref: "canvas-file:source-artifact-a:image".into(),
+            artifact_id: "source-artifact-a".into(),
+            media_type: "image/png".into(),
+            content: vec![7, 8, 9],
+        },
+        &InvocationControl::sixty_seconds(),
+    )
+    .expect("seed source artifact image blob");
+    assert!(matches!(blob, SemanticResult::ArtifactBlob(Some(_))));
     let trigger = serde_json::json!({
         "project_root": "/target-project", "base_revision": 0, "target_revision": 1,
         "changed": [{"entity_id": "shared-fn-twin", "entity_kind": "semantic_element",
             "disposition": "upserted"}]
     });
-    let outcome = system
-        .invoke(PLUGIN_ID, ELEMENT_TRIGGER_EXPORT_ID, trigger)
-        .expect("invoke storage trigger");
-    assert!(matches!(outcome, WireOutcome::Succeeded { .. }));
+    assert_succeeds(&system, ELEMENT_TRIGGER_EXPORT_ID, trigger.clone());
+    assert_eq!(
+        broker.semantic_operation_count("project_roots"),
+        0,
+        "transfer must not enumerate every semantic project root"
+    );
+    assert_eq!(
+        broker.semantic_operation_count("project_artifacts"),
+        0,
+        "transfer must not scan whole-project artifacts"
+    );
+    let target_before_selection = invoke_value(
+        &system,
+        LIST_EXPORT_ID,
+        serde_json::json!({"semantic_element_id": "shared-fn-twin"}),
+    );
+    assert_eq!(
+        target_before_selection["artifacts"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
 
+    let project_roots_before = broker.semantic_operation_count("project_roots");
+    let project_artifacts_before = broker.semantic_operation_count("project_artifacts");
+    let candidate_before = broker.semantic_operation_count("candidate_source_elements");
+    let preview = invoke_value(
+        &system,
+        PREVIEW_TRANSFER_EXPORT_ID,
+        serde_json::json!({"project_root": "/target-project"}),
+    );
+    assert_eq!(preview["project_root"], "/target-project");
+    assert_eq!(preview["existing_artifact_count"], 0);
+    let candidates = preview["candidates"]
+        .as_array()
+        .expect("transfer candidates");
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().all(|candidate| {
+        candidate["source_project_root"] == "/source-project"
+            && candidate["source_semantic_element_id"] == "shared-fn"
+            && candidate["target_semantic_element_id"] == "shared-fn-twin"
+            && candidate["exact_match"] == true
+            && candidate["already_copied"] == false
+    }));
     assert_eq!(
         broker.semantic_operation_count("project_roots"),
         project_roots_before,
-        "cross-project inheritance must never enumerate every semantic project root"
+        "preview must use bounded candidate lookup, not enumerate project roots"
     );
     assert_eq!(
         broker.semantic_operation_count("project_artifacts"),
         project_artifacts_before,
-        "cross-project inheritance must never scan a whole project's artifacts"
+        "preview must not scan whole-project artifacts"
     );
     assert_eq!(
         broker.semantic_operation_count("candidate_source_elements"),
-        candidate_before + 1
-    );
-    assert_eq!(
-        broker.semantic_operation_count("artifacts_for_elements"),
-        artifacts_for_elements_before + 2,
-        "one cultivation anchor lookup plus one inheritance candidate-owner lookup"
+        candidate_before + 1,
+        "preview must use the bounded cross-project candidate operation"
     );
 
-    let listed = system
+    let selected_candidate = candidates
+        .iter()
+        .find(|candidate| candidate["source_artifact_id"] == "source-artifact-a")
+        .expect("attachment source candidate");
+    let selected_transfer_id = selected_candidate["transfer_id"]
+        .as_str()
+        .expect("transfer id")
+        .to_owned();
+    let skipped_transfer_id = candidates
+        .iter()
+        .find(|candidate| candidate["source_artifact_id"] == "source-artifact-b")
+        .expect("unselected source candidate")["transfer_id"]
+        .as_str()
+        .expect("transfer id")
+        .to_owned();
+    let apply_input = serde_json::json!({
+        "project_root": "/target-project", "transfer_ids": [&selected_transfer_id]
+    });
+    let applied = invoke_value(&system, APPLY_TRANSFER_EXPORT_ID, apply_input.clone());
+    assert_eq!(
+        applied["copied_artifact_ids"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        applied["already_copied_artifact_ids"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    let replay = invoke_value(&system, APPLY_TRANSFER_EXPORT_ID, apply_input);
+    assert_eq!(
+        replay["copied_artifact_ids"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        replay["already_copied_artifact_ids"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    let target_after_selection = invoke_value(
+        &system,
+        LIST_EXPORT_ID,
+        serde_json::json!({"semantic_element_id": "shared-fn-twin"}),
+    );
+    assert_eq!(
+        target_after_selection["artifacts"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        target_after_selection["artifacts"][0]["semantic_element_id"],
+        "shared-fn-twin"
+    );
+    assert_eq!(
+        target_after_selection["artifacts"][0]["project_root"],
+        "/target-project"
+    );
+    let copied_artifact_id = applied["copied_artifact_ids"][0]
+        .as_str()
+        .expect("copied attachment artifact id");
+    let copied_content_ref =
+        target_after_selection["artifacts"][0]["metadata"]["files"]["image"]["contentRef"]
+            .as_str()
+            .expect("copied image reference");
+    assert_ne!(copied_content_ref, "canvas-file:source-artifact-a:image");
+    let copied_blob = SemanticPersistence::execute(
+        broker.persistence.as_ref(),
+        SemanticOperation::ArtifactBlobGet {
+            content_ref: copied_content_ref.into(),
+        },
+        &InvocationControl::sixty_seconds(),
+    )
+    .expect("read copied image blob");
+    let SemanticResult::ArtifactBlob(Some(copied_blob)) = copied_blob else {
+        panic!("expected copied artifact blob, got {copied_blob:?}");
+    };
+    assert_eq!(copied_blob.artifact_id, copied_artifact_id);
+    assert_eq!(copied_blob.content, vec![7, 8, 9]);
+    let source_blob = SemanticPersistence::execute(
+        broker.persistence.as_ref(),
+        SemanticOperation::ArtifactBlobGet {
+            content_ref: "canvas-file:source-artifact-a:image".into(),
+        },
+        &InvocationControl::sixty_seconds(),
+    )
+    .expect("source image blob remains readable");
+    assert!(matches!(
+        source_blob,
+        SemanticResult::ArtifactBlob(Some(blob))
+            if blob.artifact_id == "source-artifact-a" && blob.content == vec![7, 8, 9]
+    ));
+    let source_after_selection = invoke_value(
+        &system,
+        LIST_EXPORT_ID,
+        serde_json::json!({"semantic_element_id": "shared-fn"}),
+    );
+    assert_eq!(
+        source_after_selection["artifacts"].as_array().map(Vec::len),
+        Some(2)
+    );
+
+    let upserts_before_invalid = broker.semantic_operation_count("upsert_artifact");
+    let invalid = system
         .invoke(
             PLUGIN_ID,
-            LIST_EXPORT_ID,
-            serde_json::json!({"semantic_element_id": "shared-fn-twin"}),
+            APPLY_TRANSFER_EXPORT_ID,
+            serde_json::json!({"project_root": "/target-project", "transfer_ids": ["unknown"]}),
         )
-        .expect("list inherited Knowledge");
-    assert!(
-        matches!(listed, WireOutcome::Succeeded { value }
-        if value["artifacts"].as_array().is_some_and(|items| items.len() == 1)
-            && value["artifacts"][0]["title"] == "Shared"),
-        "Knowledge must automatically inherit across two related projects through the \
-         signed package StorageTrigger lifecycle"
+        .expect("invalid transfer id returns protocol outcome");
+    assert!(matches!(invalid, WireOutcome::Failed { .. }));
+    assert_eq!(
+        broker.semantic_operation_count("upsert_artifact"),
+        upserts_before_invalid
     );
 
-    let mut unique_element = test_element("globally-unique", "/target-project");
-    unique_element.content_fingerprint = Some("fp1:00000000000000ff:globally-unique-body".into());
-    broker.sync_elements("/target-project", vec![unique_element]);
-    let candidate_before = broker.semantic_operation_count("candidate_source_elements");
-    let artifacts_for_elements_before = broker.semantic_operation_count("artifacts_for_elements");
-    let no_candidate_trigger = serde_json::json!({
+    let next_trigger = serde_json::json!({
         "project_root": "/target-project", "base_revision": 1, "target_revision": 2,
-        "changed": [{"entity_id": "globally-unique", "entity_kind": "semantic_element",
+        "changed": [{"entity_id": "shared-fn-twin", "entity_kind": "semantic_element",
             "disposition": "upserted"}]
     });
-    let outcome = system
-        .invoke(PLUGIN_ID, ELEMENT_TRIGGER_EXPORT_ID, no_candidate_trigger)
-        .expect("invoke storage trigger for a globally unique element");
-    assert!(matches!(outcome, WireOutcome::Succeeded { .. }));
-    assert_eq!(
-        broker.semantic_operation_count("candidate_source_elements"),
-        candidate_before + 1
+    assert_succeeds(&system, ELEMENT_TRIGGER_EXPORT_ID, next_trigger);
+    let target_after_retrigger = invoke_value(
+        &system,
+        LIST_EXPORT_ID,
+        serde_json::json!({"semantic_element_id": "shared-fn-twin"}),
     );
     assert_eq!(
-        broker.semantic_operation_count("artifacts_for_elements"),
-        artifacts_for_elements_before + 1,
-        "the common no-candidate batch (only cultivation's anchor lookup) must make no \
-         inheritance-driven ArtifactsForElements call"
+        target_after_retrigger["artifacts"].as_array().map(Vec::len),
+        Some(1)
     );
+    let final_preview = invoke_value(
+        &system,
+        PREVIEW_TRANSFER_EXPORT_ID,
+        serde_json::json!({"project_root": "/target-project"}),
+    );
+    let selected_state = final_preview["candidates"]
+        .as_array()
+        .expect("final candidates")
+        .iter()
+        .find(|candidate| candidate["transfer_id"] == selected_transfer_id)
+        .expect("selected candidate remains in preview");
+    let skipped_state = final_preview["candidates"]
+        .as_array()
+        .expect("final candidates")
+        .iter()
+        .find(|candidate| candidate["transfer_id"] == skipped_transfer_id)
+        .expect("unselected candidate remains available");
+    assert_eq!(selected_state["already_copied"], true);
+    assert_eq!(skipped_state["already_copied"], false);
 
     system
         .stop(PLUGIN_ID)
@@ -1845,7 +2016,7 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
         serde_json::json!({"project_root": "/project"}),
     );
     assert_eq!(rebuilt["job"]["status"], "completed");
-    assert_eq!(rebuilt["job"]["vectors_rebuilt"], 3); // artifact-z, artifact-a, artifact-path
+    assert_eq!(rebuilt["job"]["vectors_rebuilt"], 2); // artifact-z and artifact-a; artifact-path belongs to /other.
 
     let cultivation = invoke_value(
         system,
@@ -2047,18 +2218,16 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
     assert_eq!(
         broker.semantic_operation_count("project_artifacts"),
         project_artifacts_before,
-        "StorageTrigger inheritance must never scan a whole project's artifacts to find \
-         Knowledge owners; candidates come from CandidateSourceElements + ArtifactsForElements"
+        "StorageTrigger must not scan project artifacts for implicit transfer"
     );
     assert!(broker.semantic_operation_count("selective_subgraph") > selective_before);
     let live_events_after = broker.row_count(PLUGIN_ID, "knowledge_live_events");
     assert!(live_events_after > live_events_before);
     assert_eq!(
         broker.semantic_operation_count("elements_by_ids_including_inactive"),
-        targeted_before + 4,
-        "each StorageTrigger reaction resolves only its own bounded targets: inheritance's \
-         bounded target read (1), cultivation's anchor resolution including parent \
-         traversal (2), and md-nucleus reconciliation's changed-element identity read (1)"
+        targeted_before + 3,
+        "StorageTrigger resolves cultivation anchors including parent traversal (2) and \
+         md-nucleus changed-element identity (1), without automatic inheritance"
     );
     assert_succeeds(system, ELEMENT_TRIGGER_EXPORT_ID, element_trigger.clone());
     assert_eq!(

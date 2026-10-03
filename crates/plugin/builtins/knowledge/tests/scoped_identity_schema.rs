@@ -113,3 +113,29 @@ fn packaged_knowledge_path_schemas_match_runtime_contract() {
         );
     }
 }
+
+#[test]
+fn packaged_transfer_exports_and_host_requirements_match_runtime() {
+    let template: serde_json::Value =
+        serde_json::from_str(include_str!("../lumvise-plugin-manifest.json")).unwrap();
+    let runtime = package_manifest_source("test-target", &"a".repeat(64));
+    assert_eq!(template["plugin_version"], runtime.plugin_version);
+    assert_eq!(
+        template["host_capabilities"],
+        serde_json::to_value(runtime.host_capabilities).unwrap()
+    );
+    for export in runtime.exports.iter().filter(|export| {
+        matches!(
+            export.id.as_str(),
+            "preview_knowledge_transfer" | "apply_knowledge_transfer"
+        )
+    }) {
+        let packaged = template["exports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["id"] == export.id)
+            .unwrap();
+        assert_eq!(*packaged, serde_json::to_value(export).unwrap());
+    }
+}

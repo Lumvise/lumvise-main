@@ -28,6 +28,7 @@ pub(super) const ASSISTANT_ENGINE_AVAILABILITY: &str = "runtime.assistant_engine
 /// so a missing selection is startup-detectable instead of only surfacing
 /// mid-turn (issue #92).
 pub(super) const SPEECH_AVAILABILITY: &str = "runtime.speech_availability";
+pub(super) const DOCUMENT_CONVERSION_OPTIONS: &str = "runtime.document_conversion_options";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HostCapabilityRoute {
@@ -55,7 +56,7 @@ impl HostCapabilityDefinition {
     }
 }
 
-const HOST_CAPABILITIES: [HostCapabilityDefinition; 19] = [
+const HOST_CAPABILITIES: [HostCapabilityDefinition; 20] = [
     capability(
         PLUGIN_STORAGE_CAPABILITY,
         HostCapabilityRoute::PluginStorage,
@@ -83,6 +84,7 @@ const HOST_CAPABILITIES: [HostCapabilityDefinition; 19] = [
     capability(EXCLUSIVE_LANE, HostCapabilityRoute::Services),
     capability(ASSISTANT_ENGINE_AVAILABILITY, HostCapabilityRoute::Services),
     capability(SPEECH_AVAILABILITY, HostCapabilityRoute::Services),
+    capability(DOCUMENT_CONVERSION_OPTIONS, HostCapabilityRoute::Services),
     capability("runtime.audio_session", HostCapabilityRoute::Services),
 ];
 
@@ -101,7 +103,7 @@ const fn semantic_capability() -> HostCapabilityDefinition {
         id: SEMANTIC_STORAGE,
         route: HostCapabilityRoute::SemanticStorage,
         major: 1,
-        minor: 3,
+        minor: 4,
         patch: 0,
     }
 }
@@ -144,7 +146,7 @@ mod tests {
             .map(|definition| definition.id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(identities.len(), 19);
+        assert_eq!(identities.len(), 20);
         assert_eq!(identities, expected_identities());
     }
 
@@ -152,8 +154,8 @@ mod tests {
     fn catalog_publishes_actual_versions() {
         let versions = compiled_host_capability_versions();
 
-        assert_eq!(versions.len(), 19);
-        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 3, 0));
+        assert_eq!(versions.len(), 20);
+        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 4, 0));
         assert!(
             versions
                 .iter()
@@ -175,7 +177,7 @@ mod tests {
 
         assert_eq!(definition.route, expected);
         let expected_version = if id == SEMANTIC_STORAGE {
-            Version::new(1, 3, 0)
+            Version::new(1, 4, 0)
         } else {
             Version::new(1, 0, 0)
         };
@@ -186,7 +188,7 @@ mod tests {
         expected_routes().into_iter().map(|(id, _)| id).collect()
     }
 
-    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 19] {
+    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 20] {
         [
             (
                 PLUGIN_STORAGE_CAPABILITY,
@@ -215,6 +217,7 @@ mod tests {
             (EXCLUSIVE_LANE, HostCapabilityRoute::Services),
             (ASSISTANT_ENGINE_AVAILABILITY, HostCapabilityRoute::Services),
             (SPEECH_AVAILABILITY, HostCapabilityRoute::Services),
+            (DOCUMENT_CONVERSION_OPTIONS, HostCapabilityRoute::Services),
             ("runtime.audio_session", HostCapabilityRoute::Services),
         ]
     }

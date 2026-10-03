@@ -5,7 +5,7 @@ use lumvise_plugin_sdk::{
 use serde_json::{Value, json};
 const RETAINED_LIVE_EVENTS: usize = 10_000;
 
-use crate::{cultivation, inheritance, md_nucleus, storage};
+use crate::{cultivation, md_nucleus, storage};
 
 pub(crate) fn storage_change(
     trigger_id: &str,
@@ -32,12 +32,8 @@ pub(crate) fn storage_change(
             .entry(change.entity_id.clone())
             .or_insert_with(|| change.clone());
     }
-    let upserted = unique
-        .values()
-        .filter(|change| change.disposition == StorageTriggerDisposition::Upserted)
-        .map(|change| change.entity_id.clone())
-        .collect::<std::collections::HashSet<_>>();
-    inheritance::inherit_project_knowledge(&request.project_root, &upserted, context)?;
+    // Fingerprint matches are transfer suggestions. Indexing must never copy
+    // artifacts behind the import review or resurrect a user's skipped choices.
     cultivation::refresh_reports_for_change_batch(&request, context)?;
     md_nucleus::reconcile_for_change_batch(&request, context)?;
 

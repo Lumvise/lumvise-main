@@ -90,7 +90,7 @@ pub(crate) fn exports() -> Vec<ExportDescriptor> {
         .map(|(id, description, fields)| ExportDescriptor {
             id: (*id).into(),
             name: id.replace('_', " "),
-            description: (*description).into(),
+            description: crate::manifest::analysis_description(id, description),
             surface: ExportSurface::McpTool,
             input_schema: input_schema(id, fields),
             output_schema: output_schema(id),

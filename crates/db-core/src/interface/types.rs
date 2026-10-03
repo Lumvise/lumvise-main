@@ -1,4 +1,4 @@
-pub use lumvise_contracts::ArtifactDependency;
+pub use lumvise_contracts::{ArtifactDependency, ArtifactDependencyTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -40,6 +40,36 @@ pub struct ChangeBatch {
 }
 
 impl ChangeBatch {
+    /// Constructs a portable delivery batch; adapters validate its cursor on acknowledgement.
+    /// Example: `ChangeBatch::for_hook("index".into(), 1, 0, 2, vec![])`.
+    pub fn for_hook(
+        hook_name: String,
+        generation: i64,
+        base_revision: i64,
+        target_revision: i64,
+        changed: Vec<ChangedElement>,
+    ) -> Self {
+        Self {
+            base_revision,
+            target_revision,
+            changed,
+            hook_name: Some(hook_name),
+            registration_generation: generation,
+        }
+    }
+
+    /// Identifies the registration to compare against authenticated storage.
+    /// Example: `assert_eq!(batch.hook_name(), Some("index"))`.
+    pub fn hook_name(&self) -> Option<&str> {
+        self.hook_name.as_deref()
+    }
+
+    /// Returns the registration epoch carried by this batch, never a role grant.
+    /// Example: `assert_eq!(batch.registration_generation(), 1)`.
+    pub fn registration_generation(&self) -> i64 {
+        self.registration_generation
+    }
+
     pub fn delivery_key(&self, changed: &ChangedElement) -> Result<String> {
         let hook_name = self.hook_name.as_deref().ok_or_else(|| {
             DbError::invalid_value("stateless batch", "batch returned by dirty_batch")
@@ -57,6 +87,30 @@ pub struct ChangeHookRegistration {
     pub scope: ChangeHookScope,
     pub watermark: i64,
     pub(crate) registration_generation: i64,
+}
+
+impl ChangeHookRegistration {
+    /// Constructs the portable result of a persisted registration.
+    /// Example: `ChangeHookRegistration::from_persisted("index".into(), scope, 0, 1)`.
+    pub fn from_persisted(
+        hook_name: String,
+        scope: ChangeHookScope,
+        watermark: i64,
+        generation: i64,
+    ) -> Self {
+        Self {
+            hook_name,
+            scope,
+            watermark,
+            registration_generation: generation,
+        }
+    }
+
+    /// Returns the epoch used for compare-and-swap acknowledgement.
+    /// Example: `assert_eq!(registration.generation(), 1)`.
+    pub fn generation(&self) -> i64 {
+        self.registration_generation
+    }
 }
 
 /// One registered MCP server instance row.

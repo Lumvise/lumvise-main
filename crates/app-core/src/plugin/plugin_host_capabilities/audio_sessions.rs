@@ -59,7 +59,10 @@ impl PluginHostServices {
             .lock()
             .map_err(|_| failed(AUDIO_SESSION, "frontend lock poisoned"))?;
         let settings = frontend.app_settings();
-        if !settings.assistant_direct_audio {
+        if !settings.assistant_direct_audio
+            || !settings.speech_recognition_enabled
+            || !settings.speech_synthesis_enabled
+        {
             return Ok(json!({"enabled":false}));
         }
         let provider = settings.assistant_engine.value();
@@ -260,6 +263,16 @@ impl PluginHostServices {
         &self,
         input: lumvise_frontend_core::LiveAudioInput,
     ) -> Result<(), String> {
+        if input.control == 0
+            && !self
+                .frontend
+                .lock()
+                .map_err(|_| "frontend mutex poisoned")?
+                .app_settings()
+                .speech_recognition_enabled
+        {
+            return Err("speech_recognition_enabled=false; expected speech input enabled before sending audio".into());
+        }
         let lumvise_frontend_core::LiveAudioInput {
             session_id,
             session_epoch: epoch,

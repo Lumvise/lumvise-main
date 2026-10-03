@@ -85,6 +85,10 @@ The bare runtime has an empty plugin catalog. Install the Community plugin
 bundle to enable Knowledge and Semantic tools; the packaged Community installer
 includes that bundle. See [building and installing plugins](#plugins).
 
+Saved sign-ins persist only on macOS, where they are stored in the login
+Keychain. Linux and Windows builds have no persistent credential store yet:
+sign-ins work for the running session and are lost when Lumvise quits.
+
 ### Terminal commands
 
 Running `lumvise` without arguments in a terminal shows brief help for your

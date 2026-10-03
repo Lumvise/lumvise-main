@@ -39,32 +39,6 @@ pub(crate) fn apply_element_upsert(
     Ok(())
 }
 
-pub(crate) fn prepare_element_insert(element: &SemanticElement) -> Result<ElementInsertPlan> {
-    Ok(ElementInsertPlan {
-        properties: element_properties(
-            element,
-            element.match_evidence.as_ref(),
-            serde_json::to_string(&element.metadata)?,
-        ),
-    })
-}
-
-pub(crate) fn apply_element_insert(
-    database: &GraphTransaction<'_>,
-    element: &SemanticElement,
-    commit_version: i64,
-    plan: ElementInsertPlan,
-) -> Result<()> {
-    database.create_semantic_node(
-        &element.semantic_element_id,
-        plan.properties
-            .into_iter()
-            .chain(element_change_properties(element, commit_version))
-            .collect::<Vec<_>>(),
-    )?;
-    Ok(())
-}
-
 pub(crate) fn prepare_element_name_vector_replace(
     database: &GrafeoDB,
     element: &SemanticElement,
@@ -343,43 +317,16 @@ pub(super) fn stable_node_hash(value: &str) -> u64 {
     hash.max(1)
 }
 
-pub(crate) fn prepare_project_snapshot_delete(
+pub(crate) fn prepare_project_relationship_reset(
     database: &GrafeoDB,
     project_root: &str,
-    replacement_element_ids: &HashSet<String>,
-) -> ProjectSnapshotDeletePlan {
-    let candidates = node_ids_by_label_and_property(
+) -> ProjectRelationshipResetPlan {
+    let element_node_ids = node_ids_by_label_and_property(
         database,
         "SemanticElement",
         PROJECT_ROOT_PROPERTY,
         project_root,
     );
-    let keys = [
-        ACTIVE_PROPERTY.into(),
-        "lifecycle".into(),
-        SEMANTIC_ELEMENT_ID_PROPERTY.into(),
-    ];
-    let properties = database
-        .graph_store()
-        .get_nodes_properties_selective_batch(&candidates, &keys);
-    let element_node_ids = candidates
-        .into_iter()
-        .zip(properties)
-        .filter(|(_, properties)| {
-            let active = properties
-                .get(ACTIVE_PROPERTY)
-                .map(|value| value.as_bool().unwrap_or(false))
-                .unwrap_or_else(|| {
-                    properties.get("lifecycle").and_then(|value| value.as_str()) != Some("inactive")
-                });
-            active
-                || properties
-                    .get(SEMANTIC_ELEMENT_ID_PROPERTY)
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|id| replacement_element_ids.contains(id))
-        })
-        .map(|(id, _)| id)
-        .collect::<Vec<_>>();
     let relationship_edge_ids = element_node_ids
         .iter()
         .flat_map(|node_id| database.store().edges_from(*node_id, Direction::Outgoing))
@@ -387,30 +334,17 @@ pub(crate) fn prepare_project_snapshot_delete(
         .filter(|edge| semantic_relationship_from_edge(edge).is_some())
         .map(|edge| edge.id)
         .collect();
-    ProjectSnapshotDeletePlan {
+    ProjectRelationshipResetPlan {
         relationship_edge_ids,
-        element_node_ids,
-        element_vector_node_ids: node_ids_by_label_and_property(
-            database,
-            "SemanticElementNameVector",
-            PROJECT_ROOT_PROPERTY,
-            project_root,
-        ),
     }
 }
 
-pub(crate) fn apply_project_snapshot_delete(
+pub(crate) fn apply_project_relationship_reset(
     database: &GraphTransaction<'_>,
-    plan: ProjectSnapshotDeletePlan,
+    plan: ProjectRelationshipResetPlan,
 ) {
     for edge_id in plan.relationship_edge_ids {
         database.delete_edge(edge_id);
-    }
-    for node_id in plan.element_node_ids {
-        database.delete_node(node_id);
-    }
-    for node_id in plan.element_vector_node_ids {
-        database.delete_node(node_id);
     }
 }
 

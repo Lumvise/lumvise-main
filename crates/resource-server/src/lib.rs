@@ -5,7 +5,10 @@
 //! cancellation, and tenant-local persistence lifetime remain implementation
 //! details behind [`ResourceServer`].
 
+mod archive_transfer;
 pub mod config;
+mod http_extension;
+pub use http_extension::{ResourceHttpExtension, ResourceHttpRequest, ResourceHttpResponse};
 pub mod dispatch;
 pub mod server;
 pub mod tenant;
@@ -20,6 +23,6 @@ pub use server::{
     ServerResources,
 };
 pub use tenant::{
-    LocalTenantPersistenceFactory, TenantAdapterCache, TenantAdapters, TenantKey, TenantOpenError,
-    TenantPersistenceFactory, tenant_database_path,
+    LocalTenantPersistenceFactory, PrincipalPersistenceFactory, TenantAdapterCache, TenantAdapters,
+    TenantKey, TenantOpenError, TenantPersistenceFactory, tenant_database_path,
 };

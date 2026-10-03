@@ -11,6 +11,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod audio_sessions;
+mod document_conversion;
+mod speech_access;
 use audio_sessions::{AUDIO_SESSION, LiveAudioConnections};
 mod background_jobs;
 use background_jobs::BackgroundJobAdapter;
@@ -239,6 +241,9 @@ impl PluginHostServices {
             EXCLUSIVE_LANE => self.exclusive_lane(plugin_id, input),
             ASSISTANT_ENGINE_AVAILABILITY => self.assistant_engine_availability(),
             SPEECH_AVAILABILITY => self.speech_availability(),
+            super::host_capability_catalog::DOCUMENT_CONVERSION_OPTIONS => {
+                self.document_conversion_options()
+            }
             AUDIO_SESSION => self.audio_session(input),
             other => Err(unknown(other)),
         }
@@ -271,44 +276,6 @@ impl PluginHostServices {
         let (provider, model) =
             configured_llm_selection(&self.frontend, ASSISTANT_ENGINE_AVAILABILITY)?;
         Ok(json!({"available": provider.is_some() && model.is_some()}))
-    }
-
-    /// Which speech dependencies a voice session needs and whether each is
-    /// installed. Reads the same recognizer/synthesizer slots the turn-time
-    /// `modalities.*` capabilities read, so availability and turn behaviour
-    /// cannot drift (issue #92).
-    ///
-    /// Reports names only, never model ids or service handles, so callers learn
-    /// what to configure without seeing engine internals.
-    fn speech_availability(&self) -> Result<Value, HostCapabilityError> {
-        let recognizer_installed = self
-            .speech_recognizer
-            .lock()
-            .map_err(|_| failed(SPEECH_AVAILABILITY, "speech recognizer slot mutex poisoned"))?
-            .is_some();
-        let synthesizer_installed = self
-            .speech_synthesizer
-            .lock()
-            .map_err(|_| {
-                failed(
-                    SPEECH_AVAILABILITY,
-                    "speech synthesizer slot mutex poisoned",
-                )
-            })?
-            .is_some();
-        let mut missing = Vec::new();
-        if !recognizer_installed {
-            missing.push("Speech-to-Text model");
-        }
-        if !synthesizer_installed {
-            missing.push("Text-to-Speech voice");
-        }
-        Ok(json!({
-            "available": missing.is_empty(),
-            "speech_to_text": recognizer_installed,
-            "text_to_speech": synthesizer_installed,
-            "missing": missing,
-        }))
     }
 
     fn project_execution(
@@ -629,6 +596,7 @@ impl PluginHostServices {
             return Err(quota(TEXT_TO_SPEECH, text.len(), MAX_TTS_TEXT_BYTES));
         }
 
+        let executor = self.text_to_speech_executor()?;
         let segment_index = if text.is_empty() {
             self.current_playback_segment_index(&request.playback_id)?
         } else {
@@ -636,7 +604,6 @@ impl PluginHostServices {
         };
         self.remember_playback_owner(&request.playback_id, plugin_id, &request.session_id);
 
-        let executor = self.text_to_speech_executor()?;
         let synth_control = self.playback_control(&request.playback_id);
 
         let transport = self.voice_playback_transport();
@@ -904,48 +871,6 @@ impl PluginHostServices {
             );
         }
         Ok(owner.map(|(plugin_id, session_id)| (plugin_id, session_id, segment_index)))
-    }
-
-    fn speech_to_text_executor(&self) -> Result<Arc<SpeechToTextExecutor>, HostCapabilityError> {
-        let service = self
-            .speech_recognizer
-            .lock()
-            .map_err(|_| failed(SPEECH_TO_TEXT, "speech recognizer slot mutex poisoned"))?
-            .clone()
-            .ok_or_else(|| unavailable(SPEECH_TO_TEXT, "speech recognizer is not installed"))?;
-        let mut slot = self
-            .speech_to_text_executor
-            .lock()
-            .map_err(|_| failed(SPEECH_TO_TEXT, "speech executor slot mutex poisoned"))?;
-        if let Some((current_service, executor)) = slot.as_ref()
-            && Arc::ptr_eq(current_service, &service)
-        {
-            return Ok(Arc::clone(executor));
-        }
-        let executor = Arc::new(SpeechToTextExecutor::start(Arc::clone(&service)));
-        *slot = Some((service, Arc::clone(&executor)));
-        Ok(executor)
-    }
-
-    fn text_to_speech_executor(&self) -> Result<Arc<TextToSpeechExecutor>, HostCapabilityError> {
-        let service = self
-            .speech_synthesizer
-            .lock()
-            .map_err(|_| failed(TEXT_TO_SPEECH, "speech synthesizer slot mutex poisoned"))?
-            .clone()
-            .ok_or_else(|| unavailable(TEXT_TO_SPEECH, "speech synthesizer is not installed"))?;
-        let mut slot = self
-            .text_to_speech_executor
-            .lock()
-            .map_err(|_| failed(TEXT_TO_SPEECH, "speech executor slot mutex poisoned"))?;
-        if let Some((current_service, executor)) = slot.as_ref()
-            && Arc::ptr_eq(current_service, &service)
-        {
-            return Ok(Arc::clone(executor));
-        }
-        let executor = Arc::new(TextToSpeechExecutor::start(Arc::clone(&service)));
-        *slot = Some((service, Arc::clone(&executor)));
-        Ok(executor)
     }
 
     fn scoped_mcp(&self, input: Value) -> Result<Value, HostCapabilityError> {

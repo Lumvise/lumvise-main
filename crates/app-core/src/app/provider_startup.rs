@@ -80,6 +80,16 @@ pub(crate) fn synchronize_llm_providers(
         .map_err(Into::into)
 }
 
+/// Updates selector inventory only; the Refresh models action must not buy inference.
+/// For example, Settings refresh uses this while startup may explicitly probe providers.
+pub(crate) fn refresh_llm_inventory(
+    relational: &dyn RelationalPersistence,
+) -> Result<LlmProviderSync, Box<dyn std::error::Error>> {
+    LlmProviderSynchronizer::production(Arc::new(ReqwestLlmHttpClient::new()))?
+        .refresh_inventory(configured_llm_candidates(relational)?)
+        .map_err(Into::into)
+}
+
 /// Makes configured providers callable before optional discovery probes finish.
 /// Model requests still carry the user's saved selection; catalog reconciliation
 /// stays with the background sync so an empty inventory cannot erase it.

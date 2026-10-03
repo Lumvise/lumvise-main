@@ -1,3 +1,7 @@
+//! Owns provider discovery and synchronization. Call `LlmProviderSynchronizer`;
+//! inventory parsing and invocation probes remain internal. Selection belongs to
+//! `ProviderModelCatalog`.
+
 use crate::config::{LlmProviderConfig, LlmProviderKind, SpawnConfig};
 use crate::error::{NeuralError, Result};
 use crate::llm_providers::adapter::{
@@ -48,6 +52,8 @@ pub enum LlmProviderAvailability {
     InvocationFailed {
         message: String,
     },
+    /// Inventory is known; no inference request was made to test availability.
+    Unverified,
     Available,
 }
 
@@ -141,13 +147,30 @@ impl LlmProviderSynchronizer {
     /// per-candidate error-handling branch are unchanged from the prior
     /// sequential implementation; only the execution strategy changed.
     pub fn sync(&self, candidates: Vec<LlmProviderCandidate>) -> Result<LlmProviderSync> {
+        self.synchronize_candidates(candidates, true)
+    }
+
+    /// Refreshes model choices without generating a completion or testing entitlement.
+    /// Example: `synchronizer.refresh_inventory(candidates)` for a model-list refresh.
+    pub fn refresh_inventory(
+        &self,
+        candidates: Vec<LlmProviderCandidate>,
+    ) -> Result<LlmProviderSync> {
+        self.synchronize_candidates(candidates, false)
+    }
+
+    fn synchronize_candidates(
+        &self,
+        candidates: Vec<LlmProviderCandidate>,
+        probe: bool,
+    ) -> Result<LlmProviderSync> {
         let results: Vec<(LlmProviderStatus, Option<ResolvedProviderConfig>)> =
             std::thread::scope(|scope| {
                 let handles: Vec<_> = candidates
                     .into_iter()
                     .map(|candidate| {
                         let (provider_id, kind) = Self::candidate_identity(&candidate);
-                        let handle = scope.spawn(|| self.sync_one(candidate));
+                        let handle = scope.spawn(|| self.sync_one(candidate, probe));
                         (provider_id, kind, handle)
                     })
                     .collect();
@@ -195,6 +218,7 @@ impl LlmProviderSynchronizer {
     fn sync_one(
         &self,
         candidate: LlmProviderCandidate,
+        probe: bool,
     ) -> (LlmProviderStatus, Option<ResolvedProviderConfig>) {
         match candidate {
             LlmProviderCandidate::MissingConfiguration {
@@ -280,6 +304,7 @@ impl LlmProviderSynchronizer {
                 }
                 let discovered = self.discover(&config, transport);
                 let discovery_error = discovered.as_ref().err().map(public_error);
+                let empty_live_inventory = discovered.as_ref().is_ok_and(Vec::is_empty);
                 let resolved_models =
                     match self
                         .catalog
@@ -287,6 +312,11 @@ impl LlmProviderSynchronizer {
                     {
                         Ok(resolved) => resolved,
                         Err(error) => {
+                            let model_sources = if empty_live_inventory {
+                                without_active_models(declared_sources, source)
+                            } else {
+                                declared_sources
+                            };
                             return (
                                 status(
                                     provider_id,
@@ -294,7 +324,7 @@ impl LlmProviderSynchronizer {
                                     LlmProviderAvailability::DiscoveryFailed {
                                         message: public_error(&error),
                                     },
-                                    declared_sources,
+                                    model_sources,
                                     Some(source),
                                     Some(transport),
                                 ),
@@ -316,6 +346,22 @@ impl LlmProviderSynchronizer {
                     resolved_plan: verified_plan,
                     model_sources: resolved_models.sources.clone(),
                 };
+                if !probe {
+                    let availability = discovery_error
+                        .map(|message| LlmProviderAvailability::DiscoveryFailed { message })
+                        .unwrap_or(LlmProviderAvailability::Unverified);
+                    return (
+                        status(
+                            provider_id,
+                            kind,
+                            availability,
+                            resolved_models.sources,
+                            Some(source),
+                            Some(transport),
+                        ),
+                        Some(resolved_config),
+                    );
+                }
                 match self.probe(&resolved_config, &resolved_models.selected_model) {
                     Ok(()) => (
                         status(
@@ -380,14 +426,7 @@ impl LlmProviderSynchronizer {
             headers: discovery_headers(config),
             payload: Value::Null,
         })?;
-        let models = parse_inventory(config.kind, response);
-        if models.is_empty() {
-            return Err(NeuralError::ProviderFailed {
-                provider_id: config.provider_id.clone(),
-                message: "provider returned no usable models".to_string(),
-            });
-        }
-        Ok(models)
+        parse_inventory(config.kind, response)
     }
 
     fn discover_cli(&self, config: &LlmProviderConfig) -> Result<Vec<LlmModelDescriptor>> {
@@ -400,14 +439,7 @@ impl LlmProviderSynchronizer {
         }
         let spawn = required_spawn(config)?;
         let output = self.commands.run(&spawn, args, None)?;
-        let models = parse_inventory(config.kind, parse_json(&output, &config.provider_id)?);
-        if models.is_empty() {
-            return Err(NeuralError::ProviderFailed {
-                provider_id: config.provider_id.clone(),
-                message: "CLI did not report concrete model identifiers".to_string(),
-            });
-        }
-        Ok(models)
+        parse_inventory(config.kind, parse_json(&output, &config.provider_id)?)
     }
 
     fn probe(&self, resolved: &ResolvedProviderConfig, model: &str) -> Result<()> {
@@ -462,6 +494,21 @@ impl LlmProviderSynchronizer {
             }
         }
     }
+}
+
+fn without_active_models(
+    mut sources: ProviderModelSources,
+    source: LlmModelSource,
+) -> ProviderModelSources {
+    let inventory = match source {
+        LlmModelSource::Api => sources.api.as_mut(),
+        LlmModelSource::Client => sources.client.as_mut(),
+    };
+    if let Some(inventory) = inventory {
+        inventory.models.clear();
+        inventory.default_model = None;
+    }
+    sources
 }
 
 fn ui_source(sources: &ProviderModelSources) -> Option<LlmModelSource> {
@@ -647,51 +694,71 @@ fn parse_json(output: &ProviderCommandOutput, provider_id: &str) -> Result<Value
     })
 }
 
-fn parse_inventory(kind: LlmProviderKind, value: Value) -> Vec<LlmModelDescriptor> {
+fn parse_inventory(kind: LlmProviderKind, value: Value) -> Result<Vec<LlmModelDescriptor>> {
     let entries = match kind {
-        LlmProviderKind::Gemini => value
-            .get("models")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-        _ => value
-            .get("data")
-            .or_else(|| value.get("models"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-    };
-    let mut ids = BTreeSet::new();
-    for entry in entries {
-        if kind == LlmProviderKind::Gemini
-            && !entry
-                .get("supportedGenerationMethods")
-                .and_then(Value::as_array)
-                .is_some_and(|methods| {
-                    methods
-                        .iter()
-                        .any(|method| method.as_str() == Some("generateContent"))
-                })
-        {
-            continue;
-        }
-        if let Some(id) = entry
-            .get("id")
-            .or_else(|| entry.get("slug"))
-            .or_else(|| entry.get("name"))
-            .and_then(Value::as_str)
-            .map(|id| id.strip_prefix("models/").unwrap_or(id).trim().to_string())
-            .filter(|id| !id.is_empty())
-        {
-            ids.insert(id);
-        }
+        LlmProviderKind::Gemini => value.get("models"),
+        _ => value.get("data").or_else(|| value.get("models")),
     }
-    ids.into_iter()
-        .map(|id| LlmModelDescriptor {
-            display_name: id.clone(),
-            id,
-        })
-        .collect()
+    .and_then(Value::as_array)
+    .ok_or_else(|| NeuralError::InvalidValue {
+        value: value.to_string(),
+        expected: format!("{kind:?} model inventory object with a models/data array"),
+    })?;
+    let mut ids = BTreeSet::new();
+    Ok(entries
+        .iter()
+        .filter(|entry| inventory_entry_selectable(kind, entry))
+        .filter_map(|entry| inventory_model_descriptor(kind, entry))
+        .filter(|model| ids.insert(model.id.clone()))
+        .collect())
+}
+
+fn inventory_entry_selectable(kind: LlmProviderKind, entry: &Value) -> bool {
+    if matches!(
+        entry.get("visibility").and_then(Value::as_str),
+        Some("hide" | "hidden")
+    ) {
+        return false;
+    }
+    kind != LlmProviderKind::Gemini
+        || entry
+            .get("supportedGenerationMethods")
+            .and_then(Value::as_array)
+            .is_some_and(|methods| {
+                methods
+                    .iter()
+                    .any(|method| method.as_str() == Some("generateContent"))
+            })
+}
+
+fn inventory_model_descriptor(kind: LlmProviderKind, entry: &Value) -> Option<LlmModelDescriptor> {
+    let identifier = entry
+        .get("id")
+        .or_else(|| entry.get("slug"))
+        .or_else(|| entry.get("name"))
+        .and_then(Value::as_str)?;
+    let id = match kind {
+        LlmProviderKind::Gemini => identifier.strip_prefix("models/").unwrap_or(identifier),
+        _ => identifier,
+    }
+    .trim();
+    if id.is_empty() || id == "provider-default" {
+        return None;
+    }
+    Some(LlmModelDescriptor {
+        id: id.to_string(),
+        display_name: inventory_model_label(kind, entry, id).to_string(),
+    })
+}
+
+fn inventory_model_label<'a>(kind: LlmProviderKind, entry: &'a Value, id: &'a str) -> &'a str {
+    ["display_name", "displayName", "name"]
+        .into_iter()
+        .filter(|key| kind != LlmProviderKind::Gemini || *key != "name")
+        .filter_map(|key| entry.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|label| !label.is_empty())
+        .unwrap_or(id)
 }
 
 fn public_error(error: &NeuralError) -> String {
@@ -702,181 +769,5 @@ fn public_error(error: &NeuralError) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn codex_availability_probe_disables_completion_notifications() {
-        let args = super::cli_probe_args(crate::config::LlmProviderKind::Codex, "gpt-5.6-sol");
-        assert!(args.windows(2).any(|pair| pair == ["-c", "notify=[]"]));
-        assert_eq!(args.last().map(String::as_str), Some("Reply exactly OK"));
-    }
-
-    use super::*;
-    use parking_lot::Mutex;
-
-    struct FakeHttp {
-        calls: Mutex<usize>,
-    }
-    impl LlmHttpClient for FakeHttp {
-        fn post_json(&self, _: &LlmHttpRequest) -> Result<Value> {
-            Ok(serde_json::json!({"choices":[{"message":{"content":"OK"}}]}))
-        }
-        fn get_json(&self, _: &LlmHttpRequest) -> Result<Value> {
-            *self.calls.lock() += 1;
-            Ok(serde_json::json!({"data":[{"id":"api-live"}]}))
-        }
-        fn stream_text(&self, _: &LlmHttpRequest) -> Result<Vec<String>> {
-            Ok(Vec::new())
-        }
-    }
-    struct FakeCommands {
-        calls: Mutex<Vec<Vec<String>>>,
-    }
-    impl LlmCommandTransport for FakeCommands {
-        fn run(
-            &self,
-            _: &SpawnConfig,
-            args: Vec<String>,
-            _: Option<&str>,
-        ) -> Result<ProviderCommandOutput> {
-            self.calls.lock().push(args.clone());
-            Ok(ProviderCommandOutput {
-                stdout: if args.first().is_some_and(|arg| arg == "debug") {
-                    serde_json::json!({"models":[{"id":"client-live"}]}).to_string()
-                } else {
-                    "OK".to_string()
-                },
-                stderr: String::new(),
-            })
-        }
-    }
-    /// Every call fails, simulating a provider whose CLI probe itself is
-    /// rejected (e.g. by the remote API) rather than the transport layer.
-    struct FailingCommands;
-    impl LlmCommandTransport for FailingCommands {
-        fn run(
-            &self,
-            _: &SpawnConfig,
-            _: Vec<String>,
-            _: Option<&str>,
-        ) -> Result<ProviderCommandOutput> {
-            Err(NeuralError::ProviderFailed {
-                provider_id: "claude".to_string(),
-                message: "usage limit exceeded".to_string(),
-            })
-        }
-    }
-    fn catalog() -> ProviderModelCatalog {
-        ProviderModelCatalog::new(tempfile::tempdir().unwrap().path().join("catalog.toml")).unwrap()
-    }
-    fn codex() -> LlmProviderConfig {
-        LlmProviderConfig {
-            provider_id: "codex".into(),
-            kind: LlmProviderKind::Codex,
-            model: "provider-default".into(),
-            endpoint: None,
-            credential: None,
-            completion_concurrency: None,
-            spawn: Some(SpawnConfig {
-                command: "codex".into(),
-                args: vec![],
-                timeout_ms: 1000,
-            }),
-        }
-    }
-    fn claude() -> LlmProviderConfig {
-        LlmProviderConfig {
-            provider_id: "claude".into(),
-            kind: LlmProviderKind::Claude,
-            model: "provider-default".into(),
-            endpoint: None,
-            credential: None,
-            completion_concurrency: None,
-            spawn: Some(SpawnConfig {
-                command: "claude".into(),
-                args: vec![],
-                timeout_ms: 1000,
-            }),
-        }
-    }
-
-    #[test]
-    fn client_sync_queries_only_client_inventory_and_probes_once() {
-        let http = Arc::new(FakeHttp {
-            calls: Mutex::new(0),
-        });
-        let commands = Arc::new(FakeCommands {
-            calls: Mutex::new(Vec::new()),
-        });
-        let sync = LlmProviderSynchronizer::new(http.clone(), commands.clone(), catalog())
-            .sync(vec![LlmProviderCandidate::Configured(codex())])
-            .unwrap();
-        let provider = &sync.catalog.providers[0];
-        assert_eq!(provider.active_source, Some(LlmModelSource::Client));
-        assert!(
-            provider
-                .model_sources
-                .client
-                .as_ref()
-                .unwrap()
-                .models
-                .iter()
-                .any(|model| model.id == "gpt-5.4")
-        );
-        assert_eq!(*http.calls.lock(), 0);
-        assert_eq!(commands.calls.lock().len(), 2);
-    }
-
-    /// Claude Code has no non-interactive model-listing command (see
-    /// `cli_inventory_args`); sync must not spawn a doomed discovery call
-    /// for it and must still resolve + probe using the declared static
-    /// catalog default, exactly as it would if discovery had merely found
-    /// nothing extra.
-    #[test]
-    fn client_sync_skips_discovery_for_providers_with_no_listing_command() {
-        let http = Arc::new(FakeHttp {
-            calls: Mutex::new(0),
-        });
-        let commands = Arc::new(FakeCommands {
-            calls: Mutex::new(Vec::new()),
-        });
-        let sync = LlmProviderSynchronizer::new(http.clone(), commands.clone(), catalog())
-            .sync(vec![LlmProviderCandidate::Configured(claude())])
-            .unwrap();
-        let provider = &sync.catalog.providers[0];
-        assert_eq!(provider.state, LlmProviderAvailability::Available);
-        // Only the probe call, never a discovery subprocess.
-        let calls = commands.calls.lock();
-        assert_eq!(calls.len(), 1);
-        let probe = &calls[0];
-        assert!(probe.iter().any(|arg| arg == "--strict-mcp-config"));
-        assert!(
-            probe
-                .windows(2)
-                .any(|pair| pair == ["--mcp-config", "{\"mcpServers\":{}}"])
-        );
-    }
-
-    /// When a provider's probe fails for its own reason (e.g. the remote
-    /// API rejects the request) while discovery was also unavailable, the
-    /// surfaced message must include the probe's real, actionable error
-    /// rather than silently replacing it with the less relevant discovery
-    /// failure. Regression test for a bug where `InvocationFailed.message`
-    /// always preferred `discovery_error`, hiding the true cause.
-    #[test]
-    fn invocation_failure_message_surfaces_the_probes_own_error_not_only_discovery() {
-        let http = Arc::new(FakeHttp {
-            calls: Mutex::new(0),
-        });
-        let sync = LlmProviderSynchronizer::new(http, Arc::new(FailingCommands), catalog())
-            .sync(vec![LlmProviderCandidate::Configured(claude())])
-            .unwrap();
-        let provider = &sync.catalog.providers[0];
-        let LlmProviderAvailability::InvocationFailed { message } = &provider.state else {
-            panic!("expected InvocationFailed, got {:?}", provider.state);
-        };
-        assert!(
-            message.contains("usage limit exceeded"),
-            "message must surface the probe's real error: {message}"
-        );
-    }
-}
+#[path = "discovery/tests.rs"]
+mod tests;

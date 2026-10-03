@@ -37,7 +37,10 @@ use crate::{
         CentralizedPersistenceProtocolCodec, DispatchError, DispatchResources,
         PersistenceProtocolCodec, ResourceDispatcher,
     },
-    tenant::{LocalTenantPersistenceFactory, TenantAdapterCache, TenantPersistenceFactory},
+    tenant::{
+        LocalTenantPersistenceFactory, PrincipalPersistenceFactory, TenantAdapterCache,
+        TenantPersistenceFactory,
+    },
 };
 
 pub trait AccessTokenValidator: Send + Sync {
@@ -92,12 +95,14 @@ impl AccessTokenValidator for OidcAccessTokenValidator {
 /// Only owning internal adapters are accepted here. `ResourceServer` constructs
 /// tenant-local persistence itself and never accepts centralized adapters.
 pub struct ServerResources {
+    pub http_extension: Option<Arc<dyn crate::ResourceHttpExtension>>,
     pub data_dir: std::path::PathBuf,
     pub access_tokens: Arc<dyn AccessTokenValidator>,
     pub llm_registry: Option<Arc<Mutex<LlmProviderRegistry>>>,
     pub speech_recognizer: Option<Arc<dyn SpeechRecognizer>>,
     pub speech_synthesizer: Option<Arc<dyn SpeechSynthesizer>>,
     pub tenant_factory: Arc<dyn TenantPersistenceFactory>,
+    pub principal_factory: Option<Arc<dyn PrincipalPersistenceFactory>>,
     pub persistence_codec: Arc<dyn PersistenceProtocolCodec>,
 }
 
@@ -110,12 +115,14 @@ impl ServerResources {
         speech_synthesizer: Option<Arc<dyn SpeechSynthesizer>>,
     ) -> Self {
         Self {
+            http_extension: None,
             data_dir,
             access_tokens,
             llm_registry,
             speech_recognizer,
             speech_synthesizer,
             tenant_factory: Arc::new(LocalTenantPersistenceFactory),
+            principal_factory: None,
             persistence_codec: Arc::new(CentralizedPersistenceProtocolCodec),
         }
     }
@@ -213,6 +220,7 @@ fn configured_neural_adapters(
 }
 
 pub struct ResourceServer {
+    http_extension: Option<Arc<dyn crate::ResourceHttpExtension>>,
     access_tokens: Arc<dyn AccessTokenValidator>,
     dispatcher: Arc<ResourceDispatcher>,
 }
@@ -228,9 +236,11 @@ impl ResourceServer {
             speech_recognizer: resources.speech_recognizer,
             speech_synthesizer: resources.speech_synthesizer,
             tenants,
+            principal_factory: resources.principal_factory,
             persistence_codec: resources.persistence_codec,
         }));
         Self {
+            http_extension: resources.http_extension,
             access_tokens: resources.access_tokens,
             dispatcher,
         }
@@ -284,6 +294,15 @@ impl ResourceServer {
         mut respond: h2::server::SendResponse<Bytes>,
     ) -> Result<(), ResourceServerError> {
         let path = request.uri().path().to_owned();
+        if let Some(extension) = self
+            .http_extension
+            .as_ref()
+            .filter(|extension| extension.accepts(&path))
+        {
+            return self
+                .handle_extension(extension.clone(), request, respond)
+                .await;
+        }
         let terminal_error = |message: String| InvocationTerminalV1 {
             status: InvocationTerminalStatusV1::InvalidArgument as i32,
             retryable: false,
@@ -510,6 +529,52 @@ impl ResourceServer {
             }
             _ => unreachable!("route was validated"),
         }
+        Ok(())
+    }
+
+    async fn handle_extension(
+        &self,
+        extension: Arc<dyn crate::ResourceHttpExtension>,
+        request: Request<h2::RecvStream>,
+        mut respond: h2::server::SendResponse<Bytes>,
+    ) -> Result<(), ResourceServerError> {
+        let control = InvocationControl::sixty_seconds();
+        let method = request.method().to_string();
+        let path = request.uri().path().to_owned();
+        let bearer = bearer(request.headers()).ok().map(str::to_owned);
+        let content_type = request
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = tokio::time::timeout(control.remaining(), collect_body(request.into_body()))
+            .await
+            .map_err(|_| {
+                ResourceServerError::Protocol("HTTP extension body deadline elapsed".into())
+            })??;
+        let response = tokio::task::spawn_blocking(move || {
+            extension.handle(
+                crate::ResourceHttpRequest {
+                    method,
+                    path,
+                    bearer,
+                    content_type,
+                    body,
+                },
+                &control,
+            )
+        })
+        .await
+        .map_err(|error| ResourceServerError::Protocol(error.to_string()))?;
+        let headers = Response::builder()
+            .status(response.status)
+            .header(header::CONTENT_TYPE, response.content_type)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(())
+            .map_err(|error| ResourceServerError::Protocol(error.to_string()))?;
+        respond
+            .send_response(headers, false)?
+            .send_data(Bytes::from(response.body), true)?;
         Ok(())
     }
 }

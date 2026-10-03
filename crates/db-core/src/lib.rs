@@ -7,10 +7,14 @@
 #[cfg(test)]
 extern crate self as lumvise_db_core;
 
+mod archive;
+mod domain;
 mod interface;
 mod local;
 mod resource;
 
+pub use archive::SemanticArchive;
+pub use domain::{ContentFingerprintParts, SemanticIdentityRemap, SemanticStructureReconciliation};
 pub use interface::*;
 pub use local::LocalPersistence;
 pub use resource::CentralizedPersistence;

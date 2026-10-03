@@ -1,3 +1,6 @@
+//! Owns source-local inventory and selection policy. Call `ProviderModelCatalog`
+//! to load or resolve models; catalog validation and reconciliation stay internal.
+
 use crate::config::LlmProviderKind;
 use crate::error::{NeuralError, Result};
 use crate::llm_providers::adapter::LlmTransportKind;
@@ -76,7 +79,7 @@ impl ProviderModelCandidates {
     }
 }
 
-/// Catalog resolution is the single source of merge and selection policy.
+/// Catalog resolution is the single source of inventory and selection policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedProviderModels {
     pub sources: ProviderModelSources,
@@ -154,7 +157,9 @@ impl ProviderModelCatalog {
         ProviderModelCandidates::from_inventory(inventory)
     }
 
-    /// Merges only the selected source and selects a source-local model.
+    /// Resolves live models in the selected source, preserving a saved choice.
+    /// For example, `catalog.resolve(kind, source, Some(live), "saved-model")`
+    /// retains `saved-model` visibly even when the live inventory omits it.
     pub fn resolve(
         &self,
         kind: LlmProviderKind,
@@ -171,8 +176,9 @@ impl ProviderModelCatalog {
                     expected: "catalog model source compatible with selected transport".to_string(),
                 })?;
         if let Some(discovered) = discovered {
-            inventory.models = merged_models(&inventory.models, discovered);
+            replace_live_inventory(inventory, discovered);
         }
+        retain_configured_model(inventory, configured_model);
         let selected_model =
             select_model(inventory, configured_model).ok_or_else(|| NeuralError::InvalidValue {
                 value: format!("{kind:?}:{source:?}"),
@@ -219,23 +225,36 @@ fn select_model(inventory: &ProviderModelInventory, configured_model: &str) -> O
         .map(|model| model.id.clone())
 }
 
-fn merged_models(
-    declared: &[LlmModelDescriptor],
-    discovered: Vec<LlmModelDescriptor>,
-) -> Vec<LlmModelDescriptor> {
-    let declared_ids: BTreeSet<_> = declared.iter().map(|model| model.id.as_str()).collect();
-    let mut merged = declared.to_vec();
-    let mut live_only = BTreeSet::new();
-    for model in discovered {
-        if !model.id.trim().is_empty() && !declared_ids.contains(model.id.as_str()) {
-            live_only.insert(model.id);
-        }
+fn replace_live_inventory(inventory: &mut ProviderModelInventory, live: Vec<LlmModelDescriptor>) {
+    let mut ids = BTreeSet::new();
+    inventory.models = live
+        .into_iter()
+        .filter(|model| !model.id.trim().is_empty() && model.id != "provider-default")
+        .filter(|model| ids.insert(model.id.clone()))
+        .collect();
+    inventory.default_model = inventory
+        .default_model
+        .take()
+        .filter(|default| ids.contains(default))
+        .or_else(|| inventory.models.first().map(|model| model.id.clone()));
+}
+
+fn retain_configured_model(inventory: &mut ProviderModelInventory, configured_model: &str) {
+    let configured_model = configured_model.trim();
+    if configured_model.is_empty()
+        || configured_model == "provider-default"
+        || inventory
+            .models
+            .iter()
+            .any(|model| model.id == configured_model)
+    {
+        return;
     }
-    merged.extend(live_only.into_iter().map(|id| LlmModelDescriptor {
-        display_name: id.clone(),
-        id,
-    }));
-    merged
+    // A refresh must never replace an explicit choice with a different cost/model.
+    inventory.models.push(LlmModelDescriptor {
+        id: configured_model.to_string(),
+        display_name: format!("{configured_model} (unavailable)"),
+    });
 }
 
 fn runtime_catalog_path() -> PathBuf {
@@ -588,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn resolution_is_source_local_catalog_first_and_deterministic() {
+    fn live_resolution_preserves_order_labels_and_excludes_stale_bundled_models() {
         let directory = tempfile::tempdir().unwrap();
         let catalog = ProviderModelCatalog::new(directory.path().join("catalog.toml")).unwrap();
         let resolved = catalog
@@ -612,21 +631,17 @@ mod tests {
                 "provider-default",
             )
             .unwrap();
-        assert_eq!(resolved.selected_model, "openai/gpt-4.1-mini");
+        assert_eq!(resolved.selected_model, "live-z");
+        assert_eq!(resolved.default_model.as_deref(), Some("live-z"));
+        assert_eq!(resolved.models[0].display_name, "ignored");
+        assert_eq!(resolved.models[1].display_name, "wrong");
         assert_eq!(
             resolved
                 .models
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "openai/gpt-4.1-mini",
-                "openai/gpt-4.1",
-                "anthropic/claude-sonnet-4",
-                "google/gemini-2.5-pro",
-                "live-a",
-                "live-z"
-            ]
+            vec!["live-z", "openai/gpt-4.1", "live-a"]
         );
         assert!(resolved.sources.client.is_none());
     }
@@ -657,5 +672,172 @@ mod tests {
         let before = fs::read_to_string(&path).unwrap();
         ProviderModelCatalog::new(&path).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn configured_missing_model_remains_selected_and_visible() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = ProviderModelCatalog::new(directory.path().join("catalog.toml")).unwrap();
+        let resolved = catalog
+            .resolve(
+                LlmProviderKind::Codex,
+                LlmModelSource::Client,
+                Some(vec![LlmModelDescriptor {
+                    id: "gpt-6.1-sol".into(),
+                    display_name: "GPT-6.1-Sol".into(),
+                }]),
+                "saved-custom-model",
+            )
+            .unwrap();
+        assert_eq!(resolved.selected_model, "saved-custom-model");
+        assert_eq!(resolved.models.len(), 2);
+        assert_eq!(resolved.models[1].id, "saved-custom-model");
+        assert_eq!(
+            resolved.models[1].display_name,
+            "saved-custom-model (unavailable)"
+        );
+        assert_eq!(resolved.default_model.as_deref(), Some("gpt-6.1-sol"));
+    }
+
+    #[test]
+    fn offline_resolution_uses_fallback_and_preserves_missing_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = ProviderModelCatalog::new(directory.path().join("catalog.toml")).unwrap();
+        let resolved = catalog
+            .resolve(
+                LlmProviderKind::Codex,
+                LlmModelSource::Client,
+                None,
+                "provider-default",
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.models,
+            catalog.candidates(LlmProviderKind::Codex).models
+        );
+        assert_eq!(resolved.selected_model, "gpt-5.4");
+        let configured = catalog
+            .resolve(
+                LlmProviderKind::Codex,
+                LlmModelSource::Client,
+                None,
+                "offline-custom",
+            )
+            .unwrap();
+        assert_eq!(configured.selected_model, "offline-custom");
+        assert_eq!(configured.models.last().unwrap().id, "offline-custom");
+    }
+
+    #[test]
+    fn live_resolution_keeps_default_only_when_present_and_deduplicates_by_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = ProviderModelCatalog::new(directory.path().join("catalog.toml")).unwrap();
+        let live = vec![
+            LlmModelDescriptor {
+                id: "live-first".into(),
+                display_name: "Shared".into(),
+            },
+            LlmModelDescriptor {
+                id: "gpt-5.4".into(),
+                display_name: "Shared".into(),
+            },
+            LlmModelDescriptor {
+                id: "live-first".into(),
+                display_name: "Duplicate".into(),
+            },
+            LlmModelDescriptor {
+                id: " ".into(),
+                display_name: "Invalid".into(),
+            },
+        ];
+        let resolved = catalog
+            .resolve(
+                LlmProviderKind::Codex,
+                LlmModelSource::Client,
+                Some(live),
+                "provider-default",
+            )
+            .unwrap();
+        assert_eq!(resolved.selected_model, "gpt-5.4");
+        assert_eq!(resolved.default_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(resolved.models.len(), 2);
+        assert_eq!(resolved.models[0].display_name, "Shared");
+        assert_eq!(resolved.models[1].display_name, "Shared");
+    }
+
+    #[test]
+    fn empty_live_inventory_never_restores_bundled_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = ProviderModelCatalog::new(directory.path().join("catalog.toml")).unwrap();
+        let resolved = catalog
+            .resolve(
+                LlmProviderKind::Codex,
+                LlmModelSource::Client,
+                Some(Vec::new()),
+                "saved-model",
+            )
+            .unwrap();
+        assert_eq!(resolved.models.len(), 1);
+        assert_eq!(resolved.selected_model, "saved-model");
+        assert_eq!(resolved.default_model, None);
+        assert!(
+            catalog
+                .resolve(
+                    LlmProviderKind::Codex,
+                    LlmModelSource::Client,
+                    Some(Vec::new()),
+                    "provider-default"
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn source_resolution_keeps_api_and_client_inventories_separate() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.toml");
+        fs::write(&path, format!("{SEED}\n[providers.codex.api]\ndefault = \"api-only\"\nmodels = [{{ id = \"api-only\", display_name = \"API Only\" }}]\n")).unwrap();
+        let catalog = ProviderModelCatalog::new(path).unwrap();
+        let live = vec![LlmModelDescriptor {
+            id: "client-only".into(),
+            display_name: "Client Only".into(),
+        }];
+        let resolved = catalog
+            .resolve(
+                LlmProviderKind::Codex,
+                LlmModelSource::Client,
+                Some(live),
+                "provider-default",
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.sources.api,
+            catalog.sources(LlmProviderKind::Codex).api
+        );
+        assert_eq!(resolved.models[0].id, "client-only");
+        assert_eq!(resolved.models.len(), 1);
+        let api = catalog
+            .resolve(
+                LlmProviderKind::Codex,
+                LlmModelSource::Api,
+                None,
+                "provider-default",
+            )
+            .unwrap();
+        assert_eq!(api.selected_model, "api-only");
+        assert_eq!(
+            api.sources.client,
+            catalog.sources(LlmProviderKind::Codex).client
+        );
+        assert!(
+            catalog
+                .resolve(
+                    LlmProviderKind::OpenRouter,
+                    LlmModelSource::Client,
+                    None,
+                    "provider-default"
+                )
+                .is_err()
+        );
     }
 }

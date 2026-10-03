@@ -50,6 +50,7 @@ pub struct AppCore {
     pub(crate) bridge_credentials: Arc<Mutex<Option<Arc<Mutex<HashMap<String, u64>>>>>>,
     pub(crate) frontend_actions: Arc<Mutex<Vec<serde_json::Value>>>,
     pub(crate) project_import_sessions: Mutex<crate::app::project_import::ProjectImportSessions>,
+    pub(crate) document_converter: Mutex<Arc<lumvise_project_indexer::DocumentConverter>>,
     #[cfg(feature = "assistant-e2e")]
     pub(crate) e2e_event_journal: E2eEventJournal,
     pub(crate) plugin_host_services: Arc<crate::plugin::PluginHostServices>,
@@ -243,6 +244,7 @@ impl AppCore {
             bridge_credentials: Arc::new(Mutex::new(None)),
             frontend_actions: plugin_host_services.frontend_actions(),
             project_import_sessions: Mutex::new(Default::default()),
+            document_converter: Mutex::new(Arc::default()),
             #[cfg(feature = "assistant-e2e")]
             e2e_event_journal: E2eEventJournal::default(),
             plugin_host_services,
@@ -347,18 +349,18 @@ impl AppCore {
 
     /// Returns the currently installed speech recognizer, if any.
     pub fn voice2text_service(&self) -> Option<Arc<dyn SpeechRecognizer>> {
-        self.voice2text_service
-            .lock()
+        self.plugin_host_services
+            .available_speech_recognizer()
             .ok()
-            .and_then(|guard| guard.clone())
+            .flatten()
     }
 
     /// Returns the currently installed speech synthesizer, if any.
     pub fn text2voice_service(&self) -> Option<Arc<dyn SpeechSynthesizer>> {
-        self.text2voice_service
-            .lock()
+        self.plugin_host_services
+            .available_speech_synthesizer()
             .ok()
-            .and_then(|guard| guard.clone())
+            .flatten()
     }
 
     /// Installs the managed-model lifecycle manager and restores every

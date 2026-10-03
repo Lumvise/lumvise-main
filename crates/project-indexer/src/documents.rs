@@ -1,63 +1,57 @@
-//! Owns document conversion and provenance. Call convert_document with stable source
-//! bytes; adapters and PDF extraction details stay private. No filesystem or DB writes.
-use crate::source::invalid;
+//! Owns document conversion, image assets and provenance. Call `DocumentConverter`
+//! for reusable conversion or `convert_document` for one file. Adapters stay private.
+mod basic_pdf;
+mod conversion;
+mod types;
+
 use crate::{ScanError, SourceSpan};
 use serde_json::{Value, json};
+pub use types::*;
 
-/// Page content range in converted Markdown, excluding its generated heading.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DocumentPage {
-    /// One-based original PDF page number.
-    pub page: u32,
-    /// UTF-8 range in ConvertedDocument::markdown.
-    pub span: SourceSpan,
+/// Reuses optional PDF inference across imports and previews without global state.
+/// Example: `DocumentConverter::default().convert("report.docx", bytes)?`.
+pub struct DocumentConverter {
+    options: DocumentConversionOptions,
+    runtime: conversion::ConversionRuntime,
 }
 
-/// Provenance retained with parsed definitions; coordinates always refer to Markdown.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DocumentProvenance {
-    /// Converter identity, e.g. anytomd or pdf-extract.
-    pub converter: &'static str,
-    /// Source PDF pages; empty for other formats.
-    pub pages: Vec<DocumentPage>,
+impl Default for DocumentConverter {
+    fn default() -> Self {
+        Self::new(DocumentConversionOptions::default())
+    }
 }
 
-/// Derived Markdown and its mapping back to the original document.
-#[derive(Debug)]
-pub struct ConvertedDocument {
-    /// Complete converted text; passed through the existing semantic parser.
-    pub markdown: String,
-    /// Conversion source mapping.
-    pub provenance: DocumentProvenance,
+impl DocumentConverter {
+    /// Configures conversion independently of embedding settings.
+    /// Example: `DocumentConverter::new(DocumentConversionOptions { enhancement_enabled: false })`.
+    pub fn new(options: DocumentConversionOptions) -> Self {
+        Self {
+            options,
+            runtime: conversion::ConversionRuntime::default(),
+        }
+    }
+
+    /// Returns the configuration used by this reusable converter.
+    /// Example: rebuild an import session when `converter.options()` changes.
+    pub fn options(&self) -> DocumentConversionOptions {
+        self.options
+    }
+
+    /// Converts supplied bytes without writing assets or fetching external images.
+    /// Example: `converter.convert("table.xlsx", bytes)?`.
+    pub fn convert(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<Option<ConvertedDocument>, ScanError> {
+        self.runtime.convert(path, bytes, self.options)
+    }
 }
 
 /// Converts formats without a dedicated semantic grammar; never intercepts code or JSON.
 /// Example: `convert_document("table.csv", b"name,value\na,1")`.
 pub fn convert_document(path: &str, bytes: &[u8]) -> Result<Option<ConvertedDocument>, ScanError> {
-    let extension = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if extension == "pdf" {
-        return pdf_document(path, bytes).map(Some);
-    }
-    if !is_document_path(path) {
-        return Ok(None);
-    }
-    let output = anytomd::convert_bytes(bytes, &extension, &anytomd::ConversionOptions::default())
-        .map_err(|error| {
-            invalid(
-                path,
-                format!("expected convertible {extension} document: {error}"),
-            )
-        })?;
-    if output.markdown.trim().is_empty() {
-        return Err(invalid(path, "expected non-empty converted Markdown"));
-    }
-    Ok(Some(ConvertedDocument {
-        markdown: output.markdown,
-        provenance: DocumentProvenance {
-            converter: "anytomd",
-            pages: vec![],
-        },
-    }))
+    DocumentConverter::default().convert(path, bytes)
 }
 
 /// Whether a path uses derived Markdown. Example: `is_document_path("slides.pptx")`.
@@ -72,58 +66,31 @@ pub fn is_document_path(path: &str) -> bool {
     )
 }
 
-fn pdf_document(path: &str, bytes: &[u8]) -> Result<ConvertedDocument, ScanError> {
-    let document = lopdf::Document::load_mem(bytes)
-        .map_err(|error| invalid(path, format!("expected readable PDF: {error}")))?;
-    let mut output = ConvertedDocument {
-        markdown: String::new(),
-        provenance: DocumentProvenance {
-            converter: "lopdf",
-            pages: vec![],
-        },
-    };
-    for page in document.get_pages().keys() {
-        // Text extraction must not interpret graphical paths: valid illustrated
-        // PDFs can contain clipping paths that crash graphics-aware extractors.
-        let text = document.extract_text(&[*page]).map_err(|error| {
-            invalid(
-                path,
-                format!("expected extractable PDF page {page}: {error}"),
-            )
-        })?;
-        append_pdf_page(&mut output, *page, &text);
-    }
-    if output.provenance.pages.is_empty() {
-        return Err(invalid(
-            path,
-            "expected PDF text; scanned documents require OCR",
-        ));
-    }
-    Ok(output)
-}
-
-fn append_pdf_page(output: &mut ConvertedDocument, page: u32, text: &str) {
-    let text = text.trim();
-    if text.is_empty() {
-        return;
-    }
-    output.markdown.push_str(&format!("# Page {page}\n\n"));
-    let start = output.markdown.len();
-    output.markdown.push_str(text);
-    let end = output.markdown.len();
-    output.markdown.push_str("\n\n");
-    output.provenance.pages.push(DocumentPage {
-        page,
-        span: SourceSpan { start, end },
-    });
-}
-
 impl DocumentProvenance {
     pub(crate) fn metadata(&self) -> Value {
-        json!({"status":"converted", "converter":self.converter, "media_type":"text/markdown", "coordinate_space":"converted_markdown"})
+        json!({"status":"converted", "converter":self.converter, "media_type":"text/markdown", "coordinate_space":"converted_markdown", "enhancement":self.enhancement, "warnings":self.warnings})
+    }
+
+    pub(crate) fn file_metadata(&self) -> Value {
+        let mut metadata = self.metadata();
+        metadata["images"] = json!(
+            self.figures
+                .iter()
+                .map(|figure| json!({
+                    "reference":figure.reference, "caption":figure.caption, "page":figure.page,
+                    "start_byte":figure.span.start, "end_byte":figure.span.end
+                }))
+                .collect::<Vec<_>>()
+        );
+        metadata
     }
 
     pub(crate) fn selector(&self, source: &str, span: SourceSpan) -> Option<Value> {
+        if let Some(figure) = self.figures.iter().find(|figure| figure.span == span) {
+            return Some(
+                json!({"kind":"document_image", "reference":figure.reference, "page":figure.page}),
+            );
+        }
         let page = self
             .pages
             .iter()

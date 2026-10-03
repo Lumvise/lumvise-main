@@ -19,10 +19,10 @@ use crate::interface::{
 };
 use crate::{DbError, Result};
 
-const SEMANTIC_OPERATION_TYPE: &str = "lumvise.db-core.semantic-operation.bincode.v3";
-const SEMANTIC_RESULT_TYPE: &str = "lumvise.db-core.semantic-result.bincode.v3";
-const RELATIONAL_OPERATION_TYPE: &str = "lumvise.db-core.relational-operation.bincode.v1";
-const RELATIONAL_RESULT_TYPE: &str = "lumvise.db-core.relational-result.bincode.v1";
+const SEMANTIC_OPERATION_TYPE: &str = "lumvise.db-core.semantic-operation.msgpack.v1";
+const SEMANTIC_RESULT_TYPE: &str = "lumvise.db-core.semantic-result.msgpack.v1";
+const RELATIONAL_OPERATION_TYPE: &str = "lumvise.db-core.relational-operation.msgpack.v1";
+const RELATIONAL_RESULT_TYPE: &str = "lumvise.db-core.relational-result.msgpack.v1";
 
 /// Centralized persistence facade over one authenticated resource client.
 ///
@@ -88,25 +88,26 @@ impl SemanticPersistence for CentralizedPersistence {
     ) -> PersistenceResult<SemanticResult> {
         ensure_active(control)?;
         let request_id = Uuid::new_v4().to_string();
+        let (operation, mut transfer) =
+            super::archive_transfer::SemanticArchiveTransfer::prepare(operation, control)?;
         let operation = encode_semantic_operation(operation)?;
+        let mut requests = vec![start_envelope(
+            request_id,
+            self.client_instance_id.clone(),
+            Operation::SemanticOperation(operation),
+            control,
+        )];
+        transfer.append_input(&mut requests);
         let envelopes = self
             .client
-            .invoke(
-                &[start_envelope(
-                    request_id,
-                    self.client_instance_id.clone(),
-                    Operation::SemanticOperation(operation),
-                    control,
-                )],
-                control,
-            )
+            .invoke(&requests, control)
             .map_err(transport_error)?;
         let terminal = terminal(&envelopes)?;
         ensure_completed(terminal)?;
         let Some(TerminalResult::Semantic(result)) = terminal.result.as_ref() else {
             return Err(protocol_error("semantic terminal result"));
         };
-        decode_semantic_result(result)
+        transfer.finish(decode_semantic_result(result)?, &envelopes, control)
     }
 
     fn readiness(&self) -> PersistenceResult<SemanticReadiness> {
@@ -179,15 +180,6 @@ pub(super) fn decode_semantic_operation(
 }
 
 pub(super) fn encode_semantic_result(result: SemanticResult) -> Result<PersistenceResultV1> {
-    if let SemanticResult::ScopedGraph(graph) = result {
-        return Ok(PersistenceResultV1 {
-            operation_name: "ScopedGraph".into(),
-            records: vec![binary_record(
-                "lumvise.db-core.scoped-graph.bincode.v1",
-                &super::scoped_graph_codec::encode(graph)?,
-            )?],
-        });
-    }
     let operation_name = semantic_result_name(&result).into();
     Ok(PersistenceResultV1 {
         operation_name,
@@ -196,13 +188,6 @@ pub(super) fn encode_semantic_result(result: SemanticResult) -> Result<Persisten
 }
 
 pub(super) fn decode_semantic_result(result: &PersistenceResultV1) -> Result<SemanticResult> {
-    if result.operation_name == "ScopedGraph" {
-        return super::scoped_graph_codec::decode(decode_record(
-            result,
-            "lumvise.db-core.scoped-graph.bincode.v1",
-        )?)
-        .map(SemanticResult::ScopedGraph);
-    }
     let decoded: SemanticResult = decode_record(result, SEMANTIC_RESULT_TYPE)?;
     verify_name(&result.operation_name, semantic_result_name(&decoded))?;
     Ok(decoded)
@@ -244,11 +229,18 @@ pub(super) fn decode_relational_result(result: &PersistenceResultV1) -> Result<R
 }
 
 fn binary_record<T: serde::Serialize>(type_name: &str, value: &T) -> Result<TypedBinaryChunkV1> {
+    // Self-describing binary supports arbitrary JSON metadata and tagged domain
+    // enums. ForceAll keeps Vec<u8> blobs binary instead of expanding integers.
+    let mut bytes = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut bytes)
+        .with_struct_map()
+        .with_bytes(rmp_serde::config::BytesMode::ForceAll);
+    value
+        .serialize(&mut serializer)
+        .map_err(|error| protocol_error(&format!("serializable persistence payload: {error}")))?;
     Ok(TypedBinaryChunkV1 {
         type_name: type_name.into(),
-        bytes: bincode::serialize(value).map_err(|error| {
-            protocol_error(&format!("serializable persistence payload: {error}"))
-        })?,
+        bytes,
         metadata_json: None,
         final_chunk: true,
     })
@@ -269,8 +261,15 @@ fn decode_record<T: serde::de::DeserializeOwned>(
             "one final typed binary persistence record without metadata",
         ));
     }
-    bincode::deserialize(&record.bytes)
-        .map_err(|error| protocol_error(&format!("valid binary persistence payload: {error}")))
+    let mut deserializer = rmp_serde::Deserializer::new(std::io::Cursor::new(&record.bytes));
+    let decoded = T::deserialize(&mut deserializer)
+        .map_err(|error| protocol_error(&format!("valid binary persistence payload: {error}")))?;
+    if deserializer.get_ref().position() != record.bytes.len() as u64 {
+        return Err(protocol_error(
+            "one complete binary record without trailing bytes",
+        ));
+    }
+    Ok(decoded)
 }
 
 trait PersistenceMessage {

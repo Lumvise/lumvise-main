@@ -1,4 +1,4 @@
-//! Owns automatic Knowledge inheritance between semantically similar projects.
+//! Owns read-only Knowledge transfer candidates between semantically similar projects.
 
 use std::{
     cmp::Ordering,
@@ -15,23 +15,52 @@ const AUTOMATIC_SIMHASH_DISTANCE: u32 = 8;
 const EXTENDED_SIMHASH_DISTANCE: u32 = 12;
 const MIN_EXTENDED_RANK_MARGIN: u32 = 16;
 
-pub(crate) fn inherit_project_knowledge(
+#[derive(Debug)]
+pub(crate) struct KnowledgeTransferMatch {
+    pub(crate) source: KnowledgeArtifact,
+    pub(crate) target: SemanticElement,
+    pub(crate) copy: KnowledgeArtifact,
+    pub(crate) exact_match: bool,
+    pub(crate) simhash_distance: u32,
+}
+
+/// Prepares copies for explicit review without reading or writing destination artifacts.
+/// Example: `project_transfer_candidates(root, &indexed_elements, context)`.
+pub(crate) fn project_transfer_candidates(
     target_root: &str,
-    target_ids: &HashSet<String>,
+    targets: &[SemanticElement],
     context: &mut PluginContext<'_>,
-) -> Result<(), PluginError> {
-    if target_ids.is_empty() {
-        return Ok(());
-    }
-    let targets = storage::elements_by_ids(context, target_root, target_ids)?;
-    if targets.is_empty() {
-        return Ok(());
-    }
-    let keys = CandidateKeys::from_targets(&targets);
+) -> Result<Vec<KnowledgeTransferMatch>, PluginError> {
+    let targets = targets
+        .iter()
+        .filter(|target| target.project_root == target_root && target.lifecycle == "active")
+        .cloned()
+        .collect::<Vec<_>>();
+    let elements = transfer_source_elements(target_root, &targets, context)?;
+    let candidate_ids = elements
+        .iter()
+        .map(|element| element.semantic_element_id.clone())
+        .collect::<HashSet<_>>();
+    let artifacts = storage::artifacts_for_elements(context, &candidate_ids)?;
+    let sources = owned_transfer_sources(elements, &artifacts);
+    let source_index = SourceElementIndex::new(&sources);
+    Ok(collect_transfer_matches(
+        &artifacts,
+        &targets,
+        &source_index,
+    ))
+}
+
+fn transfer_source_elements(
+    target_root: &str,
+    targets: &[SemanticElement],
+    context: &mut PluginContext<'_>,
+) -> Result<Vec<SemanticElement>, PluginError> {
+    let keys = CandidateKeys::from_targets(targets);
     if keys.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let candidate_elements = storage::candidate_source_elements(
+    Ok(storage::candidate_source_elements(
         context,
         &keys.content_fingerprints,
         &keys.kind_name_keys,
@@ -42,39 +71,28 @@ pub(crate) fn inherit_project_knowledge(
         element.project_root != target_root
             && !nested_project_roots(&element.project_root, target_root)
     })
-    .collect::<Vec<_>>();
-    if candidate_elements.is_empty() {
-        return Ok(());
-    }
-    let candidate_ids = candidate_elements
+    .collect())
+}
+
+fn owned_transfer_sources(
+    elements: Vec<SemanticElement>,
+    artifacts: &[KnowledgeArtifact],
+) -> Vec<SourceElement> {
+    let owner_ids = artifacts
         .iter()
-        .map(|element| element.semantic_element_id.clone())
+        .map(|artifact| artifact.semantic_element_id.as_str())
         .collect::<HashSet<_>>();
-    let owned_artifacts = storage::artifacts_for_elements(context, &candidate_ids)?;
-    if owned_artifacts.is_empty() {
-        return Ok(());
-    }
-    let owner_ids = owned_artifacts
-        .iter()
-        .map(|artifact| artifact.semantic_element_id.clone())
-        .collect::<HashSet<_>>();
-    let sources = candidate_elements
+    elements
         .into_iter()
-        .filter(|element| owner_ids.contains(&element.semantic_element_id))
+        .filter(|element| owner_ids.contains(element.semantic_element_id.as_str()))
         .map(|element| {
             let project_root = element.project_root.clone();
             SourceElement::new(&project_root, element)
         })
-        .collect::<Vec<_>>();
-    if sources.is_empty() {
-        return Ok(());
-    }
-    let source_index = SourceElementIndex::new(&sources);
-    inherit_best_matches(context, &owned_artifacts, &targets, &source_index)?;
-    Ok(())
+        .collect()
 }
 
-/// Exact identity keys derived from one StorageTrigger batch's target
+/// Exact identity keys derived from one transfer review's target
 /// elements, mirroring `SourceElementIndex::candidates_for`'s own admission
 /// rule byte-for-byte: a target missing a parseable content fingerprint
 /// contributes no keys at all - not even its kind/name or kind/file-name keys
@@ -116,39 +134,42 @@ impl CandidateKeys {
     }
 }
 
-fn inherit_best_matches(
-    context: &mut PluginContext<'_>,
+fn collect_transfer_matches(
     artifacts: &[KnowledgeArtifact],
     targets: &[SemanticElement],
     sources: &SourceElementIndex<'_>,
-) -> Result<Vec<KnowledgeArtifact>, PluginError> {
-    let mut inherited = Vec::new();
+) -> Vec<KnowledgeTransferMatch> {
+    let mut matches = std::collections::BTreeMap::new();
     for target in targets {
         let candidates = sources.candidates_for(target);
         let Some(selected) = best_source_match(target, &candidates) else {
             continue;
         };
-        inherit_selected_artifacts(context, artifacts, target, selected, &mut inherited)?;
+        for candidate in matched_transfer_artifacts(artifacts, target, selected) {
+            matches
+                .entry(candidate.copy.artifact_id.clone())
+                .or_insert(candidate);
+        }
     }
-    Ok(inherited)
+    matches.into_values().collect()
 }
 
-fn inherit_selected_artifacts(
-    context: &mut PluginContext<'_>,
+fn matched_transfer_artifacts(
     artifacts: &[KnowledgeArtifact],
     target: &SemanticElement,
     selected: RankedSource<'_>,
-    inherited: &mut Vec<KnowledgeArtifact>,
-) -> Result<(), PluginError> {
-    for artifact in artifacts.iter().filter(|artifact| selected.owns(artifact)) {
-        let copy = inherited_artifact(artifact, target, &selected);
-        if storage::get_knowledge(context, &copy.artifact_id)?.is_some() {
-            continue;
-        }
-        storage::put_knowledge(context, &copy)?;
-        inherited.push(copy);
-    }
-    Ok(())
+) -> Vec<KnowledgeTransferMatch> {
+    artifacts
+        .iter()
+        .filter(|artifact| selected.owns(artifact))
+        .map(|artifact| KnowledgeTransferMatch {
+            source: artifact.clone(),
+            target: target.clone(),
+            copy: inherited_artifact(artifact, target, &selected),
+            exact_match: selected.evidence.exact_hash,
+            simhash_distance: selected.evidence.simhash_distance,
+        })
+        .collect()
 }
 
 fn best_source_match<'a>(
@@ -497,6 +518,7 @@ fn attach_inheritance_metadata(
 mod tests {
     use super::*;
     use crate::KnowledgeKind;
+    use lumvise_plugin_sdk::HostCallTransport;
 
     #[test]
     fn extended_tier_accepts_twelve_bits_and_rejects_thirteen() {
@@ -665,6 +687,143 @@ mod tests {
         assert!(nested_project_roots("/repo", "/repo/examples/demo"));
         assert!(nested_project_roots("/repo/examples/demo", "/repo"));
         assert!(!nested_project_roots("/repo-copy", "/repo"));
+    }
+
+    struct TransferCandidateFakeHost {
+        elements: Vec<SemanticElement>,
+        artifacts: Vec<KnowledgeArtifact>,
+        requests: Vec<Value>,
+    }
+
+    impl HostCallTransport for TransferCandidateFakeHost {
+        fn host_call(&mut self, capability_id: &str, input: Value) -> Result<Value, PluginError> {
+            self.requests.push(input.clone());
+            assert_eq!(capability_id, "storage.semantic");
+            match input["operation"].as_str() {
+                Some("candidate_source_elements") => Ok(json!({"elements": self.elements})),
+                Some("artifacts_for_elements") => Ok(
+                    json!({"artifacts": self.artifacts.iter().map(graph_artifact).collect::<Vec<_>>()}),
+                ),
+                _ => Err(PluginError::new(
+                    "unexpected_candidate_operation",
+                    format!(
+                        "invalid candidate request `{input}`; expected read-only candidate or artifact lookup"
+                    ),
+                    false,
+                )),
+            }
+        }
+    }
+
+    fn graph_artifact(artifact: &KnowledgeArtifact) -> Value {
+        json!({
+            "artifact_id": artifact.artifact_id, "semantic_element_id": artifact.semantic_element_id,
+            "artifact_kind": artifact.knowledge_type, "title": artifact.title, "content": artifact.content,
+            "dependencies": artifact.dependencies, "metadata": {"knowledge": {
+                "tags": artifact.tags, "metadata": artifact.metadata, "path": artifact.path,
+                "project_root": artifact.project_root
+            }}
+        })
+    }
+
+    #[test]
+    fn transfer_candidates_read_only_filter_project_scope_and_deduplicate_copies() {
+        let target = element("target", "run", "function", "src/lib.rs", 0, "same");
+        let mut inactive = target.clone();
+        inactive.lifecycle = "inactive".into();
+        let mut wrong_project = target.clone();
+        wrong_project.project_root = "/elsewhere".into();
+        let owned = artifact(0, KnowledgeKind::Annotation);
+        let mut host = transfer_candidate_host(vec![owned.clone(), owned.clone()]);
+        host.elements.extend([
+            source("/new", target.clone()).element,
+            source("/new/nested", target.clone()).element,
+        ]);
+        let matches = project_transfer_candidates(
+            "/new",
+            &[target.clone(), target, inactive, wrong_project],
+            &mut PluginContext::for_test(&mut host),
+        )
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].source, owned);
+        assert_eq!(matches[0].target.semantic_element_id, "target");
+        assert_eq!(matches[0].copy.project_root.as_deref(), Some("/new"));
+        assert!(matches[0].exact_match);
+        assert_eq!(matches[0].simhash_distance, 0);
+        assert_eq!(
+            host.requests
+                .iter()
+                .map(|request| request["operation"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["candidate_source_elements", "artifacts_for_elements"]
+        );
+        assert_eq!(
+            host.requests[1]["semantic_element_ids"],
+            json!(["old-element"])
+        );
+    }
+
+    #[test]
+    fn transfer_candidates_ignore_inactive_wrong_project_and_missing_fingerprints() {
+        let mut inactive = element("inactive", "run", "function", "src/lib.rs", 0, "same");
+        inactive.lifecycle = "inactive".into();
+        let wrong_project = source(
+            "/elsewhere",
+            element("elsewhere", "run", "function", "src/lib.rs", 0, "same"),
+        )
+        .element;
+        let mut malformed = element("malformed", "run", "function", "src/lib.rs", 0, "same");
+        malformed.content_fingerprint = Some("not-a-fingerprint".into());
+        let mut host = transfer_candidate_host(Vec::new());
+        let matches = project_transfer_candidates(
+            "/new",
+            &[inactive, wrong_project, malformed],
+            &mut PluginContext::for_test(&mut host),
+        )
+        .unwrap();
+        assert!(matches.is_empty());
+        assert!(host.requests.is_empty());
+    }
+
+    #[test]
+    fn transfer_candidates_rank_only_sources_that_own_artifacts() {
+        let target = element("target", "run", "function", "src/lib.rs", 0, "same");
+        let mut host = transfer_candidate_host(vec![
+            artifact(0, KnowledgeKind::Decision),
+            artifact(1, KnowledgeKind::Annotation),
+        ]);
+        host.elements[0].content_fingerprint = Some("fp1:0000000000000001:changed".into());
+        host.elements.push(
+            source(
+                "/closer",
+                element("unowned", "run", "function", "src/lib.rs", 0, "same"),
+            )
+            .element,
+        );
+        let matches =
+            project_transfer_candidates("/new", &[target], &mut PluginContext::for_test(&mut host))
+                .unwrap();
+        assert_eq!(matches.len(), 2);
+        for candidate in matches {
+            assert_eq!(candidate.source.semantic_element_id, "old-element");
+            assert!(!candidate.exact_match);
+            assert_eq!(candidate.simhash_distance, 1);
+        }
+    }
+
+    fn transfer_candidate_host(artifacts: Vec<KnowledgeArtifact>) -> TransferCandidateFakeHost {
+        TransferCandidateFakeHost {
+            elements: vec![
+                source(
+                    "/old",
+                    element("old-element", "run", "function", "src/lib.rs", 0, "same"),
+                )
+                .element,
+            ],
+            artifacts,
+            requests: Vec::new(),
+        }
     }
 
     fn element(
