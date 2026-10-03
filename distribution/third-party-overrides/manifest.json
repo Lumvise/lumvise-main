@@ -32,6 +32,17 @@
     },
     "source_url": "https://github.com/rustaudio/sample/tree/97c3bb9b2363c0b46ac1633858bf1054fd02a980"
   },
+  "cargo:defmt-parser@1.0.0": {
+    "files": [
+      "upstream/cargo/knurling-rs/defmt/4a8cdb44891ed57b8ff5a023b6bec7137c48708f/LICENSE-APACHE",
+      "upstream/cargo/knurling-rs/defmt/4a8cdb44891ed57b8ff5a023b6bec7137c48708f/LICENSE-MIT"
+    ],
+    "sha256": {
+      "upstream/cargo/knurling-rs/defmt/4a8cdb44891ed57b8ff5a023b6bec7137c48708f/LICENSE-APACHE": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+      "upstream/cargo/knurling-rs/defmt/4a8cdb44891ed57b8ff5a023b6bec7137c48708f/LICENSE-MIT": "2710a622a896bba67356913d4d0492cab5465f61b2ecce6d880aeb483834fb50"
+    },
+    "source_url": "https://github.com/knurling-rs/defmt/tree/4a8cdb44891ed57b8ff5a023b6bec7137c48708f"
+  },
   "cargo:dispatch2@0.3.1": {
     "files": [
       "upstream/cargo/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
@@ -40,6 +51,33 @@
       "upstream/cargo/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
     },
     "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
+  },
+  "cargo:docling-core@0.52.8": {
+    "files": [
+      "upstream/cargo/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE": "35751e32194868f473a12681011d9efef674ac9be4861974eadbb2c4f7ddd30a"
+    },
+    "source_url": "https://raw.githubusercontent.com/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE"
+  },
+  "cargo:docling-pdf@0.52.8": {
+    "files": [
+      "upstream/cargo/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE": "35751e32194868f473a12681011d9efef674ac9be4861974eadbb2c4f7ddd30a"
+    },
+    "source_url": "https://raw.githubusercontent.com/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE"
+  },
+  "cargo:docling@0.52.8": {
+    "files": [
+      "upstream/cargo/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE": "35751e32194868f473a12681011d9efef674ac9be4861974eadbb2c4f7ddd30a"
+    },
+    "source_url": "https://raw.githubusercontent.com/docling-project/docling.rs/dc8d00dd534716c9140d80663fa77bc6e892e29c/LICENSE"
   },
   "cargo:flatbuffers@25.12.19": {
     "files": [
@@ -129,6 +167,17 @@
     },
     "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
   },
+  "cargo:hashify@0.2.9": {
+    "files": [
+      "upstream/cargo/stalwartlabs/hashify/74bd8a251dff8a514039e035a6437eabf1b9fd57/LICENSE-Apache-2.0.txt",
+      "upstream/cargo/stalwartlabs/hashify/74bd8a251dff8a514039e035a6437eabf1b9fd57/LICENSE-MIT.txt"
+    ],
+    "sha256": {
+      "upstream/cargo/stalwartlabs/hashify/74bd8a251dff8a514039e035a6437eabf1b9fd57/LICENSE-Apache-2.0.txt": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "upstream/cargo/stalwartlabs/hashify/74bd8a251dff8a514039e035a6437eabf1b9fd57/LICENSE-MIT.txt": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    "source_url": "https://github.com/stalwartlabs/hashify/tree/74bd8a251dff8a514039e035a6437eabf1b9fd57"
+  },
   "cargo:mac@0.1.1": {
     "files": [
       "upstream/mac/0.1.1/NOTICE-Cargo.toml.txt",
@@ -213,6 +262,37 @@
     },
     "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
   },
+  "cargo:profiling-procmacros@1.0.18": {
+    "files": [
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+    ],
+    "sha256": {
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551",
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333"
+    },
+    "source_url": "https://github.com/aclysma/profiling/tree/8271551172eb6fa4cba47369aedd93790c623df9"
+  },
+  "cargo:profiling@1.0.18": {
+    "files": [
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+    ],
+    "sha256": {
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551",
+      "upstream/cargo/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333"
+    },
+    "source_url": "https://github.com/aclysma/profiling/tree/8271551172eb6fa4cba47369aedd93790c623df9"
+  },
+  "cargo:pulp-wasm-simd-flag@0.1.1": {
+    "files": [
+      "upstream/cargo/sarah-quinones/pulp/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/sarah-quinones/pulp/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE": "d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9"
+    },
+    "source_url": "https://raw.githubusercontent.com/sarah-quinones/pulp/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE"
+  },
   "cargo:selectors@0.26.0": {
     "files": [
       "upstream/cargo/selectors/LICENSE-MPL-header.txt",
@@ -223,6 +303,26 @@
       "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-MPL-2.0.txt": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
     },
     "source_url": "https://static.crates.io/crates/selectors/selectors-0.26.0.crate"
+  },
+  "cargo:selectors@0.38.0": {
+    "files": [
+      "upstream/cargo/selectors/LICENSE-MPL-header.txt",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-MPL-2.0.txt"
+    ],
+    "sha256": {
+      "upstream/cargo/selectors/LICENSE-MPL-header.txt": "537ba1efbc411986ff686160846d04416d671a1202fa0ebc1e17f520e4e50fdb",
+      "upstream/spdx/31ba1a50e5397e00a304dbadc76531740e89ee48/text/LICENSE-MPL-2.0.txt": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+    },
+    "source_url": "https://static.crates.io/crates/selectors/selectors-0.38.0.crate"
+  },
+  "cargo:simd_helpers@0.1.0": {
+    "files": [
+      "upstream/cargo/lu-zero/simd_helpers/82040194cd05affb060bf94d6f19f82a771d07fb/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/lu-zero/simd_helpers/82040194cd05affb060bf94d6f19f82a771d07fb/LICENSE": "d69f24ad84ec2ade64c0b68bdb31b41170e997b158370342056918329cc9af1e"
+    },
+    "source_url": "https://raw.githubusercontent.com/lu-zero/simd_helpers/82040194cd05affb060bf94d6f19f82a771d07fb/LICENSE"
   },
   "cargo:tree-sitter-cpp@0.23.4": {
     "files": [
@@ -313,5 +413,16 @@
       "upstream/cargo/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d"
     },
     "source_url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+  },
+  "cargo:zune-inflate@0.2.54": {
+    "files": [
+      "upstream/cargo/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE-ZLIB",
+      "upstream/cargo/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE.md"
+    ],
+    "sha256": {
+      "upstream/cargo/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE-ZLIB": "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352",
+      "upstream/cargo/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE.md": "e870d7fd7819a9f0453c62798cb52ae95d148a8c91dc2de1d983f997143c72de"
+    },
+    "source_url": "https://github.com/etemesi254/zune-image/tree/69502ce83fdfecdd0beefd677e2abb3781b29d98"
   }
 }
