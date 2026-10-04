@@ -60,7 +60,7 @@ proprietary source and internal implementation documentation stay private.
 
 ### Signed macOS release
 
-[Download Lumvise v0.1.1](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.1)
+[Download Lumvise v0.1.2](https://github.com/Lumvise/lumvise-main/releases/tag/v0.1.2)
 for **Apple Silicon Macs running macOS 14 or newer**. Full and Community DMGs
 are available; this release provides macOS installers only.
 
