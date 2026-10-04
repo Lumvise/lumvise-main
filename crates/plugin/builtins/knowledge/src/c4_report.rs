@@ -94,7 +94,7 @@ pub(crate) fn fingerprint(
     relationships: &[SemanticRelationship],
     artifacts: &[KnowledgeArtifact],
 ) -> String {
-    let mut parts = vec!["schema:c4-report-v8".to_owned()];
+    let mut parts = vec!["schema:c4-report-v9".to_owned()];
     parts.extend(elements.iter().map(|item| {
         format!(
             "element:{}:{}",
@@ -413,6 +413,45 @@ mod tests {
                 "a removal, duplicate, changed kind or retarget must move the key"
             );
         }
+    }
+
+    fn element(id: &str, kind: &str, name: &str, parent: Option<&str>) -> SemanticElement {
+        SemanticElement {
+            project_root: "/repo".into(),
+            semantic_element_id: id.into(),
+            semantic_source_id: "src".into(),
+            path: "illustrated.docx".into(),
+            element_kind: kind.into(),
+            name: name.into(),
+            parent_element_id: parent.map(str::to_owned),
+            content_fingerprint: None,
+            start_line: None,
+            end_line: None,
+            lifecycle: "active".into(),
+            metadata: json!({}),
+        }
+    }
+
+    /// Converted documents index their sections as `markdown_section` and
+    /// figures as `document_image`. Generating knowledge for a docx drew an
+    /// empty Functional Component Map with no Component Jobs.
+    #[test]
+    fn converted_document_report_draws_its_sections() {
+        let elements = vec![
+            element("doc", "file", "illustrated.docx", None),
+            element("s1", "markdown_section", "Field report", Some("doc")),
+            element("s2", "markdown_section", "Coastal sensors", Some("s1")),
+            element("fig", "document_image", "Figure 1", Some("doc")),
+        ];
+        let report = report("/repo", &elements[0], &elements, &[], &[], "fp");
+        assert!(
+            report.content.contains("c0[") && report.content.contains("c1["),
+            "diagram draws the document's top-level parts: {}",
+            report.content
+        );
+        assert!(report.content.contains("## Component Jobs"));
+        assert!(report.content.contains("Field report"));
+        assert!(report.content.contains("Figure 1"));
     }
 
     #[test]

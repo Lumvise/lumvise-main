@@ -376,9 +376,10 @@ fn report_element(element: &&SemanticElement) -> bool {
         "coverage/",
         "vendor/",
     ];
-    // Documents (markdown notes) decompose into `heading` children; without
-    // the kind here a document target drew an empty component map even though
-    // every section had a resolved functional summary.
+    // Documents decompose into section children: markdown notes into
+    // `heading`, converted documents (docx, pdf, pptx, xlsx, ...) into
+    // `markdown_section` and `document_image`, plain text into `block`.
+    // Without these kinds a document target drew an empty component map.
     let kind = matches!(
         element.element_kind.as_str(),
         "folder"
@@ -400,6 +401,9 @@ fn report_element(element: &&SemanticElement) -> bool {
             | "method"
             | "constructor"
             | "heading"
+            | "markdown_section"
+            | "document_image"
+            | "block"
     );
     kind && !matches!(
         element.path.as_str(),
