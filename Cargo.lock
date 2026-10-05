@@ -3475,7 +3475,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lumvise-app-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3516,7 +3516,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-builtin-plugin-release"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-contracts"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "schemars 0.8.22",
  "serde",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-db-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3569,7 +3569,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-frontend-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "json-patch",
@@ -3582,7 +3582,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-mcp-app-adapter"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "lumvise-app-core",
  "lumvise-mcp-core",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-mcp-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "prost",
  "serde",
@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-neural-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
  "bzip2 0.5.2",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-admin"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3678,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-package"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3693,7 +3693,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-protocol"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "prost",
  "serde",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-runtime"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3725,7 +3725,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-sdk"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "lumvise-plugin-protocol",
  "serde_json",
@@ -3757,7 +3757,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-project-indexer"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anytomd",
  "docling",
@@ -3788,7 +3788,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-resource-routing"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bytes",
  "h2",
@@ -3816,7 +3816,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-resource-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
  "bincode 1.3.3",
