@@ -219,6 +219,36 @@ fn unsupported_binary_and_recovered_syntax_are_explicit() {
 }
 
 #[test]
+fn minified_code_keeps_only_its_file_element() {
+    let mut parser = TreeSitterProjectParser::default();
+    let bundle = "function a(){return 1}var b=function(){return a()};".repeat(40);
+    let minified = parser
+        .parse("assets/index-C58W.js", bundle.as_bytes())
+        .unwrap();
+    assert_eq!(minified.status, ParseStatus::Minified);
+    assert!(minified.definitions.is_empty());
+    assert!(minified.references.is_empty());
+    assert_eq!(minified.source.as_deref(), Some(bundle.as_str()));
+    assert_eq!(parser.metrics().trees_parsed, 0);
+
+    let readable = "function a() {\n  return 1;\n}\n".repeat(80);
+    let parsed = parser.parse("src/a.js", readable.as_bytes()).unwrap();
+    assert!(matches!(parsed.status, ParseStatus::Parsed { .. }));
+    assert!(!parsed.definitions.is_empty());
+
+    let dense = "fn one() {} fn two() {} fn three() {} fn four() {} fn five() {} fn six() {}";
+    let small = parser.parse("small.rs", dense.as_bytes()).unwrap();
+    assert!(matches!(small.status, ParseStatus::Parsed { .. }));
+    assert_eq!(small.definitions.len(), 6);
+
+    let prose = "A long unwrapped paragraph of documentation. ".repeat(40);
+    let markdown = parser
+        .parse("README.md", format!("# Guide\n\n{prose}").as_bytes())
+        .unwrap();
+    assert!(matches!(markdown.status, ParseStatus::Parsed { .. }));
+}
+
+#[test]
 fn text_fallback_indexes_blank_line_blocks_with_settings() {
     use lumvise_project_indexer::BlockSettings;
 

@@ -142,10 +142,30 @@ impl ProjectFileParser for TreeSitterProjectParser {
                 ..ParsedFile::default()
             });
         };
+        if language != SyntaxLanguage::Markdown && is_minified(text) {
+            return Ok(ParsedFile {
+                source: Some(Arc::from(text)),
+                status: ParseStatus::Minified,
+                ..ParsedFile::default()
+            });
+        }
         let parsed = self.engine(language)?.extract(path, text, language)?;
         self.metrics.trees_parsed += 1;
         Ok(parsed)
     }
+}
+
+/// Code at least this large is checked for minification; smaller files cannot
+/// flood the graph and may legitimately be one dense line.
+const MINIFIED_MIN_BYTES: usize = 1024;
+/// GitHub Linguist's minified-file rule: average line length above 110.
+const MINIFIED_AVERAGE_LINE_BYTES: usize = 110;
+
+/// Detects bundler/minifier output such as committed Vite chunks, which keep
+/// few, very long lines. Prose (Markdown) is exempt by the caller.
+fn is_minified(text: &str) -> bool {
+    text.len() >= MINIFIED_MIN_BYTES
+        && text.len() / text.lines().count().max(1) > MINIFIED_AVERAGE_LINE_BYTES
 }
 
 fn extend_document_definitions(

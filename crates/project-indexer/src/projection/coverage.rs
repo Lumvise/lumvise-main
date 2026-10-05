@@ -10,6 +10,7 @@ pub(super) fn extraction(file: &ScannedFile) -> Value {
         } => ("parsed", Some(language), *has_syntax_errors),
         ParseStatus::PlainText => ("plain_text", None, false),
         ParseStatus::Binary => ("binary", None, false),
+        ParseStatus::Minified => ("minified", None, false),
         ParseStatus::Unsupported => ("unsupported", None, false),
     };
     json!({"status":status, "language":language, "has_syntax_errors":syntax_errors,

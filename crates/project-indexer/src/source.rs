@@ -132,6 +132,9 @@ pub enum ParseStatus {
     PlainText,
     /// Non-text bytes are retained only by their file fingerprint.
     Binary,
+    /// Minified or bundled code keeps only its file element; parsing it would
+    /// flood the graph with mangled declarations.
+    Minified,
     /// A language grammar ran, possibly recovering from syntax errors.
     Parsed {
         /// Selected language grammar.

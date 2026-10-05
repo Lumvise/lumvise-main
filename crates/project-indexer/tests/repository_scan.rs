@@ -35,6 +35,7 @@ fn real_repository_scan_reports_coverage_and_warm_inventory() {
             ParseStatus::Unsupported => "unsupported",
             ParseStatus::PlainText => "text",
             ParseStatus::Binary => "binary",
+            ParseStatus::Minified => "minified",
             ParseStatus::Parsed {
                 has_syntax_errors: true,
                 ..
