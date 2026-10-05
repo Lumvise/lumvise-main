@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use lumvise_contracts::IndexBatchRequest;
@@ -76,6 +77,36 @@ pub(crate) struct ProjectImportSession {
     indexer: ProjectIndexer<FilesystemProjectSource, ParallelTreeSitterProjectParser>,
     projection: SemanticIndexProjection,
     document_converter: Arc<lumvise_project_indexer::DocumentConverter>,
+    refresh_retry: Option<RefreshRetry>,
+}
+
+/// First wait before a failed project is refreshed again; doubles per
+/// consecutive failure up to [`REFRESH_RETRY_MAX`].
+const REFRESH_RETRY_BASE: Duration = Duration::from_secs(60);
+const REFRESH_RETRY_MAX: Duration = Duration::from_secs(3600);
+
+/// Background-refresh deferral after a failed import. A deterministic failure,
+/// such as a commit that cannot finish within the plugin invocation deadline,
+/// would otherwise repeat every refresh round, restarting the semantic plugin
+/// and growing the graph WAL each time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RefreshRetry {
+    failures: u32,
+    not_before: Instant,
+}
+
+impl RefreshRetry {
+    /// Waits 1, 2, 4 ... minutes after consecutive failures, at most one hour.
+    fn after_failure(previous: Option<Self>, now: Instant) -> Self {
+        let failures = previous.map_or(1, |retry| retry.failures.saturating_add(1));
+        let delay = REFRESH_RETRY_BASE
+            .saturating_mul(1 << (failures - 1).min(6))
+            .min(REFRESH_RETRY_MAX);
+        Self {
+            failures,
+            not_before: now + delay,
+        }
+    }
 }
 
 fn import_session(
@@ -95,6 +126,7 @@ fn import_session(
         ),
         projection: SemanticIndexProjection::new(root, PROVIDER_INSTANCE_ID)
             .map_err(scan_failure)?,
+        refresh_retry: None,
     })
 }
 
@@ -223,12 +255,52 @@ fn import_project(
             entry.insert(import_session(&root, converter)?)
         }
     };
+    let now = Instant::now();
+    if existing_only
+        && session
+            .refresh_retry
+            .is_some_and(|retry| now < retry.not_before)
+    {
+        // A failed refresh waits out its backoff; manual imports still run.
+        return Ok(finished(&project_root, 0, 0, 0, Vec::new(), &started_at));
+    }
+    let result = publish_scan(
+        app,
+        session,
+        &root,
+        &project_root,
+        input.replace_paths,
+        configuration_changed,
+        &started_at,
+    );
+    session.refresh_retry = match &result {
+        Ok(_) => None,
+        Err(_) => {
+            let retry = RefreshRetry::after_failure(session.refresh_retry, now);
+            tracing::warn!(event = "project_refresh_deferred", project_root = %project_root,
+                failures = retry.failures, retry_in_secs = (retry.not_before - now).as_secs());
+            Some(retry)
+        }
+    };
+    result
+}
+
+/// Scans one session's changes and publishes them as staged snapshot pages.
+fn publish_scan(
+    app: &AppCore,
+    session: &mut ProjectImportSession,
+    root: &Path,
+    project_root: &str,
+    replace_paths: Option<Vec<String>>,
+    configuration_changed: bool,
+    started_at: &str,
+) -> Result<Value, HttpResponse> {
     let ProjectImportSession {
         indexer,
         projection,
         ..
     } = session;
-    let scope = match &input.replace_paths {
+    let scope = match &replace_paths {
         Some(paths) if !paths.is_empty() && !configuration_changed => {
             ScanScope::Paths(paths.clone())
         }
@@ -243,12 +315,12 @@ fn import_project(
 
     if !scan.needs_publication() {
         indexer.commit(scan).map_err(scan_failure)?;
-        return Ok(finished(&project_root, 0, 0, 0, Vec::new(), &started_at));
+        return Ok(finished(project_root, 0, 0, 0, Vec::new(), started_at));
     }
 
     let mut batch = projection.project(&scan).map_err(scan_failure)?;
     let skipped = if full_snapshot {
-        collect_excluded(&root, &accepted_paths(&scan))
+        collect_excluded(root, &accepted_paths(&scan))
     } else {
         // A selective import replaces exactly the requested paths; policy
         // exclusions outside that scope are not part of this import.
@@ -256,7 +328,7 @@ fn import_project(
     };
     // The caller-supplied identity wins so scoped reads later match the
     // returned `projectRoot`; the source upsert keeps the real folder path.
-    batch.project_root = project_root.clone();
+    batch.project_root = project_root.to_owned();
     let elements_upserted = batch.semantic_elements.len();
     let relationships_upserted = batch.semantic_relationships.len();
 
@@ -342,12 +414,12 @@ fn import_project(
     })?;
 
     Ok(finished(
-        &project_root,
+        project_root,
         files_scanned,
         elements_upserted,
         relationships_upserted,
         skipped,
-        &started_at,
+        started_at,
     ))
 }
 
@@ -497,11 +569,24 @@ fn snapshot_pages(batch: &IndexBatchRequest, job_id: &str, full_snapshot: bool) 
         .div_ceil(ELEMENTS_PER_PAGE)
         .max(relationships.div_ceil(RELATIONSHIPS_PER_PAGE))
         .max(1);
+    // Serialize the shared fields once; re-serializing the whole batch per
+    // page made paging quadratic in project size.
+    let mut header = serde_json::to_value(batch).expect("index batch serializes");
+    let fields = header.as_object_mut().expect("index batch is an object");
+    for paged in [
+        "semantic_elements",
+        "semantic_relationships",
+        "semantic_sources",
+        "removed_paths",
+        "replace_paths",
+    ] {
+        fields.remove(paged);
+    }
     (0..page_count)
         .map(|index| {
             let element_window = window(index, ELEMENTS_PER_PAGE, elements);
             let relationship_window = window(index, RELATIONSHIPS_PER_PAGE, relationships);
-            let mut page = serde_json::to_value(batch).expect("index batch serializes");
+            let mut page = header.clone();
             let object = page.as_object_mut().expect("index batch is an object");
             if index == 0 {
                 object.insert("removed_paths".into(), json!(batch.removed_paths));

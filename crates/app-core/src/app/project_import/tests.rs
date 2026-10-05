@@ -250,6 +250,110 @@ fn publication_failure_fails_closed_when_semantic_plugin_is_absent() {
 }
 
 #[test]
+fn refresh_retry_doubles_from_one_minute_to_one_hour() {
+    let now = Instant::now();
+    let mut retry = None;
+    let mut waits = Vec::new();
+    for _ in 0..9 {
+        let next = RefreshRetry::after_failure(retry, now);
+        waits.push((next.not_before - now).as_secs() / 60);
+        retry = Some(next);
+    }
+    assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60, 60]);
+    assert_eq!(retry.unwrap().failures, 9);
+}
+
+/// A failing refresh must not retry every round: the next background
+/// refresh waits for the backoff, an explicit import still runs, and the
+/// refresh resumes once the wait has elapsed.
+#[test]
+fn failed_refresh_waits_for_backoff_while_manual_import_still_runs() {
+    let app = credentialed_app();
+    let directory = fixture_tree();
+    let root = directory.path().canonicalize().unwrap();
+    let project_root = root.to_string_lossy().into_owned();
+    index_fixture_project(&app, &project_root);
+    let refresh = |app: &AppCore| {
+        import_project(
+            app,
+            ImportInput {
+                folder_path: project_root.clone(),
+                project_root: Some(project_root.clone()),
+                replace_paths: None,
+                source: None,
+            },
+            true,
+        )
+    };
+    let retry = |app: &AppCore| {
+        app.project_import_sessions.lock().unwrap()[&(root.clone(), project_root.clone())]
+            .refresh_retry
+    };
+
+    // No compiled semantic plugin: publication fails deterministically.
+    assert!(refresh(&app).is_err());
+    assert_eq!(retry(&app).unwrap().failures, 1);
+    let deferred = refresh(&app).ok().expect("deferred refresh is a no-op");
+    assert_eq!(deferred["elementsUpserted"], json!(0));
+    assert_eq!(retry(&app).unwrap().failures, 1, "deferral must not retry");
+
+    let manual = project_import_response(&app, &request(json!({"folderPath": project_root})));
+    assert_eq!(manual.status, "500 Internal Server Error");
+    assert_eq!(retry(&app).unwrap().failures, 2);
+
+    let expire = |app: &AppCore| {
+        let mut sessions = app.project_import_sessions.lock().unwrap();
+        let session = sessions
+            .get_mut(&(root.clone(), project_root.clone()))
+            .unwrap();
+        session.refresh_retry.as_mut().unwrap().not_before = Instant::now();
+    };
+    expire(&app);
+    assert!(refresh(&app).is_err());
+    assert_eq!(retry(&app).unwrap().failures, 3);
+
+    // A successful refresh (nothing left to publish) clears the backoff.
+    {
+        let mut sessions = app.project_import_sessions.lock().unwrap();
+        let session = sessions
+            .get_mut(&(root.clone(), project_root.clone()))
+            .unwrap();
+        let scan = session.indexer.prepare(ScanScope::Full).unwrap();
+        session.indexer.commit(scan).unwrap();
+    }
+    expire(&app);
+    assert!(refresh(&app).is_ok());
+    assert_eq!(retry(&app), None);
+}
+
+fn index_fixture_project(app: &AppCore, project_root: &str) {
+    app.semantic
+        .execute(
+            SemanticOperation::SyncStructure {
+                project_root: project_root.into(),
+                elements: vec![lumvise_db_core::SemanticElement {
+                    project_root: project_root.into(),
+                    semantic_element_id: "fixture-file".into(),
+                    semantic_source_id: "fixture-source".into(),
+                    path: "src/main.rs".into(),
+                    element_kind: "file".into(),
+                    name: "main.rs".into(),
+                    parent_element_id: None,
+                    content_fingerprint: None,
+                    start_line: None,
+                    end_line: None,
+                    lifecycle: "active".into(),
+                    match_evidence: None,
+                    metadata: json!({}),
+                }],
+                relationships: vec![],
+            },
+            &InvocationControl::sixty_seconds(),
+        )
+        .expect("fixture project indexed");
+}
+
+#[test]
 fn retained_import_session_detects_edits_renames_and_removals() {
     let directory = fixture_tree();
     let mut session = import_session(directory.path(), Arc::default())
