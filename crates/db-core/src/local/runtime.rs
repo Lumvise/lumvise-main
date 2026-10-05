@@ -393,10 +393,18 @@ fn open_graph_database(path: &Path) -> Result<GrafeoDB> {
         std::fs::create_dir_all(parent)?;
     }
     let graph = timed_startup_phase("graph_open_and_replay", || {
-        GrafeoDB::open(path).map_err(|error| crate::DbError::Grafeo(error.to_string()))
+        GrafeoDB::with_config(graph_config(path))
+            .map_err(|error| crate::DbError::Grafeo(error.to_string()))
     })?;
     timed_startup_phase("semantic_indexes", || configure_semantic_indexes(&graph))?;
     Ok(graph)
+}
+
+/// Every committed transaction is durable on return: the WAL fsyncs once per
+/// commit record. Grafeo's default batch cadence (100 ms / 1000 records)
+/// instead flushed dozens of times inside one bulk snapshot commit.
+fn graph_config(path: &Path) -> grafeo::Config {
+    grafeo::Config::persistent(path).with_wal_durability(grafeo::DurabilityMode::Sync)
 }
 
 fn timed_startup_phase<T>(phase: &'static str, operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -426,6 +434,14 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("fixture"));
         assert!(error.to_string().contains("readable database"));
+    }
+
+    #[test]
+    fn graph_wal_syncs_once_per_commit() {
+        assert_eq!(
+            graph_config(Path::new("graph.grafeo")).wal_durability,
+            grafeo::DurabilityMode::Sync
+        );
     }
 
     #[test]
