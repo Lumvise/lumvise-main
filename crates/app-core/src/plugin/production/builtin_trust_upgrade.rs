@@ -20,6 +20,7 @@ pub(super) struct BuiltinTrustUpgrade {
     development_public_key: String,
     production_public_key: String,
     protocol_major: u32,
+    retain_development_authority: bool,
 }
 
 impl BuiltinTrustUpgrade {
@@ -28,6 +29,7 @@ impl BuiltinTrustUpgrade {
             development_public_key: DEVELOPMENT_PUBLIC_KEY.into(),
             production_public_key: PRODUCTION_PUBLIC_KEY.into(),
             protocol_major: u32::from(lumvise_plugin_protocol::CURRENT_PROTOCOL_VERSION.major),
+            retain_development_authority: cfg!(debug_assertions),
         }
     }
 
@@ -37,6 +39,7 @@ impl BuiltinTrustUpgrade {
             development_public_key: development,
             production_public_key: production,
             protocol_major: 1,
+            retain_development_authority: false,
         }
     }
 
@@ -56,7 +59,9 @@ impl BuiltinTrustUpgrade {
         if !self.preflight_release(release, installed, index)? {
             return Ok(());
         }
-        self.prepare_records(installed, &mut document, legacy)?;
+        if !self.prepare_records(installed, &mut document, legacy)? {
+            return Ok(());
+        }
         publish_policy(installed, &original, &document)
     }
 
@@ -124,8 +129,12 @@ impl BuiltinTrustUpgrade {
         path: &Path,
         document: &mut TrustUpgradeDocument,
         legacy: usize,
-    ) -> Result<()> {
-        if !self.require_bundle_pin(path, document)? {
+    ) -> Result<bool> {
+        let has_production_pin = self.require_bundle_pin(path, document)?;
+        if has_production_pin && self.retain_development_authority {
+            return Ok(false);
+        }
+        if !has_production_pin {
             document.keys.push(TrustUpgradeKey {
                 publisher_id: BUILTIN_PUBLISHER.into(),
                 key_id: PRODUCTION_KEY_ID.into(),
@@ -133,8 +142,8 @@ impl BuiltinTrustUpgrade {
                 revoked: false,
             });
         }
-        document.keys[legacy].revoked = true;
-        Ok(())
+        document.keys[legacy].revoked = !self.retain_development_authority;
+        Ok(true)
     }
 }
 

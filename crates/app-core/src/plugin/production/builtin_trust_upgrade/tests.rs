@@ -245,6 +245,82 @@ fn key_record(key_id: &str, key: &SigningKey, revoked: bool) -> Value {
 }
 
 #[test]
+fn development_host_accepts_both_pins_and_preserves_grants() {
+    let mut fixture = TrustUpgradeFixture::new();
+    fixture
+        .config
+        .builtin_trust_upgrade
+        .retain_development_authority = true;
+    let grants = fs::read(fixture.state.join("host-capability-grants.json")).unwrap();
+    fixture.change_bundled_grants();
+    fixture.install_new().unwrap();
+    assert!(fixture.verifies_archive(&fixture.new_release, "0.1.4"));
+    assert!(fixture.verifies_archive(&fixture.old_release, "0.1.3"));
+    fixture.assert_selected_production_versions();
+    assert_eq!(
+        fs::read(fixture.state.join("host-capability-grants.json")).unwrap(),
+        grants
+    );
+}
+
+#[test]
+fn development_host_restart_preserves_policy_bytes() {
+    let mut fixture = TrustUpgradeFixture::new();
+    fixture
+        .config
+        .builtin_trust_upgrade
+        .retain_development_authority = true;
+    fixture.install_new().unwrap();
+    let before = fs::read(fixture.trust_path()).unwrap();
+    fixture.install_new().unwrap();
+    assert_eq!(fs::read(fixture.trust_path()).unwrap(), before);
+    fixture.assert_no_policy_snapshots();
+}
+
+#[test]
+fn development_host_respects_production_revocation() {
+    let mut fixture = TrustUpgradeFixture::new();
+    fixture
+        .config
+        .builtin_trust_upgrade
+        .retain_development_authority = true;
+    let mut policy = fixture.policy();
+    policy["keys"].as_array_mut().unwrap().push(key_record(
+        PRODUCTION_KEY_ID,
+        &fixture.production,
+        true,
+    ));
+    fixture.replace_policy(&policy);
+    fixture.assert_rejected_without_policy_change();
+    assert!(fixture.verifies_archive(&fixture.old_release, "0.1.3"));
+}
+
+#[test]
+fn development_host_does_not_replace_conflicting_production_pin() {
+    let mut fixture = TrustUpgradeFixture::new();
+    fixture
+        .config
+        .builtin_trust_upgrade
+        .retain_development_authority = true;
+    let mut policy = fixture.policy();
+    policy["keys"].as_array_mut().unwrap().push(key_record(
+        PRODUCTION_KEY_ID,
+        &SigningKey::from_bytes(&[71; 32]),
+        false,
+    ));
+    fixture.replace_policy(&policy);
+    fixture.assert_rejected_without_policy_change();
+}
+
+#[test]
+fn compiled_host_retains_development_authority_only_in_debug_builds() {
+    assert_eq!(
+        BuiltinTrustUpgrade::production().retain_development_authority,
+        cfg!(debug_assertions)
+    );
+}
+
+#[test]
 fn old_install_accepts_pinned_bundle_and_rejects_development_authority() {
     let fixture = TrustUpgradeFixture::new();
     fixture.install_new().unwrap();
