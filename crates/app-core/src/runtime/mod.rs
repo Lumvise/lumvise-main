@@ -1,4 +1,6 @@
 mod compiled_plugins;
+#[cfg(test)]
+mod initial_plugin_restore_tests;
 
 use crate::plugin::production::ProductionPluginBootstrap;
 use crate::plugin::{SharedPluginVectorizer, VectorEngineIdentity};
@@ -16,7 +18,7 @@ use lumvise_neural_core::{
 use lumvise_plugin_runtime::{PluginRepository, PluginSystem};
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Lifetime of a credential minted through [`AppCore::mint_bridge_credential`];
 /// matches the runtime coordinator's own grant window.
@@ -689,7 +691,7 @@ impl AppCore {
 
     pub(crate) fn wait_for_initial_plugin_restore(
         &self,
-        timeout: std::time::Duration,
+        timeout: Option<Duration>,
     ) -> Result<bool> {
         let Some(initial_restore) = &self.initial_plugin_restore else {
             return Ok(true);
@@ -698,12 +700,16 @@ impl AppCore {
         let complete = complete
             .lock()
             .map_err(|_| crate::AppCoreError::poisoned_mutex("initial_plugin_restore"))?;
-        if *complete {
-            return Ok(true);
+        let complete = match timeout {
+            Some(timeout) => notifier
+                .wait_timeout_while(complete, timeout, |complete| !*complete)
+                .map(|(complete, _)| complete)
+                .map_err(|_| ()),
+            None => notifier
+                .wait_while(complete, |complete| !*complete)
+                .map_err(|_| ()),
         }
-        let (complete, _) = notifier
-            .wait_timeout_while(complete, timeout, |complete| !*complete)
-            .map_err(|_| crate::AppCoreError::poisoned_mutex("initial_plugin_restore"))?;
+        .map_err(|_| crate::AppCoreError::poisoned_mutex("initial_plugin_restore"))?;
         Ok(*complete)
     }
 
@@ -924,26 +930,5 @@ mod tests {
             lumvise_neural_core::managed_models::ManagedModelState::Failed
         );
         assert!(!status.active);
-    }
-
-    #[test]
-    fn initial_plugin_restore_wait_reports_timeout_then_completion() {
-        let mut app = AppCore::in_memory().unwrap();
-        let initial_restore = Arc::new((Mutex::new(false), Condvar::new()));
-        app.initial_plugin_restore = Some(Arc::clone(&initial_restore));
-        assert!(
-            !app.wait_for_initial_plugin_restore(std::time::Duration::from_millis(1))
-                .unwrap()
-        );
-
-        std::thread::spawn(move || {
-            let (complete, notifier) = initial_restore.as_ref();
-            *complete.lock().unwrap() = true;
-            notifier.notify_all();
-        });
-        assert!(
-            app.wait_for_initial_plugin_restore(std::time::Duration::from_secs(1))
-                .unwrap()
-        );
     }
 }
