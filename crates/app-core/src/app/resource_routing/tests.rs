@@ -275,3 +275,111 @@ fn mixed_internal_graph_and_llm_share_one_relational_composition() {
     };
     assert!(super::requires_local_persistence(&config));
 }
+
+struct ReadyStorageClient {
+    requests: std::sync::Mutex<Vec<lumvise_resource_routing::protocol::ReadinessRequestV1>>,
+    unavailable: bool,
+}
+
+impl lumvise_resource_routing::ResourceInvocationClient for ReadyStorageClient {
+    fn readiness(
+        &self,
+        request: &lumvise_resource_routing::protocol::ReadinessRequestV1,
+        _: &InvocationControl,
+    ) -> Result<
+        lumvise_resource_routing::protocol::ReadinessResponseV1,
+        lumvise_resource_routing::transport::TransportError,
+    > {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(lumvise_resource_routing::protocol::ReadinessResponseV1 {
+            capabilities: request
+                .requested_capabilities
+                .iter()
+                .map(
+                    |capability| lumvise_resource_routing::protocol::CapabilityReadinessEntryV1 {
+                        capability: *capability,
+                        status: i32::from(self.unavailable),
+                    },
+                )
+                .collect(),
+            ..Default::default()
+        })
+    }
+    fn invoke(
+        &self,
+        _: &[lumvise_resource_routing::protocol::InvocationEnvelopeV1],
+        _: &InvocationControl,
+    ) -> Result<
+        Vec<lumvise_resource_routing::protocol::InvocationEnvelopeV1>,
+        lumvise_resource_routing::transport::TransportError,
+    > {
+        panic!("startup must not issue a persistence operation")
+    }
+    fn cancel(
+        &self,
+        _: &lumvise_resource_routing::protocol::InvocationEnvelopeV1,
+        _: &InvocationControl,
+    ) -> Result<
+        lumvise_resource_routing::protocol::InvocationTerminalV1,
+        lumvise_resource_routing::transport::TransportError,
+    > {
+        panic!("startup must not issue cancellation")
+    }
+}
+
+#[test]
+fn injected_storage_retains_local_compute_and_needs_no_local_database() {
+    let client = Arc::new(ReadyStorageClient {
+        requests: Default::default(),
+        unavailable: false,
+    });
+    let (config, resources) =
+        ResourceRouter::build_selection(super::AppResourceSelection::RemoteStorage {
+            client: client.clone(),
+            client_instance_id: "durable-client".into(),
+        })
+        .unwrap();
+    assert!(!super::requires_local_persistence(&config));
+    assert_eq!(config.llm_execution, ResourcePlacement::Internal);
+    assert_eq!(config.speech_inference, ResourcePlacement::Internal);
+    assert!(resources.llm_catalog.providers.is_empty());
+    assert!(resources.speech_recognizer.is_none());
+    let requests = client.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].client_instance_id, "durable-client");
+    assert_eq!(
+        requests[0].requested_capabilities,
+        vec![
+            super::ResourceCapabilityV1::GraphPersistence as i32,
+            super::ResourceCapabilityV1::SqlPersistence as i32
+        ]
+    );
+}
+
+#[test]
+fn injected_unavailable_storage_fails_without_local_fallback() {
+    let client = Arc::new(ReadyStorageClient {
+        requests: Default::default(),
+        unavailable: true,
+    });
+    let result = ResourceRouter::build_selection(super::AppResourceSelection::RemoteStorage {
+        client: client.clone(),
+        client_instance_id: "durable-client".into(),
+    });
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .contains("graph_persistence route is not ready")
+    );
+    let empty = ResourceRouter::build_selection(super::AppResourceSelection::RemoteStorage {
+        client,
+        client_instance_id: String::new(),
+    });
+    assert!(
+        empty
+            .err()
+            .unwrap()
+            .contains("expected stable client identity")
+    );
+}

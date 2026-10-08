@@ -4,6 +4,7 @@ use std::path::Path;
 use lumvise_plugin_sdk::PluginError;
 use serde_json::{Value, json};
 
+use crate::projection_identity::canonical_projection_json;
 use crate::semantic_context::{SemanticContext, SemanticElement, SemanticRelationship};
 use crate::{KnowledgeArtifact, artifact::knowledge_type_label, functional};
 
@@ -666,7 +667,7 @@ fn content_md5(content: &str) -> String {
     format!("{:x}", md5::compute(content.as_bytes()))
 }
 fn projection_content_md5(markdown: &str, link_targets: &[Value]) -> String {
-    content_md5(&json!([markdown, link_targets]).to_string())
+    content_md5(&canonical_projection_json(&json!([markdown, link_targets])))
 }
 fn is_filesystem_element(item: &SemanticElement) -> bool {
     matches!(item.element_kind.as_str(), "file" | "folder" | "directory")

@@ -4,11 +4,9 @@ use chrono::{DateTime, Utc};
 pub trait Clock: Send + Sync {
     /// Returns the current UTC instant.
     ///
-    /// # Example
-    /// ```
-    /// use lumvise_db_core::{Clock, SystemClock};
-    /// let _now = SystemClock.now();
-    /// ```
+    /// This clock is injected by the private runtime for deterministic persistence
+    /// tests. `SystemClock` delegates to `chrono::Utc::now`; callers use persistence
+    /// operations and do not access the clock.
     fn now(&self) -> DateTime<Utc>;
 }
 

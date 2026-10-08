@@ -13,14 +13,15 @@ mod workspace_activity;
 
 #[cfg(feature = "desktop-app")]
 pub use app::AppCoreDesktopBridge;
+pub use app::AppResourceSelection;
 pub use app::ScopedMcpHttpServer;
 pub use app::run_headless_app;
-#[cfg(feature = "desktop-app")]
-pub use app::run_lumvise_app;
 pub use app::runtime_coordinator::{
     AcquireResult, ActivationRequest, AppRuntimeCoordinator, OwnerLease, QuitRequest,
     RuntimeConnection, RuntimeControlPort, RuntimeCoordinatorError, RuntimeLauncher,
 };
+#[cfg(feature = "desktop-app")]
+pub use app::{run_lumvise_app, run_lumvise_app_with_resource_selection};
 pub use async_runtime::{
     AppCoreRuntime, AppCoreRuntimeHealth, RuntimeFrontendHandle, RuntimeLlmHandle,
     RuntimeModalityHandle, RuntimeSpawnMode, RuntimeWorkerState,

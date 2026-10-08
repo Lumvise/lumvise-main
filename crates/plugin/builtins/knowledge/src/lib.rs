@@ -23,6 +23,7 @@ mod md_nucleus;
 mod obsidian_reports;
 mod project_structure;
 mod projection;
+mod projection_identity;
 mod search;
 mod semantic;
 mod semantic_context;

@@ -41,15 +41,9 @@ struct AdjacencyLocator {
 /// physical range-integrity descriptors, and index locator membership before any
 /// lookup is exposed.
 ///
-/// # Example
-///
-/// ```no_run
-/// use lumvise_db_core::PzArchive;
-/// let archive = PzArchive::open("graph_db.pz")?;
-/// let files = archive.lookup_path("src/lib.rs", false)?;
-/// assert!(files.relationships.is_empty());
-/// # Ok::<(), lumvise_db_core::DbError>(())
-/// ```
+/// Index-directed lookup is an internal codec verification facility, not a
+/// caller-facing archive handle. Callers exchange owned `SemanticArchive` records
+/// and use portable semantic persistence operations.
 pub struct PzArchive {
     manifest: PzManifest,
     #[cfg(test)]

@@ -8,8 +8,10 @@ use lumvise_plugin_package::read_protected_signing_key;
 
 mod native_diagnostics;
 mod options;
+mod release_signing_identity;
 use native_diagnostics::NativeSymbols;
 use options::ReleaseOptions;
+use release_signing_identity::ReleaseSigningIdentity;
 
 fn main() {
     if let Err(error) = run(env::args().skip(1).collect()) {
@@ -28,7 +30,8 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
     let current = env::current_dir().map_err(|error| error.to_string())?;
     let options = ReleaseOptions::parse(arguments, &current)?;
     let key = read_protected_signing_key(&options.key).map_err(|error| error.to_string())?;
-    let matrix = build_builtin_binaries_composition_with_profile(
+    let identity = ReleaseSigningIdentity::select(options.profile, &key.verifying_key())?;
+    let mut matrix = build_builtin_binaries_composition_with_profile(
         &options.workspaces,
         &options.targets,
         &options.target_dir,
@@ -36,6 +39,7 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
         options.composition,
     )
     .map_err(|error| error.to_string())?;
+    identity.apply(&mut matrix)?;
     let staging = tempfile::tempdir().map_err(|error| error.to_string())?;
     let matrix = stage_payloads(&matrix, staging.path())?;
     // Apple signatures must be inside the payload before its Ed25519 digest is computed.

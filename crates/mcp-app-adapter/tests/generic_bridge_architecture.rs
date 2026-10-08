@@ -3,6 +3,7 @@ use std::process::Command;
 
 const ALLOWED_DEPENDENCIES: &[&str] = &[
     "lumvise-app-core",
+    "lumvise-contracts",
     "lumvise-mcp-core",
     "prost",
     "serde",
@@ -21,9 +22,24 @@ fn adapter_dependency_graph_is_transport_only() {
 }
 
 #[test]
-fn app_core_dependency_is_required_for_runtime_launch() {
-    let dependencies = vec!["lumvise-app-core".to_string()];
+fn runtime_launch_and_mcp_wire_contracts_are_allowed() {
+    let dependencies = vec![
+        "lumvise-app-core".to_string(),
+        "lumvise-contracts".to_string(),
+    ];
     assert_allowed_dependencies(&dependencies).unwrap();
+}
+
+#[test]
+fn mcp_wire_contracts_do_not_admit_domain_implementations() {
+    for dependency in [
+        "lumvise-db-core",
+        "lumvise-neural-core",
+        "lumvise-plugin-semantic",
+    ] {
+        let error = assert_allowed_dependencies(&[dependency.to_string()]).unwrap_err();
+        assert!(error.contains(dependency));
+    }
 }
 
 fn assert_allowed_dependencies(dependencies: &[String]) -> Result<(), String> {

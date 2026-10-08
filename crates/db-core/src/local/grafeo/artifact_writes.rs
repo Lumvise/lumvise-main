@@ -13,12 +13,29 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// # use lumvise_db_core::{DbCore, SemanticArtifact, SemanticElement};
-    /// let db = DbCore::in_memory().unwrap();
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult, SemanticArtifact, SemanticElement};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
     /// let element = SemanticElement { project_root: "/repo".into(), semantic_element_id: "e".into(), semantic_source_id: "s".into(), path: "p".into(), element_kind: "file".into(), name: "p".into(), parent_element_id: None, content_fingerprint: None, start_line: None, end_line: None, lifecycle: "active".into(), match_evidence: None, metadata: serde_json::json!({}) };
-    /// db.storage_manager().semantic_storage().upsert_element(&element).unwrap();
+    /// let synced = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::SyncStructure {
+    ///         project_root: "/repo".into(),
+    ///         elements: vec![element],
+    ///         relationships: vec![],
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(synced, SemanticResult::SyncStructure(report) if report.elements_upserted == 1));
     /// let artifact = SemanticArtifact { artifact_id: "a".into(), semantic_element_id: "e".into(), artifact_kind: "definition".into(), title: "A".into(), content_ref: None, content: None, searchable_text: None, content_size_bytes: None, dependencies: vec![], metadata: serde_json::json!({}) };
-    /// db.storage_manager().semantic_storage().upsert_artifact(&artifact).unwrap();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::UpsertArtifact { artifact, media_type: "text/plain".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::UpsertedArtifact { artifact_id } if artifact_id == "a"));
     /// ```
     pub fn upsert_artifact(&self, artifact: &SemanticArtifact) -> Result<()> {
         self.commit_artifact_update(artifact, None)
@@ -29,12 +46,36 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// # use lumvise_db_core::{DbCore, SemanticArtifact, SemanticElement};
-    /// let db = DbCore::in_memory().unwrap();
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult, SemanticArtifact, SemanticElement};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
     /// let element = SemanticElement { project_root: "/repo".into(), semantic_element_id: "e".into(), semantic_source_id: "s".into(), path: "p".into(), element_kind: "file".into(), name: "p".into(), parent_element_id: None, content_fingerprint: None, start_line: None, end_line: None, lifecycle: "active".into(), match_evidence: None, metadata: serde_json::json!({}) };
-    /// db.storage_manager().semantic_storage().upsert_element(&element).unwrap();
-    /// let artifact = SemanticArtifact { artifact_id: "a".into(), semantic_element_id: "e".into(), artifact_kind: "definition".into(), title: "A".into(), content_ref: None, content: None, searchable_text: None, content_size_bytes: None, dependencies: vec![], metadata: serde_json::json!({}) };
-    /// db.storage_manager().semantic_storage().upsert_artifact_content(&artifact, "text/plain", b"hello").unwrap();
+    /// let synced = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::SyncStructure {
+    ///         project_root: "/repo".into(),
+    ///         elements: vec![element],
+    ///         relationships: vec![],
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(synced, SemanticResult::SyncStructure(report) if report.elements_upserted == 1));
+    /// let mut artifact = SemanticArtifact { artifact_id: "a".into(), semantic_element_id: "e".into(), artifact_kind: "definition".into(), title: "A".into(), content_ref: None, content: None, searchable_text: None, content_size_bytes: None, dependencies: vec![], metadata: serde_json::json!({}) };
+    /// artifact.content = Some("hello".into());
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::UpsertArtifact { artifact, media_type: "text/plain".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::UpsertedArtifact { artifact_id } if artifact_id == "a"));
+    /// let loaded = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::Artifact { artifact_id: "a".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(loaded, SemanticResult::Artifact(Some(artifact)) if artifact.content.as_deref() == Some("hello")));
     /// ```
     pub fn upsert_artifact_content(
         &self,

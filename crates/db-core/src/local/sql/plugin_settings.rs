@@ -19,8 +19,21 @@ impl<'db> PluginSettingsRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// db.plugin_settings().set_config("knowledge", true, &serde_json::json!({})).unwrap();
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::SetPluginSetting {
+    ///         plugin_id: "knowledge".into(),
+    ///         enabled: true,
+    ///         config: serde_json::json!({}),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PluginSettingUpdated(setting) if setting.plugin_id == "knowledge" && setting.enabled && setting.config == serde_json::json!({})));
     /// ```
     pub fn set_config(&self, plugin_id: &str, enabled: bool, config: &Value) -> Result<()> {
         require_non_empty(plugin_id, "non-empty plugin id")?;
@@ -41,8 +54,17 @@ impl<'db> PluginSettingsRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.plugin_settings().plugin_settings("missing").unwrap().is_none());
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::GetPluginSetting { plugin_id: "missing".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PluginSetting(None)));
     /// ```
     pub fn plugin_settings(&self, plugin_id: &str) -> Result<Option<PluginSettingsRecord>> {
         require_non_empty(plugin_id, "non-empty plugin id")?;

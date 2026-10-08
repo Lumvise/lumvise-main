@@ -381,8 +381,17 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.storage_manager().semantic_storage().element("missing").unwrap().is_none());
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::Element { semantic_element_id: "missing".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::Element(None)));
     /// ```
     pub fn element(&self, semantic_element_id: &str) -> Result<Option<SemanticElement>> {
         require_non_empty(semantic_element_id, "non-empty semantic element id")?;
@@ -452,8 +461,17 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.storage_manager().semantic_storage().artifact("missing").unwrap().is_none());
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::Artifact { artifact_id: "missing".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::Artifact(None)));
     /// ```
     pub fn artifact(&self, artifact_id: &str) -> Result<Option<SemanticArtifact>> {
         require_non_empty(artifact_id, "non-empty semantic artifact id")?;
@@ -487,8 +505,17 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.storage_manager().semantic_storage().relationships_from("missing").unwrap().is_empty());
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::RelationshipsFrom { semantic_element_id: "missing".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::Relationships(relationships) if relationships.is_empty()));
     /// ```
     pub fn relationships_from(
         &self,
@@ -505,9 +532,18 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// # use std::collections::HashSet;
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.storage_manager().semantic_storage().relationships_touching_elements(&HashSet::new()).unwrap().is_empty());
+    /// use std::collections::HashSet;
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::RelationshipsTouchingElements { semantic_element_ids: HashSet::new() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::Relationships(records) if records.is_empty()));
     /// ```
     pub fn relationships_touching_elements(
         &self,
@@ -527,8 +563,17 @@ impl<'db> SemanticStorage<'db> {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.storage_manager().semantic_storage().artifacts_for_elements(&HashSet::new()).unwrap().is_empty());
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::ArtifactsForElements { semantic_element_ids: HashSet::new() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::Artifacts(records) if records.is_empty()));
     /// ```
     pub fn artifacts_for_elements(
         &self,
@@ -660,8 +705,17 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.storage_manager().semantic_storage().semantic_project_roots().unwrap().is_empty());
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::ProjectRoots,
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::ProjectRoots(roots) if roots.is_empty()));
     /// ```
     pub fn semantic_project_roots(&self) -> Result<Vec<String>> {
         let roots = self.graph.read(|graph| {

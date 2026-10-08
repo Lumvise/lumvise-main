@@ -39,12 +39,9 @@ impl<'db> StorageManager<'db> {
 
     /// Returns the semantic storage repository.
     ///
-    /// # Example
-    ///
-    /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// let _storage = db.storage_manager().semantic_storage();
-    /// ```
+    /// The private local composition constructs this repository over the shared SQL
+    /// and graph runtime, change tracking, and injected clock. External callers use
+    /// `SemanticPersistence` through `LocalPersistence` instead of repository handles.
     pub fn semantic_storage(&self) -> SemanticStorage<'db> {
         SemanticStorage::new(
             self.conn,

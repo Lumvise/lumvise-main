@@ -27,8 +27,21 @@ impl<'db> PluginDataRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// db.plugin_data().ensure_table("builtin.assistant", "cache", &serde_json::json!({})).unwrap();
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let table = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::EnsurePluginDataTable {
+    ///         plugin_id: "builtin.assistant".into(),
+    ///         table_name: "cache".into(),
+    ///         schema: serde_json::json!({}),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(table, RelationalResult::PluginDataTable(table) if table.plugin_id == "builtin.assistant" && table.table_name == "cache"));
     /// ```
     pub fn ensure_table(
         &self,
@@ -69,9 +82,32 @@ impl<'db> PluginDataRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// db.plugin_data().ensure_table("builtin.assistant", "cache", &serde_json::json!({})).unwrap();
-    /// db.plugin_data().put_row("builtin.assistant", "cache", "latest", &serde_json::json!({"ok": true})).unwrap();
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let table = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::EnsurePluginDataTable {
+    ///         plugin_id: "builtin.assistant".into(),
+    ///         table_name: "cache".into(),
+    ///         schema: serde_json::json!({}),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(table, RelationalResult::PluginDataTable(table) if table.plugin_id == "builtin.assistant" && table.table_name == "cache"));
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::PutPluginData {
+    ///         plugin_id: "builtin.assistant".into(),
+    ///         table_name: "cache".into(),
+    ///         row_key: "latest".into(),
+    ///         value: serde_json::json!({"ok": true}),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PluginDataRow(Some(row)) if row.row_key == "latest" && row.value == serde_json::json!({"ok": true})));
     /// ```
     pub fn put_row(
         &self,
@@ -99,8 +135,21 @@ impl<'db> PluginDataRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.plugin_data().row("builtin.assistant", "cache", "missing").unwrap().is_none());
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::GetPluginData {
+    ///         plugin_id: "builtin.assistant".into(),
+    ///         table_name: "cache".into(),
+    ///         row_key: "missing".into(),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PluginDataRow(None)));
     /// ```
     pub fn row(
         &self,
@@ -118,8 +167,20 @@ impl<'db> PluginDataRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.plugin_data().rows("builtin.assistant", "cache").unwrap().is_empty());
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::ListPluginData {
+    ///         plugin_id: "builtin.assistant".into(),
+    ///         table_name: "cache".into(),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PluginDataRows(rows) if rows.is_empty()));
     /// ```
     pub fn rows(&self, plugin_id: &str, table_name: &str) -> Result<Vec<PluginDataRowRecord>> {
         validate_table_ref(plugin_id, table_name)?;
@@ -139,11 +200,23 @@ impl<'db> PluginDataRepository<'db> {
     ///
     /// # Example
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// let page = db.plugin_data()
-    ///     .rows_page("plugin.example", "records", Some("element:"), None, 100)
-    ///     .unwrap();
-    /// assert!(page.rows.is_empty());
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::PagePluginData {
+    ///         plugin_id: "plugin.example".into(),
+    ///         table_name: "records".into(),
+    ///         key_prefix: Some("element:".into()),
+    ///         after_key: None,
+    ///         limit: 100,
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PluginDataPage(page) if page.rows.is_empty() && page.next_after_key.is_none()));
     /// ```
     pub fn rows_page(
         &self,
@@ -224,13 +297,34 @@ impl<'db> PluginDataRepository<'db> {
     ///
     /// # Example
     /// ```
-    /// use lumvise_db_core::PluginDataMutation;
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// db.plugin_data().ensure_table("plugin.example", "records", &serde_json::json!({})).unwrap();
-    /// let result = db.plugin_data().apply_mutations("plugin.example", &[
-    ///     PluginDataMutation::Put { table_name: "records".into(), row_key: "a".into(), value: serde_json::json!({"ok": true}) }
-    /// ]).unwrap();
-    /// assert_eq!(result.rows_put, 1);
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult, PluginDataMutation};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let table = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::EnsurePluginDataTable {
+    ///         plugin_id: "plugin.example".into(),
+    ///         table_name: "records".into(),
+    ///         schema: serde_json::json!({}),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(table, RelationalResult::PluginDataTable(table) if table.plugin_id == "plugin.example" && table.table_name == "records"));
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::ApplyMutations {
+    ///         plugin_id: "plugin.example".into(),
+    ///         mutations: vec![PluginDataMutation::Put {
+    ///             table_name: "records".into(),
+    ///             row_key: "a".into(),
+    ///             value: serde_json::json!({"ok": true}),
+    ///         }],
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PluginDataMutations(result) if result.rows_put == 1));
     /// ```
     pub fn apply_mutations(
         &self,

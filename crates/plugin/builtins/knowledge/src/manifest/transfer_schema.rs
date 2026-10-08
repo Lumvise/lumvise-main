@@ -19,12 +19,13 @@ fn candidate() -> Value {
         "target_semantic_element_id": string(), "target_name": string(), "target_path": string(),
         "exact_match": boolean(), "simhash_distance": integer(), "already_copied": boolean()
     });
-    let required = properties
+    let mut required = properties
         .as_object()
         .unwrap()
         .keys()
         .map(String::as_str)
         .collect::<Vec<_>>();
+    required.sort_unstable();
     closed_object(&required, properties.clone())
 }
 

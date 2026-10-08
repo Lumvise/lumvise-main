@@ -19,8 +19,21 @@ impl<'db> PersistentSettingsRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// db.persistent_settings().set_json("app", "theme", &serde_json::json!("dark")).unwrap();
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::SetPersistentSetting {
+    ///         scope: "app".into(),
+    ///         key: "theme".into(),
+    ///         value: serde_json::json!("dark"),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PersistentSettingUpdated(setting) if setting.scope == "app" && setting.key == "theme" && setting.value == serde_json::json!("dark")));
     /// ```
     pub fn set_json(&self, scope: &str, key: &str, value: &Value) -> Result<()> {
         require_non_empty(scope, "non-empty setting scope")?;
@@ -42,8 +55,17 @@ impl<'db> PersistentSettingsRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.persistent_settings().get_json("missing", "key").unwrap().is_none());
+    /// use lumvise_db_core::{LocalPersistence, RelationalOperation, RelationalPersistence, RelationalResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = RelationalPersistence::execute(
+    ///     &persistence,
+    ///     RelationalOperation::GetPersistentSetting { scope: "missing".into(), key: "key".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, RelationalResult::PersistentSetting(None)));
     /// ```
     pub fn get_json(&self, scope: &str, key: &str) -> Result<Option<SettingRecord>> {
         require_non_empty(scope, "non-empty setting scope")?;

@@ -9,6 +9,14 @@ use crate::McpInvocationContext;
 /// Implementations own tool discovery, argument validation, routing, and
 /// domain behavior. MCP Core only translates this interface to JSON-RPC.
 pub trait McpApplication: Send + Sync {
+    /// Observes a completed MCP handshake; e.g. begin connection-scoped registration.
+    fn mcp_client_initialized(&self) -> Result<(), McpApplicationError> {
+        Ok(())
+    }
+
+    /// Retires this transport before invocation draining; e.g. stop presence renewal.
+    fn mcp_client_disconnected(&self) {}
+
     /// Returns complete tool descriptors visible to MCP clients.
     fn list_tools(&self) -> Result<Vec<McpTool>, McpApplicationError>;
 

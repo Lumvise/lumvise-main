@@ -50,6 +50,8 @@ pub struct AppCore {
     pub(crate) bridge_credentials: Arc<Mutex<Option<Arc<Mutex<HashMap<String, u64>>>>>>,
     pub(crate) frontend_actions: Arc<Mutex<Vec<serde_json::Value>>>,
     pub(crate) project_import_sessions: Mutex<crate::app::project_import::ProjectImportSessions>,
+    // Some(root) is observed this incarnation; None fences explicit retirement until register.
+    pub(crate) mcp_session_membership: Mutex<HashMap<String, Option<String>>>,
     pub(crate) document_converter: Mutex<Arc<lumvise_project_indexer::DocumentConverter>>,
     #[cfg(feature = "assistant-e2e")]
     pub(crate) e2e_event_journal: E2eEventJournal,
@@ -244,6 +246,7 @@ impl AppCore {
             bridge_credentials: Arc::new(Mutex::new(None)),
             frontend_actions: plugin_host_services.frontend_actions(),
             project_import_sessions: Mutex::new(Default::default()),
+            mcp_session_membership: Mutex::new(HashMap::new()),
             document_converter: Mutex::new(Arc::default()),
             #[cfg(feature = "assistant-e2e")]
             e2e_event_journal: E2eEventJournal::default(),

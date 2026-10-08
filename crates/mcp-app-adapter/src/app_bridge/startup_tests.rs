@@ -184,7 +184,20 @@ fn mcp_base_tools_respond_before_app_initialization_and_discover_ready_plugins_l
     fixture.owner.mark_ready(bridge.base_url.clone()).unwrap();
     request.join().unwrap();
     let tools = early.expect("MCP tools/list must not wait for database or plugin initialization");
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "discover_app_plugins",
+            "invoke_app_plugin_capability",
+            "app_bridge_status",
+            "set_current_project",
+        ]
+    );
     let ready = rpc(&fixture.server, "tools/list", json!({}));
     assert!(
         ready["result"]["tools"]

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 lumvise-app-core.workspace = true
+lumvise-contracts.workspace = true
 lumvise-mcp-core.workspace = true
 prost.workspace = true
 serde.workspace = true

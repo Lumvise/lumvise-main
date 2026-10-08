@@ -21,8 +21,22 @@ impl<'db> ArtifactBlobRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// db.artifact_blobs().put_blob("blob://note", "note", "text/plain", b"body").unwrap();
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::ArtifactBlobPut {
+    ///         content_ref: "blob://note".into(),
+    ///         artifact_id: "note".into(),
+    ///         media_type: "text/plain".into(),
+    ///         content: b"body".to_vec(),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::ArtifactBlob(Some(blob)) if blob.content.as_slice() == b"body"));
     /// ```
     pub fn put_blob(
         &self,
@@ -43,8 +57,17 @@ impl<'db> ArtifactBlobRepository<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.artifact_blobs().blob("blob://missing").unwrap().is_none());
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::ArtifactBlobGet { content_ref: "blob://missing".into() },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::ArtifactBlob(None)));
     /// ```
     pub fn blob(&self, content_ref: &str) -> Result<Option<ArtifactBlob>> {
         require_non_empty(content_ref, "non-empty blob content ref")?;

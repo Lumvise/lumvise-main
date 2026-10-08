@@ -483,8 +483,8 @@ fn exports_direct_artifacts_raw_blobs_and_typed_vectors_only_for_active_direct_o
         .downcast_ref::<arrow_array::StringArray>()
         .unwrap();
     assert_eq!(
-        metadata.value(0),
-        r#"{"revision":7,"source":"focused-test"}"#
+        serde_json::from_str::<serde_json::Value>(metadata.value(0)).unwrap(),
+        json!({"revision": 7, "source": "focused-test"})
     );
 
     let name_vector_batch = first_batch(&parquet_entry(&path, "element_name_vectors.parquet"));

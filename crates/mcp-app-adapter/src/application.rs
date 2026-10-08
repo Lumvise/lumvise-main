@@ -1,3 +1,4 @@
+use crate::session_project_binding::SessionProjectBinding;
 use crate::{app_bridge::AppBridgeRuntime, tool_catalog::tool_catalog};
 use lumvise_mcp_core::{
     AppBridgeInvocationResponseV1, AppBridgeInvocationStatusV1, LumviseMcpServer, McpApplication,
@@ -11,6 +12,7 @@ use std::time::Duration;
 pub struct McpAppConfig {
     app_bridge: AppBridgeConfig,
     native_assistant_caller: NativeAssistantCaller,
+    initial_project_root: Option<String>,
 }
 
 const ASSISTANT_PLUGIN_ID: &str = "builtin.assistant";
@@ -35,6 +37,7 @@ struct LumviseMcpApplication {
     app_bridge: AppBridgeRuntime,
     native_assistant_caller: NativeAssistantCaller,
     bound_assistant_session: Mutex<Option<BoundAssistantSession>>,
+    project_binding: SessionProjectBinding,
 }
 
 pub use crate::app_bridge::AppBridgeConfig;
@@ -57,6 +60,7 @@ impl McpAppConfig {
         Self {
             app_bridge: AppBridgeConfig::discovery(),
             native_assistant_caller: default_native_assistant_caller(),
+            initial_project_root: None,
         }
     }
 
@@ -73,6 +77,7 @@ impl McpAppConfig {
         Self {
             app_bridge,
             native_assistant_caller: default_native_assistant_caller(),
+            initial_project_root: None,
         }
     }
 
@@ -85,6 +90,13 @@ impl McpAppConfig {
             engine: engine.into(),
             instance_id: instance_id.into(),
         };
+        self
+    }
+
+    /// Selects the initial explicit binding; e.g. `.with_project_root("/work/repo")`.
+    /// It is published only after the client completes initialization.
+    pub fn with_project_root(mut self, project_root: impl Into<String>) -> Self {
+        self.initial_project_root = Some(project_root.into());
         self
     }
 }
@@ -114,6 +126,10 @@ fn default_native_assistant_caller() -> NativeAssistantCaller {
 pub fn open_server(config: McpAppConfig) -> LumviseMcpServer {
     let owner_id = config.native_assistant_caller.instance_id.clone();
     let application = LumviseMcpApplication {
+        project_binding: SessionProjectBinding::new(
+            config.app_bridge.clone(),
+            config.initial_project_root,
+        ),
         app_bridge: AppBridgeRuntime::start(config.app_bridge),
         native_assistant_caller: config.native_assistant_caller,
         bound_assistant_session: Mutex::new(None),
@@ -155,12 +171,20 @@ impl LumviseMcpApplication {
     fn dispatch_tool(
         &self,
         name: &str,
-        _arguments: Value,
+        arguments: Value,
     ) -> std::result::Result<Value, JsonRpcError> {
         match name {
             "discover_app_plugins" => self.discover_app_plugins(),
             "invoke_app_plugin_capability" => Err(tool_error("controlled invocation required")),
             "app_bridge_status" => self.app_bridge_status(),
+            "set_current_project" => {
+                self.project_binding
+                    .select(arguments)
+                    .map_err(|error| match error {
+                        McpApplicationError::InvalidParams(message) => invalid_params(message),
+                        other => tool_error(other),
+                    })
+            }
             other if other.starts_with("app_plugin.") => {
                 Err(tool_error("controlled invocation required"))
             }
@@ -365,6 +389,15 @@ fn expose_session_driver(tool: &mut Value) {
 }
 
 impl McpApplication for LumviseMcpApplication {
+    fn mcp_client_initialized(&self) -> Result<(), McpApplicationError> {
+        self.project_binding
+            .initialize()
+            .map_err(McpApplicationError::invocation)
+    }
+
+    fn mcp_client_disconnected(&self) {
+        self.project_binding.close();
+    }
     fn list_tools(&self) -> std::result::Result<Vec<McpTool>, McpApplicationError> {
         self.tools_list().map_err(mcp_application_error)
     }

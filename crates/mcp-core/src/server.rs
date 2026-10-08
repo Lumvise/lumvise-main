@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -23,6 +23,17 @@ pub struct LumviseMcpServer {
     session_id: String,
     invocation_timeout: Duration,
     in_flight: Mutex<HashMap<String, McpInvocationContext>>,
+    initialize_validated: AtomicBool,
+    initialization_reported: AtomicBool,
+    transport_closed: AtomicBool,
+    initialize_ordering: Mutex<InitializeOrdering>,
+    initialize_ready: Condvar,
+}
+
+#[derive(Default)]
+struct InitializeOrdering {
+    notification_received: bool,
+    completed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +125,11 @@ impl LumviseMcpServer {
             session_id: session_id.into(),
             invocation_timeout: DEFAULT_INVOCATION_TIMEOUT,
             in_flight: Mutex::new(HashMap::new()),
+            initialize_validated: AtomicBool::new(false),
+            initialization_reported: AtomicBool::new(false),
+            transport_closed: AtomicBool::new(false),
+            initialize_ordering: Mutex::new(InitializeOrdering::default()),
+            initialize_ready: Condvar::new(),
         }
     }
 
@@ -149,6 +165,9 @@ impl LumviseMcpServer {
         let Ok(request) = serde_json::from_str::<JsonRpcRequest>(line) else {
             return Ok(());
         };
+        if request.method == "notifications/initialized" && request.id.is_none() {
+            return self.note_initialization_receipt();
+        }
         if request.method != "tools/call" {
             return Ok(());
         }
@@ -187,7 +206,7 @@ impl LumviseMcpServer {
     fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         let id = request.id;
         let result = match request.method.as_str() {
-            "initialize" => Ok(initialize_result()),
+            "initialize" => self.initialize_client(request.params),
             "tools/list" => self.tools_list(),
             "tools/call" => {
                 self.call_tool(id.as_ref().expect("request id checked"), request.params)
@@ -207,6 +226,10 @@ impl LumviseMcpServer {
         id: &Value,
         params: Option<Value>,
     ) -> std::result::Result<Value, JsonRpcError> {
+        if let Err(error) = self.await_initialization() {
+            self.remove_invocation(&request_key(id));
+            return Err(error);
+        }
         let call = match parse_tool_call(params) {
             Ok(call) => call,
             Err(error) => {
@@ -235,6 +258,9 @@ impl LumviseMcpServer {
     }
 
     fn handle_notification(&self, request: JsonRpcRequest) -> Result<()> {
+        if request.method == "notifications/initialized" {
+            return self.report_client_initialized();
+        }
         if request.method != "notifications/cancelled" {
             return Ok(());
         }
@@ -243,6 +269,91 @@ impl LumviseMcpServer {
         })?;
         let cancelled: CancelledParams = serde_json::from_value(params)?;
         self.cancel_invocation(&cancelled.request_id)
+    }
+
+    fn initialize_client(&self, params: Option<Value>) -> std::result::Result<Value, JsonRpcError> {
+        let valid = params.as_ref().is_some_and(valid_initialize_params);
+        if !valid || self.transport_closed.load(Ordering::Acquire) {
+            return Err(invalid_params(format!(
+                "initialize params {params:?}: expected protocolVersion, capabilities object and clientInfo name/version on an open transport"
+            )));
+        }
+        self.initialize_validated.store(true, Ordering::Release);
+        Ok(initialize_result())
+    }
+
+    fn report_client_initialized(&self) -> Result<()> {
+        self.note_initialization_receipt()?;
+        if self.transport_closed.load(Ordering::Acquire)
+            || !self.initialize_validated.load(Ordering::Acquire)
+            || self.initialization_reported.swap(true, Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+        self.complete_initialization(self.application.mcp_client_initialized())
+    }
+
+    fn complete_initialization(
+        &self,
+        initialized: std::result::Result<(), McpApplicationError>,
+    ) -> Result<()> {
+        if initialized.is_err() {
+            self.close_transport();
+        }
+        if let Ok(mut ordering) = self.initialize_ordering.lock() {
+            ordering.completed = true;
+        }
+        self.initialize_ready.notify_all();
+        initialized.map_err(|error| {
+            crate::McpCoreError::invalid_request(
+                error.to_string(),
+                "successful MCP initialization callback",
+            )
+        })
+    }
+
+    pub(crate) fn close_transport(&self) {
+        if !self.transport_closed.swap(true, Ordering::AcqRel) {
+            let ordering = self.initialize_ordering.lock();
+            self.initialize_ready.notify_all();
+            drop(ordering);
+            self.application.mcp_client_disconnected();
+        }
+    }
+
+    fn note_initialization_receipt(&self) -> Result<()> {
+        if !self.initialize_validated.load(Ordering::Acquire)
+            || self.transport_closed.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        let mut ordering = self.initialize_ordering.lock().map_err(|_| {
+            crate::McpCoreError::invalid_request(
+                "poisoned initialization lock",
+                "available MCP lifecycle state",
+            )
+        })?;
+        ordering.notification_received = true;
+        Ok(())
+    }
+
+    fn await_initialization(&self) -> std::result::Result<(), JsonRpcError> {
+        let ordering = self
+            .initialize_ordering
+            .lock()
+            .map_err(|_| invalid_params("poisoned MCP initialization state"))?;
+        let ordering = self
+            .initialize_ready
+            .wait_while(ordering, |state| {
+                state.notification_received
+                    && !state.completed
+                    && !self.transport_closed.load(Ordering::Acquire)
+            })
+            .map_err(|_| invalid_params("poisoned MCP initialization state"))?;
+        if ordering.notification_received && self.transport_closed.load(Ordering::Acquire) {
+            return Err(invalid_params("MCP transport closed during initialization"));
+        }
+        Ok(())
     }
 
     fn invocation_context(&self, id: &Value) -> McpInvocationContext {
@@ -333,6 +444,24 @@ fn tool_result(payload: Value) -> std::result::Result<Value, JsonRpcError> {
     let text =
         serde_json::to_string(&payload).map_err(|error| invalid_params(error.to_string()))?;
     Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": false }))
+}
+
+fn valid_initialize_params(params: &Value) -> bool {
+    let nonempty_text = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+    };
+    nonempty_text(params.get("protocolVersion"))
+        && params.get("capabilities").is_some_and(Value::is_object)
+        && nonempty_text(params.pointer("/clientInfo/name"))
+        && nonempty_text(params.pointer("/clientInfo/version"))
+}
+
+impl Drop for LumviseMcpServer {
+    fn drop(&mut self) {
+        self.close_transport();
+    }
 }
 
 fn initialize_result() -> Value {

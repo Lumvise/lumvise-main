@@ -49,9 +49,12 @@ impl DbCore {
     /// # Example
     ///
     /// ```
-    /// let temp = tempfile::NamedTempFile::new().unwrap();
-    /// let db = lumvise_db_core::DbCore::open(temp.path()).unwrap();
-    /// assert_eq!(db.path(), temp.path());
+    /// use lumvise_db_core::{LocalPersistence, SemanticPersistence, RelationalPersistence};
+    ///
+    /// let directory = tempfile::tempdir().unwrap();
+    /// let persistence = LocalPersistence::open(directory.path().join("db.sqlite")).unwrap();
+    /// assert!(SemanticPersistence::readiness(&persistence).unwrap().ready);
+    /// assert!(RelationalPersistence::readiness(&persistence).unwrap().ready);
     /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_clock(path, Arc::new(SystemClock))
@@ -105,8 +108,11 @@ impl DbCore {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert_eq!(db.path().to_string_lossy(), ":memory:");
+    /// use lumvise_db_core::{LocalPersistence, SemanticPersistence, RelationalPersistence};
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// assert!(SemanticPersistence::readiness(&persistence).unwrap().ready);
+    /// assert!(RelationalPersistence::readiness(&persistence).unwrap().ready);
     /// ```
     pub fn in_memory() -> Result<Self> {
         Self::in_memory_with_clock(Arc::new(SystemClock))
@@ -203,8 +209,22 @@ impl DbCore {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// db.artifact_blobs().put_blob("blob://a", "a", "text/plain", b"x").unwrap();
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::ArtifactBlobPut {
+    ///         content_ref: "blob://a".into(),
+    ///         artifact_id: "a".into(),
+    ///         media_type: "text/plain".into(),
+    ///         content: b"x".to_vec(),
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::ArtifactBlob(Some(blob)) if blob.content.as_slice() == b"x"));
     /// ```
     pub fn artifact_blobs(&self) -> ArtifactBlobRepository<'_> {
         ArtifactBlobRepository::with_clock(&self.conn, Arc::clone(&self.clock))
@@ -322,8 +342,17 @@ impl DbCore {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert_eq!(db.latest_published_commit_version().unwrap(), 0);
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::SemanticRevision,
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::SemanticRevision { commit_version: 0 }));
     /// ```
     pub fn latest_published_commit_version(&self) -> Result<i64> {
         let conn = self.conn.read_conn();
@@ -332,11 +361,16 @@ impl DbCore {
 
     /// Reports unresolved semantic commits that require recovery before writes.
     ///
+    /// Callers observe semantic readiness through `SemanticPersistence`; detailed
+    /// recovery state remains internal.
+    ///
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// assert!(db.semantic_recovery_status().unwrap().is_none());
+    /// use lumvise_db_core::{LocalPersistence, SemanticPersistence};
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// assert!(SemanticPersistence::readiness(&persistence).unwrap().ready);
     /// ```
     pub fn semantic_recovery_status(&self) -> Result<Option<SemanticRecoveryStatus>> {
         let conn = self.conn.read_conn();

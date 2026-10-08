@@ -233,10 +233,10 @@ impl AppSettings {
                 json!({ "assistantModel": value, model_field: value })
             }
             AppSettingsPatch::GenerationEngine(value) => {
-                self.generation_engine = *value;
-                if value.is_none() {
+                if value.is_none() || self.generation_engine != *value {
                     self.generation_model = None;
                 }
+                self.generation_engine = *value;
                 json!({
                     "generationEngine": value.map(|engine| engine.value()),
                     "generationModel": self.generation_model,
@@ -388,7 +388,8 @@ impl FrontendCore {
     }
 
     /// Replaces the active-source catalog and reports whether source-local
-    /// reconciliation changed the persisted provider/model selection.
+    /// reconciliation filled an unset model. Explicit choices survive discovery.
+    /// Example: `frontend.replace_assistant_provider_catalog(discovered_catalog)`.
     pub fn replace_assistant_provider_catalog(
         &mut self,
         catalog: AssistantProviderCatalog,
@@ -399,26 +400,37 @@ impl FrontendCore {
 
     fn reconcile_assistant_selection(&mut self) -> bool {
         let previous = self.settings.assistant_model.clone();
-        let provider_id = self.settings.assistant_engine.value();
-        let Some(provider) = self
-            .assistant_provider_catalog
-            .providers
-            .iter()
-            .find(|provider| provider.id == provider_id)
-        else {
-            self.settings.assistant_model = None;
-            return self.settings.assistant_model != previous;
-        };
-        if self.settings.assistant_model.as_ref().is_none_or(|model| {
-            !provider
-                .models
-                .iter()
-                .any(|candidate| candidate.id == *model)
-        }) {
-            self.settings.assistant_model = provider.default_model.clone();
+        if previous
+            .as_deref()
+            .is_some_and(|model| !model.trim().is_empty())
+        {
+            return false;
         }
+        let provider_id = self.settings.assistant_engine.value();
+        let providers = &self.assistant_provider_catalog.providers;
+        let Some(provider) = providers.iter().find(|provider| provider.id == provider_id) else {
+            return false;
+        };
+        self.settings.assistant_model = initial_catalog_model(provider);
         self.settings.assistant_model != previous
     }
+}
+
+fn initial_catalog_model(provider: &AssistantProviderOption) -> Option<String> {
+    let default = provider.default_model.as_ref().and_then(|default| {
+        provider
+            .models
+            .iter()
+            .find(|model| model.id == *default && !model.id.trim().is_empty())
+    });
+    default
+        .or_else(|| {
+            provider
+                .models
+                .iter()
+                .find(|model| !model.id.trim().is_empty())
+        })
+        .map(|model| model.id.clone())
 }
 
 fn default_bulb_visible() -> bool {
@@ -537,6 +549,121 @@ mod tests {
             settings.apply_app_settings_patch(&AppSettingsPatch::GenerationEngine(None)),
             json!({"generationEngine": null, "generationModel": null})
         );
+        assert_eq!(settings.generation_model, None);
+    }
+
+    fn codex_catalog(models: &[&str], default: Option<&str>) -> AssistantProviderCatalog {
+        AssistantProviderCatalog {
+            providers: vec![AssistantProviderOption {
+                id: "codex".into(),
+                label: "Codex".into(),
+                available: true,
+                model_source: AssistantModelSource::Client,
+                default_model: default.map(str::to_string),
+                models: models
+                    .iter()
+                    .map(|id| AssistantModelOption {
+                        id: (*id).into(),
+                        label: (*id).into(),
+                    })
+                    .collect(),
+            }],
+        }
+    }
+
+    fn codex_frontend(model: Option<&str>) -> FrontendCore {
+        FrontendCore::new(AppSettings {
+            assistant_engine: AssistantEngine::Codex,
+            assistant_model: model.map(str::to_string),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn catalog_publication_preserves_explicit_models_even_when_unavailable() {
+        let mut unavailable = codex_catalog(&["advertised-model"], Some("advertised-model"));
+        unavailable.providers[0].available = false;
+        for catalog in [
+            AssistantProviderCatalog::default(),
+            unavailable,
+            codex_catalog(&["advertised-model"], Some("advertised-model")),
+            codex_catalog(&["saved-model"], Some("saved-model")),
+        ] {
+            let mut frontend = codex_frontend(Some("saved-model"));
+            assert!(!frontend.replace_assistant_provider_catalog(catalog.clone()));
+            assert_eq!(
+                frontend.app_settings().assistant_model.as_deref(),
+                Some("saved-model")
+            );
+            assert_eq!(frontend.assistant_provider_catalog(), &catalog);
+        }
+    }
+
+    #[test]
+    fn catalog_publication_fills_unset_models_from_advertised_choices_only() {
+        for unset in [None, Some(""), Some("  ")] {
+            for default in [Some("preferred-model"), Some("unadvertised-model"), None] {
+                let mut frontend = codex_frontend(unset);
+                let catalog = codex_catalog(&["first-model", "preferred-model"], default);
+                assert!(frontend.replace_assistant_provider_catalog(catalog));
+                let expected = if default == Some("preferred-model") {
+                    "preferred-model"
+                } else {
+                    "first-model"
+                };
+                assert_eq!(
+                    frontend.app_settings().assistant_model.as_deref(),
+                    Some(expected)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_catalog_cannot_fill_an_unset_model_from_a_phantom_default() {
+        for models in [&[][..], &[""][..], &["  "][..]] {
+            let mut frontend = codex_frontend(None);
+            assert!(
+                !frontend.replace_assistant_provider_catalog(codex_catalog(
+                    models,
+                    Some("phantom-model")
+                ))
+            );
+            assert_eq!(frontend.app_settings().assistant_model, None);
+        }
+    }
+
+    #[test]
+    fn generation_engine_changes_clear_models_but_repeated_selection_keeps_them() {
+        for (next, expected) in [
+            (Some(AssistantEngine::Codex), Some("gen-model")),
+            (Some(AssistantEngine::Cerebras), None),
+            (None, None),
+        ] {
+            let mut settings = AppSettings {
+                generation_engine: Some(AssistantEngine::Codex),
+                generation_model: Some("gen-model".into()),
+                ..Default::default()
+            };
+            let patch =
+                settings.apply_app_settings_patch(&AppSettingsPatch::GenerationEngine(next));
+            assert_eq!(settings.generation_engine, next);
+            assert_eq!(settings.generation_model.as_deref(), expected);
+            assert_eq!(
+                patch,
+                json!({"generationEngine": next.map(|engine| engine.value()), "generationModel": expected})
+            );
+        }
+    }
+
+    #[test]
+    fn same_as_assistant_clears_an_orphan_generation_model() {
+        let mut settings = AppSettings {
+            generation_model: Some("gen-model".into()),
+            ..Default::default()
+        };
+        settings.apply_app_settings_patch(&AppSettingsPatch::GenerationEngine(None));
+        assert_eq!(settings.generation_engine, None);
         assert_eq!(settings.generation_model, None);
     }
 

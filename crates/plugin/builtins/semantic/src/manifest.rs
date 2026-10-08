@@ -212,7 +212,7 @@ pub(crate) fn source(target: &str, executable_sha256: &str) -> PluginManifest {
         schema_version: 1,
         publisher: PublisherIdentity {
             publisher_id: "lumvise.builtin".into(),
-            key_id: "lumvise.release.1".into(),
+            key_id: "lumvise.production.1".into(),
         },
         plugin_id: PLUGIN_ID.into(),
         plugin_version: env!("CARGO_PKG_VERSION").into(),

@@ -179,10 +179,12 @@ fn run_mcp(options: McpOptions) -> Result<(), Box<dyn std::error::Error>> {
     let app_bridge = options.app_bridge();
     let identity = options.identity();
     let _project_provider = options.project_provider(&app_bridge, &identity)?;
-    let server = open_server(
-        McpAppConfig::from_app_bridge(app_bridge)
-            .with_native_assistant_caller(identity.engine, identity.instance_id),
-    );
+    let mut config = McpAppConfig::from_app_bridge(app_bridge)
+        .with_native_assistant_caller(identity.engine, identity.instance_id);
+    if let Some(project_root) = options.project_root {
+        config = config.with_project_root(project_root);
+    }
+    let server = open_server(config);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     run_stdio(server, stdin.lock(), stdout)?;
@@ -370,7 +372,10 @@ mod entrypoint_tests {
         assert!(
             headless_error
                 .to_string()
-                .starts_with("reading resource routing configuration:"),
+                .contains("invalid-test-placement")
+                && headless_error
+                    .to_string()
+                    .contains("internal or centralized"),
             "{headless_error}"
         );
     }

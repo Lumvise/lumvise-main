@@ -7,6 +7,7 @@ mod app_bridge;
 mod application;
 mod product;
 mod project_execution;
+mod session_project_binding;
 mod tool_catalog;
 
 pub use app_bridge::AppBridgeConfig;

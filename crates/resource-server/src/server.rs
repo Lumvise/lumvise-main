@@ -225,6 +225,24 @@ pub struct ResourceServer {
     dispatcher: Arc<ResourceDispatcher>,
 }
 
+/// A bound listener whose certificate/key pair has already been validated.
+/// Example: `let listener = ResourceListener::new(tcp, cert, key)?;`.
+pub struct ResourceListener {
+    listener: TcpListener,
+    tls: TlsAcceptor,
+}
+
+impl ResourceListener {
+    pub fn new(
+        listener: TcpListener,
+        certificate: &Path,
+        key: &Path,
+    ) -> Result<Self, ResourceServerError> {
+        let tls = TlsAcceptor::from(Arc::new(load_tls_config(certificate, key)?));
+        Ok(Self { listener, tls })
+    }
+}
+
 impl ResourceServer {
     pub fn new(resources: ServerResources) -> Self {
         let tenants = Arc::new(TenantAdapterCache::new(
@@ -254,11 +272,20 @@ impl ResourceServer {
         self: Arc<Self>,
         config: &ResourceServerConfig,
     ) -> Result<(), ResourceServerError> {
-        let tls = TlsAcceptor::from(Arc::new(load_tls_config(
-            &config.tls_certificate_path,
-            &config.tls_key_path,
-        )?));
         let listener = TcpListener::bind(config.bind).await?;
+        let listener =
+            ResourceListener::new(listener, &config.tls_certificate_path, &config.tls_key_path)?;
+        self.serve_listener(listener).await
+    }
+
+    /// Serves the same authenticated protocol on an already bound TLS listener.
+    /// Private composition can report bind failures before publishing settings.
+    /// Example: `server.serve_listener(listener).await?`.
+    pub async fn serve_listener(
+        self: Arc<Self>,
+        endpoint: ResourceListener,
+    ) -> Result<(), ResourceServerError> {
+        let ResourceListener { listener, tls } = endpoint;
         loop {
             let (tcp, _) = listener.accept().await?;
             let server = Arc::clone(&self);
@@ -696,6 +723,9 @@ fn dispatch_terminal(error: DispatchError) -> InvocationTerminalV1 {
 }
 
 fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<ServerConfig, ResourceServerError> {
+    // Embedded desktop composition can enable both Rustls providers; choose the same
+    // provider as the existing resource client rather than depending on binary startup.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let cert_file = std::fs::File::open(cert_path)?;
     let mut cert_reader = BufReader::new(cert_file);
     let certs: Vec<CertificateDer<'static>> =

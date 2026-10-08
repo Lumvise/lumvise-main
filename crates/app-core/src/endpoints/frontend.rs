@@ -285,3 +285,65 @@ pub(crate) fn require_non_empty(value: &str, expected: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lumvise_frontend_core::{
+        AssistantEngine, AssistantModelOption, AssistantModelSource, AssistantProviderOption,
+    };
+
+    fn app_with_saved_assistant_model() -> AppCore {
+        let app = AppCore::in_memory().unwrap();
+        app.frontend()
+            .apply_app_settings_patch(&AppSettingsPatch::AssistantEngine(AssistantEngine::Codex))
+            .unwrap();
+        app.frontend()
+            .apply_app_settings_patch(&AppSettingsPatch::AssistantModel(Some(
+                "saved-model".into(),
+            )))
+            .unwrap();
+        app
+    }
+
+    fn unavailable_codex_catalog() -> AssistantProviderCatalog {
+        AssistantProviderCatalog {
+            providers: vec![AssistantProviderOption {
+                id: "codex".into(),
+                label: "Codex".into(),
+                available: false,
+                models: vec![AssistantModelOption {
+                    id: "advertised-model".into(),
+                    label: "Advertised".into(),
+                }],
+                default_model: Some("advertised-model".into()),
+                model_source: AssistantModelSource::Client,
+            }],
+        }
+    }
+
+    #[test]
+    fn discovery_preserves_durable_explicit_assistant_preferences() {
+        let app = app_with_saved_assistant_model();
+        let frontend = app.frontend();
+        let saved = frontend.app_settings_record().unwrap().unwrap().value;
+        let catalogs = [
+            AssistantProviderCatalog::default(),
+            unavailable_codex_catalog(),
+        ];
+        for catalog in catalogs {
+            frontend
+                .replace_assistant_provider_catalog(catalog.clone())
+                .unwrap();
+            assert_eq!(frontend.assistant_provider_catalog().unwrap(), catalog);
+            assert_eq!(
+                frontend.app_settings_record().unwrap().unwrap().value,
+                saved
+            );
+            let settings = frontend.app_settings().unwrap();
+            assert_eq!(settings.assistant_model.as_deref(), Some("saved-model"));
+            // Persist the runtime projection too: a stale in-memory change must not leak into the next save.
+            assert_eq!(frontend.persist_app_settings().unwrap().value, saved);
+        }
+    }
+}

@@ -40,16 +40,34 @@ pub struct Http2CentralTransport {
 
 impl Http2CentralTransport {
     pub fn from_config(config: &CentralServerConfig) -> Result<Self, TransportError> {
-        if config.url.scheme() != "https" {
-            return Err(TransportError::HttpsRequired(config.url.to_string()));
+        Self::from_endpoint(config.url.clone(), config.ca_certificate_path.as_deref())
+    }
+
+    /// Connects to an authenticated resource endpoint without prescribing its login method.
+    /// Example: `Http2CentralTransport::from_endpoint(url, Some(certificate_path))`.
+    pub fn from_endpoint(
+        origin: Url,
+        ca_certificate_path: Option<&Path>,
+    ) -> Result<Self, TransportError> {
+        if !origin.username().is_empty() || origin.password().is_some() {
+            return Err(TransportError::InvalidEndpoint(
+                "credentials in endpoint; expected HTTPS origin only",
+            ));
         }
-        let tls = TlsConnector::from(Arc::new(tls_client_config(
-            config.ca_certificate_path.as_deref(),
-        )?));
-        Ok(Self {
-            origin: config.url.clone(),
-            tls,
-        })
+        if origin.scheme() != "https" {
+            return Err(TransportError::HttpsRequired(origin.to_string()));
+        }
+        if origin.host_str().is_none()
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || origin.path() != "/"
+        {
+            return Err(TransportError::InvalidEndpoint(
+                "endpoint path, query or fragment; expected HTTPS origin only",
+            ));
+        }
+        let tls = TlsConnector::from(Arc::new(tls_client_config(ca_certificate_path)?));
+        Ok(Self { origin, tls })
     }
 
     pub async fn connect(
@@ -62,7 +80,12 @@ impl Http2CentralTransport {
         if control.is_expired() {
             return Err(TransportError::DeadlineExceeded);
         }
-        let host = self.origin.host_str().ok_or(TransportError::MissingHost)?;
+        let host = self
+            .origin
+            .host()
+            .ok_or(TransportError::MissingHost)?
+            .to_string();
+        let host = host.trim_start_matches('[').trim_end_matches(']');
         let port = self
             .origin
             .port_or_known_default()
@@ -399,6 +422,8 @@ async fn await_control<T>(
 
 #[derive(Debug, Error)]
 pub enum TransportError {
+    #[error("invalid central server endpoint: {0}")]
+    InvalidEndpoint(&'static str),
     #[error("central server URL must use HTTPS, got {0}")]
     HttpsRequired(String),
     #[error("central server URL has no hostname")]

@@ -1,9 +1,9 @@
 package = "lumvise-plugin-knowledge"
 binary = "lumvise-plugin-knowledge"
 plugin_id = "builtin.knowledge"
-plugin_version = "0.1.45"
+plugin_version = "0.1.46"
 publisher_id = "lumvise.builtin"
-key_id = "lumvise.release.1"
+key_id = "lumvise.production.1"
 protocol_min = 6
 protocol_max = 6
 payload_pattern = "plugins/builtin.knowledge/{target}/knowledge"

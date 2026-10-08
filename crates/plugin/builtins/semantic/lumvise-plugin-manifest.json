@@ -2,10 +2,10 @@
   "schema_version": 1,
   "publisher": {
     "publisher_id": "lumvise.builtin",
-    "key_id": "lumvise.release.1"
+    "key_id": "lumvise.production.1"
   },
   "plugin_id": "builtin.semantic",
-  "plugin_version": "0.1.29",
+  "plugin_version": "0.1.30",
   "protocol": {
     "min": 6,
     "max": 6

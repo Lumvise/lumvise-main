@@ -6,6 +6,7 @@
 use serde_json::{Value, json};
 
 use crate::KnowledgeArtifact;
+use crate::projection_identity::canonical_projection_json;
 
 pub(crate) fn is_report(artifact: &KnowledgeArtifact) -> bool {
     artifact.metadata["cultivation_report"].as_bool() == Some(true)
@@ -61,7 +62,7 @@ fn report_content_hash(artifact: &KnowledgeArtifact, properties: &Value) -> Stri
         format!(
             "{}\n\nproperties:{}",
             artifact.content,
-            serde_json::to_string(properties).unwrap_or_default()
+            canonical_projection_json(properties)
         )
     };
     crate::functional::stable_content_hash(&signature)

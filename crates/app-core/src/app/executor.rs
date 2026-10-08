@@ -1,5 +1,8 @@
 use crate::app::desktop::PendingDesktopBridge;
-use crate::{AppCore, AppCoreDesktopBridge, OwnerLease, QuitRequest, RuntimeControlPort};
+use crate::{
+    AppCore, AppCoreDesktopBridge, AppResourceSelection, OwnerLease, QuitRequest,
+    RuntimeControlPort,
+};
 use lumvise_frontend_core::{
     AppSettings, DesktopAppConfig, DesktopLifecyclePort, PendingDesktopLifecyclePort,
 };
@@ -29,6 +32,17 @@ impl RuntimeControlPort for DesktopRuntimeControlPort {
 /// ```
 pub fn run_lumvise_app(
     owner: OwnerLease,
+    launch: impl FnOnce(DesktopAppConfig) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_lumvise_app_with_resource_selection(owner, || Ok(AppResourceSelection::Environment), launch)
+}
+
+/// Selects resources once on the startup thread while recovery Settings remain available.
+/// Example: `run_lumvise_app_with_resource_selection(owner, load_connection, launch)`.
+/// A failed selection publishes startup failure; it never falls back to a local store.
+pub fn run_lumvise_app_with_resource_selection(
+    owner: OwnerLease,
+    select: impl FnOnce() -> Result<AppResourceSelection, String> + Send + 'static,
     launch: impl FnOnce(DesktopAppConfig) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::observability::init();
@@ -71,7 +85,7 @@ pub fn run_lumvise_app(
     let _startup_thread = std::thread::Builder::new()
         .name("lumvise-desktop-startup".to_string())
         .spawn(move || {
-            if let Err(error) = initialize_desktop_app(startup_bridge.clone(), owner_cell) {
+            if let Err(error) = select().and_then(|selection| initialize_desktop_app(startup_bridge.clone(), owner_cell, selection)) {
                 let message = format!("desktop startup failed: {error}");
                 error!(target: "app-core::desktop", event = "startup_failed", error = %error, "{message}");
                 if let Err(action_error) = startup_bridge
@@ -89,10 +103,11 @@ pub fn run_lumvise_app(
 fn initialize_desktop_app(
     startup_bridge: Arc<PendingDesktopBridge>,
     owner_cell: Arc<Mutex<Option<OwnerLease>>>,
+    selection: AppResourceSelection,
 ) -> Result<(), String> {
     startup_bridge
         .record_startup_phase("resource_routing", Some("selecting capability resources"))?;
-    let app = super::startup::build_app_runtime()?;
+    let app = super::startup::build_app_runtime_with_selection(selection)?;
     startup_bridge
         .record_startup_phase("plugins_ready", Some("plugins and runtime initialized"))?;
     let delegate = Arc::new(AppCoreDesktopBridge::new_with_owner_cell(

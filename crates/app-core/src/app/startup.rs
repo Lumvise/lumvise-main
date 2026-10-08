@@ -4,7 +4,7 @@
 use super::provider_startup::{
     configured_llm_registry, persisted_app_settings, spawn_llm_provider_sync,
 };
-use super::resource_routing::{ResourceRouter, RoutedResources};
+use super::resource_routing::{AppResourceSelection, ResourceRouter, RoutedResources};
 use crate::{AppCore, PluginProductionConfig};
 use lumvise_frontend_core::FrontendCore;
 use lumvise_neural_core::llm_providers::http_client::ReqwestLlmHttpClient;
@@ -12,10 +12,13 @@ use lumvise_resource_routing::{ResourcePlacement, ResourceRoutingConfig};
 use std::sync::Arc;
 
 pub(super) fn build_app_runtime() -> Result<Arc<AppCore>, String> {
-    let config = ResourceRoutingConfig::from_environment()
-        .map_err(|error| format!("reading resource routing configuration: {error}"))?;
-    let resources = ResourceRouter::build(config.clone())
-        .map_err(|error| format!("building selected resource routes: {error}"))?;
+    build_app_runtime_with_selection(AppResourceSelection::Environment)
+}
+
+pub(super) fn build_app_runtime_with_selection(
+    selection: AppResourceSelection,
+) -> Result<Arc<AppCore>, String> {
+    let (config, resources) = ResourceRouter::build_selection(selection)?;
     let relational = Arc::clone(&resources.relational);
     let app = Arc::new(build_selected_app(&config, resources)?);
     app.install_managed_models()

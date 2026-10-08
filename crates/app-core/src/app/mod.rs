@@ -33,9 +33,10 @@ mod workspace_activity_http;
 #[cfg(feature = "desktop-app")]
 pub use desktop::AppCoreDesktopBridge;
 #[cfg(feature = "desktop-app")]
-pub use executor::run_lumvise_app;
+pub use executor::{run_lumvise_app, run_lumvise_app_with_resource_selection};
 pub use headless::run_headless_app;
 pub use mcp_http::ScopedMcpHttpServer;
+pub use resource_routing::AppResourceSelection;
 #[cfg(all(feature = "assistant-e2e", feature = "desktop-app"))]
 mod e2e_voice_adapters;
 

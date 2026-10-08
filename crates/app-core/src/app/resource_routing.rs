@@ -28,6 +28,20 @@ use lumvise_resource_routing::{ResourcePlacement, ResourceRoutingConfig};
 use std::path::PathBuf;
 use std::{fmt, sync::Arc};
 
+/// Startup-only resource selection; consumers keep their selected adapters until exit.
+/// Private products supply an authenticated transport, never database internals.
+/// Example: `AppResourceSelection::RemoteStorage { client, client_instance_id }`.
+#[derive(Default)]
+pub enum AppResourceSelection {
+    #[default]
+    Environment,
+    Local,
+    RemoteStorage {
+        client: Arc<dyn ResourceInvocationClient>,
+        client_instance_id: String,
+    },
+}
+
 /// The immutable capability ownership selected before App Core becomes ready.
 ///
 /// Each field is populated exactly once by [`ResourceRouter::build`]. A route
@@ -124,6 +138,45 @@ impl std::error::Error for ResourceRoutingError {
 /// Selects one and only one adapter for each capability.
 pub(super) struct ResourceRouter;
 impl ResourceRouter {
+    pub(super) fn build_selection(
+        selection: AppResourceSelection,
+    ) -> Result<(ResourceRoutingConfig, RoutedResources), String> {
+        match selection {
+            AppResourceSelection::Local => {
+                let config = local_config();
+                Self::build(config.clone())
+                    .map(|resources| (config, resources))
+                    .map_err(|error| error.to_string())
+            }
+            AppResourceSelection::Environment => {
+                let config =
+                    ResourceRoutingConfig::from_environment().map_err(|error| error.to_string())?;
+                Self::build(config.clone())
+                    .map(|resources| (config, resources))
+                    .map_err(|error| error.to_string())
+            }
+            AppResourceSelection::RemoteStorage {
+                client,
+                client_instance_id,
+            } => {
+                let config = storage_only_config();
+                let central = CentralResources::connect(
+                    client,
+                    client_instance_id,
+                    &requested_central_capabilities(&config),
+                )
+                .map_err(|error| error.to_string())?;
+                let factory = ProductionResourceFactory {
+                    central: Some(central),
+                    local: None,
+                };
+                Self::build_with_factories(&config, &factory)
+                    .map(|resources| (config, resources))
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
     /// Builds the production startup routing once. Configuration is validated
     /// by `ResourceRoutingConfig` before this boundary; central authentication
     /// and readiness are performed once here before any selected adapter is
@@ -240,6 +293,82 @@ struct CentralResources {
     llm_descriptors: Vec<lumvise_resource_routing::protocol::LlmProviderDescriptorV1>,
 }
 
+impl CentralResources {
+    fn connect(
+        client: Arc<dyn ResourceInvocationClient>,
+        client_instance_id: String,
+        requested: &[ResourceCapabilityV1],
+    ) -> Result<Self, ResourceRoutingError> {
+        if client_instance_id.trim().is_empty() {
+            return Err(central_readiness_error(RouteStartupError(
+                "empty client_instance_id; expected stable client identity".into(),
+            )));
+        }
+        let control = InvocationControl::sixty_seconds();
+        let readiness = client
+            .readiness(
+                &readiness_request(&client_instance_id, requested, &control),
+                &control,
+            )
+            .map_err(central_readiness_error)?;
+        ensure_central_readiness(requested, &readiness.capabilities)
+            .map_err(central_readiness_error)?;
+        let persistence = Arc::new(CentralizedPersistence::new(
+            Arc::clone(&client),
+            client_instance_id.clone(),
+        ));
+        Ok(Self {
+            client,
+            client_instance_id,
+            persistence,
+            llm_descriptors: readiness.llm_providers,
+        })
+    }
+}
+
+fn central_readiness_error(
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> ResourceRoutingError {
+    ResourceRoutingError::selected("central_readiness", ResourcePlacement::Centralized, error)
+}
+
+fn readiness_request(
+    client: &str,
+    requested: &[ResourceCapabilityV1],
+    control: &InvocationControl,
+) -> ReadinessRequestV1 {
+    ReadinessRequestV1 {
+        supported_majors: vec![PROTOCOL_MAJOR],
+        supported_minors: vec![PROTOCOL_MINOR],
+        deadline_unix_ms: control.deadline_unix_ms(),
+        client_instance_id: client.into(),
+        requested_capabilities: requested
+            .iter()
+            .map(|capability| *capability as i32)
+            .collect(),
+    }
+}
+
+fn storage_only_config() -> ResourceRoutingConfig {
+    ResourceRoutingConfig {
+        graph_persistence: ResourcePlacement::Centralized,
+        sql_persistence: ResourcePlacement::Centralized,
+        llm_execution: ResourcePlacement::Internal,
+        speech_inference: ResourcePlacement::Internal,
+        central: None,
+    }
+}
+
+fn local_config() -> ResourceRoutingConfig {
+    ResourceRoutingConfig {
+        graph_persistence: ResourcePlacement::Internal,
+        sql_persistence: ResourcePlacement::Internal,
+        llm_execution: ResourcePlacement::Internal,
+        speech_inference: ResourcePlacement::Internal,
+        central: None,
+    }
+}
+
 /// The sole production construction site for local persistence and the
 /// authenticated central client.
 struct ProductionResourceFactory {
@@ -330,45 +459,11 @@ impl ProductionResourceFactory {
                     )
                 })?,
             );
-            let client_instance_id = uuid::Uuid::new_v4().to_string();
-            let readiness = client
-                .readiness(
-                    &ReadinessRequestV1 {
-                        supported_majors: vec![PROTOCOL_MAJOR],
-                        supported_minors: vec![PROTOCOL_MINOR],
-                        deadline_unix_ms: control.deadline_unix_ms(),
-                        client_instance_id: client_instance_id.clone(),
-                        requested_capabilities: requested
-                            .iter()
-                            .map(|capability| *capability as i32)
-                            .collect(),
-                    },
-                    &control,
-                )
-                .map_err(|error| {
-                    ResourceRoutingError::selected(
-                        "central_readiness",
-                        ResourcePlacement::Centralized,
-                        error,
-                    )
-                })?;
-            ensure_central_readiness(&requested, &readiness.capabilities).map_err(|error| {
-                ResourceRoutingError::selected(
-                    "central_readiness",
-                    ResourcePlacement::Centralized,
-                    error,
-                )
-            })?;
-            let persistence = Arc::new(CentralizedPersistence::new(
-                Arc::clone(&client),
-                client_instance_id.clone(),
-            ));
-            Some(CentralResources {
+            Some(CentralResources::connect(
                 client,
-                client_instance_id,
-                persistence,
-                llm_descriptors: readiness.llm_providers,
-            })
+                uuid::Uuid::new_v4().to_string(),
+                &requested,
+            )?)
         };
         let database_path = configured_database_path();
         let local = requires_local_persistence(config)
@@ -519,7 +614,6 @@ fn default_database_path() -> PathBuf {
 fn requires_local_persistence(config: &ResourceRoutingConfig) -> bool {
     config.graph_persistence == ResourcePlacement::Internal
         || config.sql_persistence == ResourcePlacement::Internal
-        || config.llm_execution == ResourcePlacement::Internal
 }
 
 fn requested_central_capabilities(config: &ResourceRoutingConfig) -> Vec<ResourceCapabilityV1> {

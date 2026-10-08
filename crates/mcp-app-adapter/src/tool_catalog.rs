@@ -2,14 +2,24 @@ use lumvise_mcp_core::McpTool;
 use serde_json::{Value, json};
 
 pub(crate) fn tool_catalog(bridge_tools: &[Value]) -> Result<Vec<McpTool>, serde_json::Error> {
-    let mut tools = Vec::with_capacity(bridge_tools.len() + 3);
+    let mut tools = Vec::with_capacity(bridge_tools.len() + 4);
     tools.extend([
         discover_app_plugins_tool(),
         invoke_app_plugin_capability_tool(),
         app_bridge_status_tool(),
+        set_current_project_tool(),
     ]);
     tools.extend(bridge_tools.iter().cloned());
     tools.into_iter().map(McpTool::from_value).collect()
+}
+
+fn set_current_project_tool() -> Value {
+    json!({
+        "name": "set_current_project",
+        "description": "Explicitly bind this initialized MCP connection to your current project, or pass null to unbind. Call after startup/resume and when changing projects. This only controls live desktop project presence; it does not import projects or change execution-provider routing, settings or working directory. Success returns connection_id, project_root and binding_status (ready or unbound).",
+        "inputSchema": {"type":"object", "required":["project_root"], "additionalProperties":false,
+            "properties":{"project_root":{"type":["string","null"],"minLength":1,"description":"Exact existing absolute project directory, or null to unbind."}}}
+    })
 }
 
 fn discover_app_plugins_tool() -> Value {

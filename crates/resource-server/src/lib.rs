@@ -19,8 +19,8 @@ pub use dispatch::{
     PersistenceProtocolCodec, ResourceDispatcher,
 };
 pub use server::{
-    AccessTokenValidator, OidcAccessTokenValidator, ResourceServer, ResourceServerError,
-    ServerResources,
+    AccessTokenValidator, OidcAccessTokenValidator, ResourceListener, ResourceServer,
+    ResourceServerError, ServerResources,
 };
 pub use tenant::{
     LocalTenantPersistenceFactory, PrincipalPersistenceFactory, TenantAdapterCache, TenantAdapters,

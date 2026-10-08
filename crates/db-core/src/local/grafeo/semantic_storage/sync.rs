@@ -19,11 +19,21 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// let report = db.storage_manager().semantic_storage()
-    ///     .sync_semantic_structure("/repo", &[], &[])
-    ///     .unwrap();
-    /// assert_eq!(report.elements_upserted, 0);
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::SyncStructure {
+    ///         project_root: "/repo".into(),
+    ///         elements: vec![],
+    ///         relationships: vec![],
+    ///     },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::SyncStructure(report) if report.elements_upserted == 0));
     /// ```
     pub fn sync_semantic_structure(
         &self,
@@ -77,14 +87,21 @@ impl<'db> SemanticStorage<'db> {
     /// # Example
     ///
     /// ```
-    /// let db = lumvise_db_core::DbCore::in_memory().unwrap();
-    /// let partition = lumvise_db_core::SemanticPartition {
+    /// use lumvise_db_core::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult, SemanticPartition};
+    /// use lumvise_resource_routing::InvocationControl;
+    ///
+    /// let persistence = LocalPersistence::in_memory().unwrap();
+    /// let control = InvocationControl::sixty_seconds();
+    /// let partition = SemanticPartition {
     ///     project_root: "/repo".into(),
     ///     replace_paths: vec!["src/lib.rs".into()],
     /// };
-    /// db.storage_manager().semantic_storage()
-    ///     .sync_semantic_partition(&partition, &[], &[])
-    ///     .unwrap();
+    /// let result = SemanticPersistence::execute(
+    ///     &persistence,
+    ///     SemanticOperation::SyncPartition { partition, elements: vec![], relationships: vec![] },
+    ///     &control,
+    /// ).unwrap();
+    /// assert!(matches!(result, SemanticResult::SyncPartition(report) if report.elements_upserted == 0));
     /// ```
     pub fn sync_semantic_partition(
         &self,

@@ -18,6 +18,7 @@ pub(crate) enum StdioTrafficClass {
 }
 
 trait StdioRequestProcessor: Sync {
+    fn close_transport(&self) {}
     fn process_line(&self, line: &str) -> Result<Option<String>>;
 
     fn classify_line(&self, _line: &str) -> StdioTrafficClass {
@@ -36,6 +37,9 @@ trait StdioRequestProcessor: Sync {
 }
 
 impl StdioRequestProcessor for LumviseMcpServer {
+    fn close_transport(&self) {
+        self.close_transport();
+    }
     fn process_line(&self, line: &str) -> Result<Option<String>> {
         self.handle_json_line(line)
     }
@@ -117,6 +121,7 @@ where
             control_sender,
             cancellation_sender,
         );
+        processor.close_transport();
         let worker_result = join_workers(workers);
         dispatch_result?;
         worker_result
@@ -190,7 +195,10 @@ where
     W: Write,
 {
     while let Some(line) = receive_request(receiver)? {
-        write_response(processor, writer, &line)?;
+        if let Err(error) = write_response(processor, writer, &line) {
+            processor.close_transport();
+            return Err(error);
+        }
     }
     Ok(())
 }

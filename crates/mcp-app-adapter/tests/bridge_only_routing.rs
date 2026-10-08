@@ -21,6 +21,116 @@ struct BridgeRequest {
 enum BridgeResponse {
     Json(Value),
     Protobuf(Vec<u8>),
+    RegistryAck,
+}
+
+fn registry_ack(request: &BridgeRequest) -> BridgeResponse {
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    BridgeResponse::Json(json!({"accepted":true,"instance":{
+        "instance_id":body["instance_id"],"project_root":body["project_root"],
+        "display_name":"", "capabilities":[], "control_channel":null,
+        "status":body.get("status").cloned().unwrap_or(json!("starting")),
+        "registered_at":"2026-10-07T00:00:00Z", "last_seen_at":"2026-10-07T00:00:00Z"
+    }}))
+}
+
+fn initialize_presence(server: &lumvise_mcp_core::LumviseMcpServer) {
+    let response = response_value(
+        server,
+        json!({"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"presence-test","version":"1"}}}),
+    );
+    assert!(response.get("result").is_some(), "{response}");
+    server
+        .handle_json_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+        .unwrap();
+}
+
+fn select_project(server: &lumvise_mcp_core::LumviseMcpServer, root: Value) -> Value {
+    let response = response_value(
+        server,
+        json!({"jsonrpc":"2.0","id":"select","method":"tools/call","params":{"name":"set_current_project","arguments":{"project_root":root}}}),
+    );
+    assert!(response.get("result").is_some(), "{response}");
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn project_binding_replaces_and_unbinds_only_after_registry_acknowledgements() {
+    let bridge = FakeBridge::start((0..7).map(|_| BridgeResponse::RegistryAck).collect());
+    let workspace = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let (server, _owner) = server_for_bridge(&bridge.base_url, workspace.path());
+    initialize_presence(&server);
+    let first = select_project(&server, json!(workspace.path()));
+    assert_eq!(first["binding_status"], "ready");
+    assert_eq!(
+        select_project(&server, json!(workspace.path()))["connection_id"],
+        first["connection_id"]
+    );
+    let changed = select_project(&server, json!(second.path()));
+    assert_eq!(changed["connection_id"], first["connection_id"]);
+    assert_eq!(changed["project_root"], json!(second.path()));
+    assert_eq!(
+        select_project(&server, Value::Null),
+        json!({"connection_id":first["connection_id"],"project_root":null,"binding_status":"unbound"})
+    );
+    drop(server);
+    let bodies: Vec<Value> = bridge
+        .finish()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies[3]["status"], "unavailable");
+    assert_eq!(bodies[3]["project_root"], json!(workspace.path()));
+    assert_eq!(bodies[6]["status"], "unavailable");
+}
+
+#[test]
+fn configured_instance_id_does_not_merge_independent_presence_connections() {
+    let bridge = FakeBridge::start(vec![]);
+    let one = tempfile::tempdir().unwrap();
+    let two = tempfile::tempdir().unwrap();
+    let (first, _first_owner) = server_for_bridge_config(&bridge.base_url, one.path(), |config| {
+        config.with_native_assistant_caller("codex", "same-configured-id")
+    });
+    let (second, _second_owner) =
+        server_for_bridge_config(&bridge.base_url, two.path(), |config| {
+            config.with_native_assistant_caller("codex", "same-configured-id")
+        });
+    initialize_presence(&first);
+    initialize_presence(&second);
+    assert_ne!(
+        select_project(&first, Value::Null)["connection_id"],
+        select_project(&second, Value::Null)["connection_id"]
+    );
+    drop(first);
+    drop(second);
+    assert!(bridge.finish().is_empty());
+}
+
+#[test]
+fn initial_project_binding_waits_for_initialized_and_eof_retires_it() {
+    let bridge = FakeBridge::start((0..3).map(|_| BridgeResponse::RegistryAck).collect());
+    let workspace = tempfile::tempdir().unwrap();
+    let (server, _owner) = server_for_bridge_config(&bridge.base_url, workspace.path(), |config| {
+        config.with_project_root(workspace.path().to_string_lossy())
+    });
+    let early = response_value(
+        &server,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"set_current_project","arguments":{"project_root":null}}}),
+    );
+    assert!(early.get("error").is_some());
+    assert!(bridge.requests.try_recv().is_err());
+    initialize_presence(&server);
+    lumvise_mcp_core::run_stdio(server, std::io::Cursor::new(Vec::<u8>::new()), Vec::new())
+        .unwrap();
+    let bodies: Vec<Value> = bridge
+        .finish()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies[1]["status"], "ready");
+    assert_eq!(bodies[2]["status"], "unavailable");
 }
 
 struct FakeBridge {
@@ -55,7 +165,12 @@ fn serve_responses(
 ) {
     for response in responses {
         let (mut stream, _) = listener.accept().unwrap();
-        request_sender.send(read_request(&stream)).unwrap();
+        let request = read_request(&stream);
+        let response = match response {
+            BridgeResponse::RegistryAck => registry_ack(&request),
+            other => other,
+        };
+        request_sender.send(request).unwrap();
         write_response(&mut stream, response);
     }
 }
@@ -97,6 +212,7 @@ fn write_response(stream: &mut TcpStream, response: BridgeResponse) {
     let (content_type, body) = match response {
         BridgeResponse::Json(value) => ("application/json", value.to_string().into_bytes()),
         BridgeResponse::Protobuf(bytes) => ("application/protobuf", bytes),
+        BridgeResponse::RegistryAck => unreachable!("registry reply uses the incoming request"),
     };
     write!(
         stream,
@@ -111,6 +227,14 @@ fn server_for_bridge(
     base_url: &str,
     runtime_root: &Path,
 ) -> (lumvise_mcp_core::LumviseMcpServer, OwnerLease) {
+    server_for_bridge_config(base_url, runtime_root, std::convert::identity)
+}
+
+fn server_for_bridge_config(
+    base_url: &str,
+    runtime_root: &Path,
+    configure: impl FnOnce(McpAppConfig) -> McpAppConfig,
+) -> (lumvise_mcp_core::LumviseMcpServer, OwnerLease) {
     let coordinator = AppRuntimeCoordinator::new(runtime_root, |_| {
         panic!("bridge fixture must acquire its in-process owner")
     });
@@ -123,7 +247,10 @@ fn server_for_bridge(
     };
     owner.mark_ready(base_url).expect("mark bridge ready");
     let bridge = AppBridgeConfig::discovery().with_runtime_root(runtime_root);
-    (open_server(McpAppConfig::from_app_bridge(bridge)), owner)
+    (
+        open_server(configure(McpAppConfig::from_app_bridge(bridge))),
+        owner,
+    )
 }
 
 fn plugin_surface() -> Value {
@@ -307,6 +434,7 @@ fn tool_catalog_contains_only_bridge_meta_and_discovered_plugin_tools() {
             "discover_app_plugins",
             "invoke_app_plugin_capability",
             "app_bridge_status",
+            "set_current_project",
             "app_plugin.plugin.example.run",
         ]
     );
@@ -337,7 +465,7 @@ fn plugin_owned_guidance_refreshes_through_discovery_and_disappears_with_its_cap
         &server,
         json!({"jsonrpc":"2.0", "id":4, "method":"tools/list"}),
     );
-    assert_eq!(empty["result"]["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(empty["result"]["tools"].as_array().unwrap().len(), 4);
     assert_eq!(bridge.finish().len(), 4);
 }
 
@@ -558,6 +686,7 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
             "discover_app_plugins",
             "invoke_app_plugin_capability",
             "app_bridge_status",
+            "set_current_project",
             "app_plugin.builtin.assistant.start_assistant_session",
             "assistant.respond",
             "assistant.await_turn",
