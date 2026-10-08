@@ -1,0 +1,23 @@
+Lumvise README media.
+
+Interaction video: supplied by Lumvise as Insta1.mp4.
+README edit: cropped to the Assistant window and encoded for browser playback.
+Original audio and timing retained; no added narration, music, or presentation cards.
+assistant-preview.png: a frame extracted from the README video.
+
+Micrograd screenshots: actual Lumvise app views.
+Repository: https://github.com/karpathy/micrograd
+Source revision: 7bc720e951fe422b8f8814aa5aa1b64121d26b4c
+
+README screenshots: actual Lumvise app views, without presentation-card overlays.
+documents.png: Earth Observatory online viewer, captured 2026-10-08.
+Displayed PDF: Lumvise demo collection, original text and vector artwork,
+dedicated under CC0 1.0 Universal. See demos/earth-observatory/REUSE.md.
+
+The MIT License (MIT) Copyright (c) 2020 Andrej Karpathy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
