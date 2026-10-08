@@ -22,7 +22,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -61,7 +61,7 @@ url = "2.5"
 http = "1.3"
 bytes = "1.10"
 h2 = "0.4"
-rustls = "0.23"
+rustls = "0.23.45"
 rustls-pemfile = "2.2"
 tokio-rustls = "0.26"
 openidconnect = { version = "4.0", features = ["reqwest-blocking"] }
