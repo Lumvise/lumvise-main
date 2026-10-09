@@ -443,7 +443,7 @@ fn claude_input_is_image(input: &LlmModalityInput) -> bool {
 
 fn claude_model_supports_image_snapshot(model: &str) -> bool {
     let normalized = model.to_ascii_lowercase();
-    ["claude-3", "claude-4", "sonnet", "opus", "haiku"]
+    ["claude-3", "claude-4", "sonnet", "opus", "haiku", "fable"]
         .iter()
         .any(|marker| normalized.contains(marker))
 }

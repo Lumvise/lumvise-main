@@ -445,7 +445,7 @@ fn offline_client_sync_preserves_the_saved_missing_model() {
         provider.state,
         LlmProviderAvailability::InvocationFailed { .. }
     ));
-    assert!(sync.catalog.contains_model("codex", "gpt-5.4"));
+    assert!(sync.catalog.contains_model("codex", "gpt-6.1-sol"));
     assert!(sync.catalog.contains_model("codex", "offline-custom"));
 }
 

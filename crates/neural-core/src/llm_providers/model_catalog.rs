@@ -89,9 +89,9 @@ pub struct ResolvedProviderModels {
     pub selected_model: String,
 }
 
-/// The operator-editable provider model catalog. The first process to require a
-/// missing catalog seeds it from the repository-tracked TOML; later processes
-/// only read the operator-owned runtime file.
+/// Owns fallback choices without rewriting the operator's catalog. `new(path)`
+/// reads an exact catalog; `configured()` adds bundled choices at the default
+/// location so application upgrades can expose newly released models.
 #[derive(Debug, Clone)]
 pub struct ProviderModelCatalog {
     path: PathBuf,
@@ -99,8 +99,28 @@ pub struct ProviderModelCatalog {
 }
 
 impl ProviderModelCatalog {
+    /// Loads current fallback choices while preserving explicit catalog overrides.
+    /// For example, `ProviderModelCatalog::configured()?.candidates(kind)`.
     pub fn configured() -> Result<Self> {
-        Self::new(runtime_catalog_path())
+        load_catalog_selection(
+            default_catalog_path(),
+            env::var_os(CATALOG_ENV).map(PathBuf::from),
+        )
+    }
+
+    fn append_bundled_choices(&mut self) -> Result<()> {
+        let file = toml::from_str::<CatalogFile>(SEED)
+            .map_err(|error| catalog_error(&self.path, format!("valid bundled TOML: {error}")))?;
+        let bundled = validate_catalog(&self.path, file)?.providers;
+        for (current, latest) in [
+            (&mut self.providers.claude, &bundled.claude),
+            (&mut self.providers.codex, &bundled.codex),
+            (&mut self.providers.gemini, &bundled.gemini),
+            (&mut self.providers.z_ai, &bundled.z_ai),
+        ] {
+            append_source_choices(current, latest);
+        }
+        Ok(())
     }
 
     pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
@@ -257,10 +277,49 @@ fn retain_configured_model(inventory: &mut ProviderModelInventory, configured_mo
     });
 }
 
-fn runtime_catalog_path() -> PathBuf {
-    if let Some(path) = env::var_os(CATALOG_ENV).filter(|path| !path.is_empty()) {
-        return PathBuf::from(path);
+fn load_catalog_selection(
+    default_path: PathBuf,
+    override_path: Option<PathBuf>,
+) -> Result<ProviderModelCatalog> {
+    if let Some(path) = override_path.filter(|path| !path.as_os_str().is_empty()) {
+        return ProviderModelCatalog::new(path);
     }
+    let mut catalog = ProviderModelCatalog::new(default_path)?;
+    catalog.append_bundled_choices()?;
+    Ok(catalog)
+}
+
+fn append_source_choices(current: &mut ProviderModelSources, bundled: &ProviderModelSources) {
+    for source in [LlmModelSource::Api, LlmModelSource::Client] {
+        let Some(existing) = current.for_source_mut(source) else {
+            continue;
+        };
+        let Some(latest) = bundled.for_source(source) else {
+            continue;
+        };
+        append_inventory_choices(existing, latest);
+    }
+}
+
+fn append_inventory_choices(
+    existing: &mut ProviderModelInventory,
+    latest: &ProviderModelInventory,
+) {
+    let existing_ids: BTreeSet<_> = existing
+        .models
+        .iter()
+        .map(|model| model.id.clone())
+        .collect();
+    existing.models.extend(
+        latest
+            .models
+            .iter()
+            .filter(|model| !existing_ids.contains(&model.id))
+            .cloned(),
+    );
+}
+
+fn default_catalog_path() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
         .map(|home| home.join(".lumvise/config/provider-models.toml"))
@@ -660,7 +719,16 @@ mod tests {
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["opus", "sonnet", "haiku"]
+            vec![
+                "claude-fable-5-1",
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "fable",
+                "opus",
+                "sonnet",
+                "haiku"
+            ]
         );
     }
 
@@ -715,7 +783,7 @@ mod tests {
             resolved.models,
             catalog.candidates(LlmProviderKind::Codex).models
         );
-        assert_eq!(resolved.selected_model, "gpt-5.4");
+        assert_eq!(resolved.selected_model, "gpt-6.1-sol");
         let configured = catalog
             .resolve(
                 LlmProviderKind::Codex,
@@ -738,7 +806,7 @@ mod tests {
                 display_name: "Shared".into(),
             },
             LlmModelDescriptor {
-                id: "gpt-5.4".into(),
+                id: "gpt-6.1-sol".into(),
                 display_name: "Shared".into(),
             },
             LlmModelDescriptor {
@@ -758,8 +826,8 @@ mod tests {
                 "provider-default",
             )
             .unwrap();
-        assert_eq!(resolved.selected_model, "gpt-5.4");
-        assert_eq!(resolved.default_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(resolved.selected_model, "gpt-6.1-sol");
+        assert_eq!(resolved.default_model.as_deref(), Some("gpt-6.1-sol"));
         assert_eq!(resolved.models.len(), 2);
         assert_eq!(resolved.models[0].display_name, "Shared");
         assert_eq!(resolved.models[1].display_name, "Shared");
@@ -841,3 +909,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "model_catalog/bundled_tests.rs"]
+mod bundled_tests;

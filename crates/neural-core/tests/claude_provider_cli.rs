@@ -210,33 +210,41 @@ printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}
 }
 
 #[test]
-fn claude_provider_materializes_image_snapshot_for_cli_read_tool() {
-    let temp = TempDir::new().unwrap();
-    let prompt_path = temp.path().join("claude-prompt.txt");
-    let script = fake_script(
-        &temp,
-        "fake-claude-vision",
-        &format!(
-            "prompt=\"$2\"\nprintf '%s' \"$prompt\" > '{}'\nimage_path=$(printf '%s' \"$prompt\" | sed -n 's/^  path: //p' | head -n 1)\nif [ ! -f \"$image_path\" ]; then echo \"missing image snapshot file: $image_path\" >&2; exit 7; fi\nprintf '{{\"type\":\"result\",\"result\":\"vision reply\"}}'",
-            prompt_path.display()
-        ),
-    );
-    let registry = LlmProviderRegistry::from_configs(
-        vec![claude_config(script)],
-        Arc::new(UnusedFakeHttpClient),
-    )
-    .unwrap();
-
-    let response = registry
-        .complete("claude", &image_request("describe the snapshot"))
+fn claude_provider_materializes_image_snapshot_for_current_cli_models() {
+    for model in [
+        "sonnet",
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let prompt_path = temp.path().join("claude-prompt.txt");
+        let script = fake_script(
+            &temp,
+            "fake-claude-vision",
+            &format!(
+                "prompt=\"$2\"\nprintf '%s' \"$prompt\" > '{}'\nimage_path=$(printf '%s' \"$prompt\" | sed -n 's/^  path: //p' | head -n 1)\nif [ ! -f \"$image_path\" ]; then echo \"missing image snapshot file: $image_path\" >&2; exit 7; fi\nprintf '{{\"type\":\"result\",\"result\":\"vision reply\"}}'",
+                prompt_path.display()
+            ),
+        );
+        let registry = LlmProviderRegistry::from_configs(
+            vec![claude_config_with_model(script, model)],
+            Arc::new(UnusedFakeHttpClient),
+        )
         .unwrap();
-    let prompt = fs::read_to_string(prompt_path).unwrap();
 
-    assert_eq!(response.content, "vision reply");
-    assert!(prompt.contains("Image snapshot inputs:"));
-    assert!(prompt.contains("id: image-1"));
-    assert!(prompt.contains("media_type: image/png"));
-    assert!(prompt.contains("Use the Read tool"));
+        let response = registry
+            .complete("claude", &image_request("describe the snapshot"))
+            .unwrap();
+        let prompt = fs::read_to_string(prompt_path).unwrap();
+
+        assert_eq!(response.content, "vision reply");
+        assert!(prompt.contains("Image snapshot inputs:"));
+        assert!(prompt.contains("id: image-1"));
+        assert!(prompt.contains("media_type: image/png"));
+        assert!(prompt.contains("Use the Read tool"));
+    }
 }
 
 #[test]
