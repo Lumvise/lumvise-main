@@ -592,7 +592,7 @@
         "type": "object"
       },
       "execution": "foreground",
-      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content; for tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use a clear, human-meaningful title. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. For tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "knowledge.create",
@@ -844,7 +844,7 @@
       },
       "execution": "foreground",
       "scope": "assistant_session",
-      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content; for tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use a clear, human-meaningful title. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. For tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "update_knowledge",
@@ -1131,7 +1131,7 @@
         "type": "object"
       },
       "execution": "foreground",
-      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
+      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
     },
     {
       "id": "knowledge.update",
@@ -1428,7 +1428,7 @@
       },
       "execution": "foreground",
       "scope": "assistant_session",
-      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
+      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
     },
     {
       "id": "delete_knowledge",
@@ -5447,7 +5447,7 @@
         "type": "object"
       },
       "execution": "foreground",
-      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content; for tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use a clear, human-meaningful title. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. For tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Example title: Fix parser timeout. Save checkpoints/handoffs with completed work, exact validation, limitations and a resumable next action. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "http.knowledge.artifacts.update",
@@ -5613,7 +5613,7 @@
         "type": "object"
       },
       "execution": "foreground",
-      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
+      "description": "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Keep task status/owner/blockers and checkpoint evidence readable. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. Updates provide no atomic lease/claim guarantee; coordinate ownership outside this write."
     },
     {
       "id": "http.knowledge.artifacts.delete",
