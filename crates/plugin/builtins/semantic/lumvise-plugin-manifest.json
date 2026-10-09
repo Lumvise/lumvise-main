@@ -5,7 +5,7 @@
     "key_id": "lumvise.production.1"
   },
   "plugin_id": "builtin.semantic",
-  "plugin_version": "0.1.32",
+  "plugin_version": "0.1.33",
   "protocol": {
     "min": 6,
     "max": 6
