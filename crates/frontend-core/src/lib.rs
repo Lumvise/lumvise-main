@@ -5,6 +5,8 @@ mod context_menu;
 #[cfg(feature = "desktop-app")]
 mod desktop;
 mod error;
+mod host_extension;
+pub use host_extension::HostExtension;
 mod live_audio;
 mod modality;
 pub use live_audio::LiveAudioInput;

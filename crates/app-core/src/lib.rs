@@ -34,12 +34,12 @@ pub use error::{AppCoreError, Result};
 pub use lumvise_frontend_core::{CanvasElement, CanvasPatch, CanvasRevisionRecord, CanvasSnapshot};
 pub use lumvise_plugin_runtime::UninstallPolicy as CompiledPluginUninstallPolicy;
 pub use plugin::{
-    AppCoreHostCapabilityBroker, ChangeHookCycleReport, ChangeHookRun, LUMVISE_PLUGIN_ROOT_ENV,
-    PLUGIN_MCP_MESSAGE_ENDPOINT, PLUGIN_MCP_SSE_ENDPOINT, PluginEndpoints, PluginInvocationRequest,
-    PluginInvocationResponse, PluginInvocationStatus, PluginMcpTool, PluginProductionConfig,
-    PluginRecurringTask, PluginRecurringTaskRun, SCOPED_MCP_MESSAGE_ENDPOINT,
-    SCOPED_MCP_SSE_ENDPOINT, ScopedMcpChannel, ScopedMcpMessageRequest, ScopedMcpToolRoute,
-    compiled_host_capability_versions,
+    AppCoreHostCapabilityBroker, ChangeHookCycleReport, ChangeHookRun, HostExtension,
+    LUMVISE_PLUGIN_ROOT_ENV, PLUGIN_MCP_MESSAGE_ENDPOINT, PLUGIN_MCP_SSE_ENDPOINT, PluginEndpoints,
+    PluginInvocationRequest, PluginInvocationResponse, PluginInvocationStatus, PluginMcpTool,
+    PluginProductionConfig, PluginRecurringTask, PluginRecurringTaskRun,
+    SCOPED_MCP_MESSAGE_ENDPOINT, SCOPED_MCP_SSE_ENDPOINT, ScopedMcpChannel,
+    ScopedMcpMessageRequest, ScopedMcpToolRoute, compiled_host_capability_versions,
 };
 pub use project_execution::{
     PROJECT_EXECUTION_HEARTBEAT_ENDPOINT, PROJECT_EXECUTION_NEXT_ENDPOINT,

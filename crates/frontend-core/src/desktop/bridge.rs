@@ -231,6 +231,15 @@ pub trait DesktopSemanticGraphBridge: std::fmt::Debug + Send + Sync {
 }
 
 pub trait DesktopVoiceBridge: std::fmt::Debug + Send + Sync {
+    /// Offers a product-owned service to compiled plugins once the app is ready.
+    fn install_host_extension(
+        &self,
+        name: &str,
+        service: std::sync::Arc<dyn crate::HostExtension>,
+    ) -> Result<(), String> {
+        let _ = (name, service);
+        Err("host extensions need a running app".to_string())
+    }
     fn send_live_audio(&self, _input: crate::LiveAudioInput) -> Result<(), String> {
         Err("Direct audio requires an available desktop audio connection".into())
     }

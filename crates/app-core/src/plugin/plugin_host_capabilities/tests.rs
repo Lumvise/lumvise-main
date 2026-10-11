@@ -393,6 +393,7 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
         vec![
             "frontend.action",
             "frontend.canvas",
+            "host.extension",
             "modalities.speech_to_text",
             "modalities.text_to_speech",
             "neural.embed",
@@ -1198,4 +1199,48 @@ fn frontend_canvas_apply_diff_restores_native_document_and_image_files() {
         .expect("read restored canvas");
     assert_eq!(restored["document"], document);
     assert_eq!(restored["scene"]["files"], document["files"]);
+}
+
+#[test]
+fn host_extension_routes_to_the_installed_product_service_and_is_unavailable_otherwise() {
+    struct Echo;
+    impl HostExtension for Echo {
+        fn invoke(&self, plugin_id: &str, input: Value) -> Result<Value, String> {
+            if input["fail"] == json!(true) {
+                return Err("refused by the product".into());
+            }
+            Ok(json!({"plugin": plugin_id, "input": input}))
+        }
+    }
+    let services = services();
+    let request = json!({"extension": "product.echo", "input": {"value": 7}});
+    let missing = services
+        .invoke("builtin.example", HOST_EXTENSION, request.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("host_capability_unavailable"));
+    assert!(missing.contains("product.echo"));
+
+    services.install_host_extension("product.echo", Arc::new(Echo));
+    assert_eq!(
+        services
+            .invoke("builtin.example", HOST_EXTENSION, request)
+            .unwrap(),
+        json!({"plugin": "builtin.example", "input": {"value": 7}})
+    );
+    let refused = services
+        .invoke(
+            "builtin.example",
+            HOST_EXTENSION,
+            json!({"extension": "product.echo", "input": {"fail": true}}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("host_capability_execution_failed"));
+    assert!(refused.contains("refused by the product"));
+    let unnamed = services
+        .invoke("builtin.example", HOST_EXTENSION, json!({"input": {}}))
+        .unwrap_err()
+        .to_string();
+    assert!(unnamed.contains("invalid_host_capability_input"));
 }

@@ -24,8 +24,8 @@ use turn_wait::TurnWaitAdapter;
 
 use lumvise_db_core::SemanticPersistence;
 use lumvise_frontend_core::{
-    AssistantEngine, CanvasPatch, DashboardView, FrontendCore, MAIN_CANVAS_ID, OrbMode,
-    VoicePlaybackChunk, VoicePlaybackStatus,
+    AssistantEngine, CanvasPatch, DashboardView, FrontendCore, HostExtension, MAIN_CANVAS_ID,
+    OrbMode, VoicePlaybackChunk, VoicePlaybackStatus,
 };
 use lumvise_neural_core::llm_providers::{
     LlmExecutionControl, LlmExecutorRegistry, LlmFailure, LlmMcpServerConfig, LlmMessage,
@@ -45,8 +45,8 @@ use serde_json::{Map, Value, json};
 
 use super::host_capability_catalog::{
     ASSISTANT_ENGINE_AVAILABILITY, BACKGROUND_JOB, EXCLUSIVE_LANE, FRONTEND_ACTION,
-    FRONTEND_CANVAS, NEURAL_LLM, PROJECT_EXECUTION, SCOPED_MCP, SPEECH_AVAILABILITY,
-    SPEECH_TO_TEXT, TEXT_TO_SPEECH, TURN_WAIT,
+    FRONTEND_CANVAS, HOST_EXTENSION, NEURAL_LLM, PROJECT_EXECUTION, SCOPED_MCP,
+    SPEECH_AVAILABILITY, SPEECH_TO_TEXT, TEXT_TO_SPEECH, TURN_WAIT,
 };
 
 const MAX_LLM_MESSAGES: usize = 128;
@@ -102,6 +102,7 @@ pub(crate) struct PluginHostServices {
     background_jobs: BackgroundJobAdapter,
     turn_wait: TurnWaitAdapter,
     project_execution: Mutex<Option<crate::ProjectExecutionService>>,
+    host_extensions: Mutex<HashMap<String, Arc<dyn HostExtension>>>,
 }
 
 /// Correlation recorded when a `text_to_speech` segment opens, so a later
@@ -157,6 +158,7 @@ impl PluginHostServices {
             ),
             turn_wait: TurnWaitAdapter::new(),
             project_execution: Mutex::new(None),
+            host_extensions: Mutex::new(HashMap::new()),
         })
     }
 
@@ -218,6 +220,42 @@ impl PluginHostServices {
         }
     }
 
+    /// Makes a product-owned service reachable by name, replacing any earlier one.
+    pub(crate) fn install_host_extension(&self, name: &str, service: Arc<dyn HostExtension>) {
+        if let Ok(mut extensions) = self.host_extensions.lock() {
+            extensions.insert(name.into(), service);
+        }
+    }
+
+    fn host_extension(&self, plugin_id: &str, input: Value) -> Result<Value, HostCapabilityError> {
+        let Some(name) = input.get("extension").and_then(Value::as_str) else {
+            return Err(invalid(HOST_EXTENSION, &input, "extension name and input"));
+        };
+        let service = self
+            .host_extensions
+            .lock()
+            .map_err(|_| failed(HOST_EXTENSION, "extension registry mutex poisoned"))?
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                HostCapabilityError::new(
+                    HOST_EXTENSION,
+                    "host_capability_unavailable",
+                    format!(
+                        "{HOST_EXTENSION} unavailable: `{name}` is not installed in this product"
+                    ),
+                    false,
+                )
+            })?;
+        // The registry lock is released before product code runs.
+        service
+            .invoke(
+                plugin_id,
+                input.get("input").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|message| failed(HOST_EXTENSION, &message))
+    }
+
     pub(crate) fn invoke(
         &self,
         plugin_id: &str,
@@ -225,6 +263,7 @@ impl PluginHostServices {
         input: Value,
     ) -> Result<Value, HostCapabilityError> {
         match capability_id {
+            HOST_EXTENSION => self.host_extension(plugin_id, input),
             FRONTEND_ACTION => self.frontend_action(input),
             FRONTEND_CANVAS => self.frontend_canvas(plugin_id, input, self.semantic.as_ref()),
             NEURAL_LLM => self.neural_llm(

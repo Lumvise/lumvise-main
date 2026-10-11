@@ -29,6 +29,9 @@ pub(super) const ASSISTANT_ENGINE_AVAILABILITY: &str = "runtime.assistant_engine
 /// mid-turn (issue #92).
 pub(super) const SPEECH_AVAILABILITY: &str = "runtime.speech_availability";
 pub(super) const DOCUMENT_CONVERSION_OPTIONS: &str = "runtime.document_conversion_options";
+/// Routes a call to a service the embedding product installed by name; a
+/// product that installs none leaves every extension unavailable.
+pub(super) const HOST_EXTENSION: &str = "host.extension";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HostCapabilityRoute {
@@ -56,7 +59,7 @@ impl HostCapabilityDefinition {
     }
 }
 
-const HOST_CAPABILITIES: [HostCapabilityDefinition; 20] = [
+const HOST_CAPABILITIES: [HostCapabilityDefinition; 21] = [
     capability(
         PLUGIN_STORAGE_CAPABILITY,
         HostCapabilityRoute::PluginStorage,
@@ -86,6 +89,7 @@ const HOST_CAPABILITIES: [HostCapabilityDefinition; 20] = [
     capability(SPEECH_AVAILABILITY, HostCapabilityRoute::Services),
     capability(DOCUMENT_CONVERSION_OPTIONS, HostCapabilityRoute::Services),
     capability("runtime.audio_session", HostCapabilityRoute::Services),
+    capability(HOST_EXTENSION, HostCapabilityRoute::Services),
 ];
 
 const fn capability(id: &'static str, route: HostCapabilityRoute) -> HostCapabilityDefinition {
@@ -146,7 +150,7 @@ mod tests {
             .map(|definition| definition.id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(identities.len(), 20);
+        assert_eq!(identities.len(), 21);
         assert_eq!(identities, expected_identities());
     }
 
@@ -154,7 +158,7 @@ mod tests {
     fn catalog_publishes_actual_versions() {
         let versions = compiled_host_capability_versions();
 
-        assert_eq!(versions.len(), 20);
+        assert_eq!(versions.len(), 21);
         assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 4, 0));
         assert!(
             versions
@@ -188,7 +192,7 @@ mod tests {
         expected_routes().into_iter().map(|(id, _)| id).collect()
     }
 
-    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 20] {
+    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 21] {
         [
             (
                 PLUGIN_STORAGE_CAPABILITY,
@@ -219,6 +223,7 @@ mod tests {
             (SPEECH_AVAILABILITY, HostCapabilityRoute::Services),
             (DOCUMENT_CONVERSION_OPTIONS, HostCapabilityRoute::Services),
             ("runtime.audio_session", HostCapabilityRoute::Services),
+            (HOST_EXTENSION, HostCapabilityRoute::Services),
         ]
     }
 }

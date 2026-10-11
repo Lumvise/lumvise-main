@@ -352,6 +352,13 @@ impl AppCore {
         Ok(())
     }
 
+    /// Offers a product-owned service to compiled plugins through `host.extension`.
+    /// Example: `app.install_host_extension("example.echo", service)`.
+    pub fn install_host_extension(&self, name: &str, service: Arc<dyn crate::HostExtension>) {
+        self.plugin_host_services
+            .install_host_extension(name, service);
+    }
+
     /// Returns the currently installed speech recognizer, if any.
     pub fn voice2text_service(&self) -> Option<Arc<dyn SpeechRecognizer>> {
         self.plugin_host_services

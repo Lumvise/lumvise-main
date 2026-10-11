@@ -3,6 +3,15 @@
 use super::*;
 
 impl DesktopVoiceBridge for PendingDesktopBridge {
+    fn install_host_extension(
+        &self,
+        name: &str,
+        service: std::sync::Arc<dyn lumvise_frontend_core::HostExtension>,
+    ) -> Result<(), String> {
+        self.with_ready("install_host_extension", |delegate| {
+            delegate.install_host_extension(name, service)
+        })
+    }
     fn send_live_audio(&self, input: lumvise_frontend_core::LiveAudioInput) -> Result<(), String> {
         self.with_ready("send_live_audio", |delegate| {
             delegate.send_live_audio(input)
@@ -91,6 +100,14 @@ impl DesktopVoiceBridge for PendingDesktopBridge {
 }
 
 impl DesktopVoiceBridge for AppCoreDesktopBridge {
+    fn install_host_extension(
+        &self,
+        name: &str,
+        service: std::sync::Arc<dyn lumvise_frontend_core::HostExtension>,
+    ) -> Result<(), String> {
+        self.app.install_host_extension(name, service);
+        Ok(())
+    }
     fn send_live_audio(&self, input: lumvise_frontend_core::LiveAudioInput) -> Result<(), String> {
         self.app.plugin_host_services.send_audio_input(input)
     }

@@ -41,6 +41,7 @@ pub(crate) use invocation::PluginInvocationLifecycle;
 #[cfg(feature = "desktop-app")]
 pub(crate) use invocation::surface_invocation_context;
 pub use invocation::{PluginInvocationRequest, PluginInvocationResponse, PluginInvocationStatus};
+pub use lumvise_frontend_core::HostExtension;
 pub use mcp_rpc::{PLUGIN_MCP_MESSAGE_ENDPOINT, PLUGIN_MCP_SSE_ENDPOINT};
 pub use mcp_types::PluginMcpTool;
 pub(crate) use plugin_host_capabilities::PluginHostServices;
