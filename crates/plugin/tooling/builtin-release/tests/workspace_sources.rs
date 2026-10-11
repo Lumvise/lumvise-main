@@ -2,7 +2,7 @@
 
 use lumvise_builtin_plugin_release::{
     BuiltinCompilationProfile, build_builtin_binaries_composition_with_profile,
-    discover_release_descriptors,
+    discover_release_descriptors, load_builtin_binaries_composition_with_profile,
 };
 use lumvise_plugin_package::ReleaseComposition;
 use lumvise_plugin_protocol::CURRENT_PROTOCOL_VERSION;
@@ -63,6 +63,16 @@ impl ReleaseSourceFixture {
             .unwrap();
         assert!(status.success(), "fixture lock generation: {status}");
     }
+
+    fn invalidate_rust_source(&self) {
+        fs::write(
+            self.root
+                .path()
+                .join("crates/plugin/builtins/fixture/src/main.rs"),
+            "this fixture cannot compile again",
+        )
+        .unwrap();
+    }
 }
 
 #[test]
@@ -102,6 +112,26 @@ fn combined_release_rejects_duplicate_identities_and_no_sources() {
     );
 }
 
+#[test]
+fn prebuilt_requires_the_selected_payload_instead_of_compiling_it() {
+    let source = ReleaseSourceFixture::new("knowledge");
+    let cache = tempfile::tempdir().unwrap();
+    let error = load_builtin_binaries_composition_with_profile(
+        &[source.path()],
+        &["x86_64-pc-windows-msvc".into()],
+        cache.path(),
+        BuiltinCompilationProfile::Release,
+        ReleaseComposition::Full,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("fixture-knowledge.exe"));
+    assert!(
+        error
+            .to_string()
+            .contains("compiled `builtin.knowledge` executable")
+    );
+}
+
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"),
@@ -135,4 +165,19 @@ fn independently_locked_workspaces_compile_into_one_community_matrix() {
         assert!(binary.starts_with(cache.path()));
         assert!(Command::new(binary).status().unwrap().success());
     }
+    knowledge.invalidate_rust_source();
+    semantic.invalidate_rust_source();
+    let prebuilt = load_builtin_binaries_composition_with_profile(
+        &[knowledge.path(), semantic.path()],
+        &[target.into()],
+        cache.path(),
+        BuiltinCompilationProfile::Debug,
+        ReleaseComposition::Minimal,
+    )
+    .expect("load existing native outputs without invoking Cargo");
+    assert_eq!(prebuilt.targets, matrix.targets);
+    assert_eq!(
+        serde_json::to_value(&prebuilt.manifests).unwrap(),
+        serde_json::to_value(&matrix.manifests).unwrap()
+    );
 }

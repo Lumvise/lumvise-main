@@ -89,13 +89,81 @@ pub fn build_builtin_binaries_composition_with_profile(
     profile: BuiltinCompilationProfile,
     composition: ReleaseComposition,
 ) -> Result<BuiltinReleaseMatrix> {
+    let matrix = release_matrix_inputs(workspace_roots, targets, target_dir, profile, composition)?;
+    let target_dir = absolute_target_directory(target_dir)?;
+    for target in matrix.targets.keys() {
+        for (root, selected) in descriptors_by_workspace(&matrix.descriptors) {
+            compile_target(&root, &target_dir, target, profile, &selected)?;
+        }
+    }
+    matrix.validate()?;
+    Ok(matrix)
+}
+
+/// Loads native build outputs using the selected workspaces' release descriptors.
+///
+/// This performs the same composition and payload checks as compilation, without
+/// running Cargo. The signing host can therefore consume native runner outputs.
+///
+/// # Example
+/// ```no_run
+/// # use std::path::Path;
+/// # use lumvise_builtin_plugin_release::{BuiltinCompilationProfile, load_builtin_binaries_composition_with_profile};
+/// # use lumvise_plugin_package::ReleaseComposition;
+/// let matrix = load_builtin_binaries_composition_with_profile(
+///     &[Path::new(".").to_path_buf()],
+///     &["x86_64-pc-windows-msvc".into()],
+///     Path::new("native-builds"),
+///     BuiltinCompilationProfile::Release,
+///     ReleaseComposition::Full,
+/// )?;
+/// assert_eq!(matrix.targets.len(), 1);
+/// # Ok::<(), lumvise_builtin_plugin_release::BuiltinReleaseError>(())
+/// ```
+pub fn load_builtin_binaries_composition_with_profile(
+    workspace_roots: &[PathBuf],
+    targets: &[String],
+    target_dir: &Path,
+    profile: BuiltinCompilationProfile,
+    composition: ReleaseComposition,
+) -> Result<BuiltinReleaseMatrix> {
+    let matrix = release_matrix_inputs(workspace_roots, targets, target_dir, profile, composition)?;
+    matrix.validate()?;
+    Ok(matrix)
+}
+
+fn release_matrix_inputs(
+    workspace_roots: &[PathBuf],
+    targets: &[String],
+    target_dir: &Path,
+    profile: BuiltinCompilationProfile,
+    composition: ReleaseComposition,
+) -> Result<BuiltinReleaseMatrix> {
     if targets.is_empty() {
         return Err(invalid_targets(targets));
     }
-    let target_dir = std::path::absolute(target_dir).map_err(|source| BuiltinReleaseError::Io {
+    let target_dir = absolute_target_directory(target_dir)?;
+    let descriptors = release_composition_descriptors(workspace_roots, composition)?;
+    let manifests = read_manifest_templates(&descriptors)?;
+    let binaries = release_target_matrix(targets, &target_dir, profile, &descriptors)?;
+    Ok(BuiltinReleaseMatrix {
+        descriptors,
+        manifests,
+        targets: binaries,
+    })
+}
+
+fn absolute_target_directory(target_dir: &Path) -> Result<PathBuf> {
+    std::path::absolute(target_dir).map_err(|source| BuiltinReleaseError::Io {
         path: target_dir.to_path_buf(),
         source,
-    })?;
+    })
+}
+
+fn release_composition_descriptors(
+    workspace_roots: &[PathBuf],
+    composition: ReleaseComposition,
+) -> Result<BTreeMap<String, BuiltinReleaseDescriptor>> {
     let mut descriptors = discover_release_descriptors(workspace_roots)?
         .into_iter()
         .map(|descriptor| (descriptor.plugin_id.clone(), descriptor))
@@ -111,25 +179,24 @@ pub fn build_builtin_binaries_composition_with_profile(
             });
         }
     }
-    let manifests = read_manifest_templates(&descriptors)?;
+    Ok(descriptors)
+}
+
+fn release_target_matrix(
+    targets: &[String],
+    target_dir: &Path,
+    profile: BuiltinCompilationProfile,
+    descriptors: &BTreeMap<String, BuiltinReleaseDescriptor>,
+) -> Result<BTreeMap<String, BuiltinBinaryPaths>> {
     let mut binaries = BTreeMap::new();
     for target in targets {
         validate_release_target(target)?;
-        for (root, selected) in descriptors_by_workspace(&descriptors) {
-            compile_target(&root, &target_dir, target, profile, &selected)?;
-        }
         binaries.insert(
             target.clone(),
-            target_binaries(&target_dir, target, profile, &descriptors),
+            target_binaries(target_dir, target, profile, descriptors),
         );
     }
-    let matrix = BuiltinReleaseMatrix {
-        descriptors,
-        manifests,
-        targets: binaries,
-    };
-    matrix.validate()?;
-    Ok(matrix)
+    Ok(binaries)
 }
 
 fn validate_release_target(target: &str) -> Result<()> {

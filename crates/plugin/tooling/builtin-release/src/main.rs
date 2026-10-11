@@ -2,7 +2,7 @@ use std::{env, fs, path::Path, process::Command};
 
 use lumvise_builtin_plugin_release::{
     BuiltinReleaseMatrix, build_builtin_binaries_composition_with_profile,
-    publish_builtin_release_composition,
+    load_builtin_binaries_composition_with_profile, publish_builtin_release_composition,
 };
 use lumvise_plugin_package::read_protected_signing_key;
 
@@ -31,7 +31,12 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
     let options = ReleaseOptions::parse(arguments, &current)?;
     let key = read_protected_signing_key(&options.key).map_err(|error| error.to_string())?;
     let identity = ReleaseSigningIdentity::select(options.profile, &key.verifying_key())?;
-    let mut matrix = build_builtin_binaries_composition_with_profile(
+    let source = if options.prebuilt {
+        load_builtin_binaries_composition_with_profile
+    } else {
+        build_builtin_binaries_composition_with_profile
+    };
+    let mut matrix = source(
         &options.workspaces,
         &options.targets,
         &options.target_dir,

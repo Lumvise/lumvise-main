@@ -10,7 +10,7 @@ mod publication;
 pub use compilation::{
     BuiltinCompilationProfile, build_and_publish_builtin_release_composition_with_profile,
     build_builtin_binaries, build_builtin_binaries_composition_with_profile,
-    build_builtin_binaries_with_profile,
+    build_builtin_binaries_with_profile, load_builtin_binaries_composition_with_profile,
 };
 pub use descriptors::{
     BuiltinReleaseDescriptor, discover_descriptors, discover_release_descriptors,

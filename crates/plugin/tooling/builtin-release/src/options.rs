@@ -9,6 +9,7 @@ use std::{
 
 pub(crate) struct ReleaseOptions {
     pub(crate) profile: BuiltinCompilationProfile,
+    pub(crate) prebuilt: bool,
     pub(crate) workspaces: Vec<PathBuf>,
     pub(crate) target_dir: PathBuf,
     pub(crate) composition: ReleaseComposition,
@@ -22,6 +23,7 @@ impl ReleaseOptions {
     pub(crate) fn parse(arguments: Vec<String>, current: &Path) -> Result<Self, String> {
         let mut values = VecDeque::from(arguments);
         let mut profile = BuiltinCompilationProfile::Release;
+        let mut prebuilt = false;
         let mut workspaces = Vec::new();
         let mut target_dir = None;
         let mut community_output = None;
@@ -29,6 +31,10 @@ impl ReleaseOptions {
             match flag {
                 "--debug" => {
                     profile = BuiltinCompilationProfile::Debug;
+                    values.pop_front();
+                }
+                "--prebuilt" => {
+                    prebuilt = true;
                     values.pop_front();
                 }
                 "--workspace" => workspaces.push(take_path(&mut values, current)?),
@@ -42,6 +48,7 @@ impl ReleaseOptions {
         }
         let target_dir = target_dir.unwrap_or_else(|| default_target_dir(current, profile));
         let mut options = Self::from_positional(values.into(), profile, workspaces, target_dir)?;
+        options.prebuilt = prebuilt;
         if let Some(path) = community_output {
             if options.composition != ReleaseComposition::Full
                 || path == current.join(&options.output)
@@ -75,6 +82,7 @@ impl ReleaseOptions {
         };
         Ok(Self {
             profile,
+            prebuilt: false,
             workspaces,
             target_dir,
             composition,
@@ -103,7 +111,7 @@ fn default_target_dir(current: &Path, profile: BuiltinCompilationProfile) -> Pat
 }
 
 fn usage() -> &'static str {
-    "lumvise-builtin-plugin-release [--debug] [--workspace <root> ...] [--target-dir <path>] [--community-output <path>] --composition <minimal|full> <protected-signing-key> <output-dir> <target> [target ...]"
+    "lumvise-builtin-plugin-release [--debug] [--prebuilt] [--workspace <root> ...] [--target-dir <path>] [--community-output <path>] --composition <minimal|full> <protected-signing-key> <output-dir> <target> [target ...]"
 }
 
 #[cfg(test)]
@@ -132,11 +140,24 @@ mod tests {
         let options = ReleaseOptions::parse(arguments(&[]), Path::new("/public")).unwrap();
         assert_eq!(options.workspaces, [PathBuf::from("/public")]);
         assert_eq!(options.profile, BuiltinCompilationProfile::Release);
+        assert!(!options.prebuilt);
         assert_eq!(
             options.target_dir,
             Path::new("/public/target/builtin-plugin-release")
         );
         assert_eq!(options.composition, ReleaseComposition::Minimal);
+    }
+
+    #[test]
+    fn prebuilt_uses_the_selected_native_output_directory() {
+        let options = ReleaseOptions::parse(
+            arguments(&["--prebuilt", "--target-dir", "native outputs"]),
+            Path::new("/release"),
+        )
+        .unwrap();
+        assert!(options.prebuilt);
+        assert_eq!(options.profile, BuiltinCompilationProfile::Release);
+        assert_eq!(options.target_dir, Path::new("/release/native outputs"));
     }
 
     #[test]
