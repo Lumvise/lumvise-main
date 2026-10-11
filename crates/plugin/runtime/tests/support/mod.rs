@@ -632,3 +632,22 @@ fn make_writable(root: &Path) {
     }
     let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755));
 }
+
+#[cfg(windows)]
+fn make_writable(root: &Path) {
+    let Ok(metadata) = std::fs::metadata(root) else {
+        return;
+    };
+    let mut permissions = metadata.permissions();
+    permissions.set_readonly(false);
+    let _ = std::fs::set_permissions(root, permissions);
+    if !metadata.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        make_writable(&entry.path());
+    }
+}
