@@ -1,8 +1,8 @@
 use crate::error::{NeuralError, Result};
 use crate::model_assets::{expand_model_path, resolve_or_download_cache_file};
-use crate::process::ProcessFailureDiagnostics;
+use bzip2::read::BzDecoder;
+use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const KOKOROS_CACHE_GROUP: &str = "kokoros";
 const SHERPA_KOKORO_ALIAS: &str = "kokoro-v1.0";
@@ -77,33 +77,18 @@ fn ensure_bundle_extracted(archive: &Path, parent: &Path, bundle_dir: &Path) -> 
     if bundle_dir.join("model.onnx").is_file() {
         return Ok(());
     }
-    let output = Command::new("tar")
-        .arg("-xjf")
-        .arg(archive)
-        .arg("-C")
-        .arg(parent)
-        .output()
+    let file = File::open(archive).map_err(|source| NeuralError::Io {
+        value: archive.display().to_string(),
+        expected: "extractable Sherpa Kokoro tar.bz2 archive".to_string(),
+        source,
+    })?;
+    tar::Archive::new(BzDecoder::new(file))
+        .unpack(parent)
         .map_err(|source| NeuralError::Io {
             value: archive.display().to_string(),
             expected: "extractable Sherpa Kokoro tar.bz2 archive".to_string(),
             source,
-        })?;
-    require_successful_extract(output.status, output.stderr, archive)
-}
-
-fn require_successful_extract(
-    status: std::process::ExitStatus,
-    stderr: Vec<u8>,
-    archive: &Path,
-) -> Result<()> {
-    if status.success() {
-        return Ok(());
-    }
-    Err(NeuralError::ProcessFailed {
-        command: format!("tar -xjf {}", archive.display()),
-        status: status.to_string(),
-        diagnostics: ProcessFailureDiagnostics::from_streams(&[], &stderr),
-    })
+        })
 }
 
 fn assets_from_bundle_dir(bundle_dir: &Path) -> Result<KokorosSherpaAssets> {
@@ -166,6 +151,11 @@ fn model_key(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bzip2::Compression;
+    use bzip2::write::BzEncoder;
+    use std::io::Cursor;
+
+    type TestBundleArchive = tar::Builder<BzEncoder<File>>;
 
     #[test]
     fn model_key_uses_file_name_and_lowercase() {
@@ -200,5 +190,101 @@ mod tests {
             assets.voices_path,
             expand_model_path("~/voices/voices.bin").unwrap()
         );
+    }
+
+    #[test]
+    fn ensure_bundle_extracted_unpacks_required_assets_from_tar_bz2() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("kokoro.tar.bz2");
+        write_test_bundle_archive(&archive);
+        let bundle_dir = temp.path().join(SHERPA_KOKORO_BUNDLE_DIR);
+
+        ensure_bundle_extracted(&archive, temp.path(), &bundle_dir).unwrap();
+
+        assets_from_bundle_dir(&bundle_dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_bundle_extracted_reports_missing_archive_path_and_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("missing.tar.bz2");
+        let bundle_dir = temp.path().join(SHERPA_KOKORO_BUNDLE_DIR);
+
+        let error = ensure_bundle_extracted(&archive, temp.path(), &bundle_dir).unwrap_err();
+
+        assert!(error.to_string().contains(&archive.display().to_string()));
+        assert!(error.to_string().contains("Sherpa Kokoro tar.bz2 archive"));
+    }
+
+    #[test]
+    fn ensure_bundle_extracted_reports_corrupt_archive_path_and_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("corrupt.tar.bz2");
+        std::fs::write(&archive, b"not a bzip2 archive").unwrap();
+        let bundle_dir = temp.path().join(SHERPA_KOKORO_BUNDLE_DIR);
+
+        let error = ensure_bundle_extracted(&archive, temp.path(), &bundle_dir).unwrap_err();
+
+        assert!(error.to_string().contains(&archive.display().to_string()));
+        assert!(error.to_string().contains("Sherpa Kokoro tar.bz2 archive"));
+    }
+
+    #[test]
+    fn ensure_bundle_extracted_reuses_existing_bundle_without_opening_archive() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("missing.tar.bz2");
+        let bundle_dir = temp.path().join(SHERPA_KOKORO_BUNDLE_DIR);
+        write_test_bundle_files(&bundle_dir);
+
+        ensure_bundle_extracted(&archive, temp.path(), &bundle_dir).unwrap();
+
+        assets_from_bundle_dir(&bundle_dir).unwrap();
+    }
+
+    fn write_test_bundle_archive(path: &Path) {
+        let file = File::create(path).unwrap();
+        let encoder = BzEncoder::new(file, Compression::best());
+        let mut builder = tar::Builder::new(encoder);
+        append_test_bundle_file(&mut builder, "model.onnx", b"model");
+        append_test_bundle_file(&mut builder, "voices.bin", b"voices");
+        append_test_bundle_file(&mut builder, "tokens.txt", b"tokens");
+        append_test_bundle_dir(&mut builder, "espeak-ng-data");
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+
+    fn append_test_bundle_file(builder: &mut TestBundleArchive, name: &str, bytes: &[u8]) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                format!("{SHERPA_KOKORO_BUNDLE_DIR}/{name}"),
+                Cursor::new(bytes),
+            )
+            .unwrap();
+    }
+
+    fn append_test_bundle_dir(builder: &mut TestBundleArchive, name: &str) {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                format!("{SHERPA_KOKORO_BUNDLE_DIR}/{name}"),
+                Cursor::new(Vec::<u8>::new()),
+            )
+            .unwrap();
+    }
+
+    fn write_test_bundle_files(bundle_dir: &Path) {
+        std::fs::create_dir_all(bundle_dir.join("espeak-ng-data")).unwrap();
+        std::fs::write(bundle_dir.join("model.onnx"), b"model").unwrap();
+        std::fs::write(bundle_dir.join("voices.bin"), b"voices").unwrap();
+        std::fs::write(bundle_dir.join("tokens.txt"), b"tokens").unwrap();
     }
 }
