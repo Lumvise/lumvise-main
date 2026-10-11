@@ -186,7 +186,11 @@ impl CodexProvider {
                 Ok(())
             });
         }
-        if self.hot_enabled() && request.model_id().is_none() && request.mcp_servers.is_empty() {
+        if cfg!(unix)
+            && self.hot_enabled()
+            && request.model_id().is_none()
+            && request.mcp_servers.is_empty()
+        {
             return self.hot_turn(request);
         }
         self.stateless_turn(request, control)
@@ -273,7 +277,10 @@ impl CodexProvider {
         };
         Path::new(runner.command())
             .file_name()
-            .is_some_and(|name| name == "codex")
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name == "codex" || (cfg!(windows) && name.eq_ignore_ascii_case("codex.exe"))
+            })
     }
 
     fn client_runner(&self) -> Result<&ProviderCommandRunner> {
@@ -336,14 +343,26 @@ fn isolated_codex_home(request: &LlmRequest) -> Result<Option<PathBuf>> {
 }
 
 fn resolve_existing_codex_home() -> Option<PathBuf> {
-    if let Some(codex_home) = std::env::var_os("CODEX_HOME")
-        && !codex_home.is_empty()
-    {
+    codex_home_from(
+        std::env::var_os("CODEX_HOME"),
+        std::env::var_os("HOME"),
+        dirs::home_dir(),
+    )
+}
+
+fn codex_home_from(
+    codex_home: Option<std::ffi::OsString>,
+    user_home: Option<std::ffi::OsString>,
+    platform_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(codex_home) = codex_home.filter(|home| !home.is_empty()) {
         return Some(PathBuf::from(codex_home));
     }
-    std::env::var_os("HOME")
+    user_home
         .filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".codex"))
+        .map(PathBuf::from)
+        .or(platform_home)
+        .map(|home| home.join(".codex"))
 }
 
 fn unique_codex_home_path() -> PathBuf {
@@ -472,7 +491,7 @@ fn hot_shell_script(command: &str, config: &LlmProviderConfig) -> String {
 }
 
 fn hot_shell_header() -> &'static str {
-    "set -u\nwhile IFS=$'\\t' read -r marker session_id prompt_path; do\n  prompt=$(cat \"$prompt_path\")\n  rm -f \"$prompt_path\"\n  output_path=$(mktemp)\n  diagnostics_path=$(mktemp)\n"
+    "set -u\nwhile IFS='\t' read -r marker session_id prompt_path; do\n  prompt=$(cat \"$prompt_path\")\n  rm -f \"$prompt_path\"\n  output_path=$(mktemp)\n  diagnostics_path=$(mktemp)\n"
 }
 
 fn hot_shell_body(command: &str, spawn_args: &[String], model: Option<&str>) -> String {
@@ -781,14 +800,7 @@ fn load_codex_active_mcp_server_names() -> Vec<String> {
 }
 
 fn resolve_codex_config_path() -> Option<PathBuf> {
-    if let Some(codex_home) = std::env::var_os("CODEX_HOME")
-        && !codex_home.is_empty()
-    {
-        return Some(PathBuf::from(codex_home).join("config.toml"));
-    }
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".codex").join("config.toml"))
+    resolve_existing_codex_home().map(|home| home.join("config.toml"))
 }
 
 fn parse_codex_active_mcp_servers(config: &str) -> Vec<String> {

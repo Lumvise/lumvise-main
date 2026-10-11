@@ -273,3 +273,308 @@ fn test_request() -> LlmRequest {
 fn stdout_inheritance_script() -> String {
     "output_path=''; while [ \"$#\" -gt 0 ]; do if [ \"$1\" = '-o' ]; then shift; output_path=\"$1\"; fi; shift || break; done; printf 'OK' > \"$output_path\"; sleep 2 & exit 0".into()
 }
+
+#[test]
+fn codex_home_precedence_and_platform_fallback() {
+    for (codex, home, platform, expected) in [
+        (Some("c"), Some("h"), Some("p"), Some("c")),
+        (None, Some("h"), Some("p"), Some("h/.codex")),
+        (Some(""), Some(""), Some("p"), Some("p/.codex")),
+        (None, None, Some("p"), Some("p/.codex")),
+        (None, None, None, None),
+    ] {
+        assert_eq!(
+            codex_home_from(
+                codex.map(Into::into),
+                home.map(Into::into),
+                platform.map(PathBuf::from)
+            ),
+            expected.map(PathBuf::from)
+        );
+    }
+}
+
+#[test]
+fn codex_config_path_uses_the_resolved_home() {
+    let home = resolve_existing_codex_home();
+    let config = resolve_codex_config_path();
+    assert_eq!(config, home.map(|path| path.join("config.toml")));
+}
+
+struct CancelledCodexCall;
+
+impl ProviderCallControl for CancelledCodexCall {
+    fn remaining(&self) -> Duration {
+        Duration::from_secs(1)
+    }
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn native_codex_scoped_completion_keeps_app_server_dispatch() {
+    for command in native_codex_commands() {
+        let provider = native_codex_test_provider(command);
+        let mut request = test_request();
+        request.model = Some("request-model".into());
+        assert!(provider.hot_enabled());
+        assert!(matches!(
+            provider.run_turn(&request, Some(&CancelledCodexCall)),
+            Err(NeuralError::ProcessCancelled { .. })
+        ));
+        assert_eq!(provider.app_server_sessions.lock().unwrap().len(), 1);
+        assert!(provider.hot_session.lock().unwrap().is_none());
+    }
+}
+
+fn native_codex_commands() -> &'static [&'static str] {
+    if cfg!(windows) {
+        return &[
+            "codex",
+            "codex.exe",
+            "CODEX.EXE",
+            r"C:\missing\bin\codex.exe",
+        ];
+    }
+    &["codex", "/missing/bin/codex"]
+}
+
+fn native_codex_test_provider(command: &str) -> CodexProvider {
+    let mut config = test_config(String::new());
+    config.spawn.as_mut().unwrap().command = command.into();
+    CodexProvider::new(config, Arc::new(NoHttpClient)).unwrap()
+}
+
+#[test]
+fn native_codex_recognition_does_not_include_cmd_wrappers() {
+    for (command, expected) in [
+        ("codex", true),
+        ("codex.exe", cfg!(windows)),
+        ("codex.cmd", false),
+    ] {
+        let provider = native_codex_test_provider(command);
+        assert_eq!(provider.hot_enabled(), expected, "{command}");
+    }
+}
+
+#[test]
+fn native_codex_scoped_stream_keeps_app_server_dispatch() {
+    let provider = native_codex_test_provider(native_codex_commands()[0]);
+    let control = StreamControl::unbounded()
+        .with_cancel_flag(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    assert!(matches!(
+        provider.stream_with_events(&test_request(), control, &mut |_| Ok(())),
+        Err(NeuralError::ProcessCancelled { .. })
+    ));
+    assert_eq!(provider.app_server_sessions.lock().unwrap().len(), 1);
+    assert!(provider.hot_session.lock().unwrap().is_none());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_plain_codex_completion_uses_native_process_without_shell() {
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["codex", "codex.exe"] {
+        let provider = native_codex_test_provider(directory.path().join(name).to_str().unwrap());
+        let mut request = test_request();
+        request.mcp_servers.clear();
+        assert!(
+            matches!(provider.complete(&request), Err(NeuralError::Io { expected, .. }) if expected == "provider command process")
+        );
+        assert!(provider.hot_session.lock().unwrap().is_none());
+        assert!(provider.app_server_sessions.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(unix)]
+struct FakeCodexArgumentRecorder {
+    directory: tempfile::TempDir,
+    executable: PathBuf,
+    record: PathBuf,
+}
+
+#[cfg(unix)]
+impl FakeCodexArgumentRecorder {
+    fn new(name: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::Builder::new()
+            .prefix("codex fixture's ")
+            .tempdir()
+            .unwrap();
+        let executable = directory.path().join(name);
+        let record = directory.path().join("arguments");
+        std::fs::write(&executable, Self::script()).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self {
+            directory,
+            executable,
+            record,
+        }
+    }
+
+    fn script() -> &'static str {
+        r#"#!/bin/sh
+record="$1"; shift
+printf '%s\000' "$@" > "$record"
+out=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then shift; out="$1"; fi
+  shift
+done
+printf 'fixture answer' > "$out"
+printf '%s\n' '{"type":"session_meta","id":"fixture-session"}'
+"#
+    }
+
+    fn config(&self) -> LlmProviderConfig {
+        let mut config = test_config(String::new());
+        config.model = "configured-model".into();
+        config.spawn.as_mut().unwrap().command = self.executable.to_string_lossy().into();
+        config.spawn.as_mut().unwrap().args = vec![self.record.to_string_lossy().into()];
+        config
+    }
+
+    fn arguments(&self) -> Vec<String> {
+        std::fs::read(&self.record)
+            .unwrap()
+            .split(|byte| *byte == 0)
+            .filter(|bytes| !bytes.is_empty())
+            .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap())
+            .collect()
+    }
+
+    fn shell_turn(&self, shell: &str, session: &str, prompt: &str) -> std::process::Output {
+        use std::io::Write;
+        let prompt_path = self.directory.path().join("prompt file");
+        std::fs::write(&prompt_path, prompt).unwrap();
+        let mut child = self.shell_process(shell);
+        let request = format!("marker\t{session}\t{}\n", prompt_path.display());
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(request.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    fn shell_process(&self, shell: &str) -> std::process::Child {
+        use std::process::{Command, Stdio};
+        let script = hot_shell_script(self.executable.to_str().unwrap(), &self.config());
+        Command::new(shell)
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    fn assert_shell_turn(&self, shell: &str, session: &str, prompt: &str) {
+        let output = self.shell_turn(shell, session, prompt);
+        assert!(
+            output.status.success(),
+            "{shell}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "lumvise-codex-session-id\tfixture-session\nfixture answer\nmarker\n"
+        );
+        self.assert_hot_arguments(session, prompt);
+    }
+
+    fn assert_hot_arguments(&self, session: &str, prompt: &str) {
+        let args = self.arguments();
+        assert_eq!(args.last().unwrap(), prompt);
+        self.assert_argument_pairs(&[["--model", "configured-model"]]);
+        assert_eq!(
+            args.get(1).is_some_and(|arg| arg == "resume"),
+            session != CODEX_NO_SESSION
+        );
+        if session != CODEX_NO_SESSION {
+            assert_eq!(args[args.len() - 2], session);
+        }
+    }
+
+    fn assert_argument_pairs(&self, expected: &[[&str; 2]]) {
+        let args = self.arguments();
+        for pair in expected {
+            assert!(
+                args.windows(2).any(|window| window == *pair),
+                "{pair:?}: {args:?}"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn hot_shell_round_trip_is_posix_and_preserves_inputs() {
+    let fixture = FakeCodexArgumentRecorder::new("codex");
+    let prompt = "user: literal $HOME $(echo injected) 'quote'\t tab\nsecond line";
+    for shell in ["/bin/sh", "/bin/dash"]
+        .into_iter()
+        .filter(|shell| Path::new(shell).exists())
+    {
+        for session in [CODEX_NO_SESSION, "resume '$literal"] {
+            fixture.assert_shell_turn(shell, session, prompt);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_plain_codex_completion_uses_hot_shell() {
+    let fixture = FakeCodexArgumentRecorder::new("codex");
+    let provider = CodexProvider::new(fixture.config(), Arc::new(NoHttpClient)).unwrap();
+    let mut request = test_request();
+    request.mcp_servers.clear();
+    request.provider_session_id = Some("resume-session".into());
+    let response = provider.complete(&request).unwrap();
+    assert_eq!(response.content, "fixture answer");
+    assert_eq!(response.metadata["provider_session_id"], "fixture-session");
+    assert!(provider.hot_session.lock().unwrap().is_some());
+    assert_eq!(fixture.arguments().last().unwrap(), &prompt_text(&request));
+}
+
+#[cfg(unix)]
+#[test]
+fn stateless_codex_completion_preserves_model_session_prompt_and_mcp() {
+    let fixture = FakeCodexArgumentRecorder::new("codex-fixture");
+    let provider = CodexProvider::new(fixture.config(), Arc::new(NoHttpClient)).unwrap();
+    let mut request = test_request();
+    request.model = Some("request-model".into());
+    request.provider_session_id = Some("resume-session".into());
+    request.messages[0].content = "literal '$HOME'\t tab\nsecond line".into();
+    assert_eq!(
+        provider.complete(&request).unwrap().content,
+        "fixture answer"
+    );
+    fixture.assert_argument_pairs(&[
+        ["--model", "request-model"],
+        ["--sandbox", "read-only"],
+        ["resume", "resume-session"],
+        ["-c", "mcp_servers.test.url=\"http://127.0.0.1/mcp\""],
+    ]);
+    assert_eq!(fixture.arguments().last().unwrap(), &prompt_text(&request));
+    assert!(provider.hot_session.lock().unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_model_keeps_native_codex_on_stateless_dispatch() {
+    let fixture = FakeCodexArgumentRecorder::new("codex");
+    let provider = CodexProvider::new(fixture.config(), Arc::new(NoHttpClient)).unwrap();
+    let mut request = test_request();
+    request.model = Some("request-model".into());
+    request.mcp_servers.clear();
+    assert_eq!(
+        provider.complete(&request).unwrap().content,
+        "fixture answer"
+    );
+    fixture.assert_argument_pairs(&[["--model", "request-model"], ["--sandbox", "read-only"]]);
+    assert!(provider.hot_session.lock().unwrap().is_none());
+}

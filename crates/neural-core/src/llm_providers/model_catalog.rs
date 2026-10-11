@@ -320,10 +320,19 @@ fn append_inventory_choices(
 }
 
 fn default_catalog_path() -> PathBuf {
-    env::var_os("HOME")
+    catalog_path_from_home(env::var_os("HOME"), dirs::home_dir())
+}
+
+fn catalog_path_from_home(
+    home_override: Option<std::ffi::OsString>,
+    platform_home: Option<PathBuf>,
+) -> PathBuf {
+    home_override
+        .filter(|home| !home.is_empty())
         .map(PathBuf::from)
-        .map(|home| home.join(".lumvise/config/provider-models.toml"))
-        .unwrap_or_else(|| PathBuf::from(".lumvise/config/provider-models.toml"))
+        .or(platform_home)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".lumvise/config/provider-models.toml")
 }
 
 fn ensure_seed(path: &Path) -> Result<()> {
@@ -641,6 +650,44 @@ impl CatalogProviders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_path_prefers_home_override_to_platform_home() {
+        assert_eq!(
+            catalog_path_from_home(
+                Some("/home/alice".into()),
+                Some(PathBuf::from(r"C:\Users\alice"))
+            ),
+            PathBuf::from("/home/alice")
+                .join(".lumvise")
+                .join("config")
+                .join("provider-models.toml")
+        );
+    }
+
+    #[test]
+    fn catalog_path_uses_platform_home_when_override_is_absent_or_empty() {
+        let expected = PathBuf::from(r"C:\Users\alice")
+            .join(".lumvise")
+            .join("config")
+            .join("provider-models.toml");
+        assert_eq!(
+            catalog_path_from_home(None, Some(PathBuf::from(r"C:\Users\alice"))),
+            expected
+        );
+        assert_eq!(
+            catalog_path_from_home(Some("".into()), Some(PathBuf::from(r"C:\Users\alice"))),
+            expected
+        );
+    }
+
+    #[test]
+    fn catalog_path_preserves_relative_layout_without_either_home() {
+        assert_eq!(
+            catalog_path_from_home(None, None),
+            Path::new("./.lumvise/config/provider-models.toml")
+        );
+    }
 
     #[test]
     fn v1_catalog_migrates_atomically_to_v2_with_dual_providers_client_only() {

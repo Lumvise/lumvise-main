@@ -103,8 +103,20 @@ fn configured_state_root() -> PathBuf {
 }
 
 fn default_plugin_root() -> PathBuf {
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
+    #[cfg(windows)]
+    let user_profile = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let user_profile = None;
+
+    plugin_root_from_home(std::env::var_os("HOME"), user_profile)
+}
+
+fn plugin_root_from_home(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> PathBuf {
+    home.filter(|home| !home.is_empty())
+        .or_else(|| user_profile.filter(|profile| !profile.is_empty()))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".lumvise")
@@ -187,6 +199,30 @@ mod tests {
         assert_eq!(
             config.publisher_trust_path(),
             config.state_root().join("publisher-trust.json")
+        );
+    }
+
+    #[test]
+    fn plugin_root_uses_home_before_windows_user_profile() {
+        assert_eq!(
+            plugin_root_from_home(Some("/home/alice".into()), Some(r"C:\Users\alice".into())),
+            Path::new("/home/alice/.lumvise/plugins")
+        );
+        assert_eq!(
+            plugin_root_from_home(None, Some(r"C:\Users\alice".into())),
+            PathBuf::from(r"C:\Users\alice")
+                .join(".lumvise")
+                .join("plugins")
+        );
+        assert_eq!(
+            plugin_root_from_home(Some("".into()), Some(r"C:\Users\alice".into())),
+            PathBuf::from(r"C:\Users\alice")
+                .join(".lumvise")
+                .join("plugins")
+        );
+        assert_eq!(
+            plugin_root_from_home(None, None),
+            Path::new("./.lumvise/plugins")
         );
     }
 
