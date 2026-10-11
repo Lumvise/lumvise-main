@@ -178,6 +178,7 @@ mod tests {
             &key,
             &output,
             ReleaseComposition::Minimal,
+            None,
         )
         .unwrap();
         assert_eq!(index.artifacts.len(), 2);

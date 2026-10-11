@@ -15,6 +15,9 @@ use lumvise_plugin_protocol::CURRENT_PROTOCOL_VERSION;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+mod windows_runtime;
+use windows_runtime::WindowsRuntimePayload;
+
 #[derive(Serialize)]
 struct PublisherTrustDocument {
     schema_version: u32,
@@ -41,14 +44,19 @@ struct HostCapabilityGrant {
     capability_id: String,
 }
 
-/// Publishes one explicit full or minimal schema-two composition.
+/// Publishes one composition, signing optional Windows DLLs beside each executable.
+///
+/// Pass `None` for platforms without companion DLLs, or a reviewed directory:
+/// `publish_builtin_release_composition(&matrix, &key, &output, composition, Some(&runtime))`.
 pub fn publish_builtin_release_composition(
     matrix: &BuiltinReleaseMatrix,
     signing_key: &SigningKey,
     output_dir: &Path,
     composition: ReleaseComposition,
+    windows_runtime_dir: Option<&Path>,
 ) -> Result<PluginReleaseIndexV2> {
     matrix.validate()?;
+    let windows_runtime = WindowsRuntimePayload::read(matrix, windows_runtime_dir)?;
     let plugin_ids = selected_plugin_ids(matrix, composition)?;
     let parent = prepare_destination(output_dir)?;
     let release = temporary_directory(&parent, ".builtin-release-")?;
@@ -59,6 +67,7 @@ pub fn publish_builtin_release_composition(
         signing_key,
         release.path(),
         validation.path(),
+        &windows_runtime,
     )?;
     let index = PluginReleaseIndexV2 {
         schema_version: lumvise_plugin_package::PLUGIN_RELEASE_INDEX_SCHEMA_VERSION,
@@ -148,10 +157,20 @@ fn publish_artifacts(
     signing_key: &SigningKey,
     output_dir: &Path,
     validation_root: &Path,
+    windows_runtime: &WindowsRuntimePayload,
 ) -> Result<Vec<PluginReleaseArtifactV2>> {
     plugin_ids
         .iter()
-        .map(|plugin_id| publish_one(plugin_id, matrix, signing_key, output_dir, validation_root))
+        .map(|plugin_id| {
+            publish_one(
+                plugin_id,
+                matrix,
+                signing_key,
+                output_dir,
+                validation_root,
+                windows_runtime,
+            )
+        })
         .collect()
 }
 
@@ -161,8 +180,9 @@ fn publish_one(
     key: &SigningKey,
     output_dir: &Path,
     validation_root: &Path,
+    windows_runtime: &WindowsRuntimePayload,
 ) -> Result<PluginReleaseArtifactV2> {
-    let manifest = merged_manifest(plugin_id, matrix)?;
+    let mut manifest = merged_manifest(plugin_id, matrix)?;
     let archive_path = output_dir.join(format!(
         "{}-{}.lvp",
         manifest.plugin_id, manifest.plugin_version
@@ -171,6 +191,7 @@ fn publish_one(
         .prefix(".payload-")
         .tempdir_in(output_dir)
         .map_err(|source| io_error(output_dir, source))?;
+    windows_runtime.stage(&mut manifest, staging.path())?;
     stage_payload(plugin_id, matrix, &manifest, staging.path())?;
     build_package_from_directory(&archive_path, manifest.clone(), staging.path(), key)?;
     verify_and_install(&archive_path, matrix, key, validation_root)?;

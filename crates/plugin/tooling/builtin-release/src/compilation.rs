@@ -229,7 +229,7 @@ pub fn build_and_publish_builtin_release_composition_with_profile(
         profile,
         composition,
     )?;
-    publish_builtin_release_composition(&matrix, signing_key, output_dir, composition)
+    publish_builtin_release_composition(&matrix, signing_key, output_dir, composition, None)
 }
 
 fn descriptors_by_workspace(

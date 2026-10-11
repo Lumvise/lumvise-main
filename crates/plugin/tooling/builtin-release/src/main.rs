@@ -54,9 +54,14 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
         env::var("APPLE_SIGNING_IDENTITY").ok().as_deref(),
         diagnostics.as_deref(),
     )?;
-    let index =
-        publish_builtin_release_composition(&matrix, &key, &options.output, options.composition)
-            .map_err(|error| error.to_string())?;
+    let index = publish_builtin_release_composition(
+        &matrix,
+        &key,
+        &options.output,
+        options.composition,
+        options.windows_runtime_dir.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
     // Both editions must carry the very same signed plugin bytes. Signing a
     // second time can change timestamps without changing the plugin version.
     if let Some(output) = options.community_output {
@@ -65,6 +70,7 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
             &key,
             &output,
             lumvise_plugin_package::ReleaseComposition::Minimal,
+            options.windows_runtime_dir.as_deref(),
         )
         .map_err(|error| error.to_string())?;
     }

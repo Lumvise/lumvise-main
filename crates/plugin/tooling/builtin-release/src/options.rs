@@ -16,6 +16,7 @@ pub(crate) struct ReleaseOptions {
     pub(crate) key: PathBuf,
     pub(crate) output: PathBuf,
     pub(crate) community_output: Option<PathBuf>,
+    pub(crate) windows_runtime_dir: Option<PathBuf>,
     pub(crate) targets: Vec<String>,
 }
 
@@ -27,6 +28,7 @@ impl ReleaseOptions {
         let mut workspaces = Vec::new();
         let mut target_dir = None;
         let mut community_output = None;
+        let mut windows_runtime_dir = None;
         while let Some(flag) = values.front().map(String::as_str) {
             match flag {
                 "--debug" => {
@@ -40,6 +42,9 @@ impl ReleaseOptions {
                 "--workspace" => workspaces.push(take_path(&mut values, current)?),
                 "--target-dir" => target_dir = Some(take_path(&mut values, current)?),
                 "--community-output" => community_output = Some(take_path(&mut values, current)?),
+                "--windows-runtime-dir" => {
+                    windows_runtime_dir = Some(take_path(&mut values, current)?)
+                }
                 _ => break,
             }
         }
@@ -49,6 +54,7 @@ impl ReleaseOptions {
         let target_dir = target_dir.unwrap_or_else(|| default_target_dir(current, profile));
         let mut options = Self::from_positional(values.into(), profile, workspaces, target_dir)?;
         options.prebuilt = prebuilt;
+        options.windows_runtime_dir = windows_runtime_dir;
         if let Some(path) = community_output {
             if options.composition != ReleaseComposition::Full
                 || path == current.join(&options.output)
@@ -89,6 +95,7 @@ impl ReleaseOptions {
             key: key.into(),
             output: output.into(),
             community_output: None,
+            windows_runtime_dir: None,
             targets: targets.to_vec(),
         })
     }
@@ -111,7 +118,7 @@ fn default_target_dir(current: &Path, profile: BuiltinCompilationProfile) -> Pat
 }
 
 fn usage() -> &'static str {
-    "lumvise-builtin-plugin-release [--debug] [--prebuilt] [--workspace <root> ...] [--target-dir <path>] [--community-output <path>] --composition <minimal|full> <protected-signing-key> <output-dir> <target> [target ...]"
+    "lumvise-builtin-plugin-release [--debug] [--prebuilt] [--workspace <root> ...] [--target-dir <path>] [--community-output <path>] [--windows-runtime-dir <reviewed-dll-directory>] --composition <minimal|full> <protected-signing-key> <output-dir> <target> [target ...]"
 }
 
 #[cfg(test)]
@@ -158,6 +165,29 @@ mod tests {
         assert!(options.prebuilt);
         assert_eq!(options.profile, BuiltinCompilationProfile::Release);
         assert_eq!(options.target_dir, Path::new("/release/native outputs"));
+    }
+
+    #[test]
+    fn windows_runtime_input_is_explicit_and_resolved_from_the_caller() {
+        let options = ReleaseOptions::parse(
+            arguments(&["--windows-runtime-dir", "reviewed DLLs"]),
+            Path::new("/release"),
+        )
+        .unwrap();
+        assert_eq!(
+            options.windows_runtime_dir,
+            Some(PathBuf::from("/release/reviewed DLLs"))
+        );
+    }
+
+    #[test]
+    fn windows_runtime_input_requires_a_path() {
+        let error =
+            ReleaseOptions::parse(arguments(&["--windows-runtime-dir"]), Path::new("/release"))
+                .err()
+                .unwrap();
+        assert!(error.contains("--windows-runtime-dir"));
+        assert!(error.contains("expected a following filesystem path"));
     }
 
     #[test]
