@@ -1,5 +1,5 @@
 use crate::error::{NeuralError, Result};
-use crate::model_assets::resolve_or_download_cache_file;
+use crate::model_assets::{expand_model_path, resolve_or_download_cache_file};
 use crate::process::ProcessFailureDiagnostics;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -45,7 +45,7 @@ fn default_kokoros_assets() -> Result<KokorosSherpaAssets> {
 }
 
 fn explicit_kokoros_assets(model_value: &str, voices_value: &str) -> Result<KokorosSherpaAssets> {
-    let model_path = expand_home(model_value)?;
+    let model_path = expand_model_path(model_value)?;
     let bundle_dir = model_parent(&model_path)?.to_path_buf();
     let voices_path = explicit_voices_path(&bundle_dir, voices_value)?;
     Ok(KokorosSherpaAssets {
@@ -66,7 +66,7 @@ fn model_parent(model_path: &Path) -> Result<&Path> {
 }
 
 fn explicit_voices_path(bundle_dir: &Path, voices_value: &str) -> Result<PathBuf> {
-    let path = expand_home(voices_value)?;
+    let path = expand_model_path(voices_value)?;
     if path.is_absolute() {
         return Ok(path);
     }
@@ -163,22 +163,6 @@ fn model_key(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn expand_home(value: &str) -> Result<PathBuf> {
-    if let Some(rest) = value.strip_prefix("~/") {
-        return Ok(cache_home()?.join(rest));
-    }
-    Ok(PathBuf::from(value))
-}
-
-fn cache_home() -> Result<PathBuf> {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .map_err(|_| NeuralError::MissingValue {
-            value: "HOME".to_string(),
-            expected: "home directory for model path expansion".to_string(),
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,9 +174,11 @@ mod tests {
 
     #[test]
     fn explicit_voices_path_keeps_absolute_path() {
-        let voices = explicit_voices_path(Path::new("/bundle"), "/voices.bin").unwrap();
+        let absolute_path = std::env::temp_dir().join("voices.bin");
+        let voices =
+            explicit_voices_path(Path::new("/bundle"), absolute_path.to_str().unwrap()).unwrap();
 
-        assert_eq!(voices, PathBuf::from("/voices.bin"));
+        assert_eq!(voices, absolute_path);
     }
 
     #[test]
@@ -200,5 +186,19 @@ mod tests {
         let voices = explicit_voices_path(Path::new("/bundle"), "voices.bin").unwrap();
 
         assert_eq!(voices, PathBuf::from("/bundle/voices.bin"));
+    }
+
+    #[test]
+    fn explicit_kokoro_model_and_voices_share_home_expansion() {
+        let assets = explicit_kokoros_assets("~/models/model.onnx", "~/voices/voices.bin").unwrap();
+
+        assert_eq!(
+            assets.model_path,
+            expand_model_path("~/models/model.onnx").unwrap()
+        );
+        assert_eq!(
+            assets.voices_path,
+            expand_model_path("~/voices/voices.bin").unwrap()
+        );
     }
 }

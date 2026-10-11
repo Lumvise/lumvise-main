@@ -12,7 +12,11 @@ use crate::{
     Result, discover_release_descriptors, publish_builtin_release_composition,
 };
 
-const SUPPORTED_RELEASE_TARGETS: [&str; 1] = ["aarch64-apple-darwin"];
+const SUPPORTED_RELEASE_TARGETS: [&str; 3] = [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+];
 
 /// Cargo profile used to compile built-in plugin executables.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,7 +139,7 @@ fn validate_release_target(target: &str) -> Result<()> {
     Err(BuiltinReleaseError::InvalidInput {
         value: target.into(),
         expected: format!(
-            "production target with proven sandbox support: {}",
+            "supported native production target: {}",
             SUPPORTED_RELEASE_TARGETS.join(", ")
         ),
     })
@@ -284,15 +288,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unproven_release_targets_are_rejected() {
-        for target in ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "custom"] {
-            let error = validate_release_target(target).expect_err("unsupported target");
-            assert!(error.to_string().contains("aarch64-apple-darwin"));
+    fn supported_native_release_targets_are_accepted() {
+        for target in SUPPORTED_RELEASE_TARGETS {
+            validate_release_target(target).expect("supported target");
         }
     }
 
     #[test]
-    fn future_windows_binary_path_uses_executable_suffix() {
+    fn unsupported_architectures_abis_and_custom_targets_are_rejected() {
+        for target in [
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "x86_64-pc-windows-gnu",
+            "custom",
+        ] {
+            let error = validate_release_target(target).expect_err("unsupported target");
+            for supported in SUPPORTED_RELEASE_TARGETS {
+                assert!(error.to_string().contains(supported));
+            }
+        }
+    }
+
+    #[test]
+    fn windows_release_binary_path_uses_executable_suffix() {
         let path = executable(Path::new("release"), "plugin", "x86_64-pc-windows-msvc");
 
         assert_eq!(path, Path::new("release/plugin.exe"));

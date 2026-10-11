@@ -1,4 +1,5 @@
 use crate::error::{NeuralError, Result};
+use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -14,7 +15,7 @@ pub(crate) fn resolve_or_download_model(
     cache_group: &str,
     catalog: &[DownloadableModel],
 ) -> Result<PathBuf> {
-    let path = expand_home(value)?;
+    let path = expand_model_path(value)?;
     if path.is_file() {
         return Ok(path);
     }
@@ -51,14 +52,27 @@ fn cached_model_path(cache_group: &str, model: &DownloadableModel) -> Result<Pat
 }
 
 fn cache_root() -> Result<PathBuf> {
-    if let Ok(value) = std::env::var("LUMVISE_NEURAL_MODEL_CACHE") {
-        return Ok(PathBuf::from(value));
+    cache_root_from(
+        std::env::var_os("LUMVISE_NEURAL_MODEL_CACHE"),
+        std::env::var_os("HOME"),
+        dirs::home_dir(),
+    )
+}
+
+fn cache_root_from(
+    cache_override: Option<OsString>,
+    home_override: Option<OsString>,
+    platform_home: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(cache_override) = cache_override {
+        return Ok(PathBuf::from(cache_override));
     }
-    let home = std::env::var("HOME").map_err(|_| NeuralError::MissingValue {
-        value: "HOME".to_string(),
-        expected: "home directory for Lumvise neural model cache".to_string(),
-    })?;
-    Ok(PathBuf::from(home).join(".cache/lumvise/neural-core"))
+    Ok(model_home_from(
+        home_override,
+        platform_home,
+        "home directory for Lumvise neural model cache",
+    )?
+    .join(".cache/lumvise/neural-core"))
 }
 
 fn catalog_match<'a>(
@@ -80,20 +94,38 @@ fn model_key(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn expand_home(value: &str) -> Result<PathBuf> {
+pub(crate) fn expand_model_path(value: &str) -> Result<PathBuf> {
+    expand_model_path_from(value, std::env::var_os("HOME"), dirs::home_dir())
+}
+
+fn expand_model_path_from(
+    value: &str,
+    home_override: Option<OsString>,
+    platform_home: Option<PathBuf>,
+) -> Result<PathBuf> {
     if let Some(rest) = value.strip_prefix("~/") {
-        return Ok(cache_home()?.join(rest));
+        return Ok(model_home_from(
+            home_override,
+            platform_home,
+            "home directory for model path expansion",
+        )?
+        .join(rest));
     }
     Ok(PathBuf::from(value))
 }
 
-fn cache_home() -> Result<PathBuf> {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .map_err(|_| NeuralError::MissingValue {
-            value: "HOME".to_string(),
-            expected: "home directory for model path expansion".to_string(),
-        })
+fn model_home_from(
+    home_override: Option<OsString>,
+    platform_home: Option<PathBuf>,
+    expected: &str,
+) -> Result<PathBuf> {
+    if let Some(home) = home_override.filter(|home| !home.is_empty()) {
+        return Ok(PathBuf::from(home));
+    }
+    platform_home.ok_or_else(|| NeuralError::MissingValue {
+        value: "HOME".to_string(),
+        expected: expected.to_string(),
+    })
 }
 
 fn create_parent_dir(path: &Path) -> Result<()> {
@@ -172,5 +204,86 @@ fn download_error(error: reqwest::Error) -> NeuralError {
     NeuralError::ProviderFailed {
         provider_id: "model-download".to_string(),
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_home_prefers_nonempty_home_override() {
+        let home = model_home_from(
+            Some(OsString::from("/custom home/模型")),
+            Some(PathBuf::from("/platform-home")),
+            "home directory",
+        )
+        .unwrap();
+
+        assert_eq!(home, PathBuf::from("/custom home/模型"));
+    }
+
+    #[test]
+    fn model_home_uses_platform_home_when_override_is_absent() {
+        let home = model_home_from(None, Some(PathBuf::from("/platform-home")), "home").unwrap();
+
+        assert_eq!(home, PathBuf::from("/platform-home"));
+    }
+
+    #[test]
+    fn model_home_uses_platform_home_when_override_is_empty() {
+        let home = model_home_from(
+            Some(OsString::new()),
+            Some(PathBuf::from("/platform-home")),
+            "home",
+        )
+        .unwrap();
+
+        assert_eq!(home, PathBuf::from("/platform-home"));
+    }
+
+    #[test]
+    fn model_home_returns_error_when_no_home_is_available() {
+        let error =
+            model_home_from(None, None, "home directory for model path expansion").unwrap_err();
+
+        assert!(error.to_string().contains("HOME"));
+    }
+
+    #[test]
+    fn cache_root_keeps_override_and_existing_cache_layout() {
+        let override_root = PathBuf::from("/custom cache/模型");
+        let overridden =
+            cache_root_from(Some(override_root.clone().into_os_string()), None, None).unwrap();
+        let default = cache_root_from(
+            None,
+            Some(OsString::from("/user home")),
+            Some(PathBuf::from("/platform-home")),
+        )
+        .unwrap();
+
+        assert_eq!(overridden, override_root);
+        assert_eq!(
+            default,
+            PathBuf::from("/user home/.cache/lumvise/neural-core")
+        );
+    }
+
+    #[test]
+    fn model_path_expansion_uses_home_and_preserves_other_paths() {
+        let home = PathBuf::from("/home with spaces/用户");
+        assert_eq!(
+            expand_model_path_from(
+                "~/models/模型.onnx",
+                Some(home.clone().into_os_string()),
+                None,
+            )
+            .unwrap(),
+            home.join("models/模型.onnx")
+        );
+        assert_eq!(
+            expand_model_path("relative/model.onnx").unwrap(),
+            PathBuf::from("relative/model.onnx")
+        );
     }
 }

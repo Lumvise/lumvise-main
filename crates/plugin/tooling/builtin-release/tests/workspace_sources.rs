@@ -102,7 +102,11 @@ fn combined_release_rejects_duplicate_identities_and_no_sources() {
     );
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"),
+    all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"),
+))]
 #[test]
 fn independently_locked_workspaces_compile_into_one_community_matrix() {
     let knowledge = ReleaseSourceFixture::new("knowledge");
@@ -110,17 +114,23 @@ fn independently_locked_workspaces_compile_into_one_community_matrix() {
     knowledge.lock();
     semantic.lock();
     let cache = tempfile::tempdir().unwrap();
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let target = "aarch64-apple-darwin";
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    let target = "x86_64-unknown-linux-gnu";
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    let target = "x86_64-pc-windows-msvc";
     let matrix = build_builtin_binaries_composition_with_profile(
         &[knowledge.path(), semantic.path()],
-        &["aarch64-apple-darwin".into()],
+        &[target.into()],
         cache.path(),
         BuiltinCompilationProfile::Debug,
         ReleaseComposition::Minimal,
     )
     .expect("compile independent workspaces");
     assert_eq!(matrix.descriptors.len(), 2);
-    assert_eq!(matrix.targets["aarch64-apple-darwin"].len(), 2);
-    for (id, binary) in &matrix.targets["aarch64-apple-darwin"] {
+    assert_eq!(matrix.targets[target].len(), 2);
+    for (id, binary) in &matrix.targets[target] {
         assert!(binary.is_file(), "missing {id}: {}", binary.display());
         assert!(binary.starts_with(cache.path()));
         assert!(Command::new(binary).status().unwrap().success());
