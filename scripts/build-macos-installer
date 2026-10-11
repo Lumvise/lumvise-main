@@ -19,6 +19,7 @@ import tempfile
 import tomllib
 import zipfile
 
+from distribution_payload import DistributionLicensePayload
 from macos_release import MacOSRelease
 
 TARGET = "aarch64-apple-darwin"
@@ -510,36 +511,12 @@ class MacOSInstaller:
         return "Lumvise Community.app" if self.edition == "community" else "Lumvise.app"
 
     def copy_licenses(self, resources: Path) -> None:
-        licenses = resources / "licenses"
-        licenses.mkdir()
-        shutil.copy2(self.core_workspace / "LICENSE", licenses / "LICENSE")
-        shutil.copy2(
-            self.core_workspace / "distribution/AI-RISK-NOTICE.txt",
-            licenses / "AI-RISK-NOTICE.txt",
-        )
-        shutil.copytree(self.core_workspace / "LICENSES", licenses / "LICENSES")
-        if self.edition == "full":
-            if self.private_workspace is None:
-                raise ValueError("--private-workspace is required for Full licenses")
-            shutil.copy2(
-                self.private_workspace / "LICENSE",
-                licenses / "proprietary-LICENSE",
-            )
-            self.copy_reviewed_tree(
-                self.private_workspace / "distribution/third-party-desktop",
-                licenses / "third-party-desktop",
-            )
-        if self.third_party_notices is not None:
-            self.copy_reviewed_tree(
-                self.third_party_notices,
-                licenses / "third-party-notices",
-            )
-
-    @staticmethod
-    def copy_reviewed_tree(source: Path, destination: Path) -> None:
-        if not any(source.rglob("*")):
-            raise ValueError(f"notice directory {source}; expected reviewed files")
-        shutil.copytree(source, destination)
+        DistributionLicensePayload(
+            core_workspace=self.core_workspace,
+            edition=self.edition,
+            private_workspace=self.private_workspace,
+            third_party_notices=self.third_party_notices,
+        ).copy_to(resources)
 
     def write_metadata(self, contents: Path) -> None:
         version = tomllib.loads((self.build_workspace / "Cargo.toml").read_text())[
