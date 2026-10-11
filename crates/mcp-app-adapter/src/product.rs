@@ -183,6 +183,12 @@ fn run_mcp(options: McpOptions) -> Result<(), Box<dyn std::error::Error>> {
         .with_native_assistant_caller(identity.engine, identity.instance_id);
     if let Some(project_root) = options.project_root {
         config = config.with_project_root(project_root);
+    } else if let Some(workspace) = std::env::current_dir()
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_owned))
+    {
+        // MCP clients launch this process inside the agent's workspace.
+        config = config.with_default_project_root(workspace);
     }
     let server = open_server(config);
     let stdin = std::io::stdin();

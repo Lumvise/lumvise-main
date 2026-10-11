@@ -13,6 +13,7 @@ pub struct McpAppConfig {
     app_bridge: AppBridgeConfig,
     native_assistant_caller: NativeAssistantCaller,
     initial_project_root: Option<String>,
+    default_project_root: Option<String>,
 }
 
 const ASSISTANT_PLUGIN_ID: &str = "builtin.assistant";
@@ -61,6 +62,7 @@ impl McpAppConfig {
             app_bridge: AppBridgeConfig::discovery(),
             native_assistant_caller: default_native_assistant_caller(),
             initial_project_root: None,
+            default_project_root: None,
         }
     }
 
@@ -78,6 +80,7 @@ impl McpAppConfig {
             app_bridge,
             native_assistant_caller: default_native_assistant_caller(),
             initial_project_root: None,
+            default_project_root: None,
         }
     }
 
@@ -97,6 +100,13 @@ impl McpAppConfig {
     /// It is published only after the client completes initialization.
     pub fn with_project_root(mut self, project_root: impl Into<String>) -> Self {
         self.initial_project_root = Some(project_root.into());
+        self
+    }
+
+    /// Registers the client's workspace on connect until a tool call or selection
+    /// names another project; e.g. `.with_default_project_root("/work/repo")`.
+    pub fn with_default_project_root(mut self, project_root: impl Into<String>) -> Self {
+        self.default_project_root = Some(project_root.into());
         self
     }
 }
@@ -129,6 +139,7 @@ pub fn open_server(config: McpAppConfig) -> LumviseMcpServer {
         project_binding: SessionProjectBinding::new(
             config.app_bridge.clone(),
             config.initial_project_root,
+            config.default_project_root,
         ),
         app_bridge: AppBridgeRuntime::start(config.app_bridge),
         native_assistant_caller: config.native_assistant_caller,
@@ -417,6 +428,9 @@ impl McpApplication for LumviseMcpApplication {
         name: &str,
         arguments: Value,
     ) -> std::result::Result<Value, McpApplicationError> {
+        if name != "set_current_project" {
+            self.project_binding.observe(&arguments);
+        }
         if name == START_ASSISTANT_TOOL {
             return self.invoke_started_assistant(context, arguments);
         }

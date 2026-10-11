@@ -133,6 +133,71 @@ fn initial_project_binding_waits_for_initialized_and_eof_retires_it() {
     assert_eq!(bodies[2]["status"], "unavailable");
 }
 
+#[test]
+fn default_workspace_registers_on_connect_without_any_tool_call() {
+    let bridge = FakeBridge::start((0..3).map(|_| BridgeResponse::RegistryAck).collect());
+    let workspace = tempfile::tempdir().unwrap();
+    let (server, _owner) = server_for_bridge_config(&bridge.base_url, workspace.path(), |config| {
+        config.with_default_project_root(workspace.path().to_string_lossy())
+    });
+    initialize_presence(&server);
+    drop(server);
+    let bodies: Vec<Value> = bridge
+        .finish()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies[1]["status"], "ready");
+    assert_eq!(bodies[1]["project_root"], json!(workspace.path()));
+    assert_eq!(bodies[2]["status"], "unavailable");
+}
+
+#[test]
+fn project_scoped_tool_call_binds_presence_without_an_explicit_selection() {
+    let invoked = AppBridgeInvocationResponseV1 {
+        protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
+        request_id: "1".into(),
+        status: AppBridgeInvocationStatusV1::Completed as i32,
+        output_json: br#"{"ok":true}"#.to_vec(),
+        message: String::new(),
+        retryable: false,
+    };
+    let bridge = FakeBridge::start(vec![
+        BridgeResponse::RegistryAck,
+        BridgeResponse::RegistryAck,
+        BridgeResponse::Json(plugin_surface()),
+        BridgeResponse::Protobuf(invoked.encode_to_vec()),
+        BridgeResponse::RegistryAck,
+    ]);
+    let workspace = tempfile::tempdir().unwrap();
+    let (server, _owner) = server_for_bridge(&bridge.base_url, workspace.path());
+    initialize_presence(&server);
+    let result = response_value(
+        &server,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+            "name":"app_plugin.plugin.example.run","arguments":{"project_root":workspace.path()}
+        }}),
+    );
+    assert!(result.get("error").is_none(), "{result}");
+    drop(server);
+    let requests = bridge.finish();
+    let presence =
+        |index: usize| -> Value { serde_json::from_slice(&requests[index].body).unwrap() };
+    assert!(
+        requests[0]
+            .request_line
+            .starts_with("POST /api/mcp/register?")
+    );
+    assert_eq!(presence(1)["status"], "ready");
+    assert_eq!(presence(1)["project_root"], json!(workspace.path()));
+    assert!(
+        requests[3]
+            .request_line
+            .starts_with("POST /api/mcp/plugins/invoke-v1?")
+    );
+    assert_eq!(presence(4)["status"], "unavailable");
+}
+
 struct FakeBridge {
     base_url: String,
     requests: Receiver<BridgeRequest>,

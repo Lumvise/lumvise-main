@@ -16,7 +16,7 @@ pub(crate) fn tool_catalog(bridge_tools: &[Value]) -> Result<Vec<McpTool>, serde
 fn set_current_project_tool() -> Value {
     json!({
         "name": "set_current_project",
-        "description": "Explicitly bind this initialized MCP connection to your current project, or pass null to unbind. Call after startup/resume and when changing projects. This only controls live desktop project presence; it does not import projects or change execution-provider routing, settings or working directory. Success returns connection_id, project_root and binding_status (ready or unbound).",
+        "description": "Explicitly bind this initialized MCP connection to your current project, or pass null to unbind. Call after startup/resume and when changing projects; until you do, the connection follows the project_root of your latest tool call, starting from this client's working directory. This only controls live desktop project presence; it does not import projects or change execution-provider routing, settings or working directory. Success returns connection_id, project_root and binding_status (ready or unbound).",
         "inputSchema": {"type":"object", "required":["project_root"], "additionalProperties":false,
             "properties":{"project_root":{"type":["string","null"],"minLength":1,"description":"Exact existing absolute project directory, or null to unbind."}}}
     })

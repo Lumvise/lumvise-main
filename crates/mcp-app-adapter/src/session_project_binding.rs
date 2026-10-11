@@ -19,6 +19,10 @@ const RENEWAL_INTERVAL: Duration = Duration::from_secs(10);
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
 
 trait ProjectRegistryPort: Send + Sync {
+    /// Whether the app answers now; implicit bindings never launch or wait for it.
+    fn runtime_ready(&self) -> bool {
+        true
+    }
     fn directory_exists(&self, path: &Path) -> bool;
     fn register(&self, connection_id: &str, root: &str) -> Result<(), String>;
     fn heartbeat(
@@ -78,6 +82,13 @@ impl AppProjectRegistry {
 }
 
 impl ProjectRegistryPort for AppProjectRegistry {
+    fn runtime_ready(&self) -> bool {
+        matches!(
+            self.config.coordinator().try_ready_connection(),
+            Ok(Some(_))
+        )
+    }
+
     fn directory_exists(&self, path: &Path) -> bool {
         path.is_dir()
     }
@@ -117,6 +128,7 @@ impl ProjectRegistryPort for AppProjectRegistry {
 #[derive(Default)]
 struct BindingPublication {
     initialized: bool,
+    explicit: bool,
     project_root: Option<String>,
     ready: bool,
 }
@@ -124,6 +136,7 @@ struct BindingPublication {
 struct BindingOwner {
     connection_id: String,
     initial_root: Option<String>,
+    default_root: Option<String>,
     registry: Arc<dyn ProjectRegistryPort>,
     closed: AtomicBool,
     publication: Mutex<BindingPublication>,
@@ -138,12 +151,24 @@ pub(crate) struct SessionProjectBinding {
 }
 
 impl SessionProjectBinding {
-    pub(crate) fn new(config: AppBridgeConfig, initial_root: Option<String>) -> Self {
-        Self::with_registry(Arc::new(AppProjectRegistry { config }), initial_root)
+    pub(crate) fn new(
+        config: AppBridgeConfig,
+        initial_root: Option<String>,
+        default_root: Option<String>,
+    ) -> Self {
+        Self::with_registry(
+            Arc::new(AppProjectRegistry { config }),
+            initial_root,
+            default_root,
+        )
     }
 
-    fn with_registry(registry: Arc<dyn ProjectRegistryPort>, initial_root: Option<String>) -> Self {
-        let owner = Arc::new(BindingOwner::new(registry, initial_root));
+    fn with_registry(
+        registry: Arc<dyn ProjectRegistryPort>,
+        initial_root: Option<String>,
+        default_root: Option<String>,
+    ) -> Self {
+        let owner = Arc::new(BindingOwner::new(registry, initial_root, default_root));
         let worker_owner = owner.clone();
         let worker = std::thread::Builder::new()
             .name("lumvise-mcp-project-presence".into())
@@ -177,7 +202,10 @@ impl SessionProjectBinding {
         if let Some(root) = &self.owner.initial_root {
             // Explicit CLI paths retain their existing directory validation and exact identity.
             self.owner.validate_directory(root, false)?;
+            publication.explicit = true;
             self.owner.replace(&mut publication, Some(root.clone()))?;
+        } else {
+            self.owner.adopt_default(&mut publication);
         }
         Ok(())
     }
@@ -190,6 +218,7 @@ impl SessionProjectBinding {
                 "set_current_project requires a completed MCP initialization",
             ));
         }
+        publication.explicit = true;
         self.owner
             .replace(&mut publication, root)
             .map_err(McpApplicationError::invocation)?;
@@ -197,6 +226,28 @@ impl SessionProjectBinding {
             json!({"connection_id":self.owner.connection_id, "project_root":publication.project_root,
             "binding_status":if publication.ready { "ready" } else { "unbound" }}),
         )
+    }
+
+    /// Follows the root a tool call names until the client selects explicitly;
+    /// e.g. `observe(&json!({"project_root":"/work/repo"}))`. Never fails the call.
+    pub(crate) fn observe(&self, arguments: &Value) {
+        let Some(root) = observed_root(arguments) else {
+            return;
+        };
+        let Ok(mut publication) = self.owner.lock() else {
+            return;
+        };
+        if !publication.initialized
+            || publication.explicit
+            || (publication.ready && publication.project_root.as_deref() == Some(root))
+            || !self.owner.registry.runtime_ready()
+            || self.owner.validate_directory(root, true).is_err()
+        {
+            return;
+        }
+        if let Err(error) = self.owner.replace(&mut publication, Some(root.into())) {
+            tracing::warn!(event="mcp_project_presence_observation_failed", %error);
+        }
     }
 
     fn validated_selection(
@@ -230,10 +281,15 @@ impl Drop for SessionProjectBinding {
 }
 
 impl BindingOwner {
-    fn new(registry: Arc<dyn ProjectRegistryPort>, initial_root: Option<String>) -> Self {
+    fn new(
+        registry: Arc<dyn ProjectRegistryPort>,
+        initial_root: Option<String>,
+        default_root: Option<String>,
+    ) -> Self {
         Self {
             connection_id: new_connection_id(),
             initial_root,
+            default_root,
             registry,
             closed: AtomicBool::new(false),
             publication: Mutex::new(BindingPublication::default()),
@@ -267,6 +323,25 @@ impl BindingOwner {
             ));
         }
         Ok(())
+    }
+
+    /// Registers the client's own workspace while nothing is bound or selected,
+    /// so a reconnected client is present before its agent names a project.
+    fn adopt_default(&self, publication: &mut BindingPublication) {
+        let Some(root) = &self.default_root else {
+            return;
+        };
+        if !publication.initialized
+            || publication.explicit
+            || publication.ready
+            || !self.registry.runtime_ready()
+            || self.validate_directory(root, true).is_err()
+        {
+            return;
+        }
+        if let Err(error) = self.replace(publication, Some(root.clone())) {
+            tracing::warn!(event="mcp_project_presence_default_failed", %error);
+        }
     }
 
     fn retire(&self, publication: &mut BindingPublication) -> Result<(), String> {
@@ -347,6 +422,7 @@ fn renew_until_closed(owner: Arc<BindingOwner>) {
         if let Err(error) = owner.renew(&mut publication) {
             tracing::warn!(event="mcp_project_presence_renewal_failed", %error);
         }
+        owner.adopt_default(&mut publication);
     }
 }
 
@@ -381,6 +457,15 @@ fn parse_selection(arguments: &Value) -> Result<Option<String>, String> {
     }
 }
 
+fn observed_root(arguments: &Value) -> Option<&str> {
+    // Mirrors the bridge's invocation input: a nested `input` object wins.
+    arguments
+        .get("input")
+        .unwrap_or(arguments)
+        .get("project_root")
+        .and_then(Value::as_str)
+}
+
 fn new_connection_id() -> String {
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -401,9 +486,13 @@ mod tests {
         fail_register: AtomicBool,
         fail_ready: AtomicBool,
         fail_unavailable: AtomicBool,
+        runtime_down: AtomicBool,
     }
 
     impl ProjectRegistryPort for FakeProjectRegistry {
+        fn runtime_ready(&self) -> bool {
+            !self.runtime_down.load(Ordering::Acquire)
+        }
         fn directory_exists(&self, path: &Path) -> bool {
             path.to_string_lossy().starts_with("/projects/")
         }
@@ -442,7 +531,7 @@ mod tests {
     #[test]
     fn registration_failure_before_apply_does_not_poison_retry_or_selection() {
         let registry = Arc::new(FakeProjectRegistry::default());
-        let binding = SessionProjectBinding::with_registry(registry.clone(), None);
+        let binding = SessionProjectBinding::with_registry(registry.clone(), None, None);
         binding.initialize().unwrap();
         registry.fail_register.store(true, Ordering::Release);
         assert!(
@@ -471,9 +560,84 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_roots_bind_the_connection_until_an_explicit_selection() {
+        let registry = Arc::new(FakeProjectRegistry::default());
+        let binding = SessionProjectBinding::with_registry(registry.clone(), None, None);
+        let root =
+            |binding: &SessionProjectBinding| binding.owner.lock().unwrap().project_root.clone();
+        binding.observe(&json!({"project_root":"/projects/a"}));
+        binding.initialize().unwrap();
+        for ignored in [
+            json!({}),
+            json!({"project_root":"relative"}),
+            json!({"project_root":"/missing"}),
+            json!({"project_root":"/missing","input":{"query":"q"}}),
+        ] {
+            binding.observe(&ignored);
+        }
+        assert!(registry.records.lock().unwrap().is_empty());
+        binding.observe(&json!({"project_root":"/projects/a"}));
+        binding.observe(&json!({"project_root":"/projects/a"}));
+        assert_eq!(
+            registry.records.lock().unwrap().len(),
+            2,
+            "starting and ready once; a repeated root publishes nothing"
+        );
+        binding.observe(&json!({"input":{"project_root":"/projects/b"}}));
+        assert_eq!(root(&binding).as_deref(), Some("/projects/b"));
+        binding.select(json!({"project_root":null})).unwrap();
+        binding.observe(&json!({"project_root":"/projects/a"}));
+        assert_eq!(
+            root(&binding),
+            None,
+            "explicit selection outranks tool calls"
+        );
+    }
+
+    #[test]
+    fn default_root_registers_on_connect_and_retries_once_the_app_answers() {
+        let registry = Arc::new(FakeProjectRegistry::default());
+        registry.runtime_down.store(true, Ordering::Release);
+        let binding = SessionProjectBinding::with_registry(
+            registry.clone(),
+            None,
+            Some("/projects/cwd".into()),
+        );
+        let root =
+            |binding: &SessionProjectBinding| binding.owner.lock().unwrap().project_root.clone();
+        let adopt = |binding: &SessionProjectBinding| {
+            binding
+                .owner
+                .adopt_default(&mut binding.owner.lock().unwrap())
+        };
+        adopt(&binding);
+        binding.initialize().unwrap();
+        binding.observe(&json!({"project_root":"/projects/a"}));
+        assert!(
+            registry.records.lock().unwrap().is_empty(),
+            "nothing is published before initialization or while the app is down"
+        );
+        registry.runtime_down.store(false, Ordering::Release);
+        adopt(&binding);
+        adopt(&binding);
+        assert_eq!(root(&binding).as_deref(), Some("/projects/cwd"));
+        assert_eq!(registry.records.lock().unwrap().len(), 2);
+        binding.observe(&json!({"project_root":"/projects/a"}));
+        adopt(&binding);
+        assert_eq!(root(&binding).as_deref(), Some("/projects/a"));
+        binding.select(json!({"project_root":null})).unwrap();
+        adopt(&binding);
+        assert_eq!(
+            root(&binding),
+            None,
+            "an explicit unbind is never re-adopted"
+        );
+    }
+
+    #[test]
     fn failed_ready_ack_does_not_enable_renewal_and_can_be_retried() {
         let registry = Arc::new(FakeProjectRegistry::default());
-        let binding = SessionProjectBinding::with_registry(registry.clone(), None);
+        let binding = SessionProjectBinding::with_registry(registry.clone(), None, None);
         binding.initialize().unwrap();
         registry.fail_ready.store(true, Ordering::Release);
         assert!(
@@ -499,8 +663,11 @@ mod tests {
     #[test]
     fn close_is_sticky_even_when_cleanup_delivery_fails() {
         let registry = Arc::new(FakeProjectRegistry::default());
-        let binding =
-            SessionProjectBinding::with_registry(registry.clone(), Some("/projects/a".into()));
+        let binding = SessionProjectBinding::with_registry(
+            registry.clone(),
+            Some("/projects/a".into()),
+            None,
+        );
         binding.initialize().unwrap();
         registry.fail_unavailable.store(true, Ordering::Release);
         binding.close();
@@ -585,8 +752,11 @@ mod tests {
         let (registry, entered, release) =
             FakeBlockedProjectRegistry::new(McpInstanceStatus::Starting);
         registry.block_next.store(true, Ordering::Release);
-        let binding =
-            SessionProjectBinding::with_registry(registry.clone(), Some("/projects/a".into()));
+        let binding = SessionProjectBinding::with_registry(
+            registry.clone(),
+            Some("/projects/a".into()),
+            None,
+        );
         std::thread::scope(|scope| {
             let initialization = scope.spawn(|| binding.initialize());
             entered.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -605,8 +775,11 @@ mod tests {
     fn delayed_heartbeat_and_queued_selection_cannot_revive_closed_binding() {
         let (registry, entered, release) =
             FakeBlockedProjectRegistry::new(McpInstanceStatus::Ready);
-        let binding =
-            SessionProjectBinding::with_registry(registry.clone(), Some("/projects/a".into()));
+        let binding = SessionProjectBinding::with_registry(
+            registry.clone(),
+            Some("/projects/a".into()),
+            None,
+        );
         binding.initialize().unwrap();
         registry.block_next.store(true, Ordering::Release);
         std::thread::scope(|scope| {
