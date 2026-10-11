@@ -695,7 +695,8 @@ mod tests {
         let path = directory.path().join("provider-models.toml");
         fs::write(
             &path,
-            SEED.replace("[providers.custom_openai.api]\nmodels = []\n", "")
+            SEED.replace("\r\n", "\n")
+                .replace("[providers.custom_openai.api]\nmodels = []\n", "")
                 .replace("schema_version = 2", "schema_version = 1")
                 .replace(".api", "")
                 .replace(".client", ""),
