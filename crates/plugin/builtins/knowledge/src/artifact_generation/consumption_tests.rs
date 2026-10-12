@@ -70,6 +70,9 @@ impl HostCallTransport for ConsumptionFakeHost {
                 );
                 Ok(json!({}))
             }
+            ("storage.semantic", "artifact") => Ok(json!({
+                "artifact": self.artifacts.get(input["artifact_id"].as_str().unwrap_or_default())
+            })),
             ("storage.semantic", "remove_artifact") => {
                 self.artifacts
                     .remove(input["artifact_id"].as_str().unwrap_or_default());

@@ -92,7 +92,7 @@ pub(crate) fn create(input: Value, context: &mut PluginContext<'_>) -> Result<Va
     let element = storage::required_semantic_element(context, &request.semantic_element_id)?;
     let mut artifact = artifact::create(request)?;
     attach_project_scope(&mut artifact, &element)?;
-    storage::put_knowledge(context, &artifact)?;
+    let artifact = storage::put_knowledge(context, &artifact)?;
     Ok(json!({"artifact": artifact}))
 }
 
@@ -142,6 +142,9 @@ fn update(input: Value, context: &mut PluginContext<'_>) -> Result<Value, Plugin
         parse(input, "Knowledge update request")?;
     artifact::require(&request.artifact_id, "artifact_id")?;
     let current = required_artifact(context, &request.artifact_id)?;
+    if let Some(target) = request.superseded_by.as_deref() {
+        required_artifact(context, target)?;
+    }
     let requested_project = request.project_root.clone();
     let changed_anchor = request.semantic_element_id.is_some();
     let validate_scope = changed_anchor || requested_project.is_some();
@@ -153,7 +156,7 @@ fn update(input: Value, context: &mut PluginContext<'_>) -> Result<Value, Plugin
         let element = storage::required_semantic_element(context, &artifact.semantic_element_id)?;
         attach_project_scope(&mut artifact, &element)?;
     }
-    storage::put_knowledge(context, &artifact)?;
+    let artifact = storage::put_knowledge(context, &artifact)?;
     Ok(json!({"artifact": artifact}))
 }
 
@@ -192,18 +195,20 @@ fn get(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginErr
 
 fn list(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let semantic_element_id = required_input(&input, "semantic_element_id")?;
+    let include_inactive = input["include_inactive"].as_bool();
     storage::required_semantic_element(context, &semantic_element_id)?;
     let mut artifacts = storage::artifacts_for_elements(
         context,
         &std::collections::HashSet::from([semantic_element_id]),
     )?;
+    artifacts.retain(|artifact| artifact::is_discoverable(artifact, include_inactive));
     artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
     Ok(json!({"artifacts": artifacts}))
 }
 
-/// Lists every Knowledge artifact, optionally filtered by project scope,
-/// knowledge type, tags (any of), and a result limit — the same records
-/// `GET /api/knowledge/projection-artifacts` returns.
+/// Lists Knowledge artifacts, optionally filtered by project scope, knowledge
+/// type, tags (any of), and a result limit. Inactive records are hidden unless
+/// `include_inactive` is set; `GET /api/knowledge/projection-artifacts` stays unfiltered.
 fn list_all(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let request: artifact::ListAllRequest = parse(input, "Knowledge list request")?;
     let records = if let Some(ids) = &request.semantic_element_ids {

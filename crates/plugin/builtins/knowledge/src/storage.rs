@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use chrono::Utc;
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -196,29 +197,38 @@ pub(crate) fn decode_selective_knowledge_artifacts(
         .filter(|artifact| artifact.metadata["knowledge"].is_object())
         .map(|artifact| {
             let knowledge = &artifact.metadata["knowledge"];
-            decode(
-                &json!({
-                    "artifact_id": artifact.artifact_id,
-                    "semantic_element_id": artifact.semantic_element_id,
-                    "knowledge_type": artifact.artifact_kind,
-                    "title": artifact.title,
-                    "content": artifact.content,
-                    "tags": knowledge["tags"],
-                    "metadata": knowledge["metadata"],
-                    "dependencies": artifact.dependencies,
-                    "project_root": knowledge["project_root"]
-                }),
-                "selective semantic artifacts",
-            )
+            let mut record = json!({
+                "artifact_id": artifact.artifact_id,
+                "semantic_element_id": artifact.semantic_element_id,
+                "knowledge_type": artifact.artifact_kind,
+                "title": artifact.title,
+                "content": artifact.content,
+                "tags": knowledge["tags"],
+                "metadata": knowledge["metadata"],
+                "dependencies": artifact.dependencies,
+                "project_root": knowledge["project_root"]
+            });
+            merge_lifecycle(&mut record, knowledge);
+            decode(&record, "selective semantic artifacts")
         })
         .collect()
 }
 
+/// The only Knowledge write path: stamps revision and timestamps from the stored
+/// record, then persists and returns the stamped record.
 pub(crate) fn put_knowledge(
     context: &mut PluginContext<'_>,
     artifact: &KnowledgeArtifact,
-) -> Result<(), PluginError> {
-    put_graph_artifact(context, artifact)
+) -> Result<KnowledgeArtifact, PluginError> {
+    let previous = get_knowledge(context, &artifact.artifact_id)?;
+    let mut stamped = artifact.clone();
+    crate::artifact::stamp(
+        &mut stamped,
+        previous.as_ref().map(|previous| &previous.lifecycle),
+        Utc::now(),
+    );
+    put_graph_artifact(context, &stamped)?;
+    Ok(stamped)
 }
 
 pub(crate) fn get_knowledge(
@@ -380,11 +390,12 @@ pub(crate) fn page<T: DeserializeOwned>(
         .collect()
 }
 
-fn put_graph_artifact<T: Serialize>(
+fn put_graph_artifact(
     context: &mut PluginContext<'_>,
-    value: &T,
+    value: &KnowledgeArtifact,
 ) -> Result<(), PluginError> {
     let knowledge = serde_json::to_value(value).map_err(encode_error)?;
+    let lifecycle = serde_json::to_value(&value.lifecycle).map_err(encode_error)?;
     let artifact = json!({
         "artifact_id": knowledge["artifact_id"],
         "semantic_element_id": knowledge["semantic_element_id"],
@@ -399,7 +410,8 @@ fn put_graph_artifact<T: Serialize>(
             "tags": knowledge["tags"],
             "metadata": knowledge["metadata"],
             "path": knowledge["path"],
-            "project_root": knowledge["project_root"]
+            "project_root": knowledge["project_root"],
+            "lifecycle": lifecycle
         }}
     });
     context.host_call(
@@ -461,21 +473,30 @@ fn is_knowledge_artifact(artifact: &Value) -> bool {
 
 fn decode_graph_artifact<T: DeserializeOwned>(artifact: &Value) -> Result<T, PluginError> {
     let knowledge = &artifact["metadata"]["knowledge"];
-    decode(
-        &json!({
-            "artifact_id": artifact["artifact_id"],
-            "semantic_element_id": artifact["semantic_element_id"],
-            "knowledge_type": artifact["artifact_kind"],
-            "title": artifact["title"],
-            "content": artifact["content"],
-            "tags": knowledge["tags"],
-            "metadata": knowledge["metadata"],
-            "dependencies": artifact["dependencies"],
-            "path": knowledge["path"],
-            "project_root": knowledge["project_root"]
-        }),
-        "semantic Knowledge artifacts",
-    )
+    let mut record = json!({
+        "artifact_id": artifact["artifact_id"],
+        "semantic_element_id": artifact["semantic_element_id"],
+        "knowledge_type": artifact["artifact_kind"],
+        "title": artifact["title"],
+        "content": artifact["content"],
+        "tags": knowledge["tags"],
+        "metadata": knowledge["metadata"],
+        "dependencies": artifact["dependencies"],
+        "path": knowledge["path"],
+        "project_root": knowledge["project_root"]
+    });
+    merge_lifecycle(&mut record, knowledge);
+    decode(&record, "semantic Knowledge artifacts")
+}
+
+/// Flattens the stored lifecycle envelope into the record it decodes from. An
+/// envelope without `lifecycle` leaves the record to decode as the default lifecycle.
+fn merge_lifecycle(record: &mut Value, knowledge: &Value) {
+    if let (Some(record), Some(lifecycle)) =
+        (record.as_object_mut(), knowledge["lifecycle"].as_object())
+    {
+        record.extend(lifecycle.clone());
+    }
 }
 
 fn encode_error(error: serde_json::Error) -> PluginError {

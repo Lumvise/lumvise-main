@@ -9,7 +9,12 @@ pub(super) fn closed_object(required: &[&str], properties: Value) -> Value {
 
 pub(super) fn knowledge_kind() -> Value {
     json!({"type": "string", "enum": ["specification", "issue", "task_assignment",
-        "definition", "annotation", "report", "decision", "manual_note", "derived_summary"]})
+        "definition", "annotation", "report", "decision", "manual_note", "derived_summary",
+        "checkpoint", "question"]})
+}
+
+pub(super) fn knowledge_status() -> Value {
+    json!({"type": "string", "enum": ["active", "resolved", "superseded", "archived"]})
 }
 
 pub(super) fn nullable(schema: Value) -> Value {

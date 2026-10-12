@@ -59,6 +59,7 @@ pub(crate) fn report(
         metadata: report_metadata(project_root, target, &groups, &jobs, fingerprint),
         path: None,
         project_root: Some(project_root.into()),
+        lifecycle: Default::default(),
     }
 }
 

@@ -300,6 +300,7 @@ fn artifact(
         metadata,
         path: None,
         project_root: Some("/repo".into()),
+        lifecycle: Default::default(),
     }
 }
 

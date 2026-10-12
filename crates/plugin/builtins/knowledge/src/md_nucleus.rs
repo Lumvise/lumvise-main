@@ -83,7 +83,10 @@ fn reconcile_nucleus(
     let seed = nucleus_seed(project_root, element, path);
     let existing = storage::get_knowledge(context, &seed.artifact_id)?;
     if element.lifecycle != "active" {
-        if existing.as_ref() == Some(&seed) {
+        if existing
+            .as_ref()
+            .is_some_and(|existing| crate::artifact::same_content(existing, &seed))
+        {
             storage::remove_knowledge(context, &seed.artifact_id)?;
         }
         return Ok(());
@@ -91,7 +94,7 @@ fn reconcile_nucleus(
     if existing.is_some() {
         return Ok(());
     }
-    storage::put_knowledge(context, &seed)
+    storage::put_knowledge(context, &seed).map(|_| ())
 }
 
 fn nucleus_seed(project_root: &str, element: &SemanticElement, path: &str) -> KnowledgeArtifact {
@@ -109,6 +112,7 @@ fn nucleus_seed(project_root: &str, element: &SemanticElement, path: &str) -> Kn
             "project_root": project_root}}),
         path: Some(path.to_owned()),
         project_root: Some(project_root.to_owned()),
+        lifecycle: Default::default(),
     }
 }
 

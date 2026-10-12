@@ -2289,3 +2289,165 @@ fn invoke_value(
         outcome => panic!("export `{export_id}` failed: {outcome:?}"),
     }
 }
+
+#[test]
+fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
+    let workspace = tempfile::tempdir().expect("lifecycle workspace");
+    let broker = Arc::new(MemoryStorageBroker::default());
+    broker.ensure_element("file:lifecycle", "/work/demo");
+    broker.put_knowledge("legacy-record", "file:lifecycle", "Legacy record");
+    let system = start_packaged_knowledge(&workspace, broker.clone());
+
+    let created = invoke_value(
+        &system,
+        CREATE_EXPORT_ID,
+        serde_json::json!({
+            "artifact_id": "lifecycle-decision", "semantic_element_id": "file:lifecycle",
+            "knowledge_type": "decision", "title": "Lifecycle decision", "content": "Keep history.",
+            "tags": [], "dependencies": [], "metadata": {}, "project_root": "/work/demo",
+            "expires_at": "2099-01-01T00:00:00Z"
+        }),
+    );
+    assert_eq!(created["artifact"]["status"], "active");
+    assert_eq!(created["artifact"]["revision"], 1);
+    assert_eq!(
+        created["artifact"]["expires_at"],
+        "2099-01-01T00:00:00+00:00"
+    );
+
+    let stale = system
+        .invoke(
+            PLUGIN_ID,
+            UPDATE_EXPORT_ID,
+            serde_json::json!({"artifact_id": "lifecycle-decision", "title": "Stale", "expected_revision": 0}),
+        )
+        .expect("invoke stale update");
+    assert!(
+        matches!(stale, WireOutcome::Failed { error } if error.code == "knowledge_revision_conflict")
+    );
+
+    let resolved = invoke_value(
+        &system,
+        UPDATE_EXPORT_ID,
+        serde_json::json!({
+            "artifact_id": "lifecycle-decision", "status": "resolved", "expected_revision": 1
+        }),
+    );
+    assert_eq!(resolved["artifact"]["status"], "resolved");
+    assert_eq!(resolved["artifact"]["revision"], 2);
+    assert!(resolved["artifact"].get("expires_at").is_none());
+
+    let list = |include_inactive: Option<bool>| {
+        invoke_value(
+            &system,
+            LIST_EXPORT_ID,
+            serde_json::json!({"semantic_element_id": "file:lifecycle", "include_inactive": include_inactive}),
+        )
+    };
+    assert_eq!(artifact_ids(&list(None)), ["legacy-record"]);
+    assert_eq!(
+        artifact_ids(&list(Some(true))),
+        ["legacy-record", "lifecycle-decision"]
+    );
+
+    let search = |include_inactive: Option<bool>| {
+        invoke_value(
+            &system,
+            SEARCH_EXPORT_ID,
+            serde_json::json!({
+                "query": "Lifecycle decision", "project_root": "/work/demo",
+                "include_inactive": include_inactive
+            }),
+        )
+    };
+    let hidden = search(None);
+    assert!(
+        hidden["results"]
+            .as_array()
+            .expect("search results")
+            .iter()
+            .all(|result| result["artifact_id"] != "lifecycle-decision")
+    );
+    let shown = search(Some(true));
+    assert!(
+        shown["results"]
+            .as_array()
+            .expect("search results")
+            .iter()
+            .any(|result| result["artifact_id"] == "lifecycle-decision"
+                && result["status"] == "resolved")
+    );
+
+    let legacy = invoke_value(
+        &system,
+        GET_EXPORT_ID,
+        serde_json::json!({"artifact_id": "legacy-record"}),
+    );
+    assert_eq!(legacy["artifact"]["status"], "active");
+    assert_eq!(legacy["artifact"]["revision"], 0);
+
+    system
+        .stop(PLUGIN_ID)
+        .expect("stop packaged Knowledge binary");
+    system
+        .uninstall(PLUGIN_ID)
+        .expect("detach Knowledge package");
+    make_tree_writable(workspace.path());
+}
+
+fn start_packaged_knowledge(
+    workspace: &tempfile::TempDir,
+    broker: Arc<MemoryStorageBroker>,
+) -> PluginSystem {
+    const TARGET: &str = "knowledge-lifecycle-host";
+    let executable = std::fs::read(env!("CARGO_BIN_EXE_lumvise-plugin-knowledge"))
+        .expect("read real Knowledge binary");
+    let executable_hash = hex::encode(Sha256::digest(&executable));
+    let manifest = package_manifest_source(TARGET, &executable_hash);
+    let executable_path = manifest.targets[TARGET].clone();
+    let signing_key = SigningKey::from_bytes(&[43; 32]);
+    let archive_path = workspace.path().join("builtin.knowledge.lvp");
+    build_package(
+        &archive_path,
+        BuildPackageRequest {
+            manifest,
+            files: BTreeMap::from([(executable_path, executable)]),
+            signing_key: &signing_key,
+        },
+    )
+    .expect("build real Knowledge package");
+    let verified = verify_package(
+        &archive_path,
+        &signing_key.verifying_key(),
+        &HostCompatibility::new(PACKAGE_PROTOCOL_VERSION, TARGET),
+    )
+    .expect("verify real Knowledge package");
+    let installed = install_verified_package(&verified, &workspace.path().join("installed"))
+        .expect("install real Knowledge package");
+    let system = PluginSystem::with_broker_and_sandbox(
+        fast_runtime_config(),
+        broker,
+        Arc::new(TestSubprocessSandbox),
+    );
+    system
+        .install(&installed)
+        .expect("catalog Knowledge package");
+    system
+        .start(PLUGIN_ID)
+        .expect("start packaged Knowledge binary");
+    system
+}
+
+fn artifact_ids(list: &serde_json::Value) -> Vec<String> {
+    list["artifacts"]
+        .as_array()
+        .expect("artifact list")
+        .iter()
+        .map(|artifact| {
+            artifact["artifact_id"]
+                .as_str()
+                .expect("artifact id")
+                .to_owned()
+        })
+        .collect()
+}

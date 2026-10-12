@@ -319,6 +319,7 @@ fn result(artifact: &KnowledgeArtifact, score: f32) -> Value {
         "semantic_element_id": artifact.semantic_element_id,
         "knowledge_type": artifact.knowledge_type,
         "title": artifact.title,
+        "status": artifact.lifecycle.status,
         "score": score
     })
 }

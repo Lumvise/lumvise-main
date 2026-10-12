@@ -14,8 +14,8 @@ mod schema;
 mod transfer_schema;
 
 use schema::{
-    array, artifact_dependency, boolean, closed_object, integer, knowledge_kind, nullable, number,
-    string,
+    array, artifact_dependency, boolean, closed_object, integer, knowledge_kind, knowledge_status,
+    nullable, number, string,
 };
 
 /// Stable identity of compiled Knowledge.
@@ -575,18 +575,23 @@ fn input_schema(id: &str) -> Value {
             &["target_kind", "target_id"],
             json!({"target_kind": string(), "target_id": string()}),
         ),
-        LIST_EXPORT_ID | ASSISTANT_LIST_EXPORT_ID => id_input("semantic_element_id"),
+        LIST_EXPORT_ID | ASSISTANT_LIST_EXPORT_ID => closed_object(
+            &["semantic_element_id"],
+            json!({"semantic_element_id": string(), "include_inactive": nullable(boolean())}),
+        ),
         LIST_ALL_EXPORT_ID => closed_object(
             &[],
             json!({"semantic_element_ids": nullable(array(string())), "project_root": nullable(string()), "knowledge_type": nullable(knowledge_kind()),
                 "tags": nullable(array(string())),
-                "limit": nullable(json!({"type": "integer", "minimum": 0, "maximum": 1000}))}),
+                "limit": nullable(json!({"type": "integer", "minimum": 0, "maximum": 1000})),
+                "include_inactive": nullable(boolean())}),
         ),
         SEARCH_EXPORT_ID | ASSISTANT_SEARCH_EXPORT_ID => closed_object(
             &["query"],
             json!({"query": string(), "project_root": nullable(string()),
                 "semantic_element_id": nullable(string()), "knowledge_type": nullable(knowledge_kind()),
-                "limit": nullable(json!({"type": "integer", "minimum": 0, "maximum": 1000}))}),
+                "limit": nullable(json!({"type": "integer", "minimum": 0, "maximum": 1000})),
+                "include_inactive": nullable(boolean())}),
         ),
         FIND_ELEMENTS_EXPORT_ID | ASSISTANT_FIND_ELEMENTS_EXPORT_ID => closed_object(
             &["query"],
@@ -706,7 +711,7 @@ fn create_artifact_input_properties() -> Value {
         "knowledge_type": knowledge_kind(), "title": string(), "content": string(),
         "tags": array(string()), "dependencies": array(artifact_dependency()),
         "metadata": {"type": "object"}, "path": nullable(string()),
-        "project_root": string()
+        "project_root": string(), "expires_at": nullable(string())
     })
 }
 
@@ -717,7 +722,9 @@ fn update_artifact_input_properties() -> Value {
         "content": nullable(string()), "tags": nullable(array(string())),
         "dependencies": nullable(array(artifact_dependency())),
         "metadata": nullable(json!({"type": "object"})), "path": nullable(string()),
-        "project_root": nullable(string())
+        "project_root": nullable(string()), "status": nullable(knowledge_status()),
+        "superseded_by": nullable(string()), "expires_at": nullable(string()),
+        "expected_revision": nullable(json!({"type": "integer", "minimum": 0}))
     })
 }
 
@@ -732,12 +739,18 @@ fn artifact_schema() -> Value {
             "tags",
             "dependencies",
             "metadata",
+            "status",
+            "revision",
         ],
         json!({"artifact_id": string(), "semantic_element_id": string(), "knowledge_type": knowledge_kind(),
             "title": string(), "content": string(), "tags": array(string()), "metadata": {},
             "dependencies": array(artifact_dependency()),
             "path": nullable(string()),
-            "project_root": nullable(string())}),
+            "project_root": nullable(string()),
+            "status": knowledge_status(), "revision": integer(),
+            "status_changed_at": nullable(string()), "expires_at": nullable(string()),
+            "superseded_by": nullable(string()), "created_at": nullable(string()),
+            "updated_at": nullable(string())}),
     )
 }
 
@@ -763,9 +776,10 @@ fn search_output_schema() -> Value {
         &["mode", "results"],
         json!({"mode": {"type": "string", "enum": ["vector", "lexical"]},
             "results": array(closed_object(
-                &["artifact_id", "semantic_element_id", "knowledge_type", "title", "score"],
+                &["artifact_id", "semantic_element_id", "knowledge_type", "title", "status", "score"],
                 json!({"artifact_id": string(), "semantic_element_id": string(),
-                    "knowledge_type": knowledge_kind(), "title": string(), "score": number()}))) }),
+                    "knowledge_type": knowledge_kind(), "title": string(),
+                    "status": knowledge_status(), "score": number()}))) }),
     )
 }
 
@@ -1190,7 +1204,9 @@ mod tests {
                 "report",
                 "decision",
                 "manual_note",
-                "derived_summary"
+                "derived_summary",
+                "checkpoint",
+                "question"
             ])
         );
     }

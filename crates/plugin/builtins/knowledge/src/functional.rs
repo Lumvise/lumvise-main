@@ -184,6 +184,7 @@ fn artifact(
         metadata: functional_metadata(mode, element, relationships, summary),
         path: None,
         project_root: Some(element.project_root.clone()),
+        lifecycle: Default::default(),
     }
 }
 

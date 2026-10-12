@@ -30,6 +30,83 @@ pub enum KnowledgeArtifactKindV2 {
     ManualNote,
     /// Derived summary.
     DerivedSummary,
+    /// Resumable work state or handoff between agents or sessions.
+    Checkpoint,
+    /// Open question awaiting an answer.
+    Question,
+}
+
+/// Lifecycle state of a Knowledge artifact.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeArtifactStatusV2 {
+    /// Current and applicable.
+    #[default]
+    Active,
+    /// Completed or answered; kept as history.
+    Resolved,
+    /// Replaced by the artifact named in `superseded_by`.
+    Superseded,
+    /// Withdrawn or no longer relevant.
+    Archived,
+}
+
+/// Lifecycle and version state maintained on every Knowledge record. Its
+/// fields sit beside the record's other fields on the wire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct KnowledgeArtifactLifecycleV2 {
+    /// Lifecycle state. Records stored before lifecycle support read as active.
+    #[serde(default)]
+    pub status: KnowledgeArtifactStatusV2,
+    /// RFC 3339 instant of the last status change; absent while the status
+    /// never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_changed_at: Option<String>,
+    /// RFC 3339 instant after which an active artifact stops counting as
+    /// active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Artifact that replaces this one; present exactly when the status is
+    /// superseded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// Write counter: 1 after the first stored write, +1 for each later one.
+    /// 0 marks a record stored before revisions existed.
+    #[serde(default)]
+    pub revision: u64,
+    /// RFC 3339 creation instant; absent on records stored before timestamps
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// RFC 3339 instant of the last write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+impl KnowledgeArtifactLifecycleV2 {
+    /// Validates the status-dependent fields of the record `artifact_id`.
+    pub fn validate(&self, artifact_id: &str) -> Result<(), String> {
+        let superseded = self.status == KnowledgeArtifactStatusV2::Superseded;
+        match self.superseded_by.as_deref() {
+            None if superseded => {
+                return Err("status `superseded` requires `superseded_by`".into());
+            }
+            Some(_) if !superseded => {
+                return Err("`superseded_by` requires status `superseded`".into());
+            }
+            Some(target) if target.trim().is_empty() => {
+                return Err("`superseded_by` must be a non-empty artifact identifier".into());
+            }
+            Some(target) if target == artifact_id => {
+                return Err("an artifact cannot supersede itself".into());
+            }
+            _ => {}
+        }
+        if self.expires_at.is_some() && self.status != KnowledgeArtifactStatusV2::Active {
+            return Err("`expires_at` applies only to status `active`".into());
+        }
+        Ok(())
+    }
 }
 
 /// The target kind of a directed Knowledge artifact dependency.
@@ -128,6 +205,9 @@ pub struct KnowledgeArtifactV2 {
     /// Optional project filter value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_root: Option<String>,
+    /// Lifecycle and version state.
+    #[serde(flatten)]
+    pub lifecycle: KnowledgeArtifactLifecycleV2,
 }
 
 /// Request for creating one durable Knowledge artifact.
@@ -159,6 +239,10 @@ pub struct CreateKnowledgeArtifactRequestV2 {
     /// Optional project filter value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_root: Option<String>,
+    /// Optional RFC 3339 instant after which the artifact stops counting as
+    /// active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 /// Response after creating one durable Knowledge artifact.
@@ -200,6 +284,21 @@ pub struct UpdateKnowledgeArtifactRequestV2 {
     /// Replacement project filter value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_root: Option<String>,
+    /// Replacement lifecycle status. A supplied status drops the stored
+    /// `expires_at`, and one other than superseded drops `superseded_by`,
+    /// unless this request supplies new values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<KnowledgeArtifactStatusV2>,
+    /// Artifact that replaces this one; requires status superseded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// Replacement RFC 3339 expiry; requires status active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Revision the caller last read. The update is rejected when the stored
+    /// revision differs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<u64>,
 }
 
 /// Response after updating one durable Knowledge artifact.
@@ -244,6 +343,7 @@ mod tests {
             metadata: serde_json::json!({"source": "test"}),
             path: Some("decisions/identifiers.md".into()),
             project_root: Some("/project".into()),
+            expires_at: None,
         };
         let encoded = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(encoded["artifact_id"], "artifact:architecture/42");
@@ -268,6 +368,10 @@ mod tests {
             metadata: None,
             path: None,
             project_root: None,
+            status: None,
+            superseded_by: None,
+            expires_at: None,
+            expected_revision: None,
         };
         assert_eq!(
             serde_json::to_value(partial).expect("serialize partial update"),
@@ -290,6 +394,10 @@ mod tests {
             metadata: Some(serde_json::json!({"source": "test"})),
             path: Some("notes/updated.md".into()),
             project_root: Some("/project".into()),
+            status: Some(KnowledgeArtifactStatusV2::Superseded),
+            superseded_by: Some("artifact:annotation:43".into()),
+            expires_at: None,
+            expected_revision: Some(3),
         };
         assert_eq!(
             serde_json::to_value(full).expect("serialize full update"),
@@ -303,9 +411,60 @@ mod tests {
                 "tags": ["live"],
                 "metadata": {"source": "test"},
                 "path": "notes/updated.md",
-                "project_root": "/project"
+                "project_root": "/project",
+                "status": "superseded",
+                "superseded_by": "artifact:annotation:43",
+                "expected_revision": 3
             })
         );
+    }
+
+    #[test]
+    fn record_without_lifecycle_fields_reads_as_active_revision_zero() {
+        let stored = serde_json::json!({
+            "artifact_id": "artifact:task:1", "semantic_element_id": "file:src/lib.rs",
+            "knowledge_type": "task_assignment", "title": "Fix parser", "content": "Body"
+        });
+        let mut artifact: KnowledgeArtifactV2 =
+            serde_json::from_value(stored).expect("deserialize record without lifecycle");
+        assert_eq!(artifact.lifecycle, KnowledgeArtifactLifecycleV2::default());
+
+        artifact.lifecycle = KnowledgeArtifactLifecycleV2 {
+            status: KnowledgeArtifactStatusV2::Resolved,
+            status_changed_at: Some("2026-10-13T08:00:00+00:00".into()),
+            revision: 2,
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(&artifact).expect("serialize record");
+        assert_eq!(encoded["status"], "resolved");
+        assert_eq!(encoded["status_changed_at"], "2026-10-13T08:00:00+00:00");
+        assert_eq!(encoded["revision"], 2);
+        assert!(encoded.get("lifecycle").is_none());
+        assert_eq!(
+            serde_json::from_value::<KnowledgeArtifactV2>(encoded).expect("round trip"),
+            artifact
+        );
+    }
+
+    #[test]
+    fn lifecycle_validation_ties_superseded_by_and_expiry_to_status() {
+        let lifecycle = |status, superseded_by: Option<&str>, expires_at: Option<&str>| {
+            KnowledgeArtifactLifecycleV2 {
+                status,
+                superseded_by: superseded_by.map(str::to_owned),
+                expires_at: expires_at.map(str::to_owned),
+                ..Default::default()
+            }
+            .validate("artifact:a")
+        };
+        use KnowledgeArtifactStatusV2::{Active, Resolved, Superseded};
+        assert!(lifecycle(Active, None, Some("2027-01-01T00:00:00Z")).is_ok());
+        assert!(lifecycle(Superseded, Some("artifact:b"), None).is_ok());
+        assert!(lifecycle(Superseded, None, None).is_err());
+        assert!(lifecycle(Superseded, Some("artifact:a"), None).is_err());
+        assert!(lifecycle(Superseded, Some(" "), None).is_err());
+        assert!(lifecycle(Resolved, Some("artifact:b"), None).is_err());
+        assert!(lifecycle(Resolved, None, Some("2027-01-01T00:00:00Z")).is_err());
     }
 
     #[test]
