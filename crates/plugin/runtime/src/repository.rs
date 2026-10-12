@@ -934,9 +934,12 @@ fn validate_relative(root: &Path, relative: &str) -> Result<(), PluginRepository
     Err(invalid(root, format!("unsafe relative path `{relative}`")))
 }
 
+/// Registry paths are portable `/`-separated text on every platform.
 fn path_text(path: &Path) -> Result<String, PluginRepositoryError> {
-    path.to_str()
-        .map(str::to_owned)
+    path.components()
+        .map(|part| part.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()
+        .map(|parts| parts.join("/"))
         .ok_or_else(|| invalid(path, "expected UTF-8 path".into()))
 }
 
@@ -958,5 +961,34 @@ fn invalid(path: &Path, message: String) -> PluginRepositoryError {
     PluginRepositoryError::InvalidRegistry {
         path: path.to_path_buf(),
         message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_extracted_path_uses_forward_slashes_and_validates() {
+        let native: PathBuf = ["extracted", "builtin.assistant", "0.1.35"]
+            .iter()
+            .collect();
+        let extracted_path = path_text(&native).expect("utf-8 path");
+        assert_eq!(extracted_path, "extracted/builtin.assistant/0.1.35");
+        let registry = PluginRegistry {
+            schema_version: SCHEMA_VERSION,
+            records: vec![PluginRegistryRecord {
+                plugin_id: "builtin.assistant".into(),
+                version: "0.1.35".into(),
+                digest: "digest".into(),
+                archive_path: "archives/digest.lvp".into(),
+                extracted_path,
+                enabled: false,
+                publisher_id: "lumvise.builtin".into(),
+                key_id: "lumvise.production.1".into(),
+            }],
+            highest_enabled_versions: BTreeMap::new(),
+        };
+        validate_registry(Path::new("repository"), &registry).expect("registry validates");
     }
 }
