@@ -9,8 +9,7 @@ pub(super) fn closed_object(required: &[&str], properties: Value) -> Value {
 
 pub(super) fn knowledge_kind() -> Value {
     json!({"type": "string", "enum": ["specification", "issue", "task_assignment",
-        "definition", "annotation", "report", "decision", "manual_note", "derived_summary",
-        "checkpoint", "question"]})
+        "definition", "annotation", "report", "decision", "checkpoint", "question", "plan"]})
 }
 
 pub(super) fn knowledge_status() -> Value {

@@ -1090,7 +1090,10 @@ fn invoke_export(
     match invocation {
         Invocation::Manifest => Ok(metadata()),
         Invocation::Projection => crate::projection::command(input, context),
-        Invocation::Poll => crate::artifact_generation::poll(context, None),
+        Invocation::Poll => {
+            crate::storage::settle_retired_kinds(context);
+            crate::artifact_generation::poll(context, None)
+        }
         Invocation::StorageTrigger => crate::events::storage_change(capability_id, input, context),
         other => invoke_artifact(other, capability_id, input, context, projection_cache),
     }
@@ -1203,10 +1206,9 @@ mod tests {
                 "annotation",
                 "report",
                 "decision",
-                "manual_note",
-                "derived_summary",
                 "checkpoint",
-                "question"
+                "question",
+                "plan"
             ])
         );
     }

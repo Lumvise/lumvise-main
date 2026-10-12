@@ -880,7 +880,7 @@ mod tests {
         }
     }
 
-    fn knowledge_kinds() -> [KnowledgeKind; 9] {
+    fn knowledge_kinds() -> [KnowledgeKind; 10] {
         [
             KnowledgeKind::Specification,
             KnowledgeKind::Issue,
@@ -889,8 +889,9 @@ mod tests {
             KnowledgeKind::Annotation,
             KnowledgeKind::Report,
             KnowledgeKind::Decision,
-            KnowledgeKind::ManualNote,
-            KnowledgeKind::DerivedSummary,
+            KnowledgeKind::Checkpoint,
+            KnowledgeKind::Question,
+            KnowledgeKind::Plan,
         ]
     }
 }

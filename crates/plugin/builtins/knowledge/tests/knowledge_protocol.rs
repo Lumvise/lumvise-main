@@ -12,18 +12,19 @@ use lumvise_db_core::{
     SemanticElement, SemanticOperation, SemanticPersistence, SemanticResult,
 };
 use lumvise_plugin_knowledge::{
-    APPLY_TRANSFER_EXPORT_ID, ASSISTANT_FIND_ELEMENTS_EXPORT_ID, ASSISTANT_GET_ELEMENT_EXPORT_ID,
-    ASSISTANT_GET_EXPORT_ID, ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID,
-    CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID, DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID,
-    ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID, GET_CULTIVATION_RUN_EXPORT_ID,
-    GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID, HTTP_C4_DEBUG_EXPORT_ID,
-    HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID, HTTP_DELETE_ARTIFACT_EXPORT_ID,
-    HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID, HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID,
-    HTTP_PROJECTION_ARTIFACTS_EXPORT_ID, HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID,
-    HTTP_SYNC_EXPORT_ID, HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_EXPORT_ID,
-    MANIFEST_EXPORT_ID, PACKAGE_PROTOCOL_VERSION, PLUGIN_ID, PREVIEW_TRANSFER_EXPORT_ID,
-    PROJECTION_EXPORT_ID, REBUILD_EXPORT_ID, RUN_CULTIVATION_EXPORT_ID, SEARCH_EXPORT_ID,
-    UPDATE_EXPORT_ID, package_manifest_source,
+    APPLY_TRANSFER_EXPORT_ID, ARTIFACT_GENERATION_POLL_EXPORT_ID,
+    ASSISTANT_FIND_ELEMENTS_EXPORT_ID, ASSISTANT_GET_ELEMENT_EXPORT_ID, ASSISTANT_GET_EXPORT_ID,
+    ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID, CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID,
+    DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID, ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID,
+    GET_CULTIVATION_RUN_EXPORT_ID, GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID,
+    HTTP_C4_DEBUG_EXPORT_ID, HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID,
+    HTTP_DELETE_ARTIFACT_EXPORT_ID, HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID,
+    HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID, HTTP_PROJECTION_ARTIFACTS_EXPORT_ID,
+    HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID, HTTP_SYNC_EXPORT_ID,
+    HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_EXPORT_ID, MANIFEST_EXPORT_ID,
+    PACKAGE_PROTOCOL_VERSION, PLUGIN_ID, PREVIEW_TRANSFER_EXPORT_ID, PROJECTION_EXPORT_ID,
+    REBUILD_EXPORT_ID, RUN_CULTIVATION_EXPORT_ID, SEARCH_EXPORT_ID, UPDATE_EXPORT_ID,
+    package_manifest_source,
 };
 use lumvise_plugin_package::{
     BuildPackageRequest, ExecutionMode, ExportDescriptor, ExportSurface, HostCompatibility,
@@ -2450,4 +2451,80 @@ fn artifact_ids(list: &serde_json::Value) -> Vec<String> {
                 .to_owned()
         })
         .collect()
+}
+
+#[test]
+fn retired_knowledge_kinds_read_converted_and_leave_the_contract() {
+    let workspace = tempfile::tempdir().expect("retired kind workspace");
+    let broker = Arc::new(MemoryStorageBroker::default());
+    broker.ensure_element("file:retired", "/work/demo");
+    let mut retired = test_artifact("retired-note", "file:retired", "Retired note");
+    retired.artifact_kind = "manual_note".into();
+    retired.content = Some("Retired body".into());
+    broker.upsert_artifact(retired, "text/markdown");
+    let system = start_packaged_knowledge(&workspace, broker.clone());
+
+    let stored_kind = |artifact_id: &str| {
+        broker
+            .invoke(HostCapabilityRequest {
+                plugin_id: PLUGIN_ID.into(),
+                invocation_id: "retired-kinds".into(),
+                call_id: "retired-kinds-read".into(),
+                capability_id: "storage.semantic".into(),
+                required_version: "^1.4.0".into(),
+                input: serde_json::json!({"operation": "artifact", "artifact_id": artifact_id}),
+            })
+            .expect("raw artifact read")["artifact"]["artifact_kind"]
+            .clone()
+    };
+    assert_eq!(stored_kind("retired-note"), "manual_note");
+    let before = invoke_value(
+        &system,
+        GET_EXPORT_ID,
+        serde_json::json!({"artifact_id": "retired-note"}),
+    );
+    assert_eq!(before["artifact"]["knowledge_type"], "annotation");
+
+    assert_succeeds(
+        &system,
+        ARTIFACT_GENERATION_POLL_EXPORT_ID,
+        serde_json::json!({"delivery_id": "retired-kinds", "scheduled_at_unix_seconds": 0}),
+    );
+    assert_eq!(stored_kind("retired-note"), "annotation");
+    let listed = invoke_value(
+        &system,
+        LIST_EXPORT_ID,
+        serde_json::json!({"semantic_element_id": "file:retired"}),
+    );
+    assert_eq!(listed["artifacts"][0]["knowledge_type"], "annotation");
+
+    let retired_create = system
+        .invoke(
+            PLUGIN_ID,
+            CREATE_EXPORT_ID,
+            serde_json::json!({
+                "artifact_id": "new-note", "semantic_element_id": "file:retired",
+                "knowledge_type": "manual_note", "title": "New note", "content": "Body"
+            }),
+        )
+        .expect_err("signed schema rejects a retired Knowledge kind");
+    assert!(retired_create.to_string().contains("manual_note"));
+
+    let plan = invoke_value(
+        &system,
+        CREATE_EXPORT_ID,
+        serde_json::json!({
+            "artifact_id": "new-plan", "semantic_element_id": "file:retired",
+            "knowledge_type": "plan", "title": "Plan", "content": "Steps"
+        }),
+    );
+    assert_eq!(plan["artifact"]["knowledge_type"], "plan");
+
+    system
+        .stop(PLUGIN_ID)
+        .expect("stop packaged Knowledge binary");
+    system
+        .uninstall(PLUGIN_ID)
+        .expect("detach Knowledge package");
+    make_tree_writable(workspace.path());
 }

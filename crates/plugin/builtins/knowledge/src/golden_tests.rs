@@ -92,7 +92,7 @@ fn nucleus_projection_title_uses_artifact_kind_label() {
     assert_eq!(report.title, "Stored report title");
     assert_eq!(
         projection["title"],
-        Value::String("C4 Architecture (derived-summary)".into())
+        Value::String("C4 Architecture (report)".into())
     );
 }
 
@@ -292,7 +292,7 @@ fn artifact(
     KnowledgeArtifact {
         artifact_id: id.into(),
         semantic_element_id: owner.into(),
-        knowledge_type: KnowledgeKind::DerivedSummary,
+        knowledge_type: KnowledgeKind::Report,
         title: title.into(),
         content: content.into(),
         tags: vec!["cultivation-functional".into()],

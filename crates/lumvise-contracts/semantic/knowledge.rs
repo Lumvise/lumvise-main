@@ -26,14 +26,12 @@ pub enum KnowledgeArtifactKindV2 {
     Report,
     /// Durable decision.
     Decision,
-    /// Manually authored note.
-    ManualNote,
-    /// Derived summary.
-    DerivedSummary,
     /// Resumable work state or handoff between agents or sessions.
     Checkpoint,
     /// Open question awaiting an answer.
     Question,
+    /// Intended steps toward a goal.
+    Plan,
 }
 
 /// Lifecycle state of a Knowledge artifact.

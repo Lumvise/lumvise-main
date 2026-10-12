@@ -176,7 +176,7 @@ fn artifact(
     KnowledgeArtifact {
         artifact_id: artifact_id_for(element),
         semantic_element_id: element.semantic_element_id.clone(),
-        knowledge_type: KnowledgeKind::DerivedSummary,
+        knowledge_type: KnowledgeKind::Report,
         title: format!("Functional meaning: {}", element.name),
         content: functional_content(summary),
         tags: vec!["cultivation-functional".into()],

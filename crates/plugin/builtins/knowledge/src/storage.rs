@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
 use lumvise_plugin_sdk::{PluginContext, PluginError};
@@ -10,6 +11,7 @@ use crate::KnowledgeArtifact;
 pub(crate) const VECTORS: &str = "knowledge_vectors";
 pub(crate) const CULTIVATION_RUNS: &str = "knowledge_cultivation_runs";
 pub(crate) const LIVE_EVENTS: &str = "knowledge_live_events";
+const RETIRED_KIND_BATCH: usize = 200;
 
 const CAPABILITY: &str = "storage.plugin";
 const SEMANTIC_CAPABILITY: &str = "storage.semantic";
@@ -200,7 +202,7 @@ pub(crate) fn decode_selective_knowledge_artifacts(
             let mut record = json!({
                 "artifact_id": artifact.artifact_id,
                 "semantic_element_id": artifact.semantic_element_id,
-                "knowledge_type": artifact.artifact_kind,
+                "knowledge_type": current_kind(&artifact.artifact_kind),
                 "title": artifact.title,
                 "content": artifact.content,
                 "tags": knowledge["tags"],
@@ -476,7 +478,7 @@ fn decode_graph_artifact<T: DeserializeOwned>(artifact: &Value) -> Result<T, Plu
     let mut record = json!({
         "artifact_id": artifact["artifact_id"],
         "semantic_element_id": artifact["semantic_element_id"],
-        "knowledge_type": artifact["artifact_kind"],
+        "knowledge_type": current_kind(artifact["artifact_kind"].as_str().unwrap_or_default()),
         "title": artifact["title"],
         "content": artifact["content"],
         "tags": knowledge["tags"],
@@ -497,6 +499,65 @@ fn merge_lifecycle(record: &mut Value, knowledge: &Value) {
     {
         record.extend(lifecycle.clone());
     }
+}
+
+/// Rows written before `manual_note` and `derived_summary` were retired, and stores
+/// not converted yet, still carry the old kind; they read as its replacement.
+fn current_kind(stored: &str) -> &str {
+    match stored {
+        "manual_note" => "annotation",
+        "derived_summary" => "report",
+        other => other,
+    }
+}
+
+/// Set once no retired kinds remain, or once a conversion fails, so the poll stops retrying.
+static RETIRED_KINDS_SETTLED: AtomicBool = AtomicBool::new(false);
+
+/// Runs one conversion batch per poll until no retired rows are left. A store that
+/// cannot be written must not fail or retry the poll; reads stay correct through `current_kind`.
+pub(crate) fn settle_retired_kinds(context: &mut PluginContext<'_>) {
+    if RETIRED_KINDS_SETTLED.load(Ordering::Relaxed) {
+        return;
+    }
+    match convert_retired_kinds(context, RETIRED_KIND_BATCH) {
+        Ok(0) | Err(_) => RETIRED_KINDS_SETTLED.store(true, Ordering::Relaxed),
+        Ok(_) => {}
+    }
+}
+
+/// Rewrites up to `limit` stored rows of retired kinds. The rewrite does not stamp, so
+/// revision and timestamps are kept.
+pub(crate) fn convert_retired_kinds(
+    context: &mut PluginContext<'_>,
+    limit: usize,
+) -> Result<usize, PluginError> {
+    let mut rewritten = 0;
+    for project_root in semantic_project_roots(context)? {
+        let output = context.host_call(
+            SEMANTIC_CAPABILITY,
+            json!({"operation": "project_artifacts",
+                "project_root": project_root, "artifact_namespace": "knowledge"}),
+        )?;
+        let rows = output
+            .get("artifacts")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid_response("semantic project snapshot artifacts", &output))?;
+        for row in rows.iter().filter(|row| {
+            is_knowledge_artifact(row)
+                && row["artifact_kind"]
+                    .as_str()
+                    .is_some_and(|kind| current_kind(kind) != kind)
+        }) {
+            if rewritten == limit {
+                return Ok(rewritten);
+            }
+            let artifact: KnowledgeArtifact = decode_graph_artifact(row)?;
+            put_graph_artifact(context, &artifact)?;
+            rewritten += 1;
+        }
+    }
+    Ok(rewritten)
 }
 
 fn encode_error(error: serde_json::Error) -> PluginError {
@@ -579,4 +640,110 @@ fn repeated_cursor(table: &str, cursor: &Option<String>) -> PluginError {
         ),
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::KnowledgeKind;
+    use lumvise_plugin_sdk::HostCallTransport;
+
+    /// Raw graph rows of one project; upserts replace the row with the same artifact id.
+    struct RawStore {
+        rows: Vec<Value>,
+    }
+
+    impl HostCallTransport for RawStore {
+        fn host_call(&mut self, capability_id: &str, input: Value) -> Result<Value, PluginError> {
+            match (capability_id, input["operation"].as_str()) {
+                ("storage.semantic", Some("project_roots")) => {
+                    Ok(json!({"project_roots": ["/repo"]}))
+                }
+                ("storage.semantic", Some("project_artifacts")) => {
+                    Ok(json!({"artifacts": self.rows}))
+                }
+                ("storage.semantic", Some("upsert_artifact")) => {
+                    let row = input["artifact"].clone();
+                    self.rows
+                        .retain(|stored| stored["artifact_id"] != row["artifact_id"]);
+                    self.rows.push(row);
+                    Ok(json!({}))
+                }
+                _ => Err(PluginError::unknown_capability(capability_id)),
+            }
+        }
+    }
+
+    fn row(artifact_id: &str, kind: &str) -> Value {
+        json!({
+            "artifact_id": artifact_id, "semantic_element_id": "file:src/a.rs",
+            "artifact_kind": kind, "title": "Title", "content": "Body",
+            "dependencies": [], "metadata": {"knowledge": {
+                "tags": [], "metadata": {}, "path": null, "project_root": "/repo",
+                "lifecycle": {"status": "resolved", "revision": 3,
+                    "created_at": "2026-10-01T00:00:00+00:00",
+                    "updated_at": "2026-10-02T00:00:00+00:00"}}}
+        })
+    }
+
+    #[test]
+    fn retired_kinds_read_as_their_replacements_in_both_decoders() {
+        for (stored, current) in [
+            ("manual_note", KnowledgeKind::Annotation),
+            ("derived_summary", KnowledgeKind::Report),
+        ] {
+            let graph: KnowledgeArtifact =
+                decode_graph_artifact(&row("a", stored)).expect("graph decode");
+            assert_eq!(graph.knowledge_type, current);
+
+            let semantic: crate::semantic_context::SemanticArtifact =
+                serde_json::from_value(json!({
+                    "project_root": "/repo", "artifact_id": "a",
+                    "semantic_element_id": "file:src/a.rs", "artifact_kind": stored,
+                    "title": "Title", "content": "Body", "content_ref": null,
+                    "searchable_text": null, "content_size_bytes": null,
+                    "metadata": row("a", stored)["metadata"].clone()
+                }))
+                .expect("semantic artifact");
+            let selective = decode_selective_knowledge_artifacts(&[semantic]).expect("selective");
+            assert_eq!(selective[0].knowledge_type, current);
+        }
+    }
+
+    #[test]
+    fn convert_retired_kinds_rewrites_in_batches_without_stamping() {
+        let mut store = RawStore {
+            rows: vec![
+                row("manual", "manual_note"),
+                row("summary", "derived_summary"),
+                row("definition", "definition"),
+            ],
+        };
+        let mut context = PluginContext::for_test(&mut store);
+        assert_eq!(
+            convert_retired_kinds(&mut context, 1).expect("first batch"),
+            1
+        );
+        assert_eq!(
+            convert_retired_kinds(&mut context, 1).expect("second batch"),
+            1
+        );
+        assert_eq!(convert_retired_kinds(&mut context, 1).expect("settled"), 0);
+
+        let kind_of = |id: &str| {
+            store
+                .rows
+                .iter()
+                .find(|stored| stored["artifact_id"] == id)
+                .expect("row")
+        };
+        assert_eq!(kind_of("manual")["artifact_kind"], "annotation");
+        assert_eq!(kind_of("summary")["artifact_kind"], "report");
+        assert_eq!(kind_of("definition")["artifact_kind"], "definition");
+        let lifecycle = &kind_of("manual")["metadata"]["knowledge"]["lifecycle"];
+        assert_eq!(lifecycle["revision"], 3);
+        assert_eq!(lifecycle["status"], "resolved");
+        assert_eq!(lifecycle["created_at"], "2026-10-01T00:00:00+00:00");
+        assert_eq!(lifecycle["updated_at"], "2026-10-02T00:00:00+00:00");
+    }
 }

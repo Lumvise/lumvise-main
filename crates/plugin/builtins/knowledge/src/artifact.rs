@@ -19,10 +19,9 @@ pub(crate) fn knowledge_type_label(kind: &KnowledgeKind) -> &'static str {
         KnowledgeKind::Annotation => "annotation",
         KnowledgeKind::Report => "report",
         KnowledgeKind::Decision => "decision",
-        KnowledgeKind::ManualNote => "manual-note",
-        KnowledgeKind::DerivedSummary => "derived-summary",
         KnowledgeKind::Checkpoint => "checkpoint",
         KnowledgeKind::Question => "question",
+        KnowledgeKind::Plan => "plan",
     }
 }
 
