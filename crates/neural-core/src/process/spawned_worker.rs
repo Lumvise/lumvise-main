@@ -283,6 +283,7 @@ struct ProcessReaders {
 }
 
 fn spawn_child(mut command: Command, config: &SpawnConfig) -> Result<std::process::Child> {
+    super::hide_console_window(&mut command);
     command.spawn().map_err(|source| NeuralError::Io {
         value: config.display_command(),
         expected: "spawned process".to_string(),

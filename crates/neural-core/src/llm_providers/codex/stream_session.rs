@@ -47,6 +47,7 @@ impl CodexStreamProcess {
                 source,
             })?,
         );
+        crate::process::hide_console_window(&mut command);
         let mut child = command.spawn().map_err(|source| NeuralError::Io {
             value: spawn.display_command(),
             expected: "streaming Codex command process".to_string(),
@@ -174,18 +175,19 @@ pub(super) struct CodexTurnOutput {
 
 impl CodexHotSession {
     pub(super) fn spawn(command: &str, config: &LlmProviderConfig) -> Result<Self> {
-        let mut child = Command::new("sh")
+        let mut shell = Command::new("sh");
+        shell
             .arg("-c")
             .arg(hot_shell_script(command, config))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|source| NeuralError::Io {
-                value: command.to_string(),
-                expected: "codex hot shell process".to_string(),
-                source,
-            })?;
+            .stderr(Stdio::null());
+        crate::process::hide_console_window(&mut shell);
+        let mut child = shell.spawn().map_err(|source| NeuralError::Io {
+            value: command.to_string(),
+            expected: "codex hot shell process".to_string(),
+            source,
+        })?;
         let stdin = child.stdin.take().ok_or_else(|| missing_pipe("stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| missing_pipe("stdout"))?;
         Ok(Self {

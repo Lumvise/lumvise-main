@@ -427,19 +427,22 @@ async fn run_native_llm(
     let output_path = native_llm_output_path(&request.target_id());
     let prompt = request.prompt();
     let (command, args) = engine.command_and_args(project_root, &output_path, prompt);
-    let mut child = Command::new(&command)
+    let mut native_llm = Command::new(&command);
+    native_llm
         .args(args)
         .current_dir(project_root)
         .kill_on_drop(true)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "failed to start native {} LLM `{command}`: {error}",
-                engine.name()
-            )
-        })?;
+        .stderr(Stdio::piped());
+    // CREATE_NO_WINDOW: no console window for the LLM CLI.
+    #[cfg(windows)]
+    native_llm.creation_flags(0x0800_0000);
+    let mut child = native_llm.spawn().map_err(|error| {
+        format!(
+            "failed to start native {} LLM `{command}`: {error}",
+            engine.name()
+        )
+    })?;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let status = match tokio::time::timeout(EXECUTION_DEADLINE, child.wait()).await {

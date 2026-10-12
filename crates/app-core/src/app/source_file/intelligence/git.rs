@@ -54,8 +54,8 @@ pub(super) fn changes(
 
 fn run(root: &Path, args: &[&str], control: &InvocationControl) -> Result<String, String> {
     active(control)?;
-    let mut child = Command::new("git")
-        .arg("--no-pager")
+    let mut git = Command::new("git");
+    git.arg("--no-pager")
         .arg("-c")
         .arg("core.fsmonitor=false")
         .arg("-C")
@@ -63,7 +63,14 @@ fn run(root: &Path, args: &[&str], control: &InvocationControl) -> Result<String
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: no console window per git call.
+        git.creation_flags(0x0800_0000);
+    }
+    let mut child = git
         .spawn()
         .map_err(|error| format!("git {args:?}: expected executable git: {error}"))?;
     let mut stdout = child.stdout.take().expect("piped stdout");

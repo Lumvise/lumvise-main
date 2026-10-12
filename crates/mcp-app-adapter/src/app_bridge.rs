@@ -701,7 +701,8 @@ fn coordinator_for(root: PathBuf) -> AppRuntimeCoordinator {
         let executable = std::env::current_exe().map_err(|error| {
             lumvise_app_core::RuntimeCoordinatorError::Control(error.to_string())
         })?;
-        std::process::Command::new(executable)
+        let mut command = std::process::Command::new(executable);
+        command
             .args(
                 request
                     .background
@@ -710,7 +711,14 @@ fn coordinator_for(root: PathBuf) -> AppRuntimeCoordinator {
             .env("LUMVISE_RUNTIME_ROOT", &launch_root)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: the relaunched app is a GUI process.
+            command.creation_flags(0x0800_0000);
+        }
+        command
             .spawn()
             .map(|_| ())
             .map_err(lumvise_app_core::RuntimeCoordinatorError::from)

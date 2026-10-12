@@ -115,9 +115,14 @@ impl BrowserLauncher for SystemBrowserLauncher {
         #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
         let command = "xdg-open";
         #[cfg(target_os = "windows")]
-        let status = std::process::Command::new(command)
-            .args(["/C", "start", authorization_url])
-            .status();
+        let status = {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: keeps `cmd` from opening a console window.
+            std::process::Command::new(command)
+                .args(["/C", "start", authorization_url])
+                .creation_flags(0x0800_0000)
+                .status()
+        };
         #[cfg(not(target_os = "windows"))]
         let status = std::process::Command::new(command)
             .arg(authorization_url)

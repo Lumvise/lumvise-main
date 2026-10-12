@@ -61,6 +61,7 @@ impl CodexAppServerSession {
                 source,
             })?,
         );
+        crate::process::hide_console_window(&mut command);
         let mut child = command.spawn().map_err(|source| NeuralError::Io {
             value: spawn.display_command(),
             expected: "persistent Codex app-server process".to_string(),

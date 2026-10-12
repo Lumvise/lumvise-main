@@ -223,6 +223,12 @@ fn prepare_platform_command(
     let package_root = canonical_package_root(request)?;
     let mut command = Command::new(request.executable);
     command.current_dir(package_root);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: plugins must not flash a console.
+        command.creation_flags(0x0800_0000);
+    }
     Ok(command)
 }
 

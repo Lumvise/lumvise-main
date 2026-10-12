@@ -257,6 +257,7 @@ pub(crate) fn response(
 }
 
 fn spawn_child(mut command: Command, spawn: &SpawnConfig) -> Result<std::process::Child> {
+    crate::process::hide_console_window(&mut command);
     command.spawn().map_err(|source| NeuralError::Io {
         value: spawn.display_command(),
         expected: "provider command process".to_string(),

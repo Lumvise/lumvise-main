@@ -97,8 +97,11 @@ pub(crate) fn lease_path(root: &Path) -> PathBuf {
 
 pub(crate) fn launch_desktop(request: &super::ActivationRequest) -> std::io::Result<()> {
     let executable = std::env::var_os("LUMVISE_EXECUTABLE").unwrap_or_else(|| "Lumvise.exe".into());
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW: the desktop app is a GUI process and needs no console.
     std::process::Command::new(executable)
         .args(&request.arguments)
+        .creation_flags(0x0800_0000)
         .spawn()
         .map(|_| ())
 }
