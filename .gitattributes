@@ -1,1 +1,3 @@
 *.pdf binary
+# Embedded legal text must hash identically on every platform.
+distribution/AI-RISK-NOTICE.txt text eol=lf
