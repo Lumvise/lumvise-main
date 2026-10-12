@@ -146,6 +146,36 @@ fn llm_provider_registry_accepts_prebuilt_provider_instances() {
 }
 
 #[test]
+fn llm_provider_registry_inserts_one_provider_and_keeps_the_others() {
+    let mut registry = LlmProviderRegistry::from_provider_instances(vec![Box::new(
+        NamedRuntimeProvider::new("dummy"),
+    )])
+    .unwrap();
+
+    registry
+        .insert_provider(Arc::new(NamedRuntimeProvider::new("hosted")), 4)
+        .unwrap();
+
+    assert_eq!(registry.provider_ids(), vec!["dummy", "hosted"]);
+    assert_eq!(registry.completion_concurrency("hosted"), 4);
+    assert_eq!(registry.completion_concurrency("dummy"), 1);
+    for id in ["dummy", "hosted"] {
+        assert_eq!(
+            registry
+                .stream(id, &request(true), StreamControl::unbounded())
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    registry
+        .insert_provider(Arc::new(NamedRuntimeProvider::new("hosted")), 2)
+        .unwrap();
+    assert_eq!(registry.provider_ids(), vec!["dummy", "hosted"]);
+    assert_eq!(registry.completion_concurrency("hosted"), 2);
+}
+
+#[test]
 fn llm_executor_registry_runs_with_one_shared_invocation_control() {
     let providers = Arc::new(Mutex::new(
         LlmProviderRegistry::from_provider_instances(vec![Box::new(NamedRuntimeProvider::new(

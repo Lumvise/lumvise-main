@@ -11,6 +11,7 @@ use crate::{
 use lumvise_db_core::{LocalPersistence, RelationalPersistence, SemanticPersistence};
 use lumvise_frontend_core::FrontendCore;
 
+use lumvise_neural_core::llm_providers::contract::LlmProvider;
 use lumvise_neural_core::{LlmProviderCatalog, LlmProviderSync};
 use lumvise_neural_core::{
     LlmProviderRegistry, SpeechRecognizer, SpeechSynthesizer, Text2VoiceService, Voice2TextService,
@@ -24,6 +25,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// matches the runtime coordinator's own grant window.
 const BRIDGE_CREDENTIAL_GRANT_TTL_MS: u64 = 60_000;
 
+/// Parallel completions for the hosted provider, like the other HTTP providers.
+const HOSTED_COMPLETION_CONCURRENCY: usize = 4;
+
 #[cfg(feature = "assistant-e2e")]
 use crate::app::e2e_control::E2eEventJournal;
 
@@ -35,6 +39,8 @@ pub struct AppCore {
     pub(crate) llm_registry: Arc<Mutex<LlmProviderRegistry>>,
 
     pub(crate) provider_catalog: Arc<Mutex<LlmProviderCatalog>>,
+    /// The signed-in account's LLM provider; added to every registry this app publishes.
+    pub(crate) hosted_llm_provider: Mutex<Option<Arc<dyn LlmProvider>>>,
     pub(crate) voice2text_service: Mutex<Option<Arc<dyn SpeechRecognizer>>>,
     pub(crate) text2voice_service: Mutex<Option<Arc<dyn SpeechSynthesizer>>>,
     pub(crate) screenshots: Mutex<Vec<ScreenshotRecord>>,
@@ -200,9 +206,36 @@ impl AppCore {
             .provider_catalog
             .lock()
             .map_err(|_| crate::AppCoreError::poisoned_mutex("provider_catalog"))?;
-        *registry = sync.registry;
+        let mut next = sync.registry;
+        if let Some(provider) = self.hosted_llm_provider()? {
+            next.insert_provider(provider, HOSTED_COMPLETION_CONCURRENCY)?;
+        }
+        *registry = next;
         *catalog = sync.catalog;
         Ok(())
+    }
+
+    /// Remembers the hosted provider and adds it to the live registry. Later
+    /// publishes keep it, so a key save or inventory refresh cannot drop it.
+    pub(crate) fn install_hosted_llm_provider(&self, provider: Arc<dyn LlmProvider>) -> Result<()> {
+        *self
+            .hosted_llm_provider
+            .lock()
+            .map_err(|_| crate::AppCoreError::poisoned_mutex("hosted_llm_provider"))? =
+            Some(Arc::clone(&provider));
+        self.llm_registry
+            .lock()
+            .map_err(|_| crate::AppCoreError::poisoned_mutex("llm_registry"))?
+            .insert_provider(provider, HOSTED_COMPLETION_CONCURRENCY)?;
+        Ok(())
+    }
+
+    pub(crate) fn hosted_llm_provider(&self) -> Result<Option<Arc<dyn LlmProvider>>> {
+        Ok(self
+            .hosted_llm_provider
+            .lock()
+            .map_err(|_| crate::AppCoreError::poisoned_mutex("hosted_llm_provider"))?
+            .clone())
     }
     fn build(
         semantic: Arc<dyn SemanticPersistence>,
@@ -232,6 +265,7 @@ impl AppCore {
             voice2text_service: Mutex::new(None),
 
             provider_catalog: Arc::new(Mutex::new(LlmProviderCatalog::default())),
+            hosted_llm_provider: Mutex::new(None),
             text2voice_service: Mutex::new(None),
             screenshots: Mutex::new(Vec::new()),
             desktop_broadcasts: Mutex::new(Vec::new()),
@@ -349,6 +383,30 @@ impl AppCore {
             .lock()
             .map_err(|_| crate::AppCoreError::poisoned_mutex("text2voice_service"))? =
             Some(service);
+        Ok(())
+    }
+
+    /// Removes the active speech recognizer, so recognition is unavailable until
+    /// a model or hosted service is installed again.
+    #[cfg(feature = "desktop-app")]
+    pub(crate) fn clear_voice2text_service(&self) -> Result<()> {
+        self.plugin_host_services.clear_speech_recognizer();
+        *self
+            .voice2text_service
+            .lock()
+            .map_err(|_| crate::AppCoreError::poisoned_mutex("voice2text_service"))? = None;
+        Ok(())
+    }
+
+    /// Removes the active speech synthesizer, so synthesis is unavailable until
+    /// a model or hosted service is installed again.
+    #[cfg(feature = "desktop-app")]
+    pub(crate) fn clear_text2voice_service(&self) -> Result<()> {
+        self.plugin_host_services.clear_speech_synthesizer();
+        *self
+            .text2voice_service
+            .lock()
+            .map_err(|_| crate::AppCoreError::poisoned_mutex("text2voice_service"))? = None;
         Ok(())
     }
 

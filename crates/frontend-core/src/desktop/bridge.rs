@@ -109,6 +109,15 @@ pub trait DesktopSettingsBridge: std::fmt::Debug + Send + Sync {
         let _ = model_id;
         Err("managed model bridge is not configured".to_string())
     }
+    /// Offers the product's hosted AI account once the app is ready, so speech
+    /// components set to the hosted service are served from it.
+    fn install_hosted_ai(
+        &self,
+        account: std::sync::Arc<dyn crate::HostedAiAccount>,
+    ) -> Result<(), String> {
+        let _ = account;
+        Err("hosted AI needs a running app".to_string())
+    }
     /// Returns configured/not-configured status for every LLM Provider that
     /// accepts a local API key. Never returns the stored secret value.
     fn provider_credential_status(&self) -> Result<serde_json::Value, String> {

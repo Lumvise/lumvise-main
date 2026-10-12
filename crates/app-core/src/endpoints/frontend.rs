@@ -1,8 +1,9 @@
 use crate::{AppCore, AppCoreError, Result};
 use lumvise_db_core::SettingRecord;
 use lumvise_frontend_core::{
-    AppSettings, AppSettingsPatch, AssistantProviderCatalog, CanvasPatch, CanvasSnapshot,
-    DashboardView, FrontendRuntimeSnapshot, FrontendStatus, MAIN_CANVAS_ID, WorkArea,
+    AppSettings, AppSettingsPatch, AssistantEngine, AssistantModelSource, AssistantProviderCatalog,
+    AssistantProviderOption, CanvasPatch, CanvasSnapshot, DashboardView, FrontendRuntimeSnapshot,
+    FrontendStatus, MAIN_CANVAS_ID, WorkArea,
 };
 use serde_json::Value;
 
@@ -33,8 +34,23 @@ impl<'app> FrontendInteractionEndpoints<'app> {
     }
     pub fn replace_assistant_provider_catalog(
         &self,
-        catalog: AssistantProviderCatalog,
+        mut catalog: AssistantProviderCatalog,
     ) -> Result<()> {
+        // Availability is not probed: being signed out is reported by the call itself.
+        if self.app.hosted_llm_provider()?.is_some() {
+            let engine = AssistantEngine::LumviseCloud;
+            catalog
+                .providers
+                .retain(|provider| provider.id != engine.value());
+            catalog.providers.push(AssistantProviderOption {
+                id: engine.value().to_string(),
+                label: engine.label().to_string(),
+                models: Vec::new(),
+                default_model: None,
+                model_source: AssistantModelSource::Api,
+                available: true,
+            });
+        }
         let changed = self
             .lock_frontend()?
             .replace_assistant_provider_catalog(catalog);

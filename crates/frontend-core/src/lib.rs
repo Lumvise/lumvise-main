@@ -6,7 +6,7 @@ mod context_menu;
 mod desktop;
 mod error;
 mod host_extension;
-pub use host_extension::HostExtension;
+pub use host_extension::{HostExtension, HostedAiAccount};
 mod live_audio;
 mod modality;
 pub use live_audio::LiveAudioInput;

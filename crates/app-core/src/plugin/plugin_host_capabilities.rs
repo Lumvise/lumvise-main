@@ -214,6 +214,20 @@ impl PluginHostServices {
         }
     }
 
+    /// Empties the recognizer slot so speech recognition is unavailable until one is installed.
+    pub(crate) fn clear_speech_recognizer(&self) {
+        if let Ok(mut slot) = self.speech_recognizer.lock() {
+            *slot = None;
+        }
+    }
+
+    /// Empties the synthesizer slot so speech synthesis is unavailable until one is installed.
+    pub(crate) fn clear_speech_synthesizer(&self) {
+        if let Ok(mut slot) = self.speech_synthesizer.lock() {
+            *slot = None;
+        }
+    }
+
     pub(crate) fn install_project_execution(&self, service: crate::ProjectExecutionService) {
         if let Ok(mut slot) = self.project_execution.lock() {
             *slot = Some(service);

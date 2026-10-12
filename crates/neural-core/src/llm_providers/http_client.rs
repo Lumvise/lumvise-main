@@ -98,6 +98,19 @@ impl LlmHttpClient for ReqwestLlmHttpClient {
         parse_json_response(&request.endpoint, response, timeout)
     }
 
+    fn post_bytes(&self, request: &LlmHttpRequest) -> Result<Vec<u8>> {
+        let timeout = request_timeout(request)?;
+        let response = self
+            .client
+            .post(&request.endpoint)
+            .timeout(timeout)
+            .headers(headers(request)?)
+            .json(&request.payload)
+            .send()
+            .map_err(|error| provider_error(&request.endpoint, error, timeout))?;
+        parse_bytes_response(&request.endpoint, response, timeout)
+    }
+
     fn stream_text(&self, request: &LlmHttpRequest) -> Result<Vec<String>> {
         let timeout = request_timeout(request)?;
         let response = self
@@ -202,6 +215,22 @@ fn parse_json_response(
         expected: "LLM provider JSON response".to_string(),
         source,
     })
+}
+
+fn parse_bytes_response(
+    endpoint: &str,
+    response: reqwest::blocking::Response,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    let status = response.status();
+    let body = response
+        .bytes()
+        .map_err(|error| provider_error(endpoint, error, timeout))?;
+    // Success bodies stay binary; only an error body is decoded for the message.
+    if !(200..300).contains(&status.as_u16()) {
+        ensure_success(endpoint, status.as_u16(), &String::from_utf8_lossy(&body))?;
+    }
+    Ok(body.into())
 }
 
 fn parse_text_response(
@@ -400,7 +429,7 @@ mod tests {
 
     // One-shot local HTTP server: answers the first request with `response`
     // bytes, then exits.
-    fn serve_once(response: String) -> u16 {
+    fn serve_once(response: impl AsRef<[u8]> + Send + 'static) -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -415,7 +444,7 @@ mod tests {
                 }
             }
             use std::io::Write as _;
-            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(response.as_ref()).unwrap();
         });
         port
     }
@@ -497,6 +526,20 @@ mod tests {
             message.contains("model ignored by guardrail"),
             "message: {message}"
         );
+    }
+
+    #[test]
+    fn post_bytes_returns_raw_binary_body() {
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_vec();
+        let audio = [0xff_u8, 0x00, 0x01, 0x80];
+        response.extend_from_slice(&audio);
+        let port = serve_once(response);
+        let body = ReqwestLlmHttpClient::new()
+            .post_bytes(&streaming_request(format!(
+                "http://127.0.0.1:{port}/v1/audio/speech"
+            )))
+            .unwrap();
+        assert_eq!(body, audio);
     }
 
     #[test]

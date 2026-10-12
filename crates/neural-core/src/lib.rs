@@ -9,12 +9,14 @@ pub mod llm_providers;
 pub mod managed_models;
 #[cfg(any(feature = "kokoros", feature = "whisper-rs"))]
 pub(crate) mod model_assets;
+pub mod openrouter_speech;
 pub mod process;
 pub mod semantic_mappers;
 pub mod speech;
 pub mod speech_executor;
 pub mod text2vector;
 pub mod text2voice;
+pub mod token_injecting_client;
 pub mod types;
 pub mod voice2text;
 
@@ -39,6 +41,9 @@ pub use managed_models::{
     ModelDownloader, ModelRuntimeAdapter, ModelSource, ModelSuitability, RuntimeHardwareProbe,
     builtin_catalog, lumvise_state_root, managed_models_root,
 };
+pub use openrouter_speech::{
+    OpenRouterSpeechConfig, OpenRouterSpeechRecognizer, OpenRouterSpeechSynthesizer,
+};
 pub use semantic_mappers::service::SemanticMapperService;
 pub use speech::{SpeechRecognizer, SpeechSynthesizer};
 pub use speech_executor::{
@@ -49,4 +54,5 @@ pub use speech_executor::{
 pub use text2vector::{FastEmbedText2VectorConfig, FastEmbedText2VectorEngine};
 pub use text2vector::{Text2VectorRuntimeConfig, service::Text2VectorService};
 pub use text2voice::service::Text2VoiceService;
+pub use token_injecting_client::{BearerTokenSource, TokenInjectingClient};
 pub use voice2text::service::Voice2TextService;

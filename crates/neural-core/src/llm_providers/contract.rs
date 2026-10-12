@@ -96,6 +96,13 @@ pub struct LlmHttpRequest {
 
 pub trait LlmHttpClient: Send + Sync {
     fn post_json(&self, request: &LlmHttpRequest) -> Result<Value>;
+    /// Posts JSON and returns the raw response body (for example synthesized audio).
+    fn post_bytes(&self, request: &LlmHttpRequest) -> Result<Vec<u8>> {
+        Err(crate::NeuralError::ProviderFailed {
+            provider_id: request.endpoint.clone(),
+            message: "binary HTTP responses are not supported by this transport".to_string(),
+        })
+    }
     /// Retrieves a JSON inventory document. Implementations that only support
     /// completions fail closed; discovery never falls back to a static catalog.
     fn get_json(&self, request: &LlmHttpRequest) -> Result<Value> {

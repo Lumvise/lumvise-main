@@ -440,3 +440,103 @@ fn semantic_graph_bridge_lists_only_indexed_roots() {
             .is_empty()
     );
 }
+
+#[derive(Debug)]
+struct FakeHostedAccount;
+
+impl HostedAiAccount for FakeHostedAccount {
+    fn endpoint(&self) -> String {
+        "https://hosted.test/api/ai".to_string()
+    }
+
+    fn bearer_token(&self, _force_refresh: bool) -> Result<String, String> {
+        Ok("token".to_string())
+    }
+}
+
+#[test]
+fn hosted_speech_follows_the_cloud_flags_and_clears_a_slot_without_a_local_model() {
+    let app = Arc::new(AppCore::in_memory().unwrap());
+    let bridge = AppCoreDesktopBridge::without_runtime(Arc::clone(&app));
+
+    // No hosted account is installed: the flags change nothing.
+    bridge
+        .apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionCloud(true))
+        .unwrap();
+    assert!(app.voice2text_service().is_none());
+
+    // The account arrives: recognition (flag on) is hosted, synthesis (flag off) is untouched.
+    bridge
+        .install_hosted_ai(Arc::new(FakeHostedAccount))
+        .unwrap();
+    let hosted = app.voice2text_service().expect("hosted recognizer");
+    assert!(app.text2voice_service().is_none());
+
+    bridge
+        .apply_app_settings_patch(&AppSettingsPatch::SpeechSynthesisCloud(true))
+        .unwrap();
+    assert!(app.text2voice_service().is_some());
+
+    // Applying the same state again keeps the installed adapter.
+    bridge
+        .apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionCloud(true))
+        .unwrap();
+    assert!(Arc::ptr_eq(&hosted, &app.voice2text_service().unwrap()));
+
+    // Back to local with no managed model selected: the component becomes unavailable.
+    bridge
+        .apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionCloud(false))
+        .unwrap();
+    assert!(app.voice2text_service().is_none());
+    assert!(app.text2voice_service().is_some());
+}
+
+#[test]
+fn hosted_llm_provider_is_registered_and_listed_once_the_account_arrives() {
+    let app = Arc::new(AppCore::in_memory().unwrap());
+    let bridge = AppCoreDesktopBridge::without_runtime(Arc::clone(&app));
+    let hosted = |app: &AppCore| {
+        let registered = app
+            .llms()
+            .provider_ids()
+            .unwrap()
+            .contains(&"lumvise_cloud".to_string());
+        let listed = app
+            .frontend()
+            .assistant_provider_catalog()
+            .unwrap()
+            .providers
+            .into_iter()
+            .find(|provider| provider.id == "lumvise_cloud");
+        (registered, listed)
+    };
+
+    assert_eq!(hosted(&app), (false, None));
+
+    bridge
+        .install_hosted_ai(Arc::new(FakeHostedAccount))
+        .unwrap();
+    let (registered, listed) = hosted(&app);
+    let listed = listed.expect("hosted engine is listed");
+    assert!(registered);
+    assert!(listed.available);
+    assert_eq!(listed.label, "Lumvise cloud");
+    assert!(listed.models.is_empty());
+    assert_eq!(listed.model_source, AssistantModelSource::Api);
+
+    // A later publish whose registry lacks the provider (key save, refresh) keeps it.
+    app.replace_synchronized_providers(lumvise_neural_core::LlmProviderSync {
+        registry: lumvise_neural_core::LlmProviderRegistry::empty(),
+        catalog: LlmProviderCatalog::default(),
+    })
+    .unwrap();
+    app.frontend()
+        .replace_assistant_provider_catalog(Default::default())
+        .unwrap();
+    let (registered, listed) = hosted(&app);
+    assert!(registered);
+    assert_eq!(
+        listed.map(|provider| provider.id).as_deref(),
+        Some("lumvise_cloud")
+    );
+}

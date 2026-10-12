@@ -10,7 +10,7 @@ use lumvise_frontend_core::{
     DesktopPluginViewAsset, DesktopSemanticGraphBridge, DesktopSemanticGraphRequest,
     DesktopSettingsBridge, DesktopSpeechStreamEvent, DesktopSpeechStreamEventSink,
     DesktopVoiceBridge, DesktopVoicePlaybackEvent, DesktopVoicePlaybackEventSink,
-    DesktopWhiteboardBridge, VoicePlaybackStatus, WorkArea,
+    DesktopWhiteboardBridge, HostedAiAccount, VoicePlaybackStatus, WorkArea,
 };
 use lumvise_neural_core::NeuralError;
 use lumvise_neural_core::text2voice::{Text2VoiceRequest, Text2VoiceStreamEvent};
@@ -20,6 +20,7 @@ use serde_json::json;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod hosted_ai;
 mod storage_revisions;
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub struct AppCoreDesktopBridge {
     runtime_connection: Option<RuntimeConnection>,
     _scoped_plugin_mcp_server: Option<Arc<ScopedMcpHttpServer>>,
     _runtime_owner: Arc<Mutex<Option<OwnerLease>>>,
+    hosted_ai: Arc<Mutex<Option<hosted_ai::HostedAi>>>,
 }
 impl AppCoreDesktopBridge {
     /// Bridges desktop requests into App Core and owns the ready Runtime generation.
@@ -51,6 +53,7 @@ impl AppCoreDesktopBridge {
             runtime_connection: Some(connection),
             _scoped_plugin_mcp_server: Some(Arc::new(server)),
             _runtime_owner: Arc::clone(&owner_cell),
+            hosted_ai: Arc::default(),
         })
     }
 
@@ -61,6 +64,7 @@ impl AppCoreDesktopBridge {
             runtime_connection: None,
             _scoped_plugin_mcp_server: None,
             _runtime_owner: Arc::new(Mutex::new(None)),
+            hosted_ai: Arc::default(),
         }
     }
 
@@ -414,6 +418,12 @@ impl DesktopSettingsBridge for PendingDesktopBridge {
         })
     }
 
+    fn install_hosted_ai(&self, account: Arc<dyn HostedAiAccount>) -> Result<(), String> {
+        self.with_ready("install_hosted_ai", |delegate| {
+            delegate.install_hosted_ai(account)
+        })
+    }
+
     fn set_provider_api_key(
         &self,
         provider_id: String,
@@ -703,7 +713,32 @@ impl DesktopSettingsBridge for AppCoreDesktopBridge {
             .frontend()
             .persist_app_settings()
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if hosted_ai::changes_speech_source(patch) {
+            self.apply_hosted_ai();
+        }
+        Ok(())
+    }
+
+    fn install_hosted_ai(&self, account: Arc<dyn HostedAiAccount>) -> Result<(), String> {
+        let hosted = hosted_ai::HostedAi::new(account)?;
+        self.app
+            .install_hosted_llm_provider(hosted.llm_provider())
+            .map_err(|error| error.to_string())?;
+        // Publishes the catalog again so the hosted engine shows up without a discovery run.
+        let frontend = self.app.frontend();
+        let catalog = frontend
+            .assistant_provider_catalog()
+            .map_err(|error| error.to_string())?;
+        frontend
+            .replace_assistant_provider_catalog(catalog)
+            .map_err(|error| error.to_string())?;
+        *self
+            .hosted_ai
+            .lock()
+            .map_err(|_| "hosted AI state lock poisoned".to_string())? = Some(hosted);
+        self.apply_hosted_ai();
+        Ok(())
     }
 
     fn managed_model_snapshot(&self) -> Result<serde_json::Value, String> {

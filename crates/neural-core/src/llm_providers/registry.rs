@@ -143,6 +143,29 @@ impl LlmProviderRegistry {
         })
     }
 
+    /// Adds or replaces one injected provider by its provider id, leaving the others untouched.
+    /// It negotiates like `from_provider_instances` entries: no adapter plan, no model catalog.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// registry.insert_provider(hosted_provider.clone(), 4)?;
+    /// ```
+    pub fn insert_provider(
+        &mut self,
+        provider: Arc<dyn LlmProvider>,
+        completion_concurrency: usize,
+    ) -> Result<()> {
+        let id = provider.provider_id().to_string();
+        require_non_empty(&id, "non-empty provider id")?;
+        self.adapter_plans.remove(&id);
+        self.model_sources.remove(&id);
+        self.completion_concurrency
+            .insert(id.clone(), completion_concurrency.max(1));
+        self.providers.insert(id, provider);
+        Ok(())
+    }
+
     /// Overrides the per-provider completion concurrency for an already-registered
     /// provider. Lets callers tune injected instances (config-driven concurrency
     /// is otherwise resolved at `from_configs` time from the provider kind).

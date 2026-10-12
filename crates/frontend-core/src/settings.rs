@@ -35,6 +35,7 @@ pub enum AssistantEngine {
     ZAi,
     #[serde(rename = "custom_openai")]
     CustomOpenAi,
+    LumviseCloud,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -76,6 +77,11 @@ pub struct AppSettings {
     pub speech_recognition_enabled: bool,
     #[serde(default = "default_speech_enabled")]
     pub speech_synthesis_enabled: bool,
+    /// Lumvise cloud serves the component instead of its local model; kept while speech is off.
+    #[serde(default)]
+    pub speech_recognition_cloud: bool,
+    #[serde(default)]
+    pub speech_synthesis_cloud: bool,
     #[serde(default = "default_bulb_visible")]
     pub bulb_visible: bool,
     pub input_device_id: Option<String>,
@@ -102,6 +108,8 @@ pub enum AppSettingsPatch {
     DocumentEnhancementEnabled(bool),
     SpeechRecognitionEnabled(bool),
     SpeechSynthesisEnabled(bool),
+    SpeechRecognitionCloud(bool),
+    SpeechSynthesisCloud(bool),
     BulbVisible(bool),
     InputDevice(Option<String>),
     OutputDevice(Option<String>),
@@ -124,6 +132,8 @@ impl Default for AppSettings {
             document_enhancement_enabled: true,
             speech_recognition_enabled: true,
             speech_synthesis_enabled: true,
+            speech_recognition_cloud: false,
+            speech_synthesis_cloud: false,
             bulb_visible: true,
             input_device_id: None,
             output_device_id: None,
@@ -152,6 +162,8 @@ impl AppSettings {
                 .unwrap_or(true),
             speech_recognition_enabled: value["speechRecognitionEnabled"].as_bool().unwrap_or(true),
             speech_synthesis_enabled: value["speechSynthesisEnabled"].as_bool().unwrap_or(true),
+            speech_recognition_cloud: value["speechRecognitionCloud"].as_bool().unwrap_or(false),
+            speech_synthesis_cloud: value["speechSynthesisCloud"].as_bool().unwrap_or(false),
             input_device_id: optional_string_field(value, "inputDeviceId"),
             output_device_id: optional_string_field(value, "outputDeviceId"),
             ..Default::default()
@@ -197,6 +209,14 @@ impl AppSettings {
             AppSettingsPatch::SpeechSynthesisEnabled(value) => {
                 self.speech_synthesis_enabled = *value;
                 json!({ "speechSynthesisEnabled": value })
+            }
+            AppSettingsPatch::SpeechRecognitionCloud(value) => {
+                self.speech_recognition_cloud = *value;
+                json!({ "speechRecognitionCloud": value })
+            }
+            AppSettingsPatch::SpeechSynthesisCloud(value) => {
+                self.speech_synthesis_cloud = *value;
+                json!({ "speechSynthesisCloud": value })
             }
             AppSettingsPatch::BulbVisible(value) => {
                 self.bulb_visible = *value;
@@ -267,7 +287,7 @@ impl AppSettings {
 
     fn active_model(&self) -> Option<&String> {
         match self.assistant_engine {
-            AssistantEngine::NativeMcp => None,
+            AssistantEngine::NativeMcp | AssistantEngine::LumviseCloud => None,
             _ => self.assistant_model.as_ref(),
         }
     }
@@ -293,6 +313,7 @@ impl AssistantEngine {
             Some("openai_realtime") => Self::OpenAiRealtime,
             Some("z_ai") => Self::ZAi,
             Some("custom_openai") => Self::CustomOpenAi,
+            Some("lumvise_cloud") => Self::LumviseCloud,
             _ => Self::NativeMcp,
         }
     }
@@ -308,6 +329,7 @@ impl AssistantEngine {
             Self::OpenAiRealtime => "openai_realtime",
             Self::ZAi => "z_ai",
             Self::CustomOpenAi => "custom_openai",
+            Self::LumviseCloud => "lumvise_cloud",
         }
     }
 
@@ -322,6 +344,7 @@ impl AssistantEngine {
             Self::OpenAiRealtime => "OpenAI Realtime",
             Self::ZAi => "Z.AI GLM",
             Self::CustomOpenAi => "Custom (OpenAI-compatible)",
+            Self::LumviseCloud => "Lumvise cloud",
         }
     }
 
@@ -336,12 +359,13 @@ impl AssistantEngine {
             Self::OpenAiRealtime => "engine:openai_realtime",
             Self::ZAi => "engine:z_ai",
             Self::CustomOpenAi => "engine:custom_openai",
+            Self::LumviseCloud => "engine:lumvise_cloud",
         }
     }
 
     pub fn model_field(self) -> Option<&'static str> {
         match self {
-            Self::NativeMcp => None,
+            Self::NativeMcp | Self::LumviseCloud => None,
             Self::Cerebras => Some("cerebrasModel"),
             Self::OpenRouter => Some("openRouterModel"),
             Self::Codex => Some("codexModel"),
@@ -500,6 +524,37 @@ mod tests {
         assert!(!restored.bulb_visible);
         assert!(!AppSettings::from_renderer_value(&json!({"bulbVisible": false})).bulb_visible);
         assert!(AppSettings::from_renderer_value(&json!({})).bulb_visible);
+    }
+
+    #[test]
+    fn speech_cloud_choice_defaults_local_and_survives_speech_off() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("speech_recognition_cloud");
+        object.remove("speech_synthesis_cloud");
+        let mut settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(!settings.speech_recognition_cloud);
+        assert!(!settings.speech_synthesis_cloud);
+        assert_eq!(
+            settings.apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionCloud(true)),
+            json!({"speechRecognitionCloud": true})
+        );
+        assert_eq!(
+            settings.apply_app_settings_patch(&AppSettingsPatch::SpeechSynthesisCloud(true)),
+            json!({"speechSynthesisCloud": true})
+        );
+        settings.apply_app_settings_patch(&AppSettingsPatch::SpeechRecognitionEnabled(false));
+        let restored: AppSettings =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert!(!restored.speech_recognition_enabled);
+        assert!(restored.speech_recognition_cloud);
+        assert!(restored.speech_synthesis_cloud);
+        assert!(restored.speech_synthesis_enabled);
+
+        let hydrated = AppSettings::from_renderer_value(&json!({"speechSynthesisCloud": true}));
+        assert!(!hydrated.speech_recognition_cloud);
+        assert!(hydrated.speech_synthesis_cloud);
+        assert!(!AppSettings::from_renderer_value(&json!({})).speech_synthesis_cloud);
     }
 
     #[test]
@@ -717,6 +772,30 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&settings).unwrap()["assistant_engine"],
             json!("custom_openai")
+        );
+    }
+
+    #[test]
+    fn lumvise_cloud_engine_has_no_model_field_and_no_local_key() {
+        let engine = AssistantEngine::LumviseCloud;
+        assert_eq!(AssistantEngine::parse(Some("lumvise_cloud")), engine);
+        assert_eq!(engine.value(), "lumvise_cloud");
+        assert_eq!(engine.label(), "Lumvise cloud");
+        assert_eq!(engine.menu_id(), "engine:lumvise_cloud");
+        assert_eq!(engine.model_field(), None);
+        assert!(!engine.accepts_local_api_key());
+        assert_eq!(
+            serde_json::to_value(engine).unwrap(),
+            json!("lumvise_cloud")
+        );
+
+        let mut settings = AppSettings {
+            assistant_model: Some("stale".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.apply_app_settings_patch(&AppSettingsPatch::AssistantEngine(engine)),
+            json!({"assistantEngine": "lumvise_cloud", "assistantModel": null})
         );
     }
 }
