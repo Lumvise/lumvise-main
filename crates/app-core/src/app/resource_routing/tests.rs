@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -13,7 +14,7 @@ use lumvise_neural_core::{
 };
 use lumvise_resource_routing::{InvocationControl, ResourcePlacement, ResourceRoutingConfig};
 
-use super::{ResourceAdapterFactory, ResourceRouter};
+use super::{ResourceAdapterFactory, ResourceRouter, database_path_from_home};
 
 const INTERNAL_LLM: usize = 0;
 const CENTRAL_LLM: usize = 1;
@@ -381,5 +382,31 @@ fn injected_unavailable_storage_fails_without_local_fallback() {
             .err()
             .unwrap()
             .contains("expected stable client identity")
+    );
+}
+
+#[test]
+fn default_database_path_uses_home_before_windows_user_profile() {
+    let database_under = |base: &str| {
+        PathBuf::from(base)
+            .join(".lumvise")
+            .join("database")
+            .join("lumvise.db")
+    };
+    assert_eq!(
+        database_path_from_home(Some("/home/alice".into()), Some(r"C:\Users\alice".into())),
+        database_under("/home/alice")
+    );
+    assert_eq!(
+        database_path_from_home(None, Some(r"C:\Users\alice".into())),
+        database_under(r"C:\Users\alice")
+    );
+    assert_eq!(
+        database_path_from_home(Some("".into()), Some(r"C:\Users\alice".into())),
+        database_under(r"C:\Users\alice")
+    );
+    assert_eq!(
+        database_path_from_home(None, None),
+        Path::new(".lumvise/database/lumvise.db")
     );
 }

@@ -602,8 +602,20 @@ fn configured_database_path() -> PathBuf {
 }
 
 fn default_database_path() -> PathBuf {
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
+    #[cfg(windows)]
+    let user_profile = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let user_profile = None;
+
+    database_path_from_home(std::env::var_os("HOME"), user_profile)
+}
+
+fn database_path_from_home(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> PathBuf {
+    home.filter(|home| !home.is_empty())
+        .or_else(|| user_profile.filter(|profile| !profile.is_empty()))
         .map(PathBuf::from)
         .unwrap_or_default()
         .join(".lumvise")
