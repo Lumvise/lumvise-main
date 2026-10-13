@@ -21,8 +21,12 @@ use crate::AppCore;
 struct AccountTokens(Arc<dyn HostedAiAccount>);
 
 impl BearerTokenSource for AccountTokens {
-    fn bearer_token(&self, force_refresh: bool) -> Result<String, String> {
-        self.0.bearer_token(force_refresh)
+    fn bearer_token(
+        &self,
+        force_refresh: bool,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> Result<String, String> {
+        self.0.bearer_token(force_refresh, control)
     }
 }
 

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+lumvise-resource-routing.workspace = true
 prost.workspace = true
 chrono.workspace = true
 json-patch = "2"

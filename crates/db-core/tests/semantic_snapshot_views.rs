@@ -212,3 +212,75 @@ fn media_inheritance_rejects_nonobject_metadata_through_local_and_portable_paths
         serde_json::json!(["original"])
     );
 }
+
+#[test]
+fn portable_search_and_selective_subgraph_match_public_local_reads() {
+    let (local, snapshot) = publication();
+    assert!(snapshot.search_element_candidates("", 20).is_err());
+    for query in ["parent", "PARENT", "child name", "absent"] {
+        let SemanticResult::Elements(expected) = execute(
+            &local,
+            SemanticOperation::SearchElementCandidates {
+                project_root: Some("/project".into()),
+                query: query.into(),
+                limit: 20,
+            },
+        ) else {
+            panic!("expected elements")
+        };
+        let mut actual = snapshot.search_element_candidates(query, 20).unwrap();
+        actual.sort_by(|a, b| a.semantic_element_id.cmp(&b.semantic_element_id));
+        let mut expected = expected;
+        expected.sort_by(|a, b| a.semantic_element_id.cmp(&b.semantic_element_id));
+        assert_eq!(actual, expected, "query {query}");
+    }
+    for root in ["parent", "child", "missing"] {
+        let SemanticResult::SelectiveSubgraph(expected) = execute(
+            &local,
+            SemanticOperation::SelectiveSubgraph {
+                project_root: "/project".into(),
+                root_element_id: root.into(),
+                artifact_namespace: None,
+            },
+        ) else {
+            panic!("expected subtree")
+        };
+        assert_eq!(snapshot.selective_subgraph(root, None).unwrap(), expected);
+    }
+}
+
+#[test]
+fn complete_portable_subtree_handles_large_graphs_and_more_than_128_levels() {
+    let (_, mut snapshot) = publication();
+    snapshot.elements = (0..4_000)
+        .map(|index| element(&index.to_string(), "folder"))
+        .collect();
+    snapshot.relationships = (1..4_000)
+        .map(|index| SemanticRelationship {
+            project_root: "/project".into(),
+            source_element_id: (index - 1).to_string(),
+            target_element_id: index.to_string(),
+            relationship_kind: "contains".into(),
+            label: "contains".into(),
+            metadata: serde_json::json!({}),
+        })
+        .collect();
+    let start = std::time::Instant::now();
+    let selected = snapshot.selective_subgraph("0", None).unwrap().unwrap();
+    eprintln!(
+        "portable 4000-element complete traversal: {:?}",
+        start.elapsed()
+    );
+    assert_eq!(selected.elements.len(), 4_000);
+    assert_eq!(selected.relationships.len(), 3_999);
+    assert!(snapshot.selective_subgraph("", None).is_err());
+    assert!(
+        snapshot
+            .scoped_graph(&ScopedSemanticRead::Structure {
+                scope: ProjectSnapshotScope::ProjectRoot("/project".into()),
+                max_depth: 129,
+                include_inactive: false
+            })
+            .is_err()
+    );
+}

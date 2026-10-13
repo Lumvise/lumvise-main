@@ -89,10 +89,22 @@ impl OpenAiCompatibleChatProvider {
             return self.stream_with_mcp_tools(request, control, on_event);
         }
         let mut state = OpenAiCompatibleStreamState::new(control.clone(), self.spec.label);
-        self.http_client.stream_text_with_chunks(
-            &self.http_request(request, true, &control)?,
-            &mut |chunk| state.push_chunk(&chunk, on_event),
-        )?;
+        let http_request = self.http_request(request, true, &control)?;
+        match control.invocation_control() {
+            Some(invocation) => self.http_client.stream_text_until_controlled(
+                &http_request,
+                invocation,
+                &mut |chunk| {
+                    state.push_chunk(&chunk, on_event)?;
+                    Ok(std::ops::ControlFlow::Continue(()))
+                },
+            ),
+            None => self
+                .http_client
+                .stream_text_with_chunks(&http_request, &mut |chunk| {
+                    state.push_chunk(&chunk, on_event)
+                }),
+        }?;
         state.finish(on_event)
     }
 
@@ -227,6 +239,11 @@ impl OpenAiCompatibleChatProvider {
             control,
         )?;
         if !streaming {
+            if let Some(invocation) = control.invocation_control() {
+                return self
+                    .http_client
+                    .post_json_controlled(&http_request, invocation);
+            }
             return self.http_client.post_json(&http_request);
         }
         let mut completion = tool_stream::ToolCompletionStream::default();
@@ -241,29 +258,37 @@ impl OpenAiCompatibleChatProvider {
             request_bytes = http_request.payload.to_string().len(),
             messages = http_request.payload["messages"].as_array().map_or(0, Vec::len),
             "streamed model request started");
-        let streamed = self
-            .http_client
-            .stream_text_until(&http_request, &mut |chunk| {
-                let elapsed_ms = started.elapsed().as_millis();
-                first_chunk_ms.get_or_insert(elapsed_ms);
-                last_chunk_ms = Some(elapsed_ms);
-                received_bytes += chunk.len();
-                chunks += 1;
-                check_tool_cancellation(&self.config, control)?;
-                let complete = completion.push(&chunk)?;
-                if chunks == 1 || elapsed_ms - last_progress_ms >= 10_000 {
-                    tracing::debug!(provider_id = %self.config.provider_id,
+        let mut receive_chunk = |chunk: String| {
+            let elapsed_ms = started.elapsed().as_millis();
+            first_chunk_ms.get_or_insert(elapsed_ms);
+            last_chunk_ms = Some(elapsed_ms);
+            received_bytes += chunk.len();
+            chunks += 1;
+            check_tool_cancellation(&self.config, control)?;
+            let complete = completion.push(&chunk)?;
+            if chunks == 1 || elapsed_ms - last_progress_ms >= 10_000 {
+                tracing::debug!(provider_id = %self.config.provider_id,
                         conversation_id = ?request.conversation_id, elapsed_ms,
                         received_bytes, chunks, stream = %completion.diagnostic_snapshot(),
                         "model stream progress");
-                    last_progress_ms = elapsed_ms;
-                }
-                Ok(if complete {
-                    std::ops::ControlFlow::Break(())
-                } else {
-                    std::ops::ControlFlow::Continue(())
-                })
-            });
+                last_progress_ms = elapsed_ms;
+            }
+            Ok(if complete {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            })
+        };
+        let streamed = match control.invocation_control() {
+            Some(invocation) => self.http_client.stream_text_until_controlled(
+                &http_request,
+                invocation,
+                &mut receive_chunk,
+            ),
+            None => self
+                .http_client
+                .stream_text_until(&http_request, &mut receive_chunk),
+        };
         if streamed.is_err() {
             tracing::warn!(provider_id = %self.config.provider_id,
                 conversation_id = ?request.conversation_id,

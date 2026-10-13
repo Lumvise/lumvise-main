@@ -244,14 +244,15 @@ pub(crate) fn put_knowledge(
     context: &mut PluginContext<'_>,
     artifact: &KnowledgeArtifact,
 ) -> Result<KnowledgeArtifact, PluginError> {
-    let previous = get_knowledge(context, &artifact.artifact_id)?;
+    let previous = get_knowledge(context, &artifact.artifact_id)?
+        .filter(|previous| previous.project_root == artifact.project_root);
     let mut stamped = artifact.clone();
     crate::artifact::stamp(
         &mut stamped,
         previous.as_ref().map(|previous| &previous.lifecycle),
         Utc::now(),
     );
-    put_graph_artifact(context, &stamped)?;
+    stamped.artifact_id = put_graph_artifact(context, &stamped)?;
     Ok(stamped)
 }
 
@@ -417,7 +418,7 @@ pub(crate) fn page<T: DeserializeOwned>(
 fn put_graph_artifact(
     context: &mut PluginContext<'_>,
     value: &KnowledgeArtifact,
-) -> Result<(), PluginError> {
+) -> Result<String, PluginError> {
     let knowledge = serde_json::to_value(value).map_err(encode_error)?;
     let lifecycle = serde_json::to_value(&value.lifecycle).map_err(encode_error)?;
     let artifact = json!({
@@ -438,12 +439,15 @@ fn put_graph_artifact(
             "lifecycle": lifecycle
         }}
     });
-    context.host_call(
+    let output = context.host_call(
         SEMANTIC_CAPABILITY,
         json!({"operation": "upsert_artifact", "artifact": artifact,
             "media_type": "text/markdown; charset=utf-8"}),
     )?;
-    Ok(())
+    output["artifact_id"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| invalid_response("stored artifact identity", &output))
 }
 
 fn get_graph_artifact<T: DeserializeOwned>(

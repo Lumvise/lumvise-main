@@ -48,6 +48,16 @@ type ScopedRecords = (
     Vec<SemanticRelationship>,
     Option<usize>,
 );
+
+pub(super) fn complete_subtree(
+    source: &dyn GraphViewSource,
+    root: &str,
+    id: &str,
+) -> Result<Vec<SemanticElement>> {
+    StructureSelection::new(source, root, false)
+        .select(vec![id.into()], usize::MAX)
+        .map(|(elements, _)| elements)
+}
 fn select_records(
     source: &dyn GraphViewSource,
     request: &ScopedSemanticRead,
@@ -72,6 +82,12 @@ fn select_records(
             max_depth,
             include_inactive,
         } => {
+            if *max_depth > 128 {
+                return Err(DbError::invalid_value(
+                    max_depth.to_string(),
+                    "structural max_depth from 0 through 128",
+                ));
+            }
             let (root, roots) = structure_roots(source, scope, *include_inactive)?;
             let (elements, edges) = StructureSelection::new(source, &root, *include_inactive)
                 .select(roots, *max_depth)?;
@@ -180,12 +196,6 @@ impl<'graph> StructureSelection<'graph> {
         roots: Vec<String>,
         max_depth: usize,
     ) -> Result<(Vec<SemanticElement>, Vec<SemanticRelationship>)> {
-        if max_depth > 128 {
-            return Err(DbError::invalid_value(
-                max_depth.to_string(),
-                "structural max_depth from 0 through 128",
-            ));
-        }
         let mut pending = roots.into_iter().map(|id| (id, 0)).collect::<VecDeque<_>>();
         let mut visited = HashSet::new();
         while let Some((id, depth)) = pending.pop_front() {

@@ -85,7 +85,12 @@ impl LlmProvider for CustomOpenAiProvider {
         }
         self.inner.complete_with_control(
             request,
-            StreamControl::unbounded().with_deadline(Instant::now() + control.remaining()),
+            control
+                .invocation_control()
+                .map(|control| StreamControl::from_invocation(control.clone()))
+                .unwrap_or_else(|| {
+                    StreamControl::unbounded().with_deadline(Instant::now() + control.remaining())
+                }),
         )
     }
 

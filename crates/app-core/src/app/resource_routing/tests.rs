@@ -410,3 +410,25 @@ fn default_database_path_uses_home_before_windows_user_profile() {
         Path::new(".lumvise/database/lumvise.db")
     );
 }
+
+#[test]
+fn semantic_composition_keeps_the_local_relational_owner_and_propagates_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let factory = NamedFakes::new(&directory.path().join("state.sqlite"));
+    let config = super::local_config();
+    let resources = ResourceRouter::build_with_factories(&config, &factory).unwrap();
+    let original = factory.semantic.clone();
+    let replacement: Arc<dyn SemanticPersistence> =
+        Arc::new(LocalPersistence::in_memory().unwrap());
+    let expected = replacement.clone();
+    let composed = resources
+        .compose_semantic(move |local| {
+            assert!(Arc::ptr_eq(&local, &original));
+            Ok(replacement)
+        })
+        .unwrap();
+    assert!(Arc::ptr_eq(&composed.semantic, &expected));
+    assert!(Arc::ptr_eq(&composed.relational, &factory.relational));
+    let failure = composed.compose_semantic(|_| Err("offline adapter".into()));
+    assert_eq!(failure.err().unwrap(), "offline adapter");
+}

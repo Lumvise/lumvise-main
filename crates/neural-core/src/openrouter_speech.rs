@@ -85,28 +85,29 @@ impl OpenRouterSpeechSynthesizer {
         request: &Text2VoiceRequest,
         control: &InvocationControl,
     ) -> Result<(String, Vec<u8>)> {
-        let model = self.config.model.clone();
+        let audio = self
+            .http_client
+            .post_bytes_controlled(&self.pcm_request(request, control), control)?;
+        if audio.is_empty() {
+            return Err(empty_speech());
+        }
+        Ok((self.config.model.clone(), audio))
+    }
+
+    fn pcm_request(
+        &self,
+        request: &Text2VoiceRequest,
+        control: &InvocationControl,
+    ) -> LlmHttpRequest {
         let mut payload = json!({
-            "model": model,
+            "model": self.config.model,
             "input": request.text,
             "response_format": "pcm",
         });
         if let Some(voice) = self.config.voice.as_ref().or(request.voice_id.as_ref()) {
             payload["voice"] = json!(voice);
         }
-        let audio = self.http_client.post_bytes(&http_request(
-            &self.config,
-            control,
-            "audio/speech",
-            payload,
-        ))?;
-        if audio.is_empty() {
-            return Err(NeuralError::ProviderFailed {
-                provider_id: "openrouter-tts".into(),
-                message: "speech response body is empty".into(),
-            });
-        }
-        Ok((model, audio))
+        http_request(&self.config, control, "audio/speech", payload)
     }
 }
 
@@ -130,12 +131,10 @@ impl SpeechRecognizer for OpenRouterSpeechRecognizer {
                 "format": format,
             },
         });
-        let response = self.http_client.post_json(&http_request(
-            &self.config,
+        let response = self.http_client.post_json_controlled(
+            &http_request(&self.config, control, "audio/transcriptions", payload),
             control,
-            "audio/transcriptions",
-            payload,
-        ))?;
+        )?;
         ensure_active(control, "openrouter-stt")?;
         let transcript = response
             .get("text")
@@ -205,15 +204,46 @@ impl SpeechSynthesizer for OpenRouterSpeechSynthesizer {
         on_event: &mut Text2VoiceStreamEventSink<'_>,
     ) -> Result<()> {
         ensure_active(control, "openrouter-tts")?;
-        // shortcut: the whole utterance is buffered before the first chunk, switch to incremental body reads when first-audio latency matters.
-        let (_, pcm) = self.pcm(request, control)?;
+        let mut sequence = 0;
+        let mut pending = Vec::new();
+        self.http_client.stream_bytes_controlled(
+            &self.pcm_request(request, control),
+            control,
+            &mut |chunk| {
+                ensure_active(control, "openrouter-tts")?;
+                pending.extend(chunk);
+                let samples = pending.len() / 2 * 2;
+                if samples == 0 {
+                    return Ok(());
+                }
+                let audio = pending.drain(..samples).collect();
+                on_event(Text2VoiceStreamEvent::AudioChunk {
+                    sequence,
+                    audio,
+                    media_type: "audio/pcm;rate=24000;format=s16le".into(),
+                })?;
+                sequence += 1;
+                Ok(())
+            },
+        )?;
+        if !pending.is_empty() {
+            return Err(NeuralError::InvalidValue {
+                value: "odd PCM byte count".into(),
+                expected: "complete s16le samples".into(),
+            });
+        }
+        if sequence == 0 {
+            return Err(empty_speech());
+        }
         ensure_active(control, "openrouter-tts")?;
-        on_event(Text2VoiceStreamEvent::AudioChunk {
-            sequence: 0,
-            audio: pcm,
-            media_type: "audio/pcm;rate=24000;format=s16le".into(),
-        })?;
         on_event(Text2VoiceStreamEvent::Complete)
+    }
+}
+
+fn empty_speech() -> NeuralError {
+    NeuralError::ProviderFailed {
+        provider_id: "openrouter-tts".into(),
+        message: "speech response body is empty".into(),
     }
 }
 

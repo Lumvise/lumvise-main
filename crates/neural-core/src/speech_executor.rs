@@ -10,6 +10,7 @@ use std::{
 };
 
 use lumvise_resource_routing::InvocationControl;
+use parking_lot::Mutex;
 use thiserror::Error;
 
 use crate::{
@@ -40,7 +41,7 @@ pub enum SpeechExecutionError {
 
 pub struct SpeechToTextExecutor {
     sender: SyncSender<SpeechToTextJob>,
-    isolated: Arc<AtomicBool>,
+    isolated: Arc<Mutex<bool>>,
 }
 
 struct SpeechToTextJob {
@@ -53,16 +54,21 @@ struct SpeechToTextJob {
 impl SpeechToTextExecutor {
     pub fn start(service: Arc<dyn SpeechRecognizer>) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<SpeechToTextJob>(SPEECH_QUEUE_CAPACITY);
-        let isolated = Arc::new(AtomicBool::new(false));
+        let isolated = Arc::new(Mutex::new(false));
         let worker_isolated = Arc::clone(&isolated);
         std::thread::spawn(move || {
             while let Ok(job) = receiver.recv() {
-                if terminal(&job.control).is_some() {
+                if !start_job(&job.control, &job.started, &worker_isolated) {
                     continue;
                 }
-                job.started.store(true, Ordering::Release);
                 let result = service.transcribe(&job.request, &job.control);
-                finish(&job.control, job.response, result, &worker_isolated);
+                finish(
+                    &job.control,
+                    &job.started,
+                    job.response,
+                    result,
+                    &worker_isolated,
+                );
             }
         });
         Self { sender, isolated }
@@ -91,7 +97,7 @@ impl SpeechToTextExecutor {
 
 pub struct TextToSpeechExecutor {
     sender: SyncSender<TextToSpeechWork>,
-    isolated: Arc<AtomicBool>,
+    isolated: Arc<Mutex<bool>>,
 }
 
 struct TextToSpeechJob {
@@ -115,23 +121,25 @@ enum TextToSpeechWork {
 impl TextToSpeechExecutor {
     pub fn start(service: Arc<dyn SpeechSynthesizer>) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<TextToSpeechWork>(SPEECH_QUEUE_CAPACITY);
-        let isolated = Arc::new(AtomicBool::new(false));
+        let isolated = Arc::new(Mutex::new(false));
         let worker_isolated = Arc::clone(&isolated);
         std::thread::spawn(move || {
             while let Ok(work) = receiver.recv() {
                 match work {
                     TextToSpeechWork::Synthesize(job) => {
-                        if terminal(&job.control).is_some() {
+                        if !start_job(&job.control, &job.started, &worker_isolated) {
                             continue;
                         }
-                        job.started.store(true, Ordering::Release);
                         let result = service.synthesize(&job.request, &job.control);
-                        finish(&job.control, job.response, result, &worker_isolated);
+                        finish(
+                            &job.control,
+                            &job.started,
+                            job.response,
+                            result,
+                            &worker_isolated,
+                        );
                     }
                     TextToSpeechWork::Stream(job) => {
-                        if terminal(&job.control).is_some() {
-                            continue;
-                        }
                         run_stream_job(service.as_ref(), job);
                     }
                 }
@@ -205,15 +213,20 @@ fn run_stream_job(service: &dyn SpeechSynthesizer, job: TextToSpeechStreamJob) {
     let mut next_sequence: u64 = 0;
     let mut failed = false;
     for chunk_text in chunks {
-        if terminal(&control).is_some() {
-            failed = true;
-            break;
+        if let Some(error) = terminal(&control) {
+            let _ = on_event(Text2VoiceStreamEvent::Error {
+                message: error.to_string(),
+            });
+            return;
         }
         let chunk_request = Text2VoiceRequest {
             text: chunk_text,
             ..request.clone()
         };
         let result = service.stream_with_events(&chunk_request, &control, &mut |event| {
+            if failed {
+                return Ok(());
+            }
             match event {
                 Text2VoiceStreamEvent::AudioChunk {
                     audio, media_type, ..
@@ -236,14 +249,24 @@ fn run_stream_job(service: &dyn SpeechSynthesizer, job: TextToSpeechStreamJob) {
                 }
             }
         });
-        if result.is_err() || failed {
-            failed = true;
-            break;
+        if let Err(error) = result {
+            if !failed {
+                let _ = on_event(Text2VoiceStreamEvent::Error {
+                    message: error.to_string(),
+                });
+            }
+            return;
+        }
+        if failed {
+            return;
         }
     }
-    if !failed {
-        let _ = on_event(Text2VoiceStreamEvent::Complete);
-    }
+    let final_event = terminal(&control).map_or(Text2VoiceStreamEvent::Complete, |error| {
+        Text2VoiceStreamEvent::Error {
+            message: error.to_string(),
+        }
+    });
+    let _ = on_event(final_event);
 }
 
 /// Minimum/maximum characters per streamed speech chunk (D3: response
@@ -337,8 +360,8 @@ fn split_sentences(text: &str) -> Vec<String> {
     sentences
 }
 
-fn send<T>(sender: &SyncSender<T>, job: T, isolated: &AtomicBool) -> ExecutionResult<()> {
-    if isolated.load(Ordering::Acquire) {
+fn send<T>(sender: &SyncSender<T>, job: T, isolated: &Mutex<bool>) -> ExecutionResult<()> {
+    if *isolated.lock() {
         return Err(SpeechExecutionError::Unavailable);
     }
     sender.try_send(job).map_err(|error| match error {
@@ -351,12 +374,13 @@ fn wait<T>(
     receiver: mpsc::Receiver<NeuralResult<T>>,
     control: InvocationControl,
     started: Arc<AtomicBool>,
-    isolated: &AtomicBool,
+    isolated: &Mutex<bool>,
 ) -> ExecutionResult<T> {
     loop {
         if let Some(error) = terminal(&control) {
+            let mut isolated = isolated.lock();
             if started.load(Ordering::Acquire) {
-                isolated.store(true, Ordering::Release);
+                *isolated = true;
             }
             return Err(error);
         }
@@ -365,7 +389,7 @@ fn wait<T>(
             Ok(Err(error)) => return Err(SpeechExecutionError::Service(error.to_string())),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(SpeechExecutionError::Unavailable);
+                return Err(terminal(&control).unwrap_or(SpeechExecutionError::Unavailable));
             }
         }
     }
@@ -373,15 +397,27 @@ fn wait<T>(
 
 fn finish<T>(
     control: &InvocationControl,
+    started: &AtomicBool,
     response: SyncSender<NeuralResult<T>>,
     result: NeuralResult<T>,
-    isolated: &AtomicBool,
+    isolated: &Mutex<bool>,
 ) {
+    // The waiter and worker agree on settlement before admitting new work.
+    let mut isolated = isolated.lock();
+    started.store(false, Ordering::Release);
+    *isolated = false;
     if terminal(control).is_none() {
         let _ = response.send(result);
-    } else {
-        isolated.store(true, Ordering::Release);
     }
+}
+
+fn start_job(control: &InvocationControl, started: &AtomicBool, isolated: &Mutex<bool>) -> bool {
+    let _isolation = isolated.lock();
+    if terminal(control).is_some() {
+        return false;
+    }
+    started.store(true, Ordering::Release);
+    true
 }
 
 fn terminal(control: &InvocationControl) -> Option<SpeechExecutionError> {

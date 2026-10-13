@@ -36,6 +36,7 @@ enum SourceRequest {
 /// Example: invoke with `operation: "read"` and an inclusive one-based line range.
 pub(crate) fn invoke_project_source(
     semantic: &dyn SemanticPersistence,
+    relational: &dyn lumvise_db_core::RelationalPersistence,
     input: Value,
     control: &InvocationControl,
 ) -> Result<Value, String> {
@@ -48,7 +49,8 @@ pub(crate) fn invoke_project_source(
         | SourceRequest::GitChanges { project_root, .. } => project_root,
     };
     active(control)?;
-    let root = indexed_root(semantic, project, control).map_err(|failure| failure.message)?;
+    let root =
+        indexed_root(semantic, relational, project, control).map_err(|failure| failure.message)?;
     execute(&root, request, control)
 }
 

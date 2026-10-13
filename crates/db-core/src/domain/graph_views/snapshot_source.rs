@@ -101,3 +101,95 @@ impl GraphViewSource for SemanticProjectSnapshot {
 fn normalized_path(path: &str) -> &str {
     path.trim().trim_start_matches("./").trim_start_matches('/')
 }
+
+/// Per-read indexes keep complete subtree traversal linear in graph size.
+/// Selection rules remain in `scoped`; this component only supplies records.
+pub(super) struct SnapshotGraphIndex<'a> {
+    snapshot: &'a SemanticProjectSnapshot,
+    elements: HashMap<&'a str, &'a SemanticElement>,
+    outgoing: HashMap<&'a str, Vec<&'a SemanticRelationship>>,
+    incoming: HashMap<&'a str, Vec<&'a SemanticRelationship>>,
+}
+impl<'a> SnapshotGraphIndex<'a> {
+    pub(super) fn new(snapshot: &'a SemanticProjectSnapshot) -> Self {
+        let elements = snapshot
+            .elements
+            .iter()
+            .map(|element| (element.semantic_element_id.as_str(), element))
+            .collect();
+        let mut index = Self {
+            snapshot,
+            elements,
+            outgoing: HashMap::new(),
+            incoming: HashMap::new(),
+        };
+        for edge in &snapshot.relationships {
+            index
+                .outgoing
+                .entry(&edge.source_element_id)
+                .or_default()
+                .push(edge);
+            index
+                .incoming
+                .entry(&edge.target_element_id)
+                .or_default()
+                .push(edge);
+        }
+        index
+    }
+}
+impl GraphViewSource for SnapshotGraphIndex<'_> {
+    fn validate_root(&self, root: &str) -> Result<()> {
+        self.snapshot.validate_root(root)
+    }
+    fn element(&self, id: &str) -> Option<SemanticElement> {
+        self.elements
+            .get(id)
+            .filter(|element| element.lifecycle != "inactive")
+            .map(|element| (*element).clone())
+    }
+    fn elements(&self, root: &str, ids: &HashSet<String>, inactive: bool) -> Vec<SemanticElement> {
+        ids.iter()
+            .filter_map(|id| self.elements.get(id.as_str()))
+            .filter(|element| {
+                element.project_root == root && (inactive || element.lifecycle != "inactive")
+            })
+            .map(|element| (*element).clone())
+            .collect()
+    }
+    fn roots(&self, root: &str, inactive: bool) -> Vec<String> {
+        self.snapshot.roots(root, inactive)
+    }
+    fn edges(
+        &self,
+        root: &str,
+        id: &str,
+        direction: SemanticDependencyDirection,
+    ) -> Vec<SemanticRelationship> {
+        let outgoing = (direction != SemanticDependencyDirection::Dependents)
+            .then(|| self.outgoing.get(id))
+            .flatten();
+        let incoming = (direction != SemanticDependencyDirection::Dependencies)
+            .then(|| self.incoming.get(id))
+            .flatten();
+        outgoing
+            .into_iter()
+            .flatten()
+            .chain(incoming.into_iter().flatten())
+            .filter(|edge| edge.project_root == root)
+            .map(|edge| (*edge).clone())
+            .collect()
+    }
+    fn location(
+        &self,
+        root: &str,
+        path: Option<&str>,
+        line: i64,
+        inactive: bool,
+    ) -> Vec<SemanticElement> {
+        self.snapshot.location(root, path, line, inactive)
+    }
+    fn scope_count(&self, root: &str, inactive: bool) -> usize {
+        self.snapshot.scope_count(root, inactive)
+    }
+}

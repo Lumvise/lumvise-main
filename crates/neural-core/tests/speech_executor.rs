@@ -17,6 +17,140 @@ use lumvise_neural_core::{
 use lumvise_resource_routing::InvocationControl;
 use parking_lot::Mutex;
 
+struct GatedRecognizer {
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+    first: std::sync::atomic::AtomicBool,
+}
+
+impl SpeechRecognizer for GatedRecognizer {
+    fn warmup(&self) -> Result<()> {
+        Ok(())
+    }
+    fn transcribe(
+        &self,
+        request: &Voice2TextRequest,
+        control: &InvocationControl,
+    ) -> Result<Voice2TextResponse> {
+        if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.entered.send(()).unwrap();
+            self.release.lock().recv().unwrap();
+        }
+        TestRecognizer.transcribe(request, control)
+    }
+    fn stream_with_events(
+        &self,
+        _: &Voice2TextRequest,
+        _: &InvocationControl,
+        _: &mut Voice2TextStreamEventSink<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn cancelled_and_expired_recognition_recovers_only_after_work_settles() {
+    for cancel in [true, false] {
+        let (entered, entering) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let executor = Arc::new(SpeechToTextExecutor::start(Arc::new(GatedRecognizer {
+            entered,
+            release: Mutex::new(gate),
+            first: std::sync::atomic::AtomicBool::new(true),
+        })));
+        let control = InvocationControl::with_deadline(if cancel {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(50)
+        });
+        let worker = Arc::clone(&executor);
+        let invocation = control.clone();
+        let call = std::thread::spawn(move || worker.transcribe(request(), invocation));
+        entering.recv_timeout(Duration::from_secs(1)).unwrap();
+        if cancel {
+            control.cancel();
+        }
+        assert!(matches!(
+            call.join().unwrap(),
+            Err(SpeechExecutionError::Cancelled | SpeechExecutionError::DeadlineExceeded)
+        ));
+        assert!(matches!(
+            executor.transcribe(request(), InvocationControl::sixty_seconds()),
+            Err(SpeechExecutionError::Unavailable)
+        ));
+        release.send(()).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match executor.transcribe(request(), InvocationControl::sixty_seconds()) {
+                Ok(response) => {
+                    assert_eq!(response.transcript, "recognized");
+                    break;
+                }
+                Err(SpeechExecutionError::Unavailable) if std::time::Instant::now() < until => {
+                    std::thread::yield_now()
+                }
+                result => panic!("settled recognizer must recover: {result:?}"),
+            }
+        }
+    }
+}
+
+struct RejectedCloudSpeech;
+
+impl lumvise_neural_core::llm_providers::contract::LlmHttpClient for RejectedCloudSpeech {
+    fn post_json(
+        &self,
+        _: &lumvise_neural_core::llm_providers::contract::LlmHttpRequest,
+    ) -> Result<serde_json::Value> {
+        unreachable!()
+    }
+    fn stream_text(
+        &self,
+        _: &lumvise_neural_core::llm_providers::contract::LlmHttpRequest,
+    ) -> Result<Vec<String>> {
+        unreachable!()
+    }
+    fn post_bytes(
+        &self,
+        _: &lumvise_neural_core::llm_providers::contract::LlmHttpRequest,
+    ) -> Result<Vec<u8>> {
+        Err(lumvise_neural_core::NeuralError::ProviderFailed {
+            provider_id: "cloud".into(),
+            message: "balance exhausted".into(),
+        })
+    }
+}
+
+#[test]
+fn cloud_returned_error_reaches_stream_consumer_exactly_once() {
+    let synthesizer = lumvise_neural_core::OpenRouterSpeechSynthesizer::new(
+        lumvise_neural_core::OpenRouterSpeechConfig {
+            endpoint: "https://fake.invalid".into(),
+            credential: String::new(),
+            model: "test".into(),
+            voice: None,
+            timeout_ms: 60_000,
+        },
+        Arc::new(RejectedCloudSpeech),
+    );
+    let executor = TextToSpeechExecutor::start(Arc::new(synthesizer));
+    let (sender, events) = mpsc::channel();
+    executor
+        .enqueue_stream(
+            synthesis_request("Speak this."),
+            InvocationControl::sixty_seconds(),
+            move |event| {
+                sender.send(event).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+    let received = events.iter().collect::<Vec<_>>();
+    assert!(
+        matches!(received.as_slice(), [Text2VoiceStreamEvent::Error { message }] if message.contains("balance exhausted"))
+    );
+}
+
 struct TestRecognizer;
 
 impl SpeechRecognizer for TestRecognizer {

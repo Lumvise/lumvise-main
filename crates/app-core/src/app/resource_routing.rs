@@ -36,6 +36,14 @@ pub enum AppResourceSelection {
     #[default]
     Environment,
     Local,
+    /// Decorates the selected local semantic store without changing its relational owner.
+    /// Example: `LocalWithSemantic { compose: Box::new(|local| Ok(local)) }`.
+    LocalWithSemantic {
+        compose: Box<
+            dyn FnOnce(Arc<dyn SemanticPersistence>) -> Result<Arc<dyn SemanticPersistence>, String>
+                + Send,
+        >,
+    },
     RemoteStorage {
         client: Arc<dyn ResourceInvocationClient>,
         client_instance_id: String,
@@ -55,6 +63,18 @@ pub(super) struct RoutedResources {
     pub(super) speech_synthesizer: Option<Arc<dyn SpeechSynthesizer>>,
     pub(super) semantic: Arc<dyn SemanticPersistence>,
     pub(super) relational: Arc<dyn RelationalPersistence>,
+}
+
+impl RoutedResources {
+    fn compose_semantic(
+        mut self,
+        compose: impl FnOnce(
+            Arc<dyn SemanticPersistence>,
+        ) -> Result<Arc<dyn SemanticPersistence>, String>,
+    ) -> Result<Self, String> {
+        self.semantic = compose(self.semantic)?;
+        Ok(self)
+    }
 }
 
 /// Construction boundary for resource ownership.
@@ -142,6 +162,10 @@ impl ResourceRouter {
         selection: AppResourceSelection,
     ) -> Result<(ResourceRoutingConfig, RoutedResources), String> {
         match selection {
+            AppResourceSelection::LocalWithSemantic { compose } => {
+                let (config, resources) = Self::build_selection(AppResourceSelection::Local)?;
+                Ok((config, resources.compose_semantic(compose)?))
+            }
             AppResourceSelection::Local => {
                 let config = local_config();
                 Self::build(config.clone())

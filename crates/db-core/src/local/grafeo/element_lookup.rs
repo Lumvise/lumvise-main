@@ -2,6 +2,7 @@
 //! cache lifetime; callers hydrate only selected semantic records.
 
 use super::graph_rows::{value_non_negative_i64, value_string};
+use crate::domain::element_search::ElementNameQuery;
 use grafeo::{GrafeoDB, NodeId, Value};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -148,40 +149,6 @@ struct IndexedSemanticElement {
     end_line: Option<i64>,
 }
 
-struct ElementNameQuery {
-    normalized: String,
-    tokens: Vec<String>,
-}
-
-impl ElementNameQuery {
-    fn new(query: &str) -> Self {
-        let normalized = query.trim().to_ascii_lowercase();
-        let tokens = normalized
-            .split(|ch: char| !ch.is_alphanumeric())
-            .filter(|token| !token.is_empty())
-            .map(str::to_owned)
-            .collect();
-        Self { normalized, tokens }
-    }
-
-    fn score(&self, entry: &IndexedSemanticElement) -> u8 {
-        if entry.normalized_name == self.normalized {
-            return 4;
-        }
-        if entry.normalized_name.contains(&self.normalized) {
-            return 3;
-        }
-        if self
-            .tokens
-            .iter()
-            .any(|token| entry.normalized_name.contains(token))
-        {
-            return 2;
-        }
-        u8::from(entry.normalized_id.contains(&self.normalized))
-    }
-}
-
 impl SemanticElementIndex {
     fn from_graph(graph: &GrafeoDB) -> Self {
         let ids = graph.graph_store().nodes_by_label("SemanticElement");
@@ -239,7 +206,7 @@ impl SemanticElementIndex {
                 if project_root.is_some_and(|root| root != entry.project_root) {
                     return None;
                 }
-                let score = query.score(entry);
+                let score = query.score(&entry.normalized_name, &entry.normalized_id);
                 (score > 0).then_some((Reverse(score), entry.semantic_id.as_str(), entry.node_id))
             })
             .collect::<Vec<_>>();

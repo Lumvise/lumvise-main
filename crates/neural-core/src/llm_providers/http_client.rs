@@ -1,17 +1,17 @@
 use crate::error::{NeuralError, Result};
 use crate::llm_providers::contract::{LlmHttpClient, LlmHttpRequest, LlmTextChunkSink};
-use reqwest::blocking::Client;
+use lumvise_resource_routing::InvocationControl;
+use reqwest::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
-use std::io::{ErrorKind, Read};
 use std::ops::ControlFlow;
 use std::time::Duration;
 
 // A provider that never responds (or stalls mid-stream) must still surface
 // as a bounded failure instead of hanging the caller's generation job
 // forever. Bounds the whole request/response including a streamed body
-// (`reqwest::blocking` has no per-read timeout) — generous enough for a
-// large completion, not infinite.
+// under the caller's cancellation/deadline control. Legacy callers receive
+// this default total deadline, including all body reads.
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 // Provider payloads can embed kilobytes of context; keep every error message
@@ -45,23 +45,118 @@ fn source_chain(error: &(dyn std::error::Error + 'static)) -> String {
 
 pub struct ReqwestLlmHttpClient {
     client: Client,
+    runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl ReqwestLlmHttpClient {
-    /// Creates a reusable HTTP client for remote LLM providers.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// let _client = lumvise_neural_core::llm_providers::http_client::ReqwestLlmHttpClient::new();
-    /// ```
+    /// Creates a reusable, cancellable HTTP transport. Example: `ReqwestLlmHttpClient::new()`.
     pub fn new() -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("HTTP runtime");
         Self {
             client: Client::builder()
                 .connect_timeout(Duration::from_secs(30))
-                .timeout(PROVIDER_REQUEST_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
+            runtime: Some(runtime),
+        }
+    }
+
+    fn run<T>(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+        future: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        crate::speech::ensure_active(control, &request.endpoint)?;
+        let remaining = request_timeout(request)?.min(control.remaining());
+        let cancelled = control.cancellation_token();
+        self.runtime.as_ref().expect("HTTP runtime").block_on(async {
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => Err(NeuralError::ProcessCancelled { command: request.endpoint.clone() }),
+                _ = tokio::time::sleep(remaining) => Err(NeuralError::ProcessTimeout {
+                    command: request.endpoint.clone(), timeout_ms: timeout_ms(remaining) }),
+                result = future => result,
+            }
+        })
+    }
+
+    async fn response(&self, request: &LlmHttpRequest, post: bool) -> Result<reqwest::Response> {
+        let builder = if post {
+            self.client.post(&request.endpoint).json(&request.payload)
+        } else {
+            self.client.get(&request.endpoint)
+        };
+        builder
+            .headers(headers(request)?)
+            .send()
+            .await
+            .map_err(|error| {
+                provider_error(
+                    &request.endpoint,
+                    error,
+                    request_timeout(request).unwrap_or_default(),
+                )
+            })
+    }
+
+    async fn body(&self, request: &LlmHttpRequest, post: bool) -> Result<Vec<u8>> {
+        let response = self.response(request, post).await?;
+        let status = response.status().as_u16();
+        let bytes = response.bytes().await.map_err(|error| {
+            provider_error(
+                &request.endpoint,
+                error,
+                request_timeout(request).unwrap_or_default(),
+            )
+        })?;
+        if !(200..300).contains(&status) {
+            ensure_success(&request.endpoint, status, &String::from_utf8_lossy(&bytes))?;
+        }
+        Ok(bytes.to_vec())
+    }
+
+    async fn chunks(
+        &self,
+        request: &LlmHttpRequest,
+        on_chunk: &mut dyn FnMut(Vec<u8>) -> Result<ControlFlow<()>>,
+    ) -> Result<()> {
+        let mut response = self.response(request, true).await?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let bytes = response.bytes().await.map_err(|error| {
+                provider_error(
+                    &request.endpoint,
+                    error,
+                    request_timeout(request).unwrap_or_default(),
+                )
+            })?;
+            return ensure_success(&request.endpoint, status, &String::from_utf8_lossy(&bytes));
+        }
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            provider_error(
+                &request.endpoint,
+                error,
+                request_timeout(request).unwrap_or_default(),
+            )
+        })? {
+            if !chunk.is_empty() && on_chunk(chunk.to_vec())?.is_break() {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ReqwestLlmHttpClient {
+    fn drop(&mut self) {
+        // Account adapters can be replaced from an async app thread.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
         }
     }
 }
@@ -74,54 +169,55 @@ impl Default for ReqwestLlmHttpClient {
 
 impl LlmHttpClient for ReqwestLlmHttpClient {
     fn get_json(&self, request: &LlmHttpRequest) -> Result<Value> {
-        let timeout = request_timeout(request)?;
-        let response = self
-            .client
-            .get(&request.endpoint)
-            .timeout(timeout)
-            .headers(headers(request)?)
-            .send()
-            .map_err(|error| provider_error(&request.endpoint, error, timeout))?;
-        parse_json_response(&request.endpoint, response, timeout)
+        let bytes = self.run(request, &http_control(request), self.body(request, false))?;
+        json_body(bytes)
     }
 
     fn post_json(&self, request: &LlmHttpRequest) -> Result<Value> {
-        let timeout = request_timeout(request)?;
-        let response = self
-            .client
-            .post(&request.endpoint)
-            .timeout(timeout)
-            .headers(headers(request)?)
-            .json(&request.payload)
-            .send()
-            .map_err(|error| provider_error(&request.endpoint, error, timeout))?;
-        parse_json_response(&request.endpoint, response, timeout)
+        self.post_json_controlled(request, &http_control(request))
+    }
+
+    fn post_json_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+    ) -> Result<Value> {
+        json_body(self.post_bytes_controlled(request, control)?)
     }
 
     fn post_bytes(&self, request: &LlmHttpRequest) -> Result<Vec<u8>> {
-        let timeout = request_timeout(request)?;
-        let response = self
-            .client
-            .post(&request.endpoint)
-            .timeout(timeout)
-            .headers(headers(request)?)
-            .json(&request.payload)
-            .send()
-            .map_err(|error| provider_error(&request.endpoint, error, timeout))?;
-        parse_bytes_response(&request.endpoint, response, timeout)
+        self.post_bytes_controlled(request, &http_control(request))
+    }
+
+    fn post_bytes_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+    ) -> Result<Vec<u8>> {
+        self.run(request, control, self.body(request, true))
+    }
+
+    fn stream_bytes_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+        on_chunk: &mut dyn FnMut(Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        self.run(
+            request,
+            control,
+            self.chunks(request, &mut |chunk| {
+                on_chunk(chunk)?;
+                Ok(ControlFlow::Continue(()))
+            }),
+        )
     }
 
     fn stream_text(&self, request: &LlmHttpRequest) -> Result<Vec<String>> {
-        let timeout = request_timeout(request)?;
-        let response = self
-            .client
-            .post(&request.endpoint)
-            .timeout(timeout)
-            .headers(headers(request)?)
-            .json(&request.payload)
-            .send()
-            .map_err(|error| provider_error(&request.endpoint, error, timeout))?;
-        parse_text_response(&request.endpoint, response, timeout)
+        let bytes = self.post_bytes(request)?;
+        String::from_utf8(bytes)
+            .map(|text| vec![text])
+            .map_err(|error| invalid_stream_utf8(error.as_bytes()))
     }
 
     fn stream_text_with_chunks(
@@ -140,22 +236,52 @@ impl LlmHttpClient for ReqwestLlmHttpClient {
         request: &LlmHttpRequest,
         on_chunk: &mut dyn FnMut(String) -> Result<ControlFlow<()>>,
     ) -> Result<()> {
-        let timeout = request_timeout(request)?;
-        let response = self
-            .client
-            .post(&request.endpoint)
-            .timeout(timeout)
-            .headers(headers(request)?)
-            .json(&request.payload)
-            .send()
-            .map_err(|error| provider_error(&request.endpoint, error, timeout))?;
-        stream_text_response(&request.endpoint, response, on_chunk, timeout)
+        self.stream_text_until_controlled(request, &http_control(request), on_chunk)
+    }
+
+    fn stream_text_until_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+        on_chunk: &mut dyn FnMut(String) -> Result<ControlFlow<()>>,
+    ) -> Result<()> {
+        let mut pending = Vec::new();
+        let mut ended = false;
+        self.run(
+            request,
+            control,
+            self.chunks(request, &mut |chunk| {
+                pending.extend(chunk);
+                let text = take_stream_text(&mut pending)?;
+                let action = if text.is_empty() {
+                    ControlFlow::Continue(())
+                } else {
+                    on_chunk(text)?
+                };
+                ended = action.is_break();
+                Ok(action)
+            }),
+        )?;
+        if !ended && !pending.is_empty() {
+            return Err(invalid_stream_utf8(&pending));
+        }
+        Ok(())
     }
 }
 
-/// Per-request bound: the caller's remaining time, never above the client
-/// ceiling. An exhausted deadline fails before any bytes are sent so the
-/// provider worker lane is released immediately.
+fn http_control(request: &LlmHttpRequest) -> InvocationControl {
+    InvocationControl::with_deadline(request.timeout.unwrap_or(PROVIDER_REQUEST_TIMEOUT))
+}
+
+fn json_body(body: Vec<u8>) -> Result<Value> {
+    serde_json::from_slice(&body).map_err(|source| NeuralError::Json {
+        value: String::from_utf8_lossy(&body).into_owned(),
+        expected: "LLM provider JSON response".into(),
+        source,
+    })
+}
+
+/// The request ceiling never extends the caller's absolute invocation deadline.
 fn request_timeout(request: &LlmHttpRequest) -> Result<Duration> {
     match request.timeout {
         Some(remaining) if remaining.is_zero() => Err(NeuralError::ProcessTimeout {
@@ -200,92 +326,6 @@ fn header_value(name: &str, value: &str) -> Result<HeaderValue> {
     })
 }
 
-fn parse_json_response(
-    endpoint: &str,
-    response: reqwest::blocking::Response,
-    timeout: Duration,
-) -> Result<Value> {
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|error| provider_error(endpoint, error, timeout))?;
-    ensure_success(endpoint, status.as_u16(), &body)?;
-    serde_json::from_str(&body).map_err(|source| NeuralError::Json {
-        value: body,
-        expected: "LLM provider JSON response".to_string(),
-        source,
-    })
-}
-
-fn parse_bytes_response(
-    endpoint: &str,
-    response: reqwest::blocking::Response,
-    timeout: Duration,
-) -> Result<Vec<u8>> {
-    let status = response.status();
-    let body = response
-        .bytes()
-        .map_err(|error| provider_error(endpoint, error, timeout))?;
-    // Success bodies stay binary; only an error body is decoded for the message.
-    if !(200..300).contains(&status.as_u16()) {
-        ensure_success(endpoint, status.as_u16(), &String::from_utf8_lossy(&body))?;
-    }
-    Ok(body.into())
-}
-
-fn parse_text_response(
-    endpoint: &str,
-    response: reqwest::blocking::Response,
-    timeout: Duration,
-) -> Result<Vec<String>> {
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|error| provider_error(endpoint, error, timeout))?;
-    ensure_success(endpoint, status.as_u16(), &body)?;
-    Ok(vec![body])
-}
-
-fn stream_text_response(
-    endpoint: &str,
-    mut response: reqwest::blocking::Response,
-    on_chunk: &mut dyn FnMut(String) -> Result<ControlFlow<()>>,
-    timeout: Duration,
-) -> Result<()> {
-    let status = response.status();
-    if !(200..300).contains(&status.as_u16()) {
-        // A non-2xx streaming response carries the provider's error JSON in
-        // the body; read a bounded prefix so the failure explains itself
-        // instead of logging `HTTP 404: `.
-        let mut limited = response.take(64 * 1024);
-        let mut body = Vec::new();
-        limited
-            .read_to_end(&mut body)
-            .map_err(|error| stream_error(endpoint, error, timeout))?;
-        ensure_success(endpoint, status.as_u16(), &String::from_utf8_lossy(&body))?;
-        return Ok(());
-    }
-    let mut buffer = [0_u8; 8192];
-    let mut pending = Vec::new();
-    loop {
-        let read = response
-            .read(&mut buffer)
-            .map_err(|error| stream_error(endpoint, error, timeout))?;
-        if read == 0 {
-            return if pending.is_empty() {
-                Ok(())
-            } else {
-                Err(invalid_stream_utf8(&pending))
-            };
-        }
-        pending.extend_from_slice(&buffer[..read]);
-        let text = take_stream_text(&mut pending)?;
-        if !text.is_empty() && on_chunk(text)?.is_break() {
-            return Ok(());
-        }
-    }
-}
-
 fn ensure_success(endpoint: &str, status: u16, body: &str) -> Result<()> {
     if (200..300).contains(&status) {
         return Ok(());
@@ -324,39 +364,6 @@ fn provider_error(endpoint: &str, error: reqwest::Error, timeout: Duration) -> N
     }
 }
 
-fn stream_error(endpoint: &str, error: std::io::Error, timeout: Duration) -> NeuralError {
-    // Response::read wraps reqwest timeouts in ErrorKind::Other. Preserve
-    // their typed deadline instead of reporting a non-retryable rejection.
-    if error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<reqwest::Error>())
-        .is_some_and(reqwest::Error::is_timeout)
-    {
-        return NeuralError::ProcessTimeout {
-            command: endpoint.to_string(),
-            timeout_ms: timeout_ms(timeout),
-        };
-    }
-    let message = bounded_message(&source_chain(&error));
-    match error.kind() {
-        ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof => {
-            NeuralError::Io {
-                value: endpoint.to_string(),
-                expected: "reachable LLM provider endpoint".to_string(),
-                source: std::io::Error::new(ErrorKind::ConnectionReset, message),
-            }
-        }
-        ErrorKind::TimedOut => NeuralError::ProcessTimeout {
-            command: endpoint.to_string(),
-            timeout_ms: timeout_ms(timeout),
-        },
-        _ => NeuralError::ProviderFailed {
-            provider_id: endpoint.to_string(),
-            message,
-        },
-    }
-}
-
 fn timeout_ms(timeout: Duration) -> u64 {
     let fractional_millisecond = u64::from(!timeout.subsec_nanos().is_multiple_of(1_000_000));
     (timeout.as_millis() as u64 + fractional_millisecond).max(1)
@@ -384,6 +391,7 @@ fn invalid_stream_utf8(bytes: &[u8]) -> NeuralError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn empty_credential_omits_authorization_header() {
@@ -575,39 +583,6 @@ mod tests {
         // The `source()` chain must survive: the outer reqwest Display alone
         // hides the actual cause (OS connection refused).
         assert!(message.contains("Connection refused"), "message: {message}");
-    }
-
-    #[test]
-    fn stream_reset_maps_to_retryable_io_error() {
-        let error = stream_error(
-            "http://127.0.0.1:9/v1",
-            std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                "connection reset by peer",
-            ),
-            Duration::from_millis(250),
-        );
-        let NeuralError::Io { source, .. } = error else {
-            panic!("unexpected error: {error:?}");
-        };
-        assert_eq!(source.kind(), std::io::ErrorKind::ConnectionReset);
-        assert!(source.to_string().contains("connection reset by peer"));
-    }
-
-    #[test]
-    fn stream_timeout_maps_to_process_timeout() {
-        let error = stream_error(
-            "http://127.0.0.1:9/v1",
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "read timed out"),
-            Duration::from_millis(250),
-        );
-        assert!(matches!(
-            error,
-            NeuralError::ProcessTimeout {
-                timeout_ms: 250,
-                ..
-            }
-        ));
     }
 
     #[test]

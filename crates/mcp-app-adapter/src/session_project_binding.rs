@@ -312,6 +312,25 @@ impl BindingOwner {
     }
 
     fn validate_directory(&self, root: &str, require_absolute: bool) -> Result<(), String> {
+        // Online selections identify graphs, never filesystem paths. The selected
+        // semantic adapter checks current account access on every graph operation.
+        if let Some(id) = root.strip_prefix("lumvise://projects/") {
+            let canonical = id.len() == 36
+                && id.bytes().enumerate().all(|(index, byte)| {
+                    if [8, 13, 18, 23].contains(&index) {
+                        byte == b'-'
+                    } else {
+                        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                    }
+                });
+            return if canonical {
+                Ok(())
+            } else {
+                Err(format!(
+                    "project_root {root:?}: expected lumvise://projects/canonical-UUID"
+                ))
+            };
+        }
         if root.is_empty()
             || root.trim() != root
             || (require_absolute && !Path::new(root).is_absolute())
@@ -478,6 +497,25 @@ fn new_connection_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn online_project_selection_needs_no_local_directory() {
+        let registry = Arc::new(FakeProjectRegistry::default());
+        let binding = SessionProjectBinding::with_registry(registry.clone(), None, None);
+        binding.initialize().unwrap();
+        let online = "lumvise://projects/22222222-2222-4222-8222-222222222222";
+        binding.select(json!({"project_root": online})).unwrap();
+        assert_eq!(
+            binding.owner.lock().unwrap().project_root.as_deref(),
+            Some(online)
+        );
+        assert_eq!(registry.records.lock().unwrap().len(), 2);
+        assert!(
+            binding
+                .select(json!({"project_root": "lumvise://projects/../../local"}))
+                .is_err()
+        );
+    }
 
     #[derive(Default)]
     struct FakeProjectRegistry {

@@ -110,10 +110,14 @@ struct FakeTokens {
 }
 
 impl BearerTokenSource for FakeTokens {
-    fn bearer_token(&self, force_refresh: bool) -> std::result::Result<String, String> {
+    fn bearer_token(
+        &self,
+        force_refresh: bool,
+        _control: &lumvise_resource_routing::InvocationControl,
+    ) -> std::result::Result<String, String> {
         self.log.lock().unwrap().push(force_refresh);
         if self.signed_out {
-            return Err("not signed in".into());
+            return Err(SIGN_IN_MESSAGE.into());
         }
         Ok(if force_refresh { "renewed" } else { "cached" }.into())
     }
@@ -134,6 +138,31 @@ fn request() -> LlmHttpRequest {
         headers: Default::default(),
         payload: json!({}),
     }
+}
+
+struct ExpiringTokens;
+
+impl BearerTokenSource for ExpiringTokens {
+    fn bearer_token(
+        &self,
+        _: bool,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> std::result::Result<String, String> {
+        std::thread::sleep(control.remaining() + std::time::Duration::from_millis(1));
+        Ok("late token".into())
+    }
+}
+
+#[test]
+fn expired_credential_lookup_never_dispatches_http_with_a_stale_timeout() {
+    let inner = FakeInner::scripted(Vec::new());
+    let client = TokenInjectingClient::new(inner.clone(), Arc::new(ExpiringTokens));
+    let control = lumvise_resource_routing::InvocationControl::with_deadline(
+        std::time::Duration::from_millis(10),
+    );
+    let result = client.post_json_controlled(&request(), &control);
+    assert!(matches!(result, Err(NeuralError::ProcessTimeout { .. })));
+    assert!(inner.requests.lock().unwrap().is_empty());
 }
 
 fn message(error: NeuralError) -> (String, String) {

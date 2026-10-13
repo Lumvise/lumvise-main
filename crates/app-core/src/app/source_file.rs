@@ -16,6 +16,7 @@ use super::mcp_http::{HttpRequest, HttpResponse, error_response, json_response};
 use crate::AppCore;
 use lumvise_db_core::{SemanticOperation, SemanticPersistence, SemanticResult};
 
+pub(crate) mod folders;
 mod intelligence;
 pub(crate) use intelligence::invoke_project_source;
 use lumvise_resource_routing::InvocationControl;
@@ -197,6 +198,7 @@ fn indexed_source_path(
 ) -> Result<(PathBuf, PathBuf), GuardFailure> {
     let canonical_root = indexed_root(
         app.semantic.as_ref(),
+        app.relational.as_ref(),
         root,
         &InvocationControl::sixty_seconds(),
     )?;
@@ -212,9 +214,29 @@ fn indexed_source_path(
 
 fn indexed_root(
     semantic: &dyn SemanticPersistence,
+    relational: &dyn lumvise_db_core::RelationalPersistence,
     root: &str,
     control: &InvocationControl,
 ) -> Result<PathBuf, GuardFailure> {
+    if root.starts_with("lumvise://projects/") {
+        let folder = folders::bound_folder(relational, root, control).map_err(|message| GuardFailure { status: "500 Internal Server Error", message })?
+            .ok_or_else(|| GuardFailure { status: "404 Not Found", message: "Local files are unavailable for this online project. Attach a local folder to read source contents; graph information remains available.".into() })?;
+        semantic
+            .execute(
+                SemanticOperation::ProjectIdentity {
+                    project_root: root.into(),
+                },
+                control,
+            )
+            .map_err(|error| GuardFailure {
+                status: "403 Forbidden",
+                message: error.to_string(),
+            })?;
+        return std::fs::canonicalize(&folder).map_err(|error| GuardFailure {
+            status: "404 Not Found",
+            message: format!("Local folder {folder} is unavailable: {error}"),
+        });
+    }
     let canonical_root = std::fs::canonicalize(root).map_err(|error| GuardFailure {
         status: "404 Not Found",
         message: format!("project_root {root} is unavailable: {error}"),
@@ -507,6 +529,61 @@ mod tests {
             .unwrap();
         assert_eq!(payload["text"], converted.markdown);
         assert_eq!(payload["conversion"]["enhancement"], "disabled");
+    }
+
+    #[test]
+    fn online_graph_source_folder_is_optional_and_keeps_the_containment_guard() {
+        let app = credentialed_app();
+        let folder = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("file.txt"), "local source").unwrap();
+        std::fs::write(outside.path().join("private.txt"), "private").unwrap();
+        let root = "lumvise://projects/22222222-2222-4222-8222-222222222222";
+        let missing = source_file_response(&app, &request(root, "file.txt"));
+        assert_eq!(missing.status, "404 Not Found");
+        assert!(
+            String::from_utf8_lossy(missing.buffered_bytes().unwrap())
+                .contains("Attach a local folder")
+        );
+        let mut binding = request(root, "file.txt");
+        binding.method = "PUT".into();
+        binding.path = folders::ENDPOINT.into();
+        binding.body = serde_json::to_vec(&json!({"folder":folder.path()})).unwrap();
+        assert_eq!(folders::response(&app, &binding).status, "200 OK");
+        assert_eq!(
+            source_file_response(&app, &request(root, "file.txt")).status,
+            "200 OK"
+        );
+        let source = invoke_project_source(app.semantic.as_ref(), app.relational.as_ref(), json!({"operation":"read","project_root":root,"path":"file.txt","start_line":1,"end_line":1}), &InvocationControl::sixty_seconds()).unwrap();
+        assert_eq!(source["text"], "local source");
+        assert_eq!(
+            source_file_response(
+                &app,
+                &request(root, &outside.path().join("private.txt").to_string_lossy())
+            )
+            .status,
+            "400 Bad Request"
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                outside.path().join("private.txt"),
+                folder.path().join("escape"),
+            )
+            .unwrap();
+            assert_eq!(
+                source_file_response(&app, &request(root, "escape")).status,
+                "400 Bad Request"
+            );
+        }
+        binding.body = serde_json::to_vec(&json!({"folder":null})).unwrap();
+        assert_eq!(folders::response(&app, &binding).status, "200 OK");
+        assert_eq!(
+            source_file_response(&app, &request(root, "file.txt")).status,
+            "404 Not Found"
+        );
+        binding.authorization = None;
+        assert_eq!(folders::response(&app, &binding).status, "401 Unauthorized");
     }
 
     #[test]

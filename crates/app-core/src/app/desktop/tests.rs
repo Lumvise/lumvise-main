@@ -449,7 +449,11 @@ impl HostedAiAccount for FakeHostedAccount {
         "https://hosted.test/api/ai".to_string()
     }
 
-    fn bearer_token(&self, _force_refresh: bool) -> Result<String, String> {
+    fn bearer_token(
+        &self,
+        _force_refresh: bool,
+        _control: &lumvise_resource_routing::InvocationControl,
+    ) -> Result<String, String> {
         Ok("token".to_string())
     }
 }

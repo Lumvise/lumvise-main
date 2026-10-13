@@ -41,6 +41,15 @@ pub(super) fn production_http() -> Arc<dyn LlmHttpClient> {
 struct LazyReqwestLlmHttpClient(OnceLock<ReqwestLlmHttpClient>);
 
 impl LlmHttpClient for LazyReqwestLlmHttpClient {
+    fn post_json_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+    ) -> lumvise_neural_core::Result<serde_json::Value> {
+        self.0
+            .get_or_init(ReqwestLlmHttpClient::new)
+            .post_json_controlled(request, control)
+    }
     fn post_json(
         &self,
         request: &LlmHttpRequest,

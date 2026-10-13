@@ -110,3 +110,75 @@ fn zero_timeout_fails_with_process_timeout_before_sending() {
         "no connection should have been attempted"
     );
 }
+
+#[test]
+fn cancellation_interrupts_a_silent_http_body_without_waiting_for_eof() {
+    let server = ChunkedProvider::start(b"first".to_vec(), b"tail".to_vec());
+    let control = lumvise_resource_routing::InvocationControl::sixty_seconds();
+    let cancel = control.clone();
+    let (arrived, first) = mpsc::channel();
+    let request = server.request();
+    let call = std::thread::spawn(move || {
+        ReqwestLlmHttpClient::new().stream_bytes_controlled(&request, &control, &mut |chunk| {
+            arrived.send(chunk).unwrap();
+            Ok(())
+        })
+    });
+    assert_eq!(
+        first.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"first"
+    );
+    let started = std::time::Instant::now();
+    cancel.cancel();
+    assert!(matches!(
+        call.join().unwrap(),
+        Err(NeuralError::ProcessCancelled { .. })
+    ));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    // Release the server after cancellation proved independent of its remaining response.
+    let _ = server.release.send(());
+    let _ = server.release.send(());
+    let _ = server.thread.join();
+}
+
+#[test]
+fn speech_emits_pcm_before_the_provider_finishes_the_response() {
+    use lumvise_neural_core::text2voice::{Text2VoiceRequest, Text2VoiceStreamEvent};
+    use lumvise_neural_core::{
+        OpenRouterSpeechConfig, OpenRouterSpeechSynthesizer, SpeechSynthesizer,
+    };
+    let server = ChunkedProvider::start(vec![1, 2], vec![3, 4]);
+    let control = lumvise_resource_routing::InvocationControl::sixty_seconds();
+    let voice = OpenRouterSpeechSynthesizer::new(
+        OpenRouterSpeechConfig {
+            endpoint: server.endpoint.clone(),
+            credential: String::new(),
+            model: "fake".into(),
+            voice: None,
+            timeout_ms: 60_000,
+        },
+        std::sync::Arc::new(ReqwestLlmHttpClient::new()),
+    );
+    let mut chunks = Vec::new();
+    let result = voice.stream_with_events(
+        &Text2VoiceRequest {
+            text: "Hello".into(),
+            voice_id: None,
+            model: None,
+        },
+        &control,
+        &mut |event| {
+            if let Text2VoiceStreamEvent::AudioChunk { audio, .. } = event {
+                chunks.push(audio);
+                server.release.send(()).unwrap();
+                if chunks.len() == 2 {
+                    control.cancel();
+                }
+            }
+            Ok(())
+        },
+    );
+    assert!(result.is_err(), "test cancels before EOF");
+    assert_eq!(chunks, [vec![1, 2], vec![3, 4]]);
+    server.thread.join().unwrap();
+}

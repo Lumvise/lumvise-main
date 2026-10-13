@@ -255,7 +255,11 @@ impl LlmProvider for JevDecisionProvider {
         control: &dyn ProviderCallControl,
     ) -> lumvise_neural_core::Result<LlmResponse> {
         let timeout = provider_timeout(control)?;
-        let response = self.http.post_json(&self.http_request(timeout))?;
+        let request = self.http_request(timeout);
+        let response = match control.invocation_control() {
+            Some(invocation) => self.http.post_json_controlled(&request, invocation),
+            None => self.http.post_json(&request),
+        }?;
         let decision = parse_answer_value(&response).ok_or_else(malformed_answer)?;
         Ok(decision_response(decision, response_model(&response)))
     }

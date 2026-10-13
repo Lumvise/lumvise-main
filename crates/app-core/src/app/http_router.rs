@@ -35,6 +35,11 @@ pub(crate) fn route_http_request(app: &AppCore, request: HttpRequest) -> HttpRes
     {
         return super::storage_change_stream::changes_since_response(app, &request);
     }
+    if request.path == super::source_file::folders::ENDPOINT
+        && matches!(request.method.as_str(), "GET" | "PUT")
+    {
+        return super::source_file::folders::response(app, &request);
+    }
     if request.method == "GET" && request.path == super::source_file::SOURCE_FILE_ENDPOINT {
         return super::source_file::source_file_response(app, &request);
     }

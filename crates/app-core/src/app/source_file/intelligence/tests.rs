@@ -23,6 +23,7 @@ fn invoke(root: &Path, mut input: Value) -> Result<Value, String> {
     input["project_root"] = json!(root);
     invoke_project_source(
         &FakeProjectRoots { root },
+        &lumvise_db_core::LocalPersistence::in_memory().unwrap(),
         input,
         &InvocationControl::sixty_seconds(),
     )
@@ -79,6 +80,7 @@ fn source_operations_reject_unindexed_roots_escape_symlinks_and_expired_calls() 
             &FakeProjectRoots {
                 root: outside.path().to_string_lossy().into()
             },
+            &lumvise_db_core::LocalPersistence::in_memory().unwrap(),
             request.clone(),
             &InvocationControl::sixty_seconds()
         )
@@ -90,6 +92,7 @@ fn source_operations_reject_unindexed_roots_escape_symlinks_and_expired_calls() 
             &FakeProjectRoots {
                 root: dir.path().to_string_lossy().into()
             },
+            &lumvise_db_core::LocalPersistence::in_memory().unwrap(),
             request,
             &InvocationControl::with_deadline(std::time::Duration::ZERO)
         )

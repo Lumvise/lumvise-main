@@ -96,6 +96,44 @@ pub struct LlmHttpRequest {
 
 pub trait LlmHttpClient: Send + Sync {
     fn post_json(&self, request: &LlmHttpRequest) -> Result<Value>;
+    /// Shares the caller's absolute deadline through authentication and HTTP I/O.
+    /// Example: `client.post_json_controlled(&request, &control)`.
+    fn post_json_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> Result<Value> {
+        crate::speech::ensure_active(control, &request.endpoint)?;
+        self.post_json(request)
+    }
+    /// Returns binary content within the original invocation, e.g. for synthesized audio.
+    fn post_bytes_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> Result<Vec<u8>> {
+        crate::speech::ensure_active(control, &request.endpoint)?;
+        self.post_bytes(request)
+    }
+    /// Delivers response bytes as they arrive. Example: append PCM samples to playback.
+    fn stream_bytes_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &lumvise_resource_routing::InvocationControl,
+        on_chunk: &mut dyn FnMut(Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        on_chunk(self.post_bytes_controlled(request, control)?)
+    }
+    /// Stops a streamed response on cancellation even while the server is silent.
+    fn stream_text_until_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &lumvise_resource_routing::InvocationControl,
+        on_chunk: &mut dyn FnMut(String) -> Result<std::ops::ControlFlow<()>>,
+    ) -> Result<()> {
+        crate::speech::ensure_active(control, &request.endpoint)?;
+        self.stream_text_until(request, on_chunk)
+    }
     /// Posts JSON and returns the raw response body (for example synthesized audio).
     fn post_bytes(&self, request: &LlmHttpRequest) -> Result<Vec<u8>> {
         Err(crate::NeuralError::ProviderFailed {

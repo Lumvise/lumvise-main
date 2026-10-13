@@ -1,16 +1,25 @@
+#[cfg(test)]
+use crate::domain::vector_search::{SCORE_CALLS, cosine_score};
+use crate::domain::vector_search::{top_k as rank_vectors, validate_search_input};
 use crate::local::grafeo::semantic_storage::SemanticStorage;
-use crate::local::sql::validation::require_non_empty;
-use crate::{DbError, Result, VectorSearchResult};
+use crate::{Result, VectorSearchResult};
 use grafeo::{NodeId, Value as GrafeoValue};
 use grafeo_core::graph::GraphStore as GrafeoGraphStore;
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
-#[cfg(test)]
-thread_local! {
-    static SCORE_CALLS: Cell<usize> = const { Cell::new(0) };
+fn top_k(
+    candidates: impl IntoIterator<Item = (NodeId, String, Arc<[f32]>)>,
+    query: &[f32],
+    k: usize,
+) -> Vec<VectorSearchResult> {
+    rank_vectors(
+        candidates.into_iter().map(|(_, id, vector)| (id, vector)),
+        query,
+        k,
+    )
 }
 
 const ARTIFACT_VECTOR_LABEL: &str = "SemanticArtifactVector";
@@ -103,23 +112,6 @@ impl<'db> SemanticStorage<'db> {
     }
 }
 
-fn validate_search_input(project_root: &str, query: &[f32], k: usize) -> Result<()> {
-    require_non_empty(project_root, "non-empty project root")?;
-    if query.is_empty() {
-        return Err(DbError::invalid_value("[]", "non-empty vector query"));
-    }
-    if !query.iter().all(|value| value.is_finite()) {
-        return Err(DbError::invalid_value(
-            "query",
-            "finite vector query values",
-        ));
-    }
-    if k == 0 {
-        return Err(DbError::invalid_value("0", "top-k greater than zero"));
-    }
-    Ok(())
-}
-
 fn vector_candidates_from_properties(
     store: &dyn GrafeoGraphStore,
     node_ids: &[NodeId],
@@ -170,88 +162,6 @@ fn batch_string(value: Option<&GrafeoValue>) -> Option<String> {
     match value? {
         GrafeoValue::String(value) => Some(value.to_string()),
         _ => None,
-    }
-}
-
-#[derive(Debug)]
-struct RankedCandidate {
-    id: String,
-    score: f32,
-}
-
-impl PartialEq for RankedCandidate {
-    fn eq(&self, other: &Self) -> bool {
-        self.score.to_bits() == other.score.to_bits() && self.id == other.id
-    }
-}
-
-impl Eq for RankedCandidate {}
-
-impl PartialOrd for RankedCandidate {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for RankedCandidate {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other
-            .score
-            .total_cmp(&self.score)
-            .then_with(|| self.id.cmp(&other.id))
-    }
-}
-
-fn top_k(
-    candidates: impl IntoIterator<Item = (NodeId, String, Arc<[f32]>)>,
-    query: &[f32],
-    k: usize,
-) -> Vec<VectorSearchResult> {
-    let mut heap = BinaryHeap::with_capacity(k);
-    for (_, id, vector) in candidates {
-        if vector.len() != query.len() {
-            continue;
-        }
-        let score = cosine_score(query, &vector);
-        heap.push(RankedCandidate { id, score });
-        if heap.len() > k {
-            heap.pop();
-        }
-    }
-    let mut ranked = heap.into_vec();
-    ranked.sort_by(|left, right| {
-        right
-            .score
-            .total_cmp(&left.score)
-            .then(left.id.cmp(&right.id))
-    });
-    ranked
-        .into_iter()
-        .map(|candidate| VectorSearchResult {
-            id: candidate.id,
-            score: candidate.score,
-        })
-        .collect()
-}
-
-fn cosine_score(query: &[f32], vector: &[f32]) -> f32 {
-    #[cfg(test)]
-    SCORE_CALLS.with(|calls| calls.set(calls.get() + 1));
-    let (dot, query_norm, vector_norm) = query.iter().zip(vector).fold(
-        (0.0_f32, 0.0_f32, 0.0_f32),
-        |(dot, query_norm, vector_norm), (query, vector)| {
-            (
-                dot + query * vector,
-                query_norm + query * query,
-                vector_norm + vector * vector,
-            )
-        },
-    );
-    let denominator = query_norm.sqrt() * vector_norm.sqrt();
-    if denominator == 0.0 {
-        0.0
-    } else {
-        dot / denominator
     }
 }
 

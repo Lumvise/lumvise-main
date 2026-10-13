@@ -38,6 +38,7 @@ tungstenite.workspace = true
 toml.workspace = true
 tar.workspace = true
 tokio-util.workspace = true
+tokio.workspace = true
 whisper-rs = { workspace = true, optional = true }
 url.workspace = true
 uuid.workspace = true

@@ -41,6 +41,8 @@ use lumvise_plugin_runtime::{
 use lumvise_resource_routing::InvocationControl;
 use sha2::{Digest, Sha256};
 
+#[path = "knowledge_protocol/canonical_identity.rs"]
+mod canonical_identity;
 #[path = "knowledge_protocol/retired_kind_migration.rs"]
 mod retired_kind_migration;
 mod support;
@@ -65,6 +67,7 @@ struct MemoryStorageBroker {
     vector_write_sizes: Mutex<Vec<usize>>,
     plugin_invoke_operations: Mutex<BTreeMap<String, usize>>,
     failure: Mutex<Option<(String, String)>>,
+    canonical_artifact_id: Mutex<Option<String>>,
 }
 
 impl Default for MemoryStorageBroker {
@@ -82,6 +85,7 @@ impl Default for MemoryStorageBroker {
             vector_write_sizes: Mutex::default(),
             plugin_invoke_operations: Mutex::default(),
             failure: Mutex::default(),
+            canonical_artifact_id: Mutex::default(),
         }
     }
 }
@@ -116,7 +120,7 @@ impl HostCapabilityBroker for MemoryStorageBroker {
 impl MemoryStorageBroker {
     fn semantic_storage(
         &self,
-        request: HostCapabilityRequest,
+        mut request: HostCapabilityRequest,
     ) -> Result<serde_json::Value, HostCapabilityError> {
         let operation = request.input["operation"]
             .as_str()
@@ -136,6 +140,9 @@ impl MemoryStorageBroker {
                 .as_str()
                 .unwrap_or("/work/demo");
             self.ensure_element(owner, project_root);
+            if let Some(id) = self.canonical_artifact_id.lock().unwrap().as_ref() {
+                request.input["artifact"]["artifact_id"] = serde_json::json!(id);
+            }
         }
         self.semantic.invoke(request)
     }

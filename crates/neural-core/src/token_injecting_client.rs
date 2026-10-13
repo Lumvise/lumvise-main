@@ -1,6 +1,7 @@
 //! Serves an LLM HTTP client's calls under an account's bearer token, renewed on demand.
 //! The caller never holds a provider key; the token is attached per call.
 
+use lumvise_resource_routing::InvocationControl;
 use std::cell::Cell;
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -17,7 +18,11 @@ const DAILY_LIMIT_MESSAGE: &str = "Daily Lumvise cloud limit reached.";
 
 /// Returns a currently valid bearer token; `force_refresh` renews it, e.g. `source.bearer_token(false)`.
 pub trait BearerTokenSource: Send + Sync {
-    fn bearer_token(&self, force_refresh: bool) -> std::result::Result<String, String>;
+    fn bearer_token(
+        &self,
+        force_refresh: bool,
+        control: &InvocationControl,
+    ) -> std::result::Result<String, String>;
 }
 
 /// Puts a fresh account token on every call and turns website refusals into actionable messages.
@@ -37,17 +42,24 @@ impl TokenInjectingClient {
     fn send<T>(
         &self,
         request: &LlmHttpRequest,
+        control: &InvocationControl,
         delivered: &Cell<bool>,
         mut call: impl FnMut(&LlmHttpRequest) -> Result<T>,
     ) -> Result<T> {
         let mut force_refresh = false;
         loop {
-            let credential = self
-                .token
-                .bearer_token(force_refresh)
-                .map_err(|_| cloud_error(SIGN_IN_MESSAGE))?;
+            crate::speech::ensure_active(control, PROVIDER_ID)?;
+            let credential = self.token.bearer_token(force_refresh, control);
+            crate::speech::ensure_active(control, PROVIDER_ID)?;
+            let credential = credential.map_err(|message| cloud_error(&message))?;
             let request = LlmHttpRequest {
                 credential,
+                timeout: Some(
+                    request
+                        .timeout
+                        .unwrap_or(control.remaining())
+                        .min(control.remaining()),
+                ),
                 ..request.clone()
             };
             match call(&request) {
@@ -62,27 +74,65 @@ impl TokenInjectingClient {
 
 impl LlmHttpClient for TokenInjectingClient {
     fn post_json(&self, request: &LlmHttpRequest) -> Result<Value> {
-        self.send(request, &Cell::new(false), |request| {
-            self.inner.post_json(request)
-        })
+        self.post_json_controlled(request, &request_control(request))
     }
 
     fn post_bytes(&self, request: &LlmHttpRequest) -> Result<Vec<u8>> {
-        self.send(request, &Cell::new(false), |request| {
-            self.inner.post_bytes(request)
+        self.post_bytes_controlled(request, &request_control(request))
+    }
+
+    fn post_json_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+    ) -> Result<Value> {
+        self.send(request, control, &Cell::new(false), |request| {
+            self.inner.post_json_controlled(request, control)
+        })
+    }
+
+    fn post_bytes_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+    ) -> Result<Vec<u8>> {
+        self.send(request, control, &Cell::new(false), |request| {
+            self.inner.post_bytes_controlled(request, control)
+        })
+    }
+
+    fn stream_bytes_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+        on_chunk: &mut dyn FnMut(Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        let delivered = Cell::new(false);
+        self.send(request, control, &delivered, |request| {
+            self.inner
+                .stream_bytes_controlled(request, control, &mut |chunk| {
+                    delivered.set(true);
+                    on_chunk(chunk)
+                })
         })
     }
 
     fn get_json(&self, request: &LlmHttpRequest) -> Result<Value> {
-        self.send(request, &Cell::new(false), |request| {
-            self.inner.get_json(request)
-        })
+        self.send(
+            request,
+            &request_control(request),
+            &Cell::new(false),
+            |request| self.inner.get_json(request),
+        )
     }
 
     fn stream_text(&self, request: &LlmHttpRequest) -> Result<Vec<String>> {
-        self.send(request, &Cell::new(false), |request| {
-            self.inner.stream_text(request)
-        })
+        let mut chunks = Vec::new();
+        self.stream_text_with_chunks(request, &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })?;
+        Ok(chunks)
     }
 
     fn stream_text_until(
@@ -90,12 +140,22 @@ impl LlmHttpClient for TokenInjectingClient {
         request: &LlmHttpRequest,
         on_chunk: &mut dyn FnMut(String) -> Result<ControlFlow<()>>,
     ) -> Result<()> {
+        self.stream_text_until_controlled(request, &request_control(request), on_chunk)
+    }
+
+    fn stream_text_until_controlled(
+        &self,
+        request: &LlmHttpRequest,
+        control: &InvocationControl,
+        on_chunk: &mut dyn FnMut(String) -> Result<ControlFlow<()>>,
+    ) -> Result<()> {
         let delivered = Cell::new(false);
-        self.send(request, &delivered, |request| {
-            self.inner.stream_text_until(request, &mut |chunk| {
-                delivered.set(true);
-                on_chunk(chunk)
-            })
+        self.send(request, control, &delivered, |request| {
+            self.inner
+                .stream_text_until_controlled(request, control, &mut |chunk| {
+                    delivered.set(true);
+                    on_chunk(chunk)
+                })
         })
     }
 
@@ -104,14 +164,19 @@ impl LlmHttpClient for TokenInjectingClient {
         request: &LlmHttpRequest,
         on_chunk: &mut LlmTextChunkSink<'_>,
     ) -> Result<()> {
-        let delivered = Cell::new(false);
-        self.send(request, &delivered, |request| {
-            self.inner.stream_text_with_chunks(request, &mut |chunk| {
-                delivered.set(true);
-                on_chunk(chunk)
-            })
+        self.stream_text_until(request, &mut |chunk| {
+            on_chunk(chunk)?;
+            Ok(ControlFlow::Continue(()))
         })
     }
+}
+
+fn request_control(request: &LlmHttpRequest) -> InvocationControl {
+    InvocationControl::with_deadline(
+        request
+            .timeout
+            .unwrap_or(std::time::Duration::from_secs(60)),
+    )
 }
 
 fn cloud_error(message: &str) -> NeuralError {

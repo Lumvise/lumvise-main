@@ -45,10 +45,15 @@ pub trait SpeechSynthesizer: Send + Sync {
 }
 
 pub(crate) fn ensure_active(control: &InvocationControl, operation: &str) -> Result<()> {
-    if control.is_cancelled() || control.is_expired() {
-        return Err(crate::NeuralError::ProviderFailed {
-            provider_id: operation.into(),
-            message: "speech invocation cancelled or deadline elapsed".into(),
+    if control.is_cancelled() {
+        return Err(crate::NeuralError::ProcessCancelled {
+            command: operation.into(),
+        });
+    }
+    if control.is_expired() {
+        return Err(crate::NeuralError::ProcessTimeout {
+            command: operation.into(),
+            timeout_ms: 0,
         });
     }
     Ok(())

@@ -37,7 +37,7 @@ pub trait HostExtension: Send + Sync {
 ///     fn endpoint(&self) -> String {
 ///         "https://example.com/api/public/v1/ai".to_string()
 ///     }
-///     fn bearer_token(&self, _force_refresh: bool) -> Result<String, String> {
+///     fn bearer_token(&self, _force_refresh: bool, _control: &lumvise_resource_routing::InvocationControl) -> Result<String, String> {
 ///         Ok("token".to_string())
 ///     }
 /// }
@@ -46,5 +46,9 @@ pub trait HostedAiAccount: Send + Sync + std::fmt::Debug {
     /// Base URL of the hosted services, e.g. "https://example.com/api/public/v1/ai".
     fn endpoint(&self) -> String;
     /// A currently valid bearer token; `force_refresh` after an authentication failure.
-    fn bearer_token(&self, force_refresh: bool) -> Result<String, String>;
+    fn bearer_token(
+        &self,
+        force_refresh: bool,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> Result<String, String>;
 }

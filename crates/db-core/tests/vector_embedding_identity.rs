@@ -136,3 +136,49 @@ fn corrected_embedding_identity_excludes_old_vectors_until_replacement() {
     fixture.assert_matches(LEGACY, "bge-small-en-v1.5", 0);
     fixture.assert_matches(CORRECTED, "bge-m3", 0);
 }
+
+#[test]
+fn portable_archive_name_vectors_match_local_ranking_and_model_filtering() {
+    let fixture = VectorIdentityFixture::new();
+    fixture.store(CORRECTED);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("graph.pz");
+    fixture.execute(SemanticOperation::CreatePzSnapshot {
+        project_root: ROOT.into(),
+        output_path: path.to_string_lossy().into_owned(),
+    });
+    let archive =
+        lumvise_db_core::SemanticArchive::read(&path, ROOT, &InvocationControl::sixty_seconds())
+            .unwrap();
+    for engine in [CORRECTED, LEGACY] {
+        for model in [Some("bge-small-en-v1.5"), Some("other"), None] {
+            let SemanticResult::ElementVectorSearch(expected) =
+                fixture.execute(SemanticOperation::SearchElementNameVectors {
+                    project_root: ROOT.into(),
+                    query: vec![1.0, 0.0],
+                    k: 5,
+                    engine_id: engine.into(),
+                    model: model.map(str::to_owned),
+                })
+            else {
+                panic!("expected vector search");
+            };
+            assert_eq!(
+                archive
+                    .search_element_name_vectors(&[1.0, 0.0], 5, engine, model)
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+    assert!(
+        archive
+            .search_element_name_vectors(&[], 5, CORRECTED, None)
+            .is_err()
+    );
+    assert!(
+        archive
+            .search_element_name_vectors(&[1.0, 0.0], 0, CORRECTED, None)
+            .is_err()
+    );
+}

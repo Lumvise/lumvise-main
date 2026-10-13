@@ -181,6 +181,7 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
         match definition.route {
             HostCapabilityRoute::ProjectSource => crate::app::invoke_project_source(
                 self.semantic.as_ref(),
+                self.relational.as_ref(),
                 request.input,
                 &InvocationControl::sixty_seconds(),
             )
@@ -224,6 +225,7 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
                 let bridge = super::plugin_host_capabilities::invocation_control(context);
                 crate::app::invoke_project_source(
                     self.semantic.as_ref(),
+                    self.relational.as_ref(),
                     request.input,
                     &bridge.control(),
                 )

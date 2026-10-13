@@ -87,8 +87,8 @@ pub(crate) fn put_canvas_file_with(
         },
         &InvocationControl::sixty_seconds(),
     )? {
-        SemanticResult::ArtifactBlob(Some(_)) => Ok(CanvasFileRef {
-            content_ref,
+        SemanticResult::ArtifactBlob(Some(stored)) => Ok(CanvasFileRef {
+            content_ref: stored.content_ref,
             mime_type: media_type,
             byte_size: bytes.len(),
         }),

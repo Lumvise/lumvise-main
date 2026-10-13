@@ -10,6 +10,7 @@ pub struct StreamControl {
     deadline: Option<std::time::Instant>,
     cancel_flag: Option<Arc<AtomicBool>>,
     cancellation_token: Option<CancellationToken>,
+    invocation: Option<lumvise_resource_routing::InvocationControl>,
 }
 
 impl StreamControl {
@@ -20,6 +21,7 @@ impl StreamControl {
             deadline: None,
             cancel_flag: None,
             cancellation_token: None,
+            invocation: None,
         }
     }
 
@@ -30,6 +32,7 @@ impl StreamControl {
             deadline: None,
             cancel_flag: None,
             cancellation_token: None,
+            invocation: None,
         }
     }
 
@@ -60,7 +63,24 @@ impl StreamControl {
             deadline: None,
             cancel_flag: None,
             cancellation_token: Some(cancellation_token),
+            invocation: None,
         }
+    }
+
+    /// Keeps the original invocation for downstream HTTP and credential waits.
+    /// Example: `StreamControl::from_invocation(control.clone())`.
+    pub fn from_invocation(control: lumvise_resource_routing::InvocationControl) -> Self {
+        Self {
+            invocation: Some(control.clone()),
+            ..Self::from_cancellation_token(control.cancellation_token())
+                .with_deadline(control.deadline())
+        }
+    }
+
+    pub(crate) fn invocation_control(
+        &self,
+    ) -> Option<&lumvise_resource_routing::InvocationControl> {
+        self.invocation.as_ref()
     }
 
     pub fn is_cancelled(&self) -> bool {

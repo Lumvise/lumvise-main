@@ -4,6 +4,7 @@ mod general_projection;
 mod media_artifacts;
 mod projection_records;
 mod scoped;
+mod selective;
 mod snapshot_source;
 use crate::{
     DbError, Result, ScopedSemanticRead, SemanticArtifact, SemanticElement,
@@ -60,7 +61,7 @@ impl SemanticProjectSnapshot {
     /// Example: `snapshot.scoped_graph(&request)?`.
     pub fn scoped_graph(&self, request: &ScopedSemanticRead) -> Result<SemanticScopedGraph> {
         scoped_from_source(
-            self,
+            &snapshot_source::SnapshotGraphIndex::new(self),
             request,
             self.commit_version,
             self.published_at.clone(),
