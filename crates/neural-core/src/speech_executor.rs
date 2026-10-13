@@ -318,15 +318,20 @@ pub fn chunk_for_speech(text: &str) -> Vec<String> {
     }
     let mut chunks = Vec::new();
     let mut current = String::new();
-    for sentence in split_sentences(text) {
-        if !current.is_empty() && current.len() + 1 + sentence.len() > SPEECH_CHUNK_MAX_CHARS {
+    for sentence in split_sentences(text)
+        .iter()
+        .flat_map(|sentence| bounded_speech_parts(sentence))
+    {
+        if !current.is_empty()
+            && current.chars().count() + 1 + sentence.chars().count() > SPEECH_CHUNK_MAX_CHARS
+        {
             chunks.push(std::mem::take(&mut current));
         }
         if !current.is_empty() {
             current.push(' ');
         }
         current.push_str(&sentence);
-        if current.len() >= SPEECH_CHUNK_MIN_CHARS {
+        if current.chars().count() >= SPEECH_CHUNK_MIN_CHARS {
             chunks.push(std::mem::take(&mut current));
         }
     }
@@ -334,6 +339,24 @@ pub fn chunk_for_speech(text: &str) -> Vec<String> {
         chunks.push(current);
     }
     chunks
+}
+
+fn bounded_speech_parts(mut sentence: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    while let Some((end, _)) = sentence.char_indices().nth(SPEECH_CHUNK_MAX_CHARS) {
+        // Prefer a word boundary; an unbroken token must still respect the
+        // first-audio request budget without splitting a UTF-8 code point.
+        let boundary = sentence[..end]
+            .rfind(char::is_whitespace)
+            .filter(|index| *index > 0)
+            .unwrap_or(end);
+        parts.push(sentence[..boundary].trim().to_owned());
+        sentence = sentence[boundary..].trim_start();
+    }
+    if !sentence.is_empty() {
+        parts.push(sentence.to_owned());
+    }
+    parts
 }
 
 fn split_sentences(text: &str) -> Vec<String> {

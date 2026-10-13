@@ -342,3 +342,21 @@ fn streamed_speech_error_is_terminal_without_complete() {
         }]
     );
 }
+
+#[test]
+fn long_sentences_split_at_words_and_bound_unicode_without_losing_text() {
+    let sentence = "a spoken word ".repeat(80);
+    let chunks = chunk_for_speech(&sentence);
+    assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 250));
+    assert_eq!(chunks.join(" "), sentence.trim());
+    let unbroken = "界".repeat(601);
+    let chunks = chunk_for_speech(&unbroken);
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.chars().count())
+            .collect::<Vec<_>>(),
+        vec![250, 250, 101]
+    );
+    assert_eq!(chunks.concat(), unbroken);
+}
