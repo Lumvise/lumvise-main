@@ -18,7 +18,7 @@ use lumvise_plugin_runtime::{
     PluginRuntimeConfig, PluginSystem,
 };
 use semver::VersionReq;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::AppCoreHostCapabilityBroker;
@@ -127,6 +127,14 @@ impl PluginProductionConfig {
         copy_initial_policy(
             &release_dir.join("host-capability-grants.json"),
             &self.host_capability_grants_path,
+        )?;
+        // Grants come first: a crash in between leaves an unused grant, never a plugin without one.
+        self.builtin_trust_upgrade.grant_new_builtins(
+            release_dir,
+            self.repository.publisher_trust_path(),
+            &self.host_capability_grants_path,
+            &index,
+            || installed_plugin_ids(&self.repository),
         )?;
         install_bundled_artifacts(&self.repository, release_dir, &index)
     }
@@ -446,14 +454,14 @@ impl PolicyHostCapabilityBroker {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GrantDocument {
     schema_version: u32,
     grants: Vec<GrantRecord>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GrantRecord {
     plugin_id: String,
@@ -500,6 +508,16 @@ fn configured_bundled_release_dir() -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|candidate| candidate.join("builtins-release.json").is_file())
+}
+
+fn installed_plugin_ids(config: &PluginRepositoryConfig) -> Result<BTreeSet<String>> {
+    let repository = config.open()?;
+    Ok(repository
+        .registry()
+        .records
+        .iter()
+        .map(|record| record.plugin_id.clone())
+        .collect())
 }
 
 fn install_bundled_artifacts(

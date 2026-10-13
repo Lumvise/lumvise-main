@@ -1,11 +1,14 @@
-//! Prepares only the approved built-in authority upgrade before bundled installation.
-//! The startup owner calls `BuiltinTrustUpgrade::prepare`; policy records stay private.
+//! Prepares only the approved built-in authority and grant upgrades before bundled installation.
+//! The startup owner calls `BuiltinTrustUpgrade::prepare` and `grant_new_builtins`; policy
+//! records stay private.
 
-use super::invalid_policy;
+use super::{
+    GrantDocument, GrantRecord, invalid_policy, validate_policy_id, validate_registered_capability,
+};
 use crate::Result;
 use lumvise_plugin_package::{HostCompatibility, PluginReleaseIndexV2, PublisherTrustStore};
 use serde::{Deserialize, Serialize};
-use std::{fs, fs::OpenOptions, io::Write, path::Path};
+use std::{collections::BTreeSet, fs, fs::OpenOptions, io::Write, path::Path};
 
 const BUILTIN_PUBLISHER: &str = "lumvise.builtin";
 const DEVELOPMENT_KEY_ID: &str = "lumvise.release.1";
@@ -62,6 +65,69 @@ impl BuiltinTrustUpgrade {
         if !self.prepare_records(installed, &mut document, legacy)? {
             return Ok(());
         }
+        publish_policy(installed, &original, &document)
+    }
+
+    /// Adds the bundled grants of a built-in that this pinned production bundle installs for the
+    /// first time. Records the installed policy already holds are never changed or removed, and a
+    /// built-in that was installed before keeps whatever an administrator left it.
+    pub(super) fn grant_new_builtins(
+        &self,
+        release: &Path,
+        trust: &Path,
+        installed: &Path,
+        index: &PluginReleaseIndexV2,
+        installed_plugins: impl FnOnce() -> Result<BTreeSet<String>>,
+    ) -> Result<()> {
+        // An unreadable or invalid installed policy is reported by the policy loader, not rewritten.
+        let Ok(original) = fs::read(installed) else {
+            return Ok(());
+        };
+        let Ok(mut document) = serde_json::from_slice::<GrantDocument>(&original) else {
+            return Ok(());
+        };
+        let unrecorded = |plugin_id: &str| {
+            document
+                .grants
+                .iter()
+                .all(|held| held.plugin_id != plugin_id)
+        };
+        // The usual start: every bundled built-in has records, so the registry is not even read.
+        if !index
+            .artifacts
+            .iter()
+            .any(|artifact| unrecorded(&artifact.plugin_id))
+        {
+            return Ok(());
+        }
+        let installed_plugins = installed_plugins()?;
+        let is_new =
+            |plugin_id: &str| !installed_plugins.contains(plugin_id) && unrecorded(plugin_id);
+        let bundled = release.join("host-capability-grants.json");
+        let bytes =
+            fs::read(&bundled).map_err(|error| invalid_policy(&bundled, error.to_string()))?;
+        let offered: GrantDocument = serde_json::from_slice(&bytes)
+            .map_err(|error| invalid_policy(&bundled, error.to_string()))?;
+        let additions: Vec<GrantRecord> = offered
+            .grants
+            .into_iter()
+            .filter(|grant| {
+                is_new(&grant.plugin_id)
+                    && index
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.plugin_id == grant.plugin_id)
+            })
+            .collect();
+        // Only a bundle whose every archive verifies against the compiled production pin may add.
+        if additions.is_empty() || !self.preflight_release(release, trust, index)? {
+            return Ok(());
+        }
+        for grant in &additions {
+            validate_policy_id(&bundled, &grant.plugin_id, "plugin_id")?;
+            validate_registered_capability(&bundled, &grant.capability_id)?;
+        }
+        document.grants.extend(additions);
         publish_policy(installed, &original, &document)
     }
 
@@ -201,7 +267,7 @@ impl TrustUpgradeKey {
     }
 }
 
-fn publish_policy(path: &Path, original: &[u8], document: &TrustUpgradeDocument) -> Result<()> {
+fn publish_policy(path: &Path, original: &[u8], document: &impl Serialize) -> Result<()> {
     let temporary = snapshot_path(path)?;
     let outcome = write_policy(&temporary, document)
         .and_then(|()| replace_snapshot(path, &temporary, original));
@@ -237,6 +303,11 @@ fn replace_snapshot(path: &Path, temporary: &Path, original: &[u8]) -> Result<()
         ));
     }
     fs::rename(temporary, path).map_err(|error| invalid_policy(path, error.to_string()))?;
+    sync_parent(path)
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| invalid_policy(path, "expected policy parent directory".into()))?;
@@ -245,7 +316,13 @@ fn replace_snapshot(path: &Path, temporary: &Path, original: &[u8]) -> Result<()
         .map_err(|error| invalid_policy(parent, error.to_string()))
 }
 
-fn write_policy(path: &Path, document: &TrustUpgradeDocument) -> Result<()> {
+// Windows refuses to open a directory for syncing; the rename relies on the NTFS journal there.
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn write_policy(path: &Path, document: &impl Serialize) -> Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

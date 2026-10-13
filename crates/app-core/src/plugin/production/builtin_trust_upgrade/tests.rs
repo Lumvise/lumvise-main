@@ -552,3 +552,129 @@ fn migrated_policy_has_restrictive_permissions() {
         0o600
     );
 }
+
+impl TrustUpgradeFixture {
+    fn grants_path(&self) -> PathBuf {
+        self.state.join("host-capability-grants.json")
+    }
+
+    fn hold_grants(&self, grants: Value) -> Vec<u8> {
+        let bytes = serde_json::to_vec(&json!({"schema_version":1,"grants":grants})).unwrap();
+        fs::write(self.grants_path(), &bytes).unwrap();
+        bytes
+    }
+
+    /// Adds a third built-in to a bundle and offers one grant for it and one for Semantic.
+    fn add_agents(&self, release: &Path, key: &SigningKey, key_id: &str, version: &str) {
+        let path = release.join("builtins-release.json");
+        let mut index = PluginReleaseIndexV2::read(&path).unwrap();
+        index.composition = ReleaseComposition::Full;
+        index.artifacts.insert(
+            0,
+            self.write_archive(release, key, key_id, version, "builtin.agents"),
+        );
+        fs::write(path, serde_json::to_vec(&index).unwrap()).unwrap();
+        let grants = json!({"schema_version":1,"grants":[
+            {"plugin_id":"builtin.agents","capability_id":"storage.plugin"},
+            {"plugin_id":"builtin.semantic","capability_id":"storage.semantic"}
+        ]});
+        fs::write(
+            release.join("host-capability-grants.json"),
+            serde_json::to_vec(&grants).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn production_bundle_grants_only_the_builtin_it_installs_first() {
+    let fixture = TrustUpgradeFixture::new();
+    let knowledge = json!({"plugin_id":"builtin.knowledge","capability_id":"storage.plugin"});
+    let held = fixture.hold_grants(json!([knowledge]));
+    fixture.add_agents(
+        &fixture.new_release,
+        &fixture.production,
+        PRODUCTION_KEY_ID,
+        "0.1.4",
+    );
+
+    fixture.install_new().unwrap();
+    let granted: Value = serde_json::from_slice(&fs::read(fixture.grants_path()).unwrap()).unwrap();
+    assert_eq!(
+        granted["grants"],
+        json!([knowledge, {"plugin_id":"builtin.agents","capability_id":"storage.plugin"}])
+    );
+    fixture.assert_no_policy_snapshots();
+    let once = fs::read(fixture.grants_path()).unwrap();
+    fixture.install_new().unwrap();
+    assert_eq!(fs::read(fixture.grants_path()).unwrap(), once);
+
+    // Once installed the built-in is no longer new: a removed grant stays removed.
+    fs::write(fixture.grants_path(), &held).unwrap();
+    fixture.install_new().unwrap();
+    assert_eq!(fs::read(fixture.grants_path()).unwrap(), held);
+}
+
+#[test]
+fn only_a_bundle_verified_against_the_production_pin_adds_grants() {
+    let development = TrustUpgradeFixture::new();
+    let held = development.hold_grants(json!([]));
+    development.add_agents(
+        &development.old_release,
+        &development.development,
+        DEVELOPMENT_KEY_ID,
+        "0.1.3",
+    );
+    development
+        .config
+        .install_bundled_release(&development.old_release)
+        .unwrap();
+    assert_eq!(fs::read(development.grants_path()).unwrap(), held);
+
+    let forged = TrustUpgradeFixture::new();
+    forged.install_new().unwrap();
+    let held = forged.hold_grants(json!([]));
+    forged.add_agents(
+        &forged.new_release,
+        &SigningKey::from_bytes(&[71; 32]),
+        PRODUCTION_KEY_ID,
+        "0.1.4",
+    );
+    assert!(forged.install_new().is_err());
+    assert_eq!(fs::read(forged.grants_path()).unwrap(), held);
+    forged.assert_no_policy_snapshots();
+}
+
+#[test]
+fn administrator_record_for_a_new_builtin_is_left_as_written() {
+    let fixture = TrustUpgradeFixture::new();
+    let held = fixture.hold_grants(json!([
+        {"plugin_id":"builtin.agents","capability_id":"storage.semantic"}
+    ]));
+    fixture.add_agents(
+        &fixture.new_release,
+        &fixture.production,
+        PRODUCTION_KEY_ID,
+        "0.1.4",
+    );
+    fixture.install_new().unwrap();
+    assert_eq!(fs::read(fixture.grants_path()).unwrap(), held);
+}
+
+#[test]
+fn emptied_policy_receives_the_new_builtin_and_nothing_for_installed_ones() {
+    let fixture = TrustUpgradeFixture::new();
+    fixture.hold_grants(json!([]));
+    fixture.add_agents(
+        &fixture.new_release,
+        &fixture.production,
+        PRODUCTION_KEY_ID,
+        "0.1.4",
+    );
+    fixture.install_new().unwrap();
+    let granted: Value = serde_json::from_slice(&fs::read(fixture.grants_path()).unwrap()).unwrap();
+    assert_eq!(
+        granted["grants"],
+        json!([{"plugin_id":"builtin.agents","capability_id":"storage.plugin"}])
+    );
+}
