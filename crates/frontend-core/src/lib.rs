@@ -33,7 +33,7 @@ pub use modality::{ModalityStreamCatalog, ModalityStreamState, ModalityStreamsIn
 pub use settings::{
     AppSettings, AppSettingsPatch, AssistantEngine, AssistantModelOption, AssistantModelSource,
     AssistantProviderCatalog, AssistantProviderOption, AudioDeviceCatalog, AudioDeviceOption,
-    ListeningMode,
+    LinkClassificationProvider, ListeningMode,
 };
 pub use state::{
     DashboardState, FrontendCore, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendStatus,

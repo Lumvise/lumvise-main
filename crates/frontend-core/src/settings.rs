@@ -38,6 +38,26 @@ pub enum AssistantEngine {
     LumviseCloud,
 }
 
+/// Selects dynamic Background Agent link decisions independently of conversation routing.
+/// Example: `AppSettingsPatch::LinkClassificationProvider(LinkClassificationProvider::Jev)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkClassificationProvider {
+    Jev,
+    #[default]
+    LumviseCloud,
+}
+
+impl LinkClassificationProvider {
+    /// Returns the durable renderer value, e.g. `LinkClassificationProvider::Jev.value()`.
+    pub fn value(self) -> &'static str {
+        match self {
+            Self::Jev => "jev",
+            Self::LumviseCloud => "lumvise_cloud",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AssistantProviderCatalog {
     pub providers: Vec<AssistantProviderOption>,
@@ -73,6 +93,8 @@ pub struct AppSettings {
     /// Prefer document layout and OCR models when available; basic conversion stays usable.
     #[serde(default = "default_document_enhancement_enabled")]
     pub document_enhancement_enabled: bool,
+    #[serde(default)]
+    pub link_classification_provider: LinkClassificationProvider,
     #[serde(default = "default_speech_enabled")]
     pub speech_recognition_enabled: bool,
     #[serde(default = "default_speech_enabled")]
@@ -106,6 +128,7 @@ pub struct AppSettings {
 pub enum AppSettingsPatch {
     SetupCompleted(bool),
     DocumentEnhancementEnabled(bool),
+    LinkClassificationProvider(LinkClassificationProvider),
     SpeechRecognitionEnabled(bool),
     SpeechSynthesisEnabled(bool),
     SpeechRecognitionCloud(bool),
@@ -130,6 +153,7 @@ impl Default for AppSettings {
         Self {
             setup_completed: false,
             document_enhancement_enabled: true,
+            link_classification_provider: LinkClassificationProvider::default(),
             speech_recognition_enabled: true,
             speech_synthesis_enabled: true,
             speech_recognition_cloud: false,
@@ -174,6 +198,8 @@ impl AppSettings {
         };
         settings.assistant_direct_audio = value["assistantDirectAudio"].as_bool().unwrap_or(false);
         settings.bulb_visible = value["bulbVisible"].as_bool().unwrap_or(true);
+        settings.link_classification_provider =
+            serde_json::from_value(value["linkClassificationProvider"].clone()).unwrap_or_default();
         settings.assistant_engine =
             AssistantEngine::parse(string_field(value, "assistantEngine").as_deref());
         settings.assistant_model = settings
@@ -197,6 +223,10 @@ impl AppSettings {
             AppSettingsPatch::DocumentEnhancementEnabled(value) => {
                 self.document_enhancement_enabled = *value;
                 json!({ "documentEnhancementEnabled": value })
+            }
+            AppSettingsPatch::LinkClassificationProvider(value) => {
+                self.link_classification_provider = *value;
+                json!({ "linkClassificationProvider": value.value() })
             }
             AppSettingsPatch::SetupCompleted(value) => {
                 self.setup_completed = *value;
@@ -772,6 +802,61 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&settings).unwrap()["assistant_engine"],
             json!("custom_openai")
+        );
+    }
+
+    #[test]
+    fn link_classification_choice_survives_storage_without_changing_assistant() {
+        let mut settings = AppSettings {
+            assistant_engine: AssistantEngine::Codex,
+            assistant_model: Some("saved-model".into()),
+            ..Default::default()
+        };
+        for provider in [
+            LinkClassificationProvider::Jev,
+            LinkClassificationProvider::LumviseCloud,
+        ] {
+            let patch = settings
+                .apply_app_settings_patch(&AppSettingsPatch::LinkClassificationProvider(provider));
+            assert_eq!(
+                patch,
+                json!({"linkClassificationProvider": provider.value()})
+            );
+            let stored = serde_json::to_value(&settings).unwrap();
+            assert_eq!(
+                stored["link_classification_provider"],
+                json!(provider.value())
+            );
+            assert_eq!(
+                serde_json::from_value::<AppSettings>(stored).unwrap(),
+                settings
+            );
+            assert_eq!(settings.assistant_engine, AssistantEngine::Codex);
+            assert_eq!(settings.assistant_model.as_deref(), Some("saved-model"));
+        }
+    }
+
+    #[test]
+    fn link_classification_hydrates_both_routes_and_defaults_missing_preference() {
+        for provider in [
+            LinkClassificationProvider::Jev,
+            LinkClassificationProvider::LumviseCloud,
+        ] {
+            let settings = AppSettings::from_renderer_value(
+                &json!({"linkClassificationProvider": provider.value(), "assistantEngine": "claude"}),
+            );
+            assert_eq!(settings.link_classification_provider, provider);
+            assert_eq!(settings.assistant_engine, AssistantEngine::Claude);
+        }
+        let mut stored = serde_json::to_value(AppSettings::default()).unwrap();
+        stored
+            .as_object_mut()
+            .unwrap()
+            .remove("link_classification_provider");
+        let settings: AppSettings = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            settings.link_classification_provider,
+            LinkClassificationProvider::LumviseCloud
         );
     }
 

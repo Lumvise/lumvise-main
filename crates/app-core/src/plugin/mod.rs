@@ -44,7 +44,7 @@ pub use invocation::{PluginInvocationRequest, PluginInvocationResponse, PluginIn
 pub use lumvise_frontend_core::HostExtension;
 pub use mcp_rpc::{PLUGIN_MCP_MESSAGE_ENDPOINT, PLUGIN_MCP_SSE_ENDPOINT};
 pub use mcp_types::PluginMcpTool;
-pub(crate) use plugin_host_capabilities::PluginHostServices;
+pub(crate) use plugin_host_capabilities::{LinkDecisionCredentials, PluginHostServices};
 pub use production::{LUMVISE_PLUGIN_ROOT_ENV, PluginProductionConfig};
 pub use scoped_mcp_channel::{
     SCOPED_MCP_MESSAGE_ENDPOINT, SCOPED_MCP_SSE_ENDPOINT, ScopedMcpChannel,

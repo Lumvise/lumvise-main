@@ -19,6 +19,23 @@ use lumvise_resource_routing::InvocationControl;
 use std::sync::Arc;
 use tracing::error;
 
+struct StoredLinkDecisionCredentials(Arc<dyn RelationalPersistence>);
+
+impl crate::plugin::LinkDecisionCredentials for StoredLinkDecisionCredentials {
+    fn openrouter_config(
+        &self,
+        control: &InvocationControl,
+    ) -> Result<Option<LlmProviderConfig>, String> {
+        openrouter_provider_config(self.0.as_ref(), control).map_err(|error| error.to_string())
+    }
+}
+
+pub(crate) fn link_decision_credentials(
+    relational: Arc<dyn RelationalPersistence>,
+) -> Arc<dyn crate::plugin::LinkDecisionCredentials> {
+    Arc::new(StoredLinkDecisionCredentials(relational))
+}
+
 /// Synchronizes local LLM providers off the startup path. Provider discovery
 /// probes each provider's network endpoint or CLI subprocess and can take up
 /// to the configured request timeout; running it before the app was ready
@@ -132,7 +149,7 @@ fn configured_llm_candidates(
     candidates.push(remote_candidate(
         "openrouter",
         LlmProviderKind::OpenRouter,
-        openrouter_provider_config(relational)?,
+        openrouter_provider_config(relational, &InvocationControl::sixty_seconds())?,
     ));
     candidates.push(remote_candidate(
         "z_ai",
@@ -288,10 +305,15 @@ fn cerebras_provider_config(
 
 fn openrouter_provider_config(
     relational: &dyn RelationalPersistence,
+    control: &InvocationControl,
 ) -> Result<Option<LlmProviderConfig>, Box<dyn std::error::Error>> {
     let credential = match env_first(&["LUMVISE_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"]) {
         Some(value) => Some(value),
-        None => stored_provider_api_key(relational, "openrouter")?,
+        None => super::provider_settings::stored_provider_api_key_controlled(
+            relational,
+            "openrouter",
+            control,
+        )?,
     };
     let Some(credential) = credential else {
         return Ok(None);

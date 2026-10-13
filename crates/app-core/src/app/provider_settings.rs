@@ -76,13 +76,22 @@ pub(crate) fn stored_provider_api_key(
     relational: &dyn RelationalPersistence,
     provider_id: &str,
 ) -> Result<Option<String>> {
+    stored_provider_api_key_controlled(relational, provider_id, &InvocationControl::sixty_seconds())
+}
+
+/// Uses the caller's deadline for native key lookup, e.g. a link decision's original control.
+pub(crate) fn stored_provider_api_key_controlled(
+    relational: &dyn RelationalPersistence,
+    provider_id: &str,
+    control: &InvocationControl,
+) -> Result<Option<String>> {
     let provider_id = supported_provider_id(provider_id)?;
     let result = relational.execute(
         RelationalOperation::GetPersistentSetting {
             scope: PROVIDER_API_KEYS_SCOPE.to_string(),
             key: provider_id.to_string(),
         },
-        &InvocationControl::sixty_seconds(),
+        control,
     )?;
     let RelationalResult::PersistentSetting(record) = result else {
         return Err(AppCoreError::unsupported(

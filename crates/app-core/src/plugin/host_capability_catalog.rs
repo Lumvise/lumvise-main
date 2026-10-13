@@ -16,6 +16,7 @@ pub(super) const PLUGIN_INVOKE_CAPABILITY: &str = "plugin.invoke";
 pub(super) const FRONTEND_ACTION: &str = "frontend.action";
 pub(super) const FRONTEND_CANVAS: &str = "frontend.canvas";
 pub(super) const NEURAL_LLM: &str = "neural.llm";
+pub(super) const NEURAL_DECISIONS: &str = "neural.decisions";
 pub(super) const SPEECH_TO_TEXT: &str = "modalities.speech_to_text";
 pub(super) const TEXT_TO_SPEECH: &str = "modalities.text_to_speech";
 pub(super) const BACKGROUND_JOB: &str = "runtime.background_job";
@@ -59,7 +60,7 @@ impl HostCapabilityDefinition {
     }
 }
 
-const HOST_CAPABILITIES: [HostCapabilityDefinition; 21] = [
+const HOST_CAPABILITIES: [HostCapabilityDefinition; 22] = [
     capability(
         PLUGIN_STORAGE_CAPABILITY,
         HostCapabilityRoute::PluginStorage,
@@ -78,6 +79,7 @@ const HOST_CAPABILITIES: [HostCapabilityDefinition; 21] = [
     capability(FRONTEND_ACTION, HostCapabilityRoute::Services),
     capability(FRONTEND_CANVAS, HostCapabilityRoute::Services),
     capability(NEURAL_LLM, HostCapabilityRoute::Services),
+    capability(NEURAL_DECISIONS, HostCapabilityRoute::Services),
     capability(SPEECH_TO_TEXT, HostCapabilityRoute::Services),
     capability(TEXT_TO_SPEECH, HostCapabilityRoute::Services),
     capability(BACKGROUND_JOB, HostCapabilityRoute::Services),
@@ -150,7 +152,7 @@ mod tests {
             .map(|definition| definition.id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(identities.len(), 21);
+        assert_eq!(identities.len(), 22);
         assert_eq!(identities, expected_identities());
     }
 
@@ -158,7 +160,7 @@ mod tests {
     fn catalog_publishes_actual_versions() {
         let versions = compiled_host_capability_versions();
 
-        assert_eq!(versions.len(), 21);
+        assert_eq!(versions.len(), 22);
         assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 4, 0));
         assert!(
             versions
@@ -192,7 +194,7 @@ mod tests {
         expected_routes().into_iter().map(|(id, _)| id).collect()
     }
 
-    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 21] {
+    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 22] {
         [
             (
                 PLUGIN_STORAGE_CAPABILITY,
@@ -212,6 +214,7 @@ mod tests {
             (FRONTEND_ACTION, HostCapabilityRoute::Services),
             (FRONTEND_CANVAS, HostCapabilityRoute::Services),
             (NEURAL_LLM, HostCapabilityRoute::Services),
+            (NEURAL_DECISIONS, HostCapabilityRoute::Services),
             (SPEECH_TO_TEXT, HostCapabilityRoute::Services),
             (TEXT_TO_SPEECH, HostCapabilityRoute::Services),
             (BACKGROUND_JOB, HostCapabilityRoute::Services),

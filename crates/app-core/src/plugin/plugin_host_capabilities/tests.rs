@@ -1,6 +1,8 @@
 use super::*;
 #[path = "tests/document_conversion.rs"]
 mod document_conversion;
+#[path = "tests/link_decision_dispatch.rs"]
+mod link_decision_dispatch;
 use lumvise_frontend_core::{AppSettingsPatch, AssistantEngine};
 use lumvise_neural_core::llm_providers::contract::{LlmProvider, LlmStreamEventSink};
 use lumvise_neural_core::llm_providers::{

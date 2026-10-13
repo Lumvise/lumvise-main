@@ -18,6 +18,7 @@ pub(crate) mod project_import;
 mod project_removal;
 mod provider_settings;
 mod provider_startup;
+pub(crate) use provider_startup::link_decision_credentials;
 pub(crate) mod resource_routing;
 mod runtime_bridge;
 pub(crate) mod runtime_coordinator;

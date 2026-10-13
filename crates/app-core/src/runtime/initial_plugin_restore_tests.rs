@@ -6,6 +6,17 @@ struct PendingPluginCatalog {
     completion: Arc<(Mutex<bool>, Condvar)>,
 }
 
+#[test]
+fn initial_runtime_installs_link_decisions_before_any_plugin_delivery() {
+    let app = AppCore::in_memory().unwrap();
+    let error = app.plugin_host_services.invoke(
+        "builtin.agents",
+        "neural.decisions",
+        serde_json::json!({"cause": "Only when the status changes", "baseline": null, "current": "{}"}),
+    ).expect_err("the empty provider registry must reject execution, not dispatch");
+    assert!(error.to_string().contains("provider_unconfigured"));
+}
+
 impl PendingPluginCatalog {
     fn new(app: &mut AppCore) -> Self {
         let completion = Arc::new((Mutex::new(false), Condvar::new()));

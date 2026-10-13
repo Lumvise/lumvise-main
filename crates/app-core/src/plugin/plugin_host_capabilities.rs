@@ -18,8 +18,11 @@ mod background_jobs;
 use background_jobs::BackgroundJobAdapter;
 mod canvas_images;
 use canvas_images::add_image as frontend_canvas_add_image;
+mod link_decisions;
 mod turn_wait;
 use super::voice_playback_transport::{VoicePlaybackTransportEvent, sample_rate_from_media_type};
+pub(crate) use link_decisions::LinkDecisionCredentials;
+use link_decisions::LinkDecisionService;
 use turn_wait::TurnWaitAdapter;
 
 use lumvise_db_core::SemanticPersistence;
@@ -45,7 +48,7 @@ use serde_json::{Map, Value, json};
 
 use super::host_capability_catalog::{
     ASSISTANT_ENGINE_AVAILABILITY, BACKGROUND_JOB, EXCLUSIVE_LANE, FRONTEND_ACTION,
-    FRONTEND_CANVAS, HOST_EXTENSION, NEURAL_LLM, PROJECT_EXECUTION, SCOPED_MCP,
+    FRONTEND_CANVAS, HOST_EXTENSION, NEURAL_DECISIONS, NEURAL_LLM, PROJECT_EXECUTION, SCOPED_MCP,
     SPEECH_AVAILABILITY, SPEECH_TO_TEXT, TEXT_TO_SPEECH, TURN_WAIT,
 };
 
@@ -103,6 +106,7 @@ pub(crate) struct PluginHostServices {
     turn_wait: TurnWaitAdapter,
     project_execution: Mutex<Option<crate::ProjectExecutionService>>,
     host_extensions: Mutex<HashMap<String, Arc<dyn HostExtension>>>,
+    link_decisions: Mutex<Option<Arc<LinkDecisionService>>>,
 }
 
 /// Correlation recorded when a `text_to_speech` segment opens, so a later
@@ -159,6 +163,7 @@ impl PluginHostServices {
             turn_wait: TurnWaitAdapter::new(),
             project_execution: Mutex::new(None),
             host_extensions: Mutex::new(HashMap::new()),
+            link_decisions: Mutex::new(None),
         })
     }
 
@@ -234,6 +239,35 @@ impl PluginHostServices {
         }
     }
 
+    pub(crate) fn install_link_decisions(&self, credentials: Arc<dyn LinkDecisionCredentials>) {
+        let service = LinkDecisionService::production(Arc::clone(&self.llm_executors), credentials);
+        if let Ok(mut slot) = self.link_decisions.lock() {
+            *slot = Some(Arc::new(service));
+        }
+    }
+
+    fn decide_link(
+        &self,
+        input: Value,
+        control: InvocationControl,
+    ) -> Result<Value, HostCapabilityError> {
+        let provider = self
+            .frontend
+            .lock()
+            .map_err(|_| failed(NEURAL_DECISIONS, "frontend lock is poisoned"))?
+            .app_settings()
+            .link_classification_provider;
+        let service = self
+            .link_decisions
+            .lock()
+            .map_err(|_| failed(NEURAL_DECISIONS, "decision service lock is poisoned"))?
+            .clone()
+            .ok_or_else(|| {
+                unavailable(NEURAL_DECISIONS, "link decision service is not installed")
+            })?;
+        service.decide(provider, input, control)
+    }
+
     /// Makes a product-owned service reachable by name, replacing any earlier one.
     pub(crate) fn install_host_extension(&self, name: &str, service: Arc<dyn HostExtension>) {
         if let Ok(mut extensions) = self.host_extensions.lock() {
@@ -285,6 +319,7 @@ impl PluginHostServices {
                 input,
                 LlmExecutionControl::new(InvocationControl::sixty_seconds()),
             ),
+            NEURAL_DECISIONS => self.decide_link(input, InvocationControl::sixty_seconds()),
             SPEECH_TO_TEXT => self.speech_to_text(input, InvocationControl::sixty_seconds()),
             TEXT_TO_SPEECH => self.text_to_speech(plugin_id, input),
             BACKGROUND_JOB => self.background_jobs.invoke(plugin_id, input),
@@ -316,6 +351,7 @@ impl PluginHostServices {
                 input,
                 LlmExecutionControl::new(control.control()),
             ),
+            NEURAL_DECISIONS => self.decide_link(input, control.control()),
             SPEECH_TO_TEXT => self.speech_to_text(input, control.control()),
             TEXT_TO_SPEECH => self.text_to_speech(plugin_id, input),
             _ => self.invoke(plugin_id, capability_id, input),

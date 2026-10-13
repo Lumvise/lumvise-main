@@ -71,6 +71,21 @@ pub struct AppCore {
         crate::project_execution::ProjectExecutionControlTransport,
 }
 
+// Install decision execution before plugin restore can deliver an existing link's changes.
+fn compose_plugin_host_services(
+    frontend: FrontendCore,
+    llm_registry: LlmProviderRegistry,
+    semantic: &Arc<dyn SemanticPersistence>,
+    relational: &Arc<dyn RelationalPersistence>,
+) -> Arc<crate::plugin::PluginHostServices> {
+    let services =
+        crate::plugin::PluginHostServices::new(frontend, llm_registry, Arc::clone(semantic));
+    services.install_link_decisions(crate::app::link_decision_credentials(Arc::clone(
+        relational,
+    )));
+    services
+}
+
 impl AppCore {
     /// Builds App Core from the selected persistence, frontend, and LLM runtime dependencies.
     ///
@@ -87,8 +102,7 @@ impl AppCore {
         llm_registry: LlmProviderRegistry,
     ) -> Self {
         let vectorizer = Arc::new(Mutex::new(None));
-        let services =
-            crate::plugin::PluginHostServices::new(frontend, llm_registry, Arc::clone(&semantic));
+        let services = compose_plugin_host_services(frontend, llm_registry, &semantic, &relational);
         let recurring_registration_signal = Arc::new((Mutex::new(0), Condvar::new()));
         let semantic_snapshots =
             Arc::new(crate::SemanticSnapshotService::new(Arc::clone(&semantic)));
@@ -130,8 +144,7 @@ impl AppCore {
     ) -> Self {
         let semantic_snapshots =
             Arc::new(crate::SemanticSnapshotService::new(Arc::clone(&semantic)));
-        let services =
-            crate::plugin::PluginHostServices::new(frontend, llm_registry, Arc::clone(&semantic));
+        let services = compose_plugin_host_services(frontend, llm_registry, &semantic, &relational);
         let app = Self::build(
             semantic,
             relational,
@@ -165,8 +178,7 @@ impl AppCore {
         config: PluginProductionConfig,
     ) -> Result<Self> {
         let vectorizer = Arc::new(Mutex::new(None));
-        let services =
-            crate::plugin::PluginHostServices::new(frontend, llm_registry, Arc::clone(&semantic));
+        let services = compose_plugin_host_services(frontend, llm_registry, &semantic, &relational);
         let recurring_registration_signal = Arc::new((Mutex::new(0), Condvar::new()));
         let semantic_snapshots =
             Arc::new(crate::SemanticSnapshotService::new(Arc::clone(&semantic)));
