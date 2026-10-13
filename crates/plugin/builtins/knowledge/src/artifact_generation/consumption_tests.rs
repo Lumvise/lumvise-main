@@ -68,7 +68,7 @@ impl HostCallTransport for ConsumptionFakeHost {
                         .to_owned(),
                     artifact,
                 );
-                Ok(json!({}))
+                Ok(json!({"artifact_id": input["artifact"]["artifact_id"]}))
             }
             ("storage.semantic", "artifact") => Ok(json!({
                 "artifact": self.artifacts.get(input["artifact_id"].as_str().unwrap_or_default())

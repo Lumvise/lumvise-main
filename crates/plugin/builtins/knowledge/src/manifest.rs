@@ -1074,10 +1074,18 @@ pub(crate) fn invoke(
     input: Value,
     context: &mut PluginContext<'_>,
     projection_cache: &crate::projection::ProjectProjectionCache,
+    search_vectors: &crate::search::KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
     let invocation = invocation_for(capability_id)
         .ok_or_else(|| PluginError::unknown_capability(capability_id))?;
-    invoke_export(invocation, capability_id, input, context, projection_cache)
+    invoke_export(
+        invocation,
+        capability_id,
+        input,
+        context,
+        projection_cache,
+        search_vectors,
+    )
 }
 
 fn invoke_export(
@@ -1086,6 +1094,7 @@ fn invoke_export(
     input: Value,
     context: &mut PluginContext<'_>,
     projection_cache: &crate::projection::ProjectProjectionCache,
+    search_vectors: &crate::search::KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
     match invocation {
         Invocation::Manifest => Ok(metadata()),
@@ -1095,7 +1104,14 @@ fn invoke_export(
             crate::artifact_generation::poll(context, None)
         }
         Invocation::StorageTrigger => crate::events::storage_change(capability_id, input, context),
-        other => invoke_artifact(other, capability_id, input, context, projection_cache),
+        other => invoke_artifact(
+            other,
+            capability_id,
+            input,
+            context,
+            projection_cache,
+            search_vectors,
+        ),
     }
 }
 
@@ -1105,6 +1121,7 @@ fn invoke_artifact(
     input: Value,
     context: &mut PluginContext<'_>,
     projection_cache: &crate::projection::ProjectProjectionCache,
+    search_vectors: &crate::search::KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
     match invocation {
         Invocation::PreviewTransfer => crate::transfer::preview(input, context),
@@ -1116,10 +1133,10 @@ fn invoke_artifact(
         Invocation::List => crate::list(input, context),
         Invocation::ListAll => crate::list_all(input, context),
         Invocation::ListDependents => crate::list_dependents(input, context),
-        Invocation::Search => crate::search(input, context),
+        Invocation::Search => crate::search(input, context, search_vectors),
         Invocation::FindElements => crate::semantic::search_elements(context, input),
         Invocation::GetElement => crate::get_element(input, context),
-        Invocation::Rebuild => crate::rebuild_vectors(input, context),
+        Invocation::Rebuild => crate::rebuild_vectors(input, context, search_vectors),
         other => invoke_cultivation(other, capability_id, input, context, projection_cache),
     }
 }

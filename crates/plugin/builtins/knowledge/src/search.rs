@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{cmp::Ordering, collections::BTreeMap, sync::Mutex};
 
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Deserialize, Serialize};
@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use crate::{KnowledgeArtifact, artifact, artifact::SearchRequest, storage};
 
 const EMBED_BATCH_SIZE: usize = 64;
+// Match neural.embed's input contract without dropping long artifact content.
+const EMBED_TEXT_BYTES: usize = 32 * 1024;
+const EMBED_REQUEST_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
 struct KnowledgeVector {
@@ -15,16 +18,44 @@ struct KnowledgeVector {
     vector: Vec<f32>,
 }
 
+/// Owns derived vectors for this plugin process. Artifact reads still authorize every search.
+#[derive(Default)]
+pub(crate) struct KnowledgeSearchVectors {
+    records: Mutex<BTreeMap<String, Option<KnowledgeVector>>>,
+}
+
+impl KnowledgeSearchVectors {
+    fn find(&self, artifact_id: &str, context: &mut PluginContext<'_>) -> Option<KnowledgeVector> {
+        if let Some(cached) = self.records.lock().ok()?.get(artifact_id).cloned() {
+            return cached;
+        }
+        let stored = storage::get(context, storage::VECTORS, artifact_id).ok()?;
+        self.records
+            .lock()
+            .ok()?
+            .entry(artifact_id.to_owned())
+            .or_insert(stored)
+            .clone()
+    }
+
+    fn remember(&self, rows: Vec<(String, KnowledgeVector)>) {
+        if let Ok(mut records) = self.records.lock() {
+            records.extend(rows.into_iter().map(|(id, vector)| (id, Some(vector))));
+        }
+    }
+}
+
 pub(crate) fn search(
     request: &SearchRequest,
     context: &mut PluginContext<'_>,
+    vectors: &KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
     crate::artifact::require(&request.query, "query")?;
     let artifacts = artifacts_for_search(request, context)?
         .into_iter()
         .filter(|item| artifact::filter_matches(item, request))
         .collect::<Vec<_>>();
-    let (mode, mut results) = vector_results(request, &artifacts, context)
+    let (mode, mut results) = vector_results(request, &artifacts, context, vectors)
         .unwrap_or_else(|| ("lexical", lexical_results(request, &artifacts)));
     // Literal title/tag/content matches must remain discoverable even when
     // an embedding model ranks unrelated records above them.
@@ -72,16 +103,19 @@ fn vector_results(
     request: &SearchRequest,
     artifacts: &[KnowledgeArtifact],
     context: &mut PluginContext<'_>,
+    vectors: &KnowledgeSearchVectors,
 ) -> Option<(&'static str, Vec<Value>)> {
     let query = embed(context, &[request.query.as_str()])?.pop()?;
-    let stored = stored_vectors(context);
     let mut results = Vec::with_capacity(artifacts.len());
     let missing = artifacts
         .iter()
-        .filter(|artifact| !append_stored_result(artifact, &stored, &query, &mut results))
+        .filter(|artifact| {
+            let stored = vectors.find(&artifact.artifact_id, context);
+            !append_stored_result(artifact, stored.as_ref(), &query, &mut results)
+        })
         .collect::<Vec<_>>();
     for batch in missing.chunks(EMBED_BATCH_SIZE) {
-        append_embedded_results(batch, &query, &mut results, context)?;
+        append_embedded_results(batch, &query, &mut results, context, vectors)?;
     }
     Some(("vector", results))
 }
@@ -89,9 +123,10 @@ fn vector_results(
 pub(crate) fn rebuild(
     project_root: Option<&str>,
     context: &mut PluginContext<'_>,
+    vectors: &KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
     let artifacts = rebuild_artifacts(project_root, context)?;
-    Ok(json!({"job": rebuild_batches(&artifacts, context)?}))
+    Ok(json!({"job": rebuild_batches(&artifacts, context, vectors)?}))
 }
 
 fn rebuild_artifacts(
@@ -107,10 +142,11 @@ fn rebuild_artifacts(
 fn rebuild_batches(
     artifacts: &[KnowledgeArtifact],
     context: &mut PluginContext<'_>,
+    vectors: &KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
     let mut rebuilt = 0;
     for batch in artifacts.chunks(EMBED_BATCH_SIZE) {
-        match persist_batch(batch, context) {
+        match persist_batch(batch, context, vectors) {
             Ok(()) => rebuilt += batch.len(),
             Err(error) if error.code == "host_capability_unavailable" => {
                 return Ok(unavailable_rebuild(rebuilt, error));
@@ -129,21 +165,13 @@ fn unavailable_rebuild(vectors_rebuilt: usize, error: PluginError) -> Value {
     })
 }
 
-fn stored_vectors(context: &mut PluginContext<'_>) -> BTreeMap<String, KnowledgeVector> {
-    storage::list::<KnowledgeVector>(context, storage::VECTORS, None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|record| (record.artifact_id.clone(), record))
-        .collect()
-}
-
 fn append_stored_result(
     artifact: &KnowledgeArtifact,
-    stored: &BTreeMap<String, KnowledgeVector>,
+    stored: Option<&KnowledgeVector>,
     query: &[f32],
     results: &mut Vec<Value>,
 ) -> bool {
-    let Some(record) = stored.get(&artifact.artifact_id) else {
+    let Some(record) = stored else {
         return false;
     };
     if record.content_fingerprint != content_fingerprint(artifact) {
@@ -161,6 +189,7 @@ fn append_embedded_results(
     query: &[f32],
     results: &mut Vec<Value>,
     context: &mut PluginContext<'_>,
+    cache: &KnowledgeSearchVectors,
 ) -> Option<()> {
     let texts = artifacts
         .iter()
@@ -173,26 +202,33 @@ fn append_embedded_results(
     for (artifact, vector) in artifacts.iter().zip(&vectors) {
         results.push(result(artifact, cosine(query, vector)?));
     }
-    let _ = persist_vectors(artifacts, vectors, context);
+    let _ = persist_vectors(artifacts, vectors, context, cache);
     Some(())
 }
 
 fn persist_batch(
     artifacts: &[KnowledgeArtifact],
     context: &mut PluginContext<'_>,
+    cache: &KnowledgeSearchVectors,
 ) -> Result<(), PluginError> {
     let texts = artifacts.iter().map(searchable_text).collect::<Vec<_>>();
     let vectors = required_embeddings(
         context,
         &texts.iter().map(String::as_str).collect::<Vec<_>>(),
     )?;
-    persist_vectors(&artifacts.iter().collect::<Vec<_>>(), vectors, context)
+    persist_vectors(
+        &artifacts.iter().collect::<Vec<_>>(),
+        vectors,
+        context,
+        cache,
+    )
 }
 
 fn persist_vectors(
     artifacts: &[&KnowledgeArtifact],
     vectors: Vec<Vec<f32>>,
     context: &mut PluginContext<'_>,
+    cache: &KnowledgeSearchVectors,
 ) -> Result<(), PluginError> {
     let rows = artifacts
         .iter()
@@ -208,7 +244,9 @@ fn persist_vectors(
         .collect::<Vec<_>>();
     // Match embedding batches to existing atomic storage batches, avoiding
     // two process round trips for each individual cached vector.
-    storage::put_rows(context, storage::VECTORS, &rows)
+    storage::put_rows(context, storage::VECTORS, &rows)?;
+    cache.remember(rows);
+    Ok(())
 }
 
 fn content_fingerprint(artifact: &KnowledgeArtifact) -> String {
@@ -227,6 +265,93 @@ fn embed(context: &mut PluginContext<'_>, texts: &[&str]) -> Option<Vec<Vec<f32>
 }
 
 fn required_embeddings(
+    context: &mut PluginContext<'_>,
+    texts: &[&str],
+) -> Result<Vec<Vec<f32>>, PluginError> {
+    let chunks = texts
+        .iter()
+        .map(|text| embedding_chunks(text))
+        .collect::<Vec<_>>();
+    let inputs = chunks.iter().flatten().copied().collect::<Vec<_>>();
+    let vectors = embed_bounded_chunks(context, &inputs)?;
+    let dimensions = vectors.first().map_or(0, Vec::len);
+    if vectors.iter().any(|vector| vector.len() != dimensions) {
+        return Err(invalid_embeddings(
+            &json!({"vectors": vectors}),
+            inputs.len(),
+        ));
+    }
+    Ok(merge_chunk_embeddings(&chunks, &vectors))
+}
+
+fn embedding_chunks(mut text: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    while text.len() > EMBED_TEXT_BYTES {
+        let mut end = EMBED_TEXT_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        chunks.push(&text[..end]);
+        text = &text[end..];
+    }
+    chunks.push(text);
+    chunks
+}
+
+fn embed_bounded_chunks(
+    context: &mut PluginContext<'_>,
+    mut chunks: &[&str],
+) -> Result<Vec<Vec<f32>>, PluginError> {
+    let mut vectors = Vec::with_capacity(chunks.len());
+    while !chunks.is_empty() {
+        let count = embedding_batch_count(chunks);
+        vectors.extend(embed_request(context, &chunks[..count])?);
+        chunks = &chunks[count..];
+    }
+    Ok(vectors)
+}
+
+fn embedding_batch_count(chunks: &[&str]) -> usize {
+    let mut bytes = 0;
+    chunks
+        .iter()
+        .take(EMBED_BATCH_SIZE)
+        .take_while(|text| {
+            bytes += text.len();
+            bytes <= EMBED_REQUEST_BYTES
+        })
+        .count()
+}
+
+fn merge_chunk_embeddings(chunks: &[Vec<&str>], vectors: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    let mut offset = 0;
+    chunks
+        .iter()
+        .map(|parts| {
+            let end = offset + parts.len();
+            let merged = average_chunk_embedding(parts, &vectors[offset..end]);
+            offset = end;
+            merged
+        })
+        .collect()
+}
+
+fn average_chunk_embedding(chunks: &[&str], vectors: &[Vec<f32>]) -> Vec<f32> {
+    if vectors.len() == 1 {
+        return vectors[0].clone();
+    }
+    let total_bytes = chunks.iter().map(|text| text.len()).sum::<usize>() as f64;
+    let mut average = vec![0.0_f64; vectors[0].len()];
+    for (text, vector) in chunks.iter().zip(vectors) {
+        let weight = text.len() as f64 / total_bytes;
+        for (sum, value) in average.iter_mut().zip(vector) {
+            *sum += f64::from(*value) * weight;
+        }
+    }
+    average.into_iter().map(|value| value as f32).collect()
+}
+
+fn embed_request(
     context: &mut PluginContext<'_>,
     texts: &[&str],
 ) -> Result<Vec<Vec<f32>>, PluginError> {

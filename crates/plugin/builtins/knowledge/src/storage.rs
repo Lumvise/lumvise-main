@@ -753,7 +753,7 @@ mod tests {
                     self.rows
                         .retain(|stored| stored["artifact_id"] != row["artifact_id"]);
                     self.rows.push(row);
-                    Ok(json!({}))
+                    Ok(json!({"artifact_id": input["artifact"]["artifact_id"]}))
                 }
                 _ => Err(PluginError::unknown_capability(capability_id)),
             }

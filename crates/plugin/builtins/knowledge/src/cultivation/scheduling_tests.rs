@@ -56,7 +56,9 @@ impl HostCallTransport for SchedulingFakeHost {
             }
             ("storage.semantic", "candidate_source_elements") => Ok(json!({"elements": []})),
             ("storage.semantic", "artifact") => Ok(self.artifact(&input)),
-            ("storage.semantic", "upsert_artifact") => Ok(json!({})),
+            ("storage.semantic", "upsert_artifact") => {
+                Ok(json!({"artifact_id": input["artifact"]["artifact_id"]}))
+            }
             ("storage.semantic", "remove_artifact") => Ok(json!({"removed": true})),
             (other, _) => Err(PluginError::unknown_capability(other)),
         }

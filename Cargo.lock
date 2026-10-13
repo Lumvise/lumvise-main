@@ -3659,7 +3659,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-knowledge"
-version = "0.1.51"
+version = "0.1.52"
 dependencies = [
  "chrono",
  "ed25519-dalek",

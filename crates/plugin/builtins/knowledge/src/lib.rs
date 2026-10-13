@@ -69,6 +69,7 @@ pub fn package_manifest_source(target: &str, executable_sha256: &str) -> PluginM
 #[derive(Clone, Default)]
 pub struct KnowledgePlugin {
     projection_cache: std::sync::Arc<projection::ProjectProjectionCache>,
+    search_vectors: std::sync::Arc<search::KnowledgeSearchVectors>,
 }
 
 impl PluginApplication for KnowledgePlugin {
@@ -82,7 +83,13 @@ impl PluginApplication for KnowledgePlugin {
         input: Value,
         context: &mut PluginContext<'_>,
     ) -> Result<Value, PluginError> {
-        manifest::invoke(capability_id, input, context, &self.projection_cache)
+        manifest::invoke(
+            capability_id,
+            input,
+            context,
+            &self.projection_cache,
+            &self.search_vectors,
+        )
     }
 }
 
@@ -240,10 +247,14 @@ fn list_dependents(input: Value, context: &mut PluginContext<'_>) -> Result<Valu
     Ok(json!({"artifacts": artifacts}))
 }
 
-fn search(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
+fn search(
+    input: Value,
+    context: &mut PluginContext<'_>,
+    vectors: &search::KnowledgeSearchVectors,
+) -> Result<Value, PluginError> {
     let request: artifact::SearchRequest = parse(input, "Knowledge search request")?;
     artifact::require(&request.query, "query")?;
-    search::search(&request, context)
+    search::search(&request, context, vectors)
 }
 
 fn get_element(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
@@ -252,9 +263,13 @@ fn get_element(input: Value, context: &mut PluginContext<'_>) -> Result<Value, P
     Ok(json!({"element": storage::public_semantic_element(&element)}))
 }
 
-fn rebuild_vectors(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
+fn rebuild_vectors(
+    input: Value,
+    context: &mut PluginContext<'_>,
+    vectors: &search::KnowledgeSearchVectors,
+) -> Result<Value, PluginError> {
     let project_root = input.get("project_root").and_then(Value::as_str);
-    search::rebuild(project_root, context)
+    search::rebuild(project_root, context, vectors)
 }
 
 fn required_artifact(

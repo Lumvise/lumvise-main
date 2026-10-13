@@ -45,6 +45,8 @@ use sha2::{Digest, Sha256};
 mod canonical_identity;
 #[path = "knowledge_protocol/retired_kind_migration.rs"]
 mod retired_kind_migration;
+#[path = "knowledge_protocol/search_cache.rs"]
+mod search_cache;
 mod support;
 
 use support::{ControlledTestInvoke, fast_runtime_config, make_tree_writable};
@@ -65,6 +67,9 @@ struct MemoryStorageBroker {
     rows: Mutex<HashMap<(String, String), BTreeMap<String, serde_json::Value>>>,
     semantic_operations: Mutex<BTreeMap<String, usize>>,
     vector_write_sizes: Mutex<Vec<usize>>,
+    vector_reads: Mutex<Vec<(String, String)>>,
+    embedding_vector: Mutex<Option<Vec<f32>>>,
+    embedding_inputs: Mutex<Vec<Vec<String>>>,
     plugin_invoke_operations: Mutex<BTreeMap<String, usize>>,
     failure: Mutex<Option<(String, String)>>,
     canonical_artifact_id: Mutex<Option<String>>,
@@ -83,6 +88,9 @@ impl Default for MemoryStorageBroker {
             rows: Mutex::default(),
             semantic_operations: Mutex::default(),
             vector_write_sizes: Mutex::default(),
+            vector_reads: Mutex::default(),
+            embedding_vector: Mutex::default(),
+            embedding_inputs: Mutex::default(),
             plugin_invoke_operations: Mutex::default(),
             failure: Mutex::default(),
             canonical_artifact_id: Mutex::default(),
@@ -108,7 +116,7 @@ impl HostCapabilityBroker for MemoryStorageBroker {
             "storage.plugin" => self.storage(request),
             "storage.semantic" => self.semantic_storage(request),
             "plugin.invoke" => self.plugin_invoke(request),
-            "neural.embed" => Ok(embed_response(&request.input)),
+            "neural.embed" => self.embedding_response(&request.input),
             "runtime.background_job" => Ok(serde_json::json!({
                 "job_id": "knowledge-job-1", "status": "accepted"
             })),
@@ -118,6 +126,29 @@ impl HostCapabilityBroker for MemoryStorageBroker {
 }
 
 impl MemoryStorageBroker {
+    fn embedding_response(
+        &self,
+        input: &serde_json::Value,
+    ) -> Result<serde_json::Value, HostCapabilityError> {
+        let texts = input["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|text| text.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        if texts.iter().any(|text| text.len() > 32 * 1024)
+            || texts.iter().map(String::len).sum::<usize>() > 256 * 1024
+        {
+            return Err(host_error("neural.embed", "invalid_embedding_input"));
+        }
+        self.embedding_inputs.lock().unwrap().push(texts);
+        let Some(vector) = self.embedding_vector.lock().unwrap().clone() else {
+            return Ok(embed_response(input));
+        };
+        let count = input["texts"].as_array().map_or(0, Vec::len);
+        Ok(serde_json::json!({"vectors": vec![vector; count]}))
+    }
+
     fn semantic_storage(
         &self,
         mut request: HostCapabilityRequest,
@@ -374,6 +405,15 @@ impl MemoryStorageBroker {
     ) -> Result<serde_json::Value, HostCapabilityError> {
         let operation = request.input["operation"].as_str().unwrap_or_default();
         let table = request.input["table_name"].as_str().unwrap_or_default();
+        if table == "knowledge_vectors" && matches!(operation, "get_row" | "list_rows") {
+            self.vector_reads.lock().unwrap().push((
+                operation.to_owned(),
+                request.input["row_key"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            ));
+        }
         if operation == "put_row" && table == "knowledge_vectors" {
             self.vector_write_sizes.lock().unwrap().push(1);
         }
