@@ -364,7 +364,10 @@ impl PluginHostServices {
     fn assistant_engine_availability(&self) -> Result<Value, HostCapabilityError> {
         let (provider, model) =
             configured_llm_selection(&self.frontend, ASSISTANT_ENGINE_AVAILABILITY)?;
-        Ok(json!({"available": provider.is_some() && model.is_some()}))
+        // Lumvise Cloud chooses its model on the website; its saved model is intentionally empty.
+        let configured = provider.as_deref() == Some(AssistantEngine::LumviseCloud.value())
+            || (provider.is_some() && model.is_some());
+        Ok(json!({"available": configured}))
     }
 
     fn project_execution(

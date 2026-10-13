@@ -1,4 +1,6 @@
 use super::*;
+#[path = "tests/assistant_availability.rs"]
+mod assistant_availability;
 #[path = "tests/document_conversion.rs"]
 mod document_conversion;
 #[path = "tests/link_decision_dispatch.rs"]
