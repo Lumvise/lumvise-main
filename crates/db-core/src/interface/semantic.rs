@@ -202,6 +202,11 @@ pub enum SemanticOperation {
         project_root: String,
         input_path: String,
     },
+    /// Captures complete owned project records without an archive-format conversion.
+    /// Example: `SemanticOperation::ProjectArchive { project_root: "/repo".into() }`.
+    ProjectArchive {
+        project_root: String,
+    },
 }
 
 /// Stateless graph-derived delta page for transient external consumers.
@@ -279,6 +284,7 @@ pub enum SemanticResult {
         elements_by_kind: std::collections::BTreeMap<String, usize>,
     },
     PzImport(crate::PzImportResult),
+    ProjectArchive(crate::SemanticArchive),
 }
 
 pub trait SemanticPersistence: Send + Sync {

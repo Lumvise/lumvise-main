@@ -7,6 +7,7 @@ mod semantic;
 pub(crate) mod sql;
 
 mod persistence;
+mod project_archive;
 
 pub use persistence::LocalPersistence;
 

@@ -391,6 +391,7 @@ fn protocol_error(expected: &str) -> DbError {
 
 fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
     match operation {
+        SemanticOperation::ProjectArchive { .. } => "ProjectArchive",
         SemanticOperation::CreatePzSnapshot { .. } => "CreatePzSnapshot",
         SemanticOperation::SyncStructure { .. } => "SyncStructure",
         SemanticOperation::BeginProjectSnapshot { .. } => "BeginProjectSnapshot",
@@ -446,6 +447,7 @@ fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
 
 fn semantic_result_name(result: &SemanticResult) -> &'static str {
     match result {
+        SemanticResult::ProjectArchive(_) => "ProjectArchive",
         SemanticResult::PzSnapshot(_) => "PzSnapshot",
         SemanticResult::SyncStructure(_) => "SyncStructure",
         SemanticResult::SyncPartition(_) => "SyncPartition",

@@ -1,6 +1,8 @@
 use lumvise_db_core::{
-    ArtifactBlob, ArtifactTextVector, DbError, PzFailurePhase, SemanticArchive, SemanticArtifact,
-    SemanticElement, SemanticProjectSnapshot, SemanticRelationship, StoredArtifactTextVector,
+    ArtifactBlob, ArtifactDependency, ArtifactDependencyTarget, ArtifactTextVector,
+    CentralizedPersistence, DbError, LocalPersistence, PzFailurePhase, SemanticArchive,
+    SemanticArtifact, SemanticElement, SemanticOperation, SemanticPersistence,
+    SemanticProjectSnapshot, SemanticRelationship, SemanticResult, StoredArtifactTextVector,
     StoredSemanticElementNameVector,
 };
 use lumvise_resource_routing::InvocationControl;
@@ -87,6 +89,142 @@ fn pz_vector() -> ArtifactTextVector {
 }
 fn pz_phase(error: DbError, expected: PzFailurePhase) {
     assert!(matches!(error, DbError::Pz { phase, .. } if phase==expected));
+}
+
+fn seeded_archive_source() -> (LocalPersistence, SemanticArchive) {
+    let persistence = LocalPersistence::in_memory().unwrap();
+    let mut source = pz_contents();
+    for element in &mut source.snapshot.elements {
+        element.content_fingerprint = None;
+    }
+    source.snapshot.artifacts[0].dependencies = vec![ArtifactDependency {
+        target: ArtifactDependencyTarget::SemanticElement {
+            semantic_element_id: "b".into(),
+        },
+    }];
+    source.snapshot.artifacts[0].metadata = json!({"nul": "a\0b", "integer": i64::MAX});
+    let mut dependent = source.snapshot.artifacts[0].clone();
+    dependent.artifact_id = "dependent".into();
+    dependent.content_ref = None;
+    dependent.dependencies = vec![ArtifactDependency {
+        target: ArtifactDependencyTarget::Artifact {
+            artifact_id: "guide".into(),
+        },
+    }];
+    source.snapshot.artifacts.push(dependent);
+    seed_archive_records(&persistence, &source);
+    (persistence, source)
+}
+
+fn archive_execute(persistence: &LocalPersistence, operation: SemanticOperation) -> SemanticResult {
+    SemanticPersistence::execute(persistence, operation, &InvocationControl::sixty_seconds())
+        .unwrap()
+}
+
+fn seed_archive_records(persistence: &LocalPersistence, source: &SemanticArchive) {
+    archive_execute(
+        persistence,
+        SemanticOperation::SyncStructure {
+            project_root: "/source".into(),
+            elements: source.snapshot.elements.clone(),
+            relationships: source.snapshot.relationships.clone(),
+        },
+    );
+    for artifact in &source.snapshot.artifacts {
+        archive_execute(
+            persistence,
+            SemanticOperation::UpsertArtifact {
+                artifact: artifact.clone(),
+                media_type: "application/octet-stream".into(),
+            },
+        );
+    }
+    for blob in &source.artifact_blobs {
+        archive_execute(
+            persistence,
+            SemanticOperation::ArtifactBlobPut {
+                content_ref: blob.content_ref.clone(),
+                artifact_id: blob.artifact_id.clone(),
+                media_type: blob.media_type.clone(),
+                content: blob.content.clone(),
+            },
+        );
+    }
+    archive_execute(
+        persistence,
+        SemanticOperation::StoreElementNameVectors {
+            project_root: "/source".into(),
+            vectors: source.element_name_vectors.clone(),
+        },
+    );
+    archive_execute(
+        persistence,
+        SemanticOperation::StoreArtifactTextVectors {
+            project_root: "/source".into(),
+            vectors: source.artifact_text_vectors.clone(),
+        },
+    );
+}
+
+#[test]
+fn project_archive_capture_preserves_dependencies_and_all_owned_records_without_pz() {
+    let (persistence, source) = seeded_archive_source();
+    let SemanticResult::ProjectArchive(captured) = archive_execute(
+        &persistence,
+        SemanticOperation::ProjectArchive {
+            project_root: "/source".into(),
+        },
+    ) else {
+        panic!("expected complete project archive")
+    };
+    assert_eq!(captured.snapshot.elements, source.snapshot.elements);
+    assert_eq!(
+        captured.snapshot.relationships,
+        source.snapshot.relationships
+    );
+    for expected in &source.snapshot.artifacts {
+        let actual = captured
+            .snapshot
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_id == expected.artifact_id)
+            .unwrap();
+        assert_eq!(actual.dependencies, expected.dependencies);
+        assert_eq!(actual.metadata, expected.metadata);
+    }
+    assert_eq!(
+        captured.artifact_blobs[0].content,
+        source.artifact_blobs[0].content
+    );
+    assert_eq!(captured.element_name_vectors, source.element_name_vectors);
+    assert_eq!(captured.artifact_text_vectors, source.artifact_text_vectors);
+    let encoded = CentralizedPersistence::encode_semantic_result(SemanticResult::ProjectArchive(
+        captured.clone(),
+    ))
+    .unwrap();
+    let SemanticResult::ProjectArchive(decoded) =
+        CentralizedPersistence::decode_semantic_result(&encoded).unwrap()
+    else {
+        panic!("expected portable project archive")
+    };
+    assert_eq!(decoded, captured);
+}
+
+#[test]
+fn project_archive_operation_round_trips_and_rejects_expired_or_cancelled_captures() {
+    let operation = SemanticOperation::ProjectArchive {
+        project_root: "/source".into(),
+    };
+    let encoded = CentralizedPersistence::encode_semantic_operation(operation.clone()).unwrap();
+    assert!(
+        matches!(CentralizedPersistence::decode_semantic_operation(&encoded).unwrap(), SemanticOperation::ProjectArchive { project_root } if project_root == "/source")
+    );
+    let persistence = LocalPersistence::in_memory().unwrap();
+    let expired = InvocationControl::with_deadline(std::time::Duration::ZERO);
+    assert!(SemanticPersistence::execute(&persistence, operation.clone(), &expired).is_err());
+    let cancelled = InvocationControl::sixty_seconds();
+    cancelled.cancel();
+    assert!(SemanticPersistence::execute(&persistence, operation, &cancelled).is_err());
 }
 
 #[test]

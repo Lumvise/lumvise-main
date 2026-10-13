@@ -105,6 +105,13 @@ impl SemanticPersistence for LocalPersistence {
             .semantic_storage()
             .with_control(control.clone());
         match operation {
+            SemanticOperation::ProjectArchive { project_root } => Ok(
+                SemanticResult::ProjectArchive(super::project_archive::capture(
+                    &self.core.storage_manager(),
+                    &project_root,
+                    control,
+                )?),
+            ),
             SemanticOperation::CreatePzSnapshot {
                 project_root,
                 output_path,

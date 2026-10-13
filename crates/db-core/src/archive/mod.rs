@@ -35,8 +35,8 @@ pub(crate) use validation::PzArchive;
 use write::*;
 pub(crate) use write::{normalized_project_root, verify_control};
 
-/// Owned project contents exchanged through the unchanged PZ snapshot format.
-#[derive(Debug, Clone, PartialEq)]
+/// Complete owned project contents; PZ encoding is an explicit, separate operation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticArchive {
     pub project_id: String,
     pub snapshot_id: String,
