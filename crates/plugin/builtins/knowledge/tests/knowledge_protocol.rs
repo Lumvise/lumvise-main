@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
@@ -41,6 +41,8 @@ use lumvise_plugin_runtime::{
 use lumvise_resource_routing::InvocationControl;
 use sha2::{Digest, Sha256};
 
+#[path = "knowledge_protocol/retired_kind_migration.rs"]
+mod retired_kind_migration;
 mod support;
 
 use support::{ControlledTestInvoke, fast_runtime_config, make_tree_writable};
@@ -57,6 +59,7 @@ struct TestSubprocessSandbox;
 struct MemoryStorageBroker {
     persistence: Arc<LocalPersistence>,
     semantic: AppCoreHostCapabilityBroker,
+    preserved_inactive_owner_ids: Mutex<HashSet<String>>,
     rows: Mutex<HashMap<(String, String), BTreeMap<String, serde_json::Value>>>,
     semantic_operations: Mutex<BTreeMap<String, usize>>,
     vector_write_sizes: Mutex<Vec<usize>>,
@@ -73,6 +76,7 @@ impl Default for MemoryStorageBroker {
         Self {
             persistence,
             semantic: AppCoreHostCapabilityBroker::new(semantic, relational),
+            preserved_inactive_owner_ids: Mutex::default(),
             rows: Mutex::default(),
             semantic_operations: Mutex::default(),
             vector_write_sizes: Mutex::default(),
@@ -246,17 +250,33 @@ impl MemoryStorageBroker {
     fn ensure_element(&self, semantic_element_id: &str, project_root: &str) {
         let result = SemanticPersistence::execute(
             self.persistence.as_ref(),
-            SemanticOperation::Element {
-                semantic_element_id: semantic_element_id.to_owned(),
+            SemanticOperation::ElementsByIdsIncludingInactive {
+                project_root: project_root.to_owned(),
+                semantic_element_ids: HashSet::from([semantic_element_id.to_owned()]),
             },
             &InvocationControl::sixty_seconds(),
         );
         match result {
-            Ok(SemanticResult::Element(Some(_))) => return,
-            Ok(SemanticResult::Element(None)) => {}
-            Ok(other) => panic!("expected Element result while checking seed owner, got {other:?}"),
+            Ok(SemanticResult::Elements(elements))
+                if elements.first().is_some_and(|element| {
+                    element.lifecycle != "inactive"
+                        || self
+                            .preserved_inactive_owner_ids
+                            .lock()
+                            .expect("preserved inactive owners")
+                            .contains(semantic_element_id)
+                }) =>
+            {
+                return;
+            }
+            Ok(SemanticResult::Elements(_)) => {}
+            Ok(other) => {
+                panic!("expected targeted elements while checking seed owner, got {other:?}")
+            }
             Err(error) => {
-                panic!("expected Element operation to succeed while checking seed owner: {error}")
+                panic!(
+                    "expected targeted elements operation to succeed while checking seed owner: {error}"
+                )
             }
         }
         self.sync_elements(
@@ -2451,80 +2471,4 @@ fn artifact_ids(list: &serde_json::Value) -> Vec<String> {
                 .to_owned()
         })
         .collect()
-}
-
-#[test]
-fn retired_knowledge_kinds_read_converted_and_leave_the_contract() {
-    let workspace = tempfile::tempdir().expect("retired kind workspace");
-    let broker = Arc::new(MemoryStorageBroker::default());
-    broker.ensure_element("file:retired", "/work/demo");
-    let mut retired = test_artifact("retired-note", "file:retired", "Retired note");
-    retired.artifact_kind = "manual_note".into();
-    retired.content = Some("Retired body".into());
-    broker.upsert_artifact(retired, "text/markdown");
-    let system = start_packaged_knowledge(&workspace, broker.clone());
-
-    let stored_kind = |artifact_id: &str| {
-        broker
-            .invoke(HostCapabilityRequest {
-                plugin_id: PLUGIN_ID.into(),
-                invocation_id: "retired-kinds".into(),
-                call_id: "retired-kinds-read".into(),
-                capability_id: "storage.semantic".into(),
-                required_version: "^1.4.0".into(),
-                input: serde_json::json!({"operation": "artifact", "artifact_id": artifact_id}),
-            })
-            .expect("raw artifact read")["artifact"]["artifact_kind"]
-            .clone()
-    };
-    assert_eq!(stored_kind("retired-note"), "manual_note");
-    let before = invoke_value(
-        &system,
-        GET_EXPORT_ID,
-        serde_json::json!({"artifact_id": "retired-note"}),
-    );
-    assert_eq!(before["artifact"]["knowledge_type"], "annotation");
-
-    assert_succeeds(
-        &system,
-        ARTIFACT_GENERATION_POLL_EXPORT_ID,
-        serde_json::json!({"delivery_id": "retired-kinds", "scheduled_at_unix_seconds": 0}),
-    );
-    assert_eq!(stored_kind("retired-note"), "annotation");
-    let listed = invoke_value(
-        &system,
-        LIST_EXPORT_ID,
-        serde_json::json!({"semantic_element_id": "file:retired"}),
-    );
-    assert_eq!(listed["artifacts"][0]["knowledge_type"], "annotation");
-
-    let retired_create = system
-        .invoke(
-            PLUGIN_ID,
-            CREATE_EXPORT_ID,
-            serde_json::json!({
-                "artifact_id": "new-note", "semantic_element_id": "file:retired",
-                "knowledge_type": "manual_note", "title": "New note", "content": "Body"
-            }),
-        )
-        .expect_err("signed schema rejects a retired Knowledge kind");
-    assert!(retired_create.to_string().contains("manual_note"));
-
-    let plan = invoke_value(
-        &system,
-        CREATE_EXPORT_ID,
-        serde_json::json!({
-            "artifact_id": "new-plan", "semantic_element_id": "file:retired",
-            "knowledge_type": "plan", "title": "Plan", "content": "Steps"
-        }),
-    );
-    assert_eq!(plan["artifact"]["knowledge_type"], "plan");
-
-    system
-        .stop(PLUGIN_ID)
-        .expect("stop packaged Knowledge binary");
-    system
-        .uninstall(PLUGIN_ID)
-        .expect("detach Knowledge package");
-    make_tree_writable(workspace.path());
 }
