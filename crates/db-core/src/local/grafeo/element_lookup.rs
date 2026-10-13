@@ -271,13 +271,16 @@ struct SubstringPostings {
 
 impl SubstringPostings {
     fn insert(&mut self, text: &str, ordinal: usize) {
-        let grams = text
-            .as_bytes()
-            .windows(3)
-            .map(|bytes| [bytes[0], bytes[1], bytes[2]])
-            .collect::<HashSet<_>>();
-        for gram in grams {
-            self.trigrams.entry(gram).or_default().push(ordinal);
+        for bytes in text.as_bytes().windows(3) {
+            let posting = self
+                .trigrams
+                .entry([bytes[0], bytes[1], bytes[2]])
+                .or_default();
+            // Entries arrive in ordinal order, so the tail deduplicates repeated
+            // grams without allocating a temporary hash table for every name/id.
+            if posting.last() != Some(&ordinal) {
+                posting.push(ordinal);
+            }
         }
     }
 

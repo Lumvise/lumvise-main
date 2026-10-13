@@ -107,9 +107,27 @@ pub(crate) fn project_artifacts_selective(
     project_root: &str,
     artifact_namespace: Option<&str>,
 ) -> Vec<SemanticArtifact> {
-    let node_ids =
-        database.find_nodes_by_property(PROJECT_ROOT_PROPERTY, &GrafeoValue::from(project_root));
-    let owners = semantic_owner_ids(database, &node_ids);
+    let store = database.graph_store();
+    let artifact_nodes = store.nodes_by_label("SemanticArtifact");
+    // Artifact search needs only owners of existing artifacts, not every source
+    // element in a large project. Keep the same project-membership predicate.
+    let mut owners = semantic_owner_ids(database, &artifact_nodes);
+    let project_key = PROJECT_ROOT_PROPERTY.into();
+    owners.retain(|owner| {
+        database
+            .find_nodes_by_property(
+                SEMANTIC_ELEMENT_ID_PROPERTY,
+                &GrafeoValue::from(owner.as_str()),
+            )
+            .into_iter()
+            .any(|id| {
+                store
+                    .get_node_property(id, &project_key)
+                    .and_then(|value| value_string(&value))
+                    .as_deref()
+                    == Some(project_root)
+            })
+    });
     selective_artifacts_for_owners(database, owners, artifact_namespace)
 }
 

@@ -88,6 +88,7 @@ impl PluginHostServices {
 
     pub(super) fn text_to_speech_executor(
         &self,
+        session_id: &str,
     ) -> Result<Arc<TextToSpeechExecutor>, HostCapabilityError> {
         let service = self.available_speech_synthesizer()?.ok_or_else(|| {
             unavailable(
@@ -95,8 +96,12 @@ impl PluginHostServices {
                 "speech synthesis is disabled or no synthesizer is installed",
             )
         })?;
-        let mut slot = self
-            .text_to_speech_executor
+        let executor_slot = if workspace_session(session_id) {
+            &self.workspace_speech_executor
+        } else {
+            &self.text_to_speech_executor
+        };
+        let mut slot = executor_slot
             .lock()
             .map_err(|_| failed(TEXT_TO_SPEECH, "speech executor slot mutex poisoned"))?;
         if let Some((current_service, executor)) = slot.as_ref()

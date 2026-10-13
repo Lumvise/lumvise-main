@@ -233,7 +233,8 @@ impl OpenAiCompatibleChatProvider {
         control: &StreamControl,
     ) -> Result<Value> {
         let started = std::time::Instant::now();
-        let streaming = self.config.kind == crate::config::LlmProviderKind::OpenRouter;
+        let streaming =
+            request.stream || self.config.kind == crate::config::LlmProviderKind::OpenRouter;
         let http_request = self.http_request_with_payload(
             self.payload(request, streaming, messages, tools),
             control,

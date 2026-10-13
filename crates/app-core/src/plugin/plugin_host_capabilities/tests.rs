@@ -3,6 +3,8 @@ use super::*;
 mod assistant_availability;
 #[path = "tests/document_conversion.rs"]
 mod document_conversion;
+#[path = "tests/independent_streams.rs"]
+mod independent_streams;
 #[path = "tests/link_decision_dispatch.rs"]
 mod link_decision_dispatch;
 use lumvise_frontend_core::{AppSettingsPatch, AssistantEngine};
@@ -400,6 +402,7 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
             "host.extension",
             "modalities.speech_to_text",
             "modalities.text_to_speech",
+            "neural.decisions",
             "neural.embed",
             "neural.llm",
             "plugin.invoke",

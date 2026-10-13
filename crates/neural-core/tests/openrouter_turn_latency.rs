@@ -252,6 +252,35 @@ fn finalized_speech_uses_one_streamed_round_and_reuses_conversation_discovery() 
 }
 
 #[test]
+fn hosted_openai_tool_calls_honor_requested_streaming() {
+    let assistant = ScopedAssistant::start(acknowledged(true));
+    let model = StreamedModel::new(vec![speech_round()]);
+    let registry = LlmProviderRegistry::from_configs(
+        vec![LlmProviderConfig {
+            provider_id: "lumvise_cloud".into(),
+            kind: LlmProviderKind::OpenAiCompatible,
+            model: "provider-default".into(),
+            endpoint: Some("https://unused.test/ai".into()),
+            credential: None,
+            completion_concurrency: None,
+            spawn: None,
+        }],
+        Arc::new(model.clone()),
+    )
+    .unwrap();
+    let response = registry
+        .complete("lumvise_cloud", &assistant.request("workspace:voice"))
+        .unwrap();
+    assert_eq!(response.content, "Hello 🐼");
+    assert_eq!(model.requests.lock().unwrap()[0].payload["stream"], true);
+    assert_eq!(assistant.invocations.lock().unwrap().len(), 1);
+    assert_eq!(
+        assistant.invocations.lock().unwrap()[0]["arguments"]["content"],
+        "Hello 🐼"
+    );
+}
+
+#[test]
 fn partial_or_failed_speech_requires_model_continuation_and_preserves_reasoning() {
     for outcome in [
         acknowledged(false),

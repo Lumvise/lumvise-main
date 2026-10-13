@@ -3,8 +3,8 @@ use crate::{
     DbError, Result, SemanticElement, SemanticGraphProjection, SemanticGraphProjectionRequest,
 };
 use grafeo::{EdgeId, GrafeoDB, NodeId, Session, Value as GrafeoValue};
-use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -18,6 +18,8 @@ pub(crate) struct GraphStore {
     /// writer owns the gate. A conditional writer validates the exact even
     /// value before it opens its Grafeo transaction.
     revision: AtomicU64,
+    // Search/path caches depend on semantic nodes, not artifact/vector writes.
+    element_revision: AtomicU64,
     committed_semantic_entities: AtomicUsize,
     last_checkpoint_error: Mutex<Option<String>>,
     work: GraphWork,
@@ -92,6 +94,8 @@ pub(crate) struct GraphTransaction<'graph> {
     _database: &'graph GrafeoDB,
     session: Session,
     semantic_node_ids: RefCell<BTreeMap<String, NodeId>>,
+    semantic_labels: RefCell<HashMap<NodeId, bool>>,
+    elements_changed: Cell<bool>,
     #[cfg(test)]
     work: &'graph GraphWork,
 }
@@ -104,6 +108,7 @@ impl GraphStore {
             write_admission: Mutex::new(()),
             structure_sync: Mutex::new(()),
             revision: AtomicU64::new(0),
+            element_revision: AtomicU64::new(0),
             committed_semantic_entities: AtomicUsize::new(0),
             last_checkpoint_error: Mutex::new(None),
             projection_cache: Mutex::new(VecDeque::with_capacity(PROJECTION_CACHE_CAPACITY)),
@@ -147,7 +152,7 @@ impl GraphStore {
         limit: usize,
     ) -> Result<Vec<SemanticElement>> {
         self.stable_read(|graph| {
-            let revision = self.revision.load(Ordering::Acquire);
+            let revision = self.element_revision.load(Ordering::Acquire);
             let ids = self
                 .element_lookup
                 .lock()
@@ -174,7 +179,7 @@ impl GraphStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .scope_count(
                 graph,
-                self.revision.load(Ordering::Acquire),
+                self.element_revision.load(Ordering::Acquire),
                 project_root,
                 include_inactive,
             )
@@ -199,7 +204,7 @@ impl GraphStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .select_path(
                 graph,
-                self.revision.load(Ordering::Acquire),
+                self.element_revision.load(Ordering::Acquire),
                 project_root,
                 path,
                 line,
@@ -492,6 +497,9 @@ impl GraphStore {
             }
         };
         let write_result = write(&transaction);
+        if transaction.elements_changed.get() {
+            self.element_revision.fetch_add(1, Ordering::Release);
+        }
         let result = transaction.finish(write_result);
         self.revision.fetch_add(1, Ordering::Release);
         result.map(ConditionalGraphWrite::Applied)
@@ -531,6 +539,9 @@ impl GraphStore {
             }
         };
         let write_result = write(&transaction);
+        if transaction.elements_changed.get() {
+            self.element_revision.fetch_add(1, Ordering::Release);
+        }
         let write_result = transaction.finish(write_result);
         let mut checkpoint_due = false;
         let result = match write_result {
@@ -622,6 +633,8 @@ impl<'graph> GraphTransaction<'graph> {
             _database: database,
             session,
             semantic_node_ids: RefCell::new(BTreeMap::new()),
+            semantic_labels: RefCell::new(HashMap::new()),
+            elements_changed: Cell::new(false),
             #[cfg(test)]
             work: _work,
         })
@@ -651,9 +664,16 @@ impl<'graph> GraphTransaction<'graph> {
         labels: &[&str],
         properties: impl IntoIterator<Item = (&'a str, GrafeoValue)>,
     ) -> Result<NodeId> {
-        self.session
+        let node = self
+            .session
             .create_node_with_props(labels, properties)
-            .map_err(|error| DbError::Grafeo(error.to_string()))
+            .map_err(|error| DbError::Grafeo(error.to_string()))?;
+        let semantic = labels.contains(&"SemanticElement");
+        self.semantic_labels.borrow_mut().insert(node, semantic);
+        if semantic {
+            self.elements_changed.set(true);
+        }
+        Ok(node)
     }
 
     pub(crate) fn create_semantic_node<'a>(
@@ -666,6 +686,24 @@ impl<'graph> GraphTransaction<'graph> {
             .borrow_mut()
             .insert(semantic_element_id.to_string(), node_id);
         Ok(node_id)
+    }
+
+    fn note_element_mutation(&self, node_id: NodeId) {
+        if self.elements_changed.get() {
+            return;
+        }
+        let semantic = *self
+            .semantic_labels
+            .borrow_mut()
+            .entry(node_id)
+            .or_insert_with(|| {
+                self.session
+                    .get_node(node_id)
+                    .is_some_and(|node| node.has_label("SemanticElement"))
+            });
+        if semantic {
+            self.elements_changed.set(true);
+        }
     }
 
     pub(crate) fn create_edge_with_props<'a>(
@@ -681,6 +719,7 @@ impl<'graph> GraphTransaction<'graph> {
     }
 
     pub(crate) fn delete_node(&self, node_id: NodeId) -> bool {
+        self.note_element_mutation(node_id);
         self.session.delete_node(node_id)
     }
 
@@ -714,6 +753,7 @@ impl<'graph> GraphTransaction<'graph> {
         property: &str,
         value: GrafeoValue,
     ) -> Result<()> {
+        self.note_element_mutation(node_id);
         self.session
             .set_node_property(node_id, property, value)
             .map_err(|error| DbError::Grafeo(error.to_string()))

@@ -10,6 +10,32 @@ use std::thread;
 use std::time::Duration;
 
 #[test]
+fn search_cache_revision_ignores_artifact_and_vector_writes_but_tracks_element_edits() {
+    let store = GraphStore::new(GrafeoDB::new_in_memory());
+    let element = store
+        .write(|graph| graph.create_semantic_node("element", []))
+        .unwrap();
+    let revision = store.element_revision.load(Ordering::Acquire);
+    for label in ["SemanticArtifact", "SemanticElementNameVector"] {
+        let node = store
+            .write(|graph| graph.create_node_with_props(&[label], []))
+            .unwrap();
+        store
+            .write(|graph| graph.set_node_property(node, "semantic_element_id", "element".into()))
+            .unwrap();
+        store.write(|graph| Ok(graph.delete_node(node))).unwrap();
+    }
+    assert_eq!(store.element_revision.load(Ordering::Acquire), revision);
+    store
+        .write(|graph| graph.set_node_property(element, "name", "renamed".into()))
+        .unwrap();
+    assert!(store.element_revision.load(Ordering::Acquire) > revision);
+    let renamed = store.element_revision.load(Ordering::Acquire);
+    store.write(|graph| Ok(graph.delete_node(element))).unwrap();
+    assert!(store.element_revision.load(Ordering::Acquire) > renamed);
+}
+
+#[test]
 fn automatic_checkpoint_allows_published_reads_with_a_waiting_writer() {
     let store = Arc::new(GraphStore::new(GrafeoDB::new_in_memory()));
     let (entered, checkpoint_started) = mpsc::channel();

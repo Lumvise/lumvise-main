@@ -32,6 +32,7 @@ pub(super) struct BackgroundJobAdapter {
     finished: Arc<Condvar>,
     llm_executors: Arc<LlmExecutorRegistry>,
     assistant_llm_executors: Arc<LlmExecutorRegistry>,
+    workspace_llm_executors: Arc<LlmExecutorRegistry>,
     activity: Arc<crate::workspace_activity::WorkspaceActivity>,
     frontend: Arc<Mutex<FrontendCore>>,
     session_routes: Arc<Mutex<HashMap<String, LlmSessionRoute>>>,
@@ -55,6 +56,7 @@ impl BackgroundJobAdapter {
     pub(super) fn new(
         llm_executors: Arc<LlmExecutorRegistry>,
         assistant_llm_executors: Arc<LlmExecutorRegistry>,
+        workspace_llm_executors: Arc<LlmExecutorRegistry>,
         frontend: Arc<Mutex<FrontendCore>>,
         activity: Arc<crate::workspace_activity::WorkspaceActivity>,
     ) -> Self {
@@ -63,6 +65,7 @@ impl BackgroundJobAdapter {
             finished: Arc::new(Condvar::new()),
             llm_executors,
             assistant_llm_executors,
+            workspace_llm_executors,
             activity,
             frontend,
             session_routes: Arc::new(Mutex::new(HashMap::new())),
@@ -106,8 +109,10 @@ impl BackgroundJobAdapter {
         apply_configured_llm_selection(&self.frontend, BACKGROUND_JOB, &mut request)?;
         let llm_executors = selected_llm_executor(
             plugin_id,
+            request.conversation_id.as_deref(),
             &self.llm_executors,
             &self.assistant_llm_executors,
+            &self.workspace_llm_executors,
         );
         let route = self.resolve_route(&request, llm_executors)?;
         let control =
@@ -472,12 +477,29 @@ mod tests {
     }
 
     #[test]
+    fn hosted_jobs_request_incremental_transport_without_changing_other_providers() {
+        for (provider, streamed) in [("lumvise_cloud", true), ("custom_openai", false)] {
+            let request: NeutralLlmRequest = serde_json::from_value(json!({
+                "provider_id": provider, "model": null, "conversation_id": "workspace:voice",
+                "llm_session_id": null, "messages": [{"role": "user", "content": "Hello"}],
+                "mcp_servers": []
+            }))
+            .unwrap();
+            let sent = request.into_neural();
+            assert_eq!(sent.stream, streamed);
+            assert_eq!(sent.conversation_id.as_deref(), Some("workspace:voice"));
+            assert_eq!(sent.messages[0].content, "Hello");
+        }
+    }
+
+    #[test]
     fn session_route_is_selected_once_and_rejects_provider_changes() {
         let registry =
             LlmProviderRegistry::from_provider_instances(vec![Box::new(TimeoutProvider)])
                 .expect("timeout provider registry");
         let providers = Arc::new(Mutex::new(registry));
         let adapter = BackgroundJobAdapter::new(
+            LlmExecutorRegistry::new(Arc::clone(&providers)),
             LlmExecutorRegistry::new(Arc::clone(&providers)),
             LlmExecutorRegistry::new(providers),
             Arc::new(Mutex::new(FrontendCore::default())),
@@ -701,6 +723,7 @@ mod tests {
         let providers = Arc::new(Mutex::new(registry));
         let adapter = BackgroundJobAdapter::new(
             LlmExecutorRegistry::new(Arc::clone(&providers)),
+            LlmExecutorRegistry::new(Arc::clone(&providers)),
             LlmExecutorRegistry::new(providers),
             Arc::new(Mutex::new(FrontendCore::default())),
             Arc::default(),
@@ -782,6 +805,7 @@ mod tests {
     fn empty_adapter() -> BackgroundJobAdapter {
         let providers = Arc::new(Mutex::new(LlmProviderRegistry::empty()));
         BackgroundJobAdapter::new(
+            LlmExecutorRegistry::new(Arc::clone(&providers)),
             LlmExecutorRegistry::new(Arc::clone(&providers)),
             LlmExecutorRegistry::new(providers),
             Arc::new(Mutex::new(FrontendCore::default())),

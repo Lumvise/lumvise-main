@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 mod audio_sessions;
 mod document_conversion;
 mod speech_access;
+mod speech_playback;
 use audio_sessions::{AUDIO_SESSION, LiveAudioConnections};
 mod background_jobs;
 use background_jobs::BackgroundJobAdapter;
@@ -88,6 +89,7 @@ pub(crate) struct PluginHostServices {
     llms: Arc<Mutex<LlmProviderRegistry>>,
     llm_executors: Arc<LlmExecutorRegistry>,
     assistant_llm_executors: Arc<LlmExecutorRegistry>,
+    workspace_llm_executors: Arc<LlmExecutorRegistry>,
     activity: Arc<crate::workspace_activity::WorkspaceActivity>,
     frontend_actions: Arc<Mutex<Vec<Value>>>,
     frontend_action_ids: Mutex<HashSet<String>>,
@@ -97,6 +99,8 @@ pub(crate) struct PluginHostServices {
     speech_synthesizer: SharedSpeechSynthesizer,
     speech_to_text_executor: Mutex<Option<(Arc<dyn SpeechRecognizer>, Arc<SpeechToTextExecutor>)>>,
     text_to_speech_executor: Mutex<Option<(Arc<dyn SpeechSynthesizer>, Arc<TextToSpeechExecutor>)>>,
+    workspace_speech_executor:
+        Mutex<Option<(Arc<dyn SpeechSynthesizer>, Arc<TextToSpeechExecutor>)>>,
     voice_playback_transport: Arc<super::voice_playback_transport::VoicePlaybackTransport>,
     playback_owners: Arc<Mutex<HashMap<String, PlaybackOwner>>>,
     playback_controls: Arc<Mutex<HashMap<String, InvocationControl>>>,
@@ -112,10 +116,11 @@ pub(crate) struct PluginHostServices {
 /// Correlation recorded when a `text_to_speech` segment opens, so a later
 /// real playback-status report (`report_voice_playback_status`) can notify
 /// whichever plugin/session opened it — kept as opaque strings on purpose,
-/// this module never interprets what `session_id` means.
+/// Workspace playback stays outside the floating Assistant projection.
 struct PlaybackOwner {
     plugin_id: String,
     session_id: String,
+    segment_index: u64,
 }
 
 impl PluginHostServices {
@@ -127,6 +132,7 @@ impl PluginHostServices {
         let llms = Arc::new(Mutex::new(llms));
         let llm_executors = LlmExecutorRegistry::new(Arc::clone(&llms));
         let assistant_llm_executors = LlmExecutorRegistry::new(Arc::clone(&llms));
+        let workspace_llm_executors = LlmExecutorRegistry::new(Arc::clone(&llms));
         let activity = Arc::new(crate::workspace_activity::WorkspaceActivity::default());
         let frontend = Arc::new(Mutex::new(frontend));
         let speech_recognizer = Arc::new(Mutex::new(None));
@@ -138,6 +144,7 @@ impl PluginHostServices {
             llms: Arc::clone(&llms),
             llm_executors: Arc::clone(&llm_executors),
             assistant_llm_executors: Arc::clone(&assistant_llm_executors),
+            workspace_llm_executors: Arc::clone(&workspace_llm_executors),
             activity: Arc::clone(&activity),
             frontend_actions: Arc::new(Mutex::new(Vec::new())),
             frontend_action_ids: Mutex::new(HashSet::new()),
@@ -147,6 +154,7 @@ impl PluginHostServices {
             speech_synthesizer,
             speech_to_text_executor: Mutex::new(None),
             text_to_speech_executor: Mutex::new(None),
+            workspace_speech_executor: Mutex::new(None),
             voice_playback_transport: Arc::new(
                 super::voice_playback_transport::VoicePlaybackTransport::new(),
             ),
@@ -157,6 +165,7 @@ impl PluginHostServices {
             background_jobs: BackgroundJobAdapter::new(
                 llm_executors,
                 assistant_llm_executors,
+                workspace_llm_executors,
                 frontend,
                 activity,
             ),
@@ -623,8 +632,10 @@ impl PluginHostServices {
         let ticket = self.activity.track_llm(plugin_id, &provider_id);
         let result = selected_llm_executor(
             plugin_id,
+            request.conversation_id.as_deref(),
             &self.llm_executors,
             &self.assistant_llm_executors,
+            &self.workspace_llm_executors,
         )
         .complete(&provider_id, request.into_neural(), ticket.control(control));
         ticket.finish(&result);
@@ -671,300 +682,6 @@ impl PluginHostServices {
         Ok(json!({"transcript": response.transcript}))
     }
 
-    fn text_to_speech(&self, plugin_id: &str, input: Value) -> Result<Value, HostCapabilityError> {
-        let request: TextToSpeechRequest = decode(TEXT_TO_SPEECH, input)?;
-        require_non_empty(TEXT_TO_SPEECH, &request.playback_id, "playback_id")?;
-        require_non_empty(TEXT_TO_SPEECH, &request.session_id, "session_id")?;
-
-        if request.cancel {
-            return self.cancel_text_to_speech(&request.playback_id);
-        }
-
-        let text = request.text.as_deref().unwrap_or_default();
-        if text.is_empty() && !request.close {
-            require_non_empty(TEXT_TO_SPEECH, text, "text")?;
-        }
-        if text.len() > MAX_TTS_TEXT_BYTES {
-            return Err(quota(TEXT_TO_SPEECH, text.len(), MAX_TTS_TEXT_BYTES));
-        }
-
-        let executor = self.text_to_speech_executor()?;
-        let segment_index = if text.is_empty() {
-            self.current_playback_segment_index(&request.playback_id)?
-        } else {
-            self.open_or_append_playback_segment(&request)?
-        };
-        self.remember_playback_owner(&request.playback_id, plugin_id, &request.session_id);
-
-        let synth_control = self.playback_control(&request.playback_id);
-
-        let transport = self.voice_playback_transport();
-        let playback_id = request.playback_id.clone();
-        let close_after = request.close;
-        let frontend = Arc::clone(&self.frontend);
-        let opened_map = Arc::clone(&self.playback_opened);
-        let sequences_map = Arc::clone(&self.playback_sequences);
-        let controls_map = Arc::clone(&self.playback_controls);
-
-        let enqueue_result = executor.enqueue_stream(
-            Text2VoiceRequest {
-                text: text.to_string(),
-                voice_id: request.voice_id.clone(),
-                model: request.model.clone(),
-            },
-            synth_control,
-            move |event| {
-                match event {
-                    Text2VoiceStreamEvent::AudioChunk {
-                        sequence,
-                        audio,
-                        media_type,
-                    } => {
-                        let first_chunk = opened_map
-                            .lock()
-                            .map(|mut opened| opened.insert(playback_id.clone()))
-                            .unwrap_or(false);
-                        if first_chunk {
-                            let _ = transport.publish(VoicePlaybackTransportEvent::Opened {
-                                playback_id: playback_id.clone(),
-                                media_type: media_type.clone(),
-                                sample_rate_hz: sample_rate_from_media_type(&media_type),
-                            });
-                        }
-                        let transport_sequence = sequences_map
-                            .lock()
-                            .map(|mut sequences| {
-                                let next = sequences.entry(playback_id.clone()).or_insert(0);
-                                let sequence = *next;
-                                *next = next.saturating_add(1);
-                                sequence
-                            })
-                            .unwrap_or(sequence);
-                        let _ = transport.publish(VoicePlaybackTransportEvent::AudioChunk {
-                            playback_id: playback_id.clone(),
-                            sequence: transport_sequence,
-                            audio,
-                        });
-                    }
-                    Text2VoiceStreamEvent::Complete => {
-                        if close_after {
-                            let _ = transport.publish(VoicePlaybackTransportEvent::Closed {
-                                playback_id: playback_id.clone(),
-                            });
-                            if let Ok(mut frontend) = frontend.lock() {
-                                let _ = frontend.close_voice_playback(playback_id.clone());
-                            }
-                            cleanup_synthesis(
-                                &controls_map,
-                                &opened_map,
-                                &sequences_map,
-                                &playback_id,
-                            );
-                        }
-                    }
-                    Text2VoiceStreamEvent::Error { .. } => {
-                        let _ = transport.publish(VoicePlaybackTransportEvent::Cancelled {
-                            playback_id: playback_id.clone(),
-                        });
-                        if let Ok(mut frontend) = frontend.lock() {
-                            let _ = frontend.set_voice_playback_status(
-                                playback_id.clone(),
-                                VoicePlaybackStatus::Failed,
-                            );
-                        }
-                        cleanup_synthesis(&controls_map, &opened_map, &sequences_map, &playback_id);
-                    }
-                }
-                Ok(())
-            },
-        );
-        enqueue_result.map_err(|error| speech_execution_error(TEXT_TO_SPEECH, error))?;
-
-        Ok(json!({
-            "playback_id": request.playback_id,
-            "segment_index": segment_index,
-            "accepted": true,
-        }))
-    }
-
-    /// Opens a new playback turn on first use for `playback_id`, or appends
-    /// the next segment when the turn is already active, returning the
-    /// assigned `segment_index`.
-    fn open_or_append_playback_segment(
-        &self,
-        request: &TextToSpeechRequest,
-    ) -> Result<u64, HostCapabilityError> {
-        let mut frontend = self
-            .frontend
-            .lock()
-            .map_err(|_| failed(TEXT_TO_SPEECH, "frontend mutex poisoned"))?;
-        let is_new_turn = frontend
-            .voice_playback_status()
-            .active_playback_id
-            .as_deref()
-            != Some(request.playback_id.as_str());
-        if is_new_turn {
-            frontend
-                .open_voice_playback(request.playback_id.clone())
-                .map_err(|error| failed(TEXT_TO_SPEECH, &error.to_string()))?;
-        }
-        let snapshot = frontend
-            .append_voice_playback_chunk(VoicePlaybackChunk {
-                playback_id: request.playback_id.clone(),
-                media_type: "audio/pcm".to_string(),
-            })
-            .map_err(|error| failed(TEXT_TO_SPEECH, &error.to_string()))?;
-        Ok(snapshot
-            .state
-            .voice_playback
-            .segments
-            .back()
-            .map(|segment| segment.segment_index)
-            .unwrap_or(0))
-    }
-
-    fn current_playback_segment_index(
-        &self,
-        playback_id: &str,
-    ) -> Result<u64, HostCapabilityError> {
-        let frontend = self
-            .frontend
-            .lock()
-            .map_err(|_| failed(TEXT_TO_SPEECH, "frontend mutex poisoned"))?;
-        frontend
-            .voice_playback_status()
-            .segments
-            .iter()
-            .rev()
-            .find(|segment| segment.playback_id == playback_id)
-            .map(|segment| segment.segment_index)
-            .ok_or_else(|| unavailable(TEXT_TO_SPEECH, "no playback segment is open to close"))
-    }
-
-    fn remember_playback_owner(&self, playback_id: &str, plugin_id: &str, session_id: &str) {
-        if let Ok(mut map) = self.playback_owners.lock() {
-            map.insert(
-                playback_id.to_string(),
-                PlaybackOwner {
-                    plugin_id: plugin_id.to_string(),
-                    session_id: session_id.to_string(),
-                },
-            );
-        }
-    }
-
-    fn playback_control(&self, playback_id: &str) -> InvocationControl {
-        self.playback_controls
-            .lock()
-            .map(|mut controls| {
-                controls
-                    .entry(playback_id.to_string())
-                    .or_insert_with(|| InvocationControl::with_deadline(Duration::from_secs(600)))
-                    .clone()
-            })
-            .unwrap_or_else(|_| InvocationControl::with_deadline(Duration::from_secs(600)))
-    }
-
-    /// Cancels an outstanding stream for `playback_id` (barge-in): stops the
-    /// background synthesis worker, evicts owner/control tracking, and
-    /// marks every queued segment `Cancelled`.
-    fn cancel_text_to_speech(&self, playback_id: &str) -> Result<Value, HostCapabilityError> {
-        if let Ok(map) = self.playback_controls.lock()
-            && let Some(control) = map.get(playback_id)
-        {
-            control.cancel();
-        }
-        if let Ok(mut map) = self.playback_owners.lock() {
-            map.remove(playback_id);
-        }
-        cleanup_synthesis(
-            &self.playback_controls,
-            &self.playback_opened,
-            &self.playback_sequences,
-            playback_id,
-        );
-        let _ = self
-            .voice_playback_transport
-            .publish(VoicePlaybackTransportEvent::Cancelled {
-                playback_id: playback_id.to_string(),
-            });
-        let mut frontend = self
-            .frontend
-            .lock()
-            .map_err(|_| failed(TEXT_TO_SPEECH, "frontend mutex poisoned"))?;
-        frontend
-            .cancel_voice_playback(playback_id)
-            .map_err(|error| failed(TEXT_TO_SPEECH, &error.to_string()))?;
-        Ok(json!({"playback_id": playback_id, "accepted": true, "cancelled": true}))
-    }
-
-    /// Applies a real renderer-reported playback status transition and
-    pub(crate) fn report_voice_playback_status(
-        &self,
-        playback_id: &str,
-        status: VoicePlaybackStatus,
-    ) -> Result<Option<(String, String, u64)>, HostCapabilityError> {
-        if self.report_audio_playback(playback_id, status) {
-            return Ok(None);
-        }
-        let owner = self.playback_owners.lock().ok().and_then(|map| {
-            map.get(playback_id)
-                .map(|owner| (owner.plugin_id.clone(), owner.session_id.clone()))
-        });
-        let mut frontend = self
-            .frontend
-            .lock()
-            .map_err(|_| failed(TEXT_TO_SPEECH, "frontend mutex poisoned"))?;
-        let state = frontend.voice_playback_status();
-        if state.active_playback_id.as_deref() != Some(playback_id) {
-            // The renderer reported a playback turn that is no longer the
-            // active one (the turn was replaced by the next response, or the
-            // session was replaced). That is normal lifecycle noise: the
-            // active turn's own reports drive the session. Failing here used
-            // to surface as a bogus session last_error ("expected active
-            // voice playback id") and degrade live voice sessions.
-            drop(frontend);
-            if let Ok(mut map) = self.playback_owners.lock() {
-                map.remove(playback_id);
-            }
-            cleanup_synthesis(
-                &self.playback_controls,
-                &self.playback_opened,
-                &self.playback_sequences,
-                playback_id,
-            );
-            return Ok(None);
-        }
-        let segment_index = state
-            .segments
-            .iter()
-            .rev()
-            .find(|segment| segment.playback_id == playback_id)
-            .map(|segment| segment.segment_index)
-            .unwrap_or(0);
-        frontend
-            .set_voice_playback_status(playback_id, status)
-            .map_err(|error| failed(TEXT_TO_SPEECH, &error.to_string()))?;
-        drop(frontend);
-        if matches!(
-            status,
-            VoicePlaybackStatus::Completed
-                | VoicePlaybackStatus::Cancelled
-                | VoicePlaybackStatus::Failed
-        ) {
-            if let Ok(mut map) = self.playback_owners.lock() {
-                map.remove(playback_id);
-            }
-            cleanup_synthesis(
-                &self.playback_controls,
-                &self.playback_opened,
-                &self.playback_sequences,
-                playback_id,
-            );
-        }
-        Ok(owner.map(|(plugin_id, session_id)| (plugin_id, session_id, segment_index)))
-    }
-
     fn scoped_mcp(&self, input: Value) -> Result<Value, HostCapabilityError> {
         let request: OperationRequest = decode(SCOPED_MCP, input)?;
         if request.operation != "base_url" {
@@ -1009,12 +726,20 @@ impl PluginHostServices {
     }
 }
 
+fn workspace_session(session_id: &str) -> bool {
+    session_id.starts_with("workspace:")
+}
+
 fn selected_llm_executor<'a>(
     plugin_id: &str,
+    conversation_id: Option<&str>,
     ordinary: &'a Arc<LlmExecutorRegistry>,
     assistant: &'a Arc<LlmExecutorRegistry>,
+    workspace: &'a Arc<LlmExecutorRegistry>,
 ) -> &'a Arc<LlmExecutorRegistry> {
-    if plugin_id == "builtin.assistant" {
+    if plugin_id == "builtin.assistant" && conversation_id.is_some_and(workspace_session) {
+        workspace
+    } else if plugin_id == "builtin.assistant" {
         assistant
     } else {
         ordinary
@@ -1251,7 +976,7 @@ impl NeutralLlmRequest {
         LlmRequest {
             options: self.options,
             messages: self.messages,
-            stream: false,
+            stream: self.provider_id.as_deref() == Some(AssistantEngine::LumviseCloud.value()),
             provider_id: self.provider_id,
             model: self.model,
             conversation_id: self.conversation_id,
