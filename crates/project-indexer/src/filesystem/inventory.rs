@@ -7,14 +7,16 @@ use std::path::{Path, PathBuf};
 
 pub(super) struct ProjectInventory<'root> {
     root: &'root Path,
+    user_ignore: Option<&'root Path>,
     policies: BTreeMap<PathBuf, (GitignoreBuilder, Gitignore)>,
     entries: BTreeMap<String, SourceEntry>,
 }
 
 impl<'root> ProjectInventory<'root> {
-    pub(super) fn new(root: &'root Path) -> Self {
+    pub(super) fn new(root: &'root Path, user_ignore: Option<&'root Path>) -> Self {
         Self {
             root,
+            user_ignore,
             policies: BTreeMap::new(),
             entries: BTreeMap::new(),
         }
@@ -153,7 +155,12 @@ impl<'root> ProjectInventory<'root> {
     }
     fn inherited_policy(&mut self, directory: &Path) -> Result<GitignoreBuilder, ScanError> {
         if directory == self.root {
-            return Ok(GitignoreBuilder::new(self.root));
+            // User-wide rules come first, so a project's own ignore files can re-include paths.
+            let mut builder = GitignoreBuilder::new(self.root);
+            if let Some(user_ignore) = self.user_ignore {
+                add_ignore_file(&mut builder, user_ignore)?;
+            }
+            return Ok(builder);
         }
         let parent = directory.parent().ok_or_else(|| {
             invalid(

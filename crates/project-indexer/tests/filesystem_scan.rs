@@ -198,3 +198,42 @@ fn filesystem_work_for_ten_thousand_files_and_one_changed_path() {
         indexer.commit(scan).unwrap();
     }
 }
+
+#[test]
+fn user_wide_ignore_file_applies_to_every_project_and_projects_can_reinclude() {
+    let state = tempfile::tempdir().unwrap();
+    let user_ignore = state.path().join("lumignore");
+    fs::write(&user_ignore, "*.log\nvendor/\n").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("vendor")).unwrap();
+    fs::create_dir_all(root.path().join("src")).unwrap();
+    for path in ["src/a.rs", "src/run.log", "keep.log", "vendor/lib.rs"] {
+        fs::write(root.path().join(path), "x").unwrap();
+    }
+    fs::write(root.path().join(".lumignore"), "!keep.log\n").unwrap();
+    let source = FilesystemProjectSource::open(root.path())
+        .unwrap()
+        .with_user_ignore(Some(user_ignore));
+    let mut full: Vec<_> = source
+        .inventory(&ScanScope::Full)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.kind == SourceKind::File)
+        .map(|entry| entry.path)
+        .collect();
+    full.sort();
+    assert_eq!(full, [".lumignore", "keep.log", "src/a.rs"]);
+    let scoped = source.inventory(&paths(&["vendor/lib.rs"])).unwrap();
+    assert!(scoped.is_empty());
+}
+
+#[test]
+fn missing_user_wide_ignore_file_changes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("a.log"), "x").unwrap();
+    let source = FilesystemProjectSource::open(root.path())
+        .unwrap()
+        .with_user_ignore(Some(root.path().join("absent/lumignore")));
+    let full = source.inventory(&ScanScope::Full).unwrap();
+    assert!(full.iter().any(|entry| entry.path == "a.log"));
+}

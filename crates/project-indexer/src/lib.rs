@@ -21,7 +21,7 @@ pub use documents::{
     ConvertedDocument, DocumentConversionOptions, DocumentConverter, DocumentFigure, DocumentImage,
     DocumentPage, DocumentProvenance, convert_document, is_document_path,
 };
-pub use filesystem::FilesystemProjectSource;
+pub use filesystem::{FilesystemProjectSource, user_ignore_file};
 pub use fingerprints::SourceFingerprint;
 pub use parallel_parser::ParallelTreeSitterProjectParser;
 pub use parser::{BlockSettings, SyntaxParserMetrics, TreeSitterProjectParser};

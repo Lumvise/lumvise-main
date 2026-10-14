@@ -9,10 +9,27 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Reads one canonical project root. Example: `FilesystemProjectSource::open(".")`.
-/// Ignores generated/build directories and honors project `.gitignore`/`.lumignore`
-/// files. Symlinks are excluded; metadata shortcuts require Unix change timestamps.
+/// Ignores generated/build directories and honors the user-wide `~/.lumvise/lumignore`
+/// plus project `.gitignore`/`.lumignore` files. Symlinks are excluded; metadata
+/// shortcuts require Unix change timestamps.
 pub struct FilesystemProjectSource {
     root: PathBuf,
+    user_ignore: Option<PathBuf>,
+}
+
+/// The user-wide ignore file every project honors, in gitignore syntax with patterns
+/// relative to each project root: `$LUMVISE_STATE_ROOT/lumignore`, else `~/.lumvise/lumignore`.
+pub fn user_ignore_file() -> Option<PathBuf> {
+    let state_root = std::env::var_os("LUMVISE_STATE_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
+                .map(|home| PathBuf::from(home).join(".lumvise"))
+        })?;
+    Some(state_root.join("lumignore"))
 }
 
 impl FilesystemProjectSource {
@@ -28,7 +45,16 @@ impl FilesystemProjectSource {
                 "expected project directory",
             ));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            user_ignore: user_ignore_file(),
+        })
+    }
+
+    /// Replaces the user-wide ignore file, e.g. a fixture path in tests; `None` disables it.
+    pub fn with_user_ignore(mut self, path: Option<PathBuf>) -> Self {
+        self.user_ignore = path;
+        self
     }
 
     /// Returns the canonical root for publication identity.
@@ -39,7 +65,7 @@ impl FilesystemProjectSource {
 
 impl ProjectSource for FilesystemProjectSource {
     fn inventory(&self, scope: &ScanScope) -> Result<Vec<SourceEntry>, ScanError> {
-        inventory::ProjectInventory::new(&self.root).collect(scope)
+        inventory::ProjectInventory::new(&self.root, self.user_ignore.as_deref()).collect(scope)
     }
 
     fn read_file(&self, path: &str) -> Result<FileRead, ScanError> {
