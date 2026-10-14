@@ -13,8 +13,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tree_sitter::{Parser, Query, QueryCursor};
 
-/// Bounds for the generic text fallback that indexes every unsupported text
-/// file as blank-line-separated block elements.
+/// Bounds for the blank-line block elements of converted documents (PDF, Office,
+/// HTML and similar, after Markdown conversion). Text files without a grammar are
+/// indexed as one file element and never split.
 /// Example: `TreeSitterProjectParser::default().with_block_settings(settings)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockSettings {
@@ -63,7 +64,7 @@ impl TreeSitterProjectParser {
         self
     }
 
-    /// Overrides the generic text fallback bounds; other fields stay default.
+    /// Overrides the converted-document block bounds; other fields stay default.
     /// Example: `TreeSitterProjectParser::default().with_block_settings(settings)`.
     pub fn with_block_settings(mut self, blocks: BlockSettings) -> Self {
         self.blocks = blocks;
@@ -129,15 +130,15 @@ impl ProjectFileParser for TreeSitterProjectParser {
             }
         };
         let Some(language) = SyntaxLanguage::for_path(path) else {
-            let definitions = text_blocks(text, &self.blocks);
-            let status = if definitions.is_empty() {
+            // Text without a grammar stays one file element: splitting it into blank-line
+            // blocks turned large proof or data trees into millions of graph elements.
+            let status = if text.trim().is_empty() {
                 ParseStatus::Unsupported
             } else {
                 ParseStatus::PlainText
             };
             return Ok(ParsedFile {
                 source: Some(Arc::from(text)),
-                definitions,
                 status,
                 ..ParsedFile::default()
             });

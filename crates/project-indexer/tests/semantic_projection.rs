@@ -265,7 +265,7 @@ fn invalid_root_or_provider_fails_before_any_projection() {
 }
 
 #[test]
-fn markdown_headings_and_text_blocks_project_as_child_elements() {
+fn markdown_headings_project_as_children_and_grammarless_text_stays_whole() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("guide.md"), "# Setup\n\nBody text.\n").unwrap();
     fs::write(
@@ -293,11 +293,12 @@ fn markdown_headings_and_text_blocks_project_as_child_elements() {
         .collect();
     assert_eq!(
         children,
-        [
-            ("block", "alpha one"),
-            ("block", "beta"),
-            ("heading", "Setup"),
-        ]
-        .map(|(kind, name)| (kind.into(), name.into()))
+        [("heading", "Setup")].map(|(kind, name)| (kind.into(), name.into()))
+    );
+    assert!(
+        batch
+            .semantic_elements
+            .iter()
+            .any(|element| element.semantic_element_name == "data.table")
     );
 }

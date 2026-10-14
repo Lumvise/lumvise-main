@@ -180,8 +180,7 @@ fn unsupported_binary_and_recovered_syntax_are_explicit() {
         .parse("junk.notes", b"# Kept for content projection")
         .unwrap();
     assert_eq!(text.status, ParseStatus::PlainText);
-    assert_eq!(text.definitions.len(), 1);
-    assert_eq!(text.definitions[0].kind, "block");
+    assert!(text.definitions.is_empty());
     assert_eq!(
         text.source.as_deref(),
         Some("# Kept for content projection")
@@ -249,41 +248,17 @@ fn minified_code_keeps_only_its_file_element() {
 }
 
 #[test]
-fn text_fallback_indexes_blank_line_blocks_with_settings() {
-    use lumvise_project_indexer::BlockSettings;
-
-    let text = "alpha one\nalpha two\n\nbeta\n\ngamma\n\n\ndelta\n";
+fn text_without_a_grammar_stays_one_file_element() {
+    let text = "theorem a : True := trivial\n\ntheorem b : True := trivial\n";
     let parsed = TreeSitterProjectParser::default()
-        .parse("data.table", text.as_bytes())
+        .parse("Proofs/Basic.lean", text.as_bytes())
         .unwrap();
     assert_eq!(parsed.status, ParseStatus::PlainText);
-    let names: Vec<&str> = parsed.definitions.iter().map(|d| d.name.as_str()).collect();
-    assert_eq!(names, ["alpha one", "beta", "gamma", "delta"]);
-    assert_eq!(parsed.definitions[0].start_line, 1);
-    assert_eq!(parsed.definitions[0].end_line, 2);
-    assert_eq!(parsed.definitions[1].start_line, 4);
+    assert!(parsed.definitions.is_empty());
+    assert_eq!(parsed.source.as_deref(), Some(text));
 
-    let capped = TreeSitterProjectParser::default()
-        .with_block_settings(BlockSettings {
-            max_blocks_per_file: 2,
-            max_file_lines: 50,
-        })
-        .parse("data.table", text.as_bytes())
+    let blank = TreeSitterProjectParser::default()
+        .parse("empty.tex", b"\n  \n")
         .unwrap();
-    assert_eq!(capped.status, ParseStatus::PlainText);
-    assert_eq!(capped.definitions.len(), 2);
-
-    let oversized = TreeSitterProjectParser::default()
-        .with_block_settings(BlockSettings {
-            max_blocks_per_file: 50,
-            max_file_lines: 3,
-        })
-        .parse("huge.log", text.as_bytes())
-        .unwrap();
-    assert_eq!(oversized.status, ParseStatus::Unsupported);
-    assert!(oversized.definitions.is_empty());
-    assert_eq!(
-        oversized.source.as_deref(),
-        Some("alpha one\nalpha two\n\nbeta\n\ngamma\n\n\ndelta\n")
-    );
+    assert_eq!(blank.status, ParseStatus::Unsupported);
 }
