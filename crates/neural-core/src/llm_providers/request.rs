@@ -40,6 +40,14 @@ pub struct LlmRequestOptions {
     /// Per-request reasoning effort; currently honored by OpenRouter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<LlmReasoningEffort>,
+    /// Streams plain assistant text in sentences to this discovered scoped
+    /// Assistant tool (`content`, `final`), e.g. `Some("assistant_respond".into())`.
+    /// OpenAI-compatible tool turns honor this; other providers keep normal delivery.
+    /// The target is hidden from the model. Its receipt must contain decision
+    /// `assistant_responded`, state.last_response and state.app_response_finalized,
+    /// or decision `cancelled`; an empty final segment closes the existing stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streamed_response_tool: Option<String>,
 }
 
 /// Provider-independent reasoning preference, e.g. `LlmReasoningEffort::Low`

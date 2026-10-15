@@ -22,6 +22,7 @@ struct StreamedModel {
     cancelled: Arc<AtomicBool>,
     cancel_on_chunk: bool,
     read_tail: Arc<AtomicBool>,
+    speech_probe: Option<Arc<Mutex<Vec<Value>>>>,
 }
 
 impl StreamedModel {
@@ -33,10 +34,14 @@ impl StreamedModel {
     }
 
     fn registry(&self) -> LlmProviderRegistry {
+        self.registry_for("openrouter", LlmProviderKind::OpenRouter)
+    }
+
+    fn registry_for(&self, provider_id: &str, kind: LlmProviderKind) -> LlmProviderRegistry {
         LlmProviderRegistry::from_configs(
             vec![LlmProviderConfig {
-                provider_id: "openrouter".into(),
-                kind: LlmProviderKind::OpenRouter,
+                provider_id: provider_id.into(),
+                kind,
                 model: "test/model".into(),
                 endpoint: Some("https://unused.test/api/v1".into()),
                 credential: Some("fake".into()),
@@ -68,7 +73,16 @@ impl LlmHttpClient for StreamedModel {
             .unwrap()
             .pop_front()
             .expect("unexpected extra model request");
-        for chunk in chunks {
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            if index == 1
+                && let Some(calls) = &self.speech_probe
+            {
+                assert_eq!(
+                    calls.lock().unwrap().len(),
+                    1,
+                    "first sentence must reach the scoped speech tool before the next model chunk"
+                );
+            }
             if self.cancel_on_chunk {
                 self.cancelled.store(true, Ordering::SeqCst);
             }
@@ -174,13 +188,179 @@ fn serve_rpc(
             .lock()
             .unwrap()
             .push(header.lines().next().unwrap().into());
-        json!({"tools":[{"name":"assistant_respond","description":"Speak","inputSchema":{"type":"object","properties":{"content":{"type":"string"},"final":{"type":"boolean"}},"required":["content"]}}, {"name":"assistant_finish","description":"Close session","inputSchema":{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}}]})
+        json!({"tools":[{"name":"assistant_respond","description":"Speak","inputSchema":{"type":"object","properties":{"content":{"type":"string"},"final":{"type":"boolean"}},"required":["content"]}}, {"name":"assistant_finish","description":"Close session","inputSchema":{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}}, {"name":"lookup","description":"Read a record","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}]})
     } else {
         calls.lock().unwrap().push(rpc["params"].clone());
-        outcome.clone()
+        if outcome["echo_response"] == true {
+            let content = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|call| call["arguments"]["content"].as_str())
+                .filter(|content| !content.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            json!({"structuredContent":{"decision":"assistant_responded","state":{
+                "last_response":content,"app_response_finalized":rpc["params"]["arguments"]["final"] == true
+            }}})
+        } else {
+            outcome.clone()
+        }
     };
     let body = json!({"jsonrpc":"2.0","id":rpc["id"],"result":result}).to_string();
     write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).unwrap();
+}
+
+fn streamed_request(assistant: &ScopedAssistant) -> LlmRequest {
+    let mut request = assistant.request("streamed-speech");
+    request.options.streamed_response_tool = Some("assistant_respond".into());
+    request
+}
+
+#[test]
+fn streamed_narration_preserves_tool_order_and_closes_only_the_last_round() {
+    let assistant = ScopedAssistant::start(json!({"echo_response":true}));
+    let model = StreamedModel::new(vec![
+        vec![
+            event(json!({"content":"I will check that record. "}), Value::Null),
+            event(
+                json!({"tool_calls":[{"index":0,"id":"read","function":{"name":"lookup","arguments":"{\"id\":"}}]}),
+                Value::Null,
+            ),
+            event(
+                json!({"tool_calls":[{"index":0,"function":{"arguments":"\"record\"}"}}]}),
+                json!("tool_calls"),
+            ),
+        ],
+        vec![event(
+            json!({"content":"Here is the result."}),
+            json!("stop"),
+        )],
+    ]);
+    let response = model
+        .registry()
+        .complete("openrouter", &streamed_request(&assistant))
+        .unwrap();
+    assert_eq!(
+        response.content,
+        "I will check that record. Here is the result."
+    );
+    let calls = assistant.invocations.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| call["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["assistant_respond", "lookup", "assistant_respond"]
+    );
+    assert_eq!(calls[0]["arguments"]["final"], false);
+    assert_eq!(calls[1]["arguments"], json!({"id":"record"}));
+    assert_eq!(calls[2]["arguments"]["final"], true);
+}
+
+#[test]
+fn cancelled_or_rejected_streaming_delivery_stops_generation_without_fallback() {
+    for outcome in [
+        json!({"structuredContent":{"decision":"cancelled"}}),
+        json!({"isError":true,"content":[{"type":"text","text":"not available"}]}),
+    ] {
+        let assistant = ScopedAssistant::start(outcome);
+        let model = StreamedModel::new(vec![vec![
+            event(json!({"content":"First sentence. "}), Value::Null),
+            event(json!({"content":"Must never speak this."}), json!("stop")),
+        ]]);
+        assert!(
+            model
+                .registry()
+                .complete("openrouter", &streamed_request(&assistant))
+                .is_err()
+        );
+        assert_eq!(assistant.invocations.lock().unwrap().len(), 1);
+        assert_eq!(model.requests.lock().unwrap().len(), 1);
+        assert!(!model.read_tail.load(Ordering::SeqCst));
+    }
+}
+
+#[test]
+fn streamed_reply_preserves_unicode_and_split_frames_and_sends_empty_final_once() {
+    let assistant = ScopedAssistant::start(json!({"echo_response":true}));
+    let first = event(json!({"content":"こんにちは 🐼. "}), Value::Null);
+    let model = StreamedModel::new(vec![vec![
+        first[..10].into(),
+        first[10..].into(),
+        event(
+            json!({"reasoning":"Do not speak this.", "content":"The value is 3."}),
+            Value::Null,
+        ),
+        event(json!({"content":"14. "}), Value::Null),
+        event(json!({}), json!("stop")),
+    ]]);
+    let response = model
+        .registry()
+        .complete("openrouter", &streamed_request(&assistant))
+        .unwrap();
+    assert_eq!(response.content, "こんにちは 🐼. The value is 3.14.");
+    let calls = assistant.invocations.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[1]["arguments"]["content"], "The value is 3.14.");
+    assert_eq!(calls[2]["arguments"], json!({"content":"", "final":true}));
+}
+
+#[test]
+fn malformed_or_truncated_stream_never_claims_final_delivery() {
+    for tail in [
+        "data: {broken}\n\n".into(),
+        event(json!({}), json!("length")),
+    ] {
+        let assistant = ScopedAssistant::start(json!({"echo_response":true}));
+        let model = StreamedModel::new(vec![vec![
+            event(json!({"content":"A partial answer. "}), Value::Null),
+            tail,
+        ]]);
+        assert!(
+            model
+                .registry()
+                .complete("openrouter", &streamed_request(&assistant))
+                .is_err()
+        );
+        let calls = assistant.invocations.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["arguments"]["final"], false);
+    }
+}
+
+#[test]
+fn serialized_tool_leaks_never_reach_streamed_speech() {
+    for text in [
+        "<tool_call>lookup<arg_key>id</arg_key><arg_value>record.</arg_value></tool_call>",
+        "call:lookup{id:record.}",
+    ] {
+        let assistant = ScopedAssistant::start(json!({"echo_response":true}));
+        let model = StreamedModel::new(vec![vec![event(json!({"content":text}), json!("stop"))]]);
+        assert!(
+            model
+                .registry()
+                .complete("openrouter", &streamed_request(&assistant))
+                .is_err()
+        );
+        assert!(assistant.invocations.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn hidden_response_tool_is_not_executed_a_second_time() {
+    let assistant = ScopedAssistant::start(json!({"echo_response":true}));
+    let model = StreamedModel::new(vec![
+        speech_round(),
+        vec![event(json!({"content":"Only speak once."}), json!("stop"))],
+    ]);
+    let result = model
+        .registry()
+        .complete("openrouter", &streamed_request(&assistant))
+        .unwrap();
+    assert_eq!(result.content, "Only speak once.");
+    assert_eq!(assistant.invocations.lock().unwrap().len(), 1);
+    assert_eq!(model.requests.lock().unwrap().len(), 2);
 }
 
 fn acknowledged(finalized: bool) -> Value {
@@ -214,6 +394,38 @@ fn text_round() -> Vec<String> {
         json!({"content":"Continue after tool result"}),
         json!("stop"),
     )]
+}
+
+#[test]
+fn opted_in_speech_reaches_assistant_before_the_model_finishes() {
+    let assistant = ScopedAssistant::start(json!({"echo_response":true}));
+    let mut model = StreamedModel::new(vec![vec![
+        event(json!({"content":"Hello there. "}), Value::Null),
+        event(json!({"content":"This arrives later."}), json!("stop")),
+    ]]);
+    model.speech_probe = Some(assistant.invocations.clone());
+    let mut request = serde_json::to_value(assistant.request("streamed-speech")).unwrap();
+    request["options"] = json!({"streamed_response_tool":"assistant_respond"});
+    let request: LlmRequest = serde_json::from_value(request).unwrap();
+    let result = model
+        .registry_for("lumvise_cloud", LlmProviderKind::OpenAiCompatible)
+        .complete("lumvise_cloud", &request)
+        .unwrap();
+    assert_eq!(result.content, "Hello there. This arrives later.");
+    let calls = assistant.invocations.lock().unwrap();
+    assert_eq!(
+        calls[0]["arguments"],
+        json!({"content":"Hello there.","final":false})
+    );
+    assert_eq!(calls.last().unwrap()["arguments"]["final"], true);
+    let requests = model.requests.lock().unwrap();
+    assert!(
+        requests[0].payload["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["function"]["name"] != "assistant_respond")
+    );
 }
 
 #[test]

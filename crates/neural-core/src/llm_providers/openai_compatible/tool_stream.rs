@@ -39,13 +39,17 @@ impl ToolCompletionStream {
         })
     }
 
-    pub(super) fn push(&mut self, chunk: &str) -> Result<bool> {
+    pub(super) fn push(
+        &mut self,
+        chunk: &str,
+        on_text: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<bool> {
         self.buffer.push_str(chunk);
         while let Some((offset, length)) = next_sse_delimiter(&self.buffer) {
             let event = self.buffer[..offset].to_owned();
             self.buffer.drain(..offset + length);
             for data in sse_data_lines(&event) {
-                self.accept(data)?;
+                self.accept(data, on_text)?;
                 if self.response.is_some() {
                     return Ok(true);
                 }
@@ -59,7 +63,7 @@ impl ToolCompletionStream {
             .ok_or_else(|| malformed("stream EOF", "a completed model turn before EOF"))
     }
 
-    fn accept(&mut self, data: &str) -> Result<()> {
+    fn accept(&mut self, data: &str, on_text: &mut dyn FnMut(&str) -> Result<()>) -> Result<()> {
         self.data_events += 1;
         if data == "[DONE]" {
             self.complete(Value::Null);
@@ -83,12 +87,16 @@ impl ToolCompletionStream {
             .as_array()
             .and_then(|choices| choices.first())
         {
-            self.accept_choice(choice)?;
+            self.accept_choice(choice, on_text)?;
         }
         Ok(())
     }
 
-    fn accept_choice(&mut self, choice: &Value) -> Result<()> {
+    fn accept_choice(
+        &mut self,
+        choice: &Value,
+        on_text: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
         let delta = &choice["delta"];
         for field in ["content", "reasoning", "reasoning_content", "refusal"] {
             append_text(&mut self.message, field, &delta[field])?;
@@ -98,6 +106,9 @@ impl ToolCompletionStream {
         }
         for detail in delta["reasoning_details"].as_array().into_iter().flatten() {
             self.accept_reasoning(detail)?;
+        }
+        if let Some(text) = delta["content"].as_str() {
+            on_text(text)?;
         }
         if !choice["finish_reason"].is_null() {
             self.complete(choice["finish_reason"].clone());
@@ -203,16 +214,18 @@ mod tests {
     #[test]
     fn stalled_stream_diagnostics_separate_heartbeats_framing_and_generated_text() {
         let mut stream = ToolCompletionStream::default();
-        stream.push(": OPENROUTER PROCESSING\n\n").unwrap();
+        stream
+            .push(": OPENROUTER PROCESSING\n\n", &mut |_| Ok(()))
+            .unwrap();
         assert_eq!(stream.diagnostic_snapshot()["data_events"], 0);
         let frame = json!({"choices":[{"delta":{
             "content":"hello", "reasoning":"private thought",
             "tool_calls":[{"index":0,"function":{"name":"read","arguments":"{\"id\":"}}]
         }}]});
         let chunk = format!("data: {frame}\n\n");
-        stream.push(&chunk[..7]).unwrap();
+        stream.push(&chunk[..7], &mut |_| Ok(())).unwrap();
         assert_eq!(stream.diagnostic_snapshot()["buffered_bytes"], 7);
-        stream.push(&chunk[7..]).unwrap();
+        stream.push(&chunk[7..], &mut |_| Ok(())).unwrap();
         let counts = stream.diagnostic_snapshot();
         assert_eq!(counts["data_events"], 1);
         assert_eq!(counts["buffered_bytes"], 0);

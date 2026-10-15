@@ -219,6 +219,96 @@ struct RecordingSynthesizer {
     fail: bool,
 }
 
+struct GatedSynthesizer {
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+    first: std::sync::atomic::AtomicBool,
+}
+
+impl SpeechSynthesizer for GatedSynthesizer {
+    fn warmup(&self) -> Result<()> {
+        Ok(())
+    }
+    fn synthesize(
+        &self,
+        _: &Text2VoiceRequest,
+        _: &InvocationControl,
+    ) -> Result<Text2VoiceResponse> {
+        panic!("streaming must use stream_with_events")
+    }
+    fn stream_with_events(
+        &self,
+        _: &Text2VoiceRequest,
+        _: &InvocationControl,
+        sink: &mut Text2VoiceStreamEventSink<'_>,
+    ) -> Result<()> {
+        if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+        }
+        sink(Text2VoiceStreamEvent::Complete)
+    }
+}
+
+#[test]
+fn streamed_sentences_wait_for_queue_capacity_and_cancel_while_waiting() {
+    for cancel in [false, true] {
+        let (entered, entering) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let executor = Arc::new(TextToSpeechExecutor::start(Arc::new(GatedSynthesizer {
+            entered,
+            release: Mutex::new(gate),
+            first: std::sync::atomic::AtomicBool::new(true),
+        })));
+        executor
+            .enqueue_stream(
+                synthesis_request("First."),
+                InvocationControl::sixty_seconds(),
+                |_| Ok(()),
+            )
+            .unwrap();
+        entering.recv_timeout(Duration::from_secs(1)).unwrap();
+        for _ in 0..8 {
+            executor
+                .enqueue_stream(
+                    synthesis_request("Queued."),
+                    InvocationControl::sixty_seconds(),
+                    |_| Ok(()),
+                )
+                .unwrap();
+        }
+        let control = InvocationControl::sixty_seconds();
+        let invocation = control.clone();
+        let worker = executor.clone();
+        let (finished, result) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            finished
+                .send(worker.enqueue_stream(synthesis_request("Last."), invocation, |_| Ok(())))
+                .unwrap();
+        });
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        if cancel {
+            control.cancel();
+        } else {
+            release.send(()).unwrap();
+        }
+        let result = result.recv_timeout(Duration::from_secs(1)).unwrap();
+        if cancel {
+            assert!(matches!(result, Err(SpeechExecutionError::Cancelled)));
+            release.send(()).unwrap();
+        } else {
+            assert!(result.is_ok());
+        }
+        thread.join().unwrap();
+    }
+}
+
 impl SpeechSynthesizer for RecordingSynthesizer {
     fn warmup(&self) -> Result<()> {
         Ok(())

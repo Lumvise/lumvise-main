@@ -594,6 +594,7 @@ impl PreparedArtifactExecution {
                 max_output_tokens: None,
                 temperature: None,
                 reasoning_effort: None,
+                streamed_response_tool: None,
                 response_format: structured.then(|| LlmResponseFormat::JsonSchema {
                     name: "functional_artifact".into(),
                     schema: self.task.response_schema(),

@@ -19,8 +19,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod catalog;
+mod streamed_response;
 mod tool_stream;
 mod turn_completion;
+
+use streamed_response::StreamedToolResponse;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OpenAiCompatibleProviderSpec {
@@ -73,7 +76,7 @@ impl OpenAiCompatibleChatProvider {
         if !request.mcp_servers.is_empty() {
             return self.complete_with_mcp_tools(request, &control);
         }
-        let response = self.tool_round(request, self.messages(request), None, &control)?;
+        let response = self.tool_round(request, self.messages(request), None, &control, None)?;
         self.response_from_value(request, response)
     }
 
@@ -177,14 +180,21 @@ impl OpenAiCompatibleChatProvider {
         tools: &McpToolCatalog,
         control: &StreamControl,
     ) -> Result<String> {
+        let mut speech = StreamedToolResponse::new(&self.config, request, tools, control)?;
         let mut messages = self.messages(request);
+        if let Some(speech) = &speech {
+            messages.push(speech.instructions());
+        }
+        let descriptors =
+            openai_tool_descriptors(tools, speech.as_ref().map(|speech| speech.tool_name()));
         for _ in 0..self.spec.tool_call_limit {
             check_tool_cancellation(&self.config, control)?;
             let response = self.tool_round(
                 request,
                 messages.clone(),
-                Some(openai_tool_descriptors(tools)),
+                Some(descriptors.clone()),
                 control,
+                speech.as_mut(),
             )?;
             check_tool_cancellation(&self.config, control)?;
             if response["choices"][0]["finish_reason"] == "length" {
@@ -193,13 +203,34 @@ impl OpenAiCompatibleChatProvider {
                     message: "Response reached the output token limit before completing the turn. Try a smaller request.".into(),
                 });
             }
-            if append_openai_tool_calls(&self.config, tools, &mut messages, &response, control)? {
+            let has_tools = response["choices"][0]["message"]["tool_calls"]
+                .as_array()
+                .is_some_and(|calls| !calls.is_empty());
+            if has_tools && let Some(speech) = &mut speech {
+                speech.finish_round(false)?;
+            }
+            if append_openai_tool_calls(
+                &self.config,
+                tools,
+                &mut messages,
+                &response,
+                control,
+                speech.as_ref().map(|speech| speech.tool_name()),
+            )? {
                 if let Some(content) = turn_completion::finalized_response(&messages) {
                     return Ok(content);
                 }
                 continue;
             } else {
                 let content = required_choice_content(&response, "message", self.spec.label)?;
+                if let Some(speech) = &mut speech {
+                    native_tool_call_recovery::reject_undispatchable_call_attempt(
+                        self.config.kind,
+                        &selected_model(&self.config, request),
+                        content,
+                    )?;
+                    return speech.finish_round(true);
+                }
                 match native_tool_call_recovery::recover_or_confirm_final_text(
                     self.config.kind,
                     &selected_model(&self.config, request),
@@ -231,10 +262,12 @@ impl OpenAiCompatibleChatProvider {
         messages: Vec<Value>,
         tools: Option<Value>,
         control: &StreamControl,
+        mut speech: Option<&mut StreamedToolResponse<'_>>,
     ) -> Result<Value> {
         let started = std::time::Instant::now();
-        let streaming =
-            request.stream || self.config.kind == crate::config::LlmProviderKind::OpenRouter;
+        let streaming = request.stream
+            || speech.is_some()
+            || self.config.kind == crate::config::LlmProviderKind::OpenRouter;
         let http_request = self.http_request_with_payload(
             self.payload(request, streaming, messages, tools),
             control,
@@ -266,7 +299,13 @@ impl OpenAiCompatibleChatProvider {
             received_bytes += chunk.len();
             chunks += 1;
             check_tool_cancellation(&self.config, control)?;
-            let complete = completion.push(&chunk)?;
+            let complete = completion.push(&chunk, &mut |text| {
+                check_tool_cancellation(&self.config, control)?;
+                match &mut speech {
+                    Some(speech) => speech.push(text),
+                    None => Ok(()),
+                }
+            })?;
             if chunks == 1 || elapsed_ms - last_progress_ms >= 10_000 {
                 tracing::debug!(provider_id = %self.config.provider_id,
                         conversation_id = ?request.conversation_id, elapsed_ms,
@@ -488,6 +527,7 @@ fn append_openai_tool_calls(
     messages: &mut Vec<Value>,
     response: &Value,
     control: &StreamControl,
+    streamed_tool: Option<&str>,
 ) -> Result<bool> {
     let Some(message) = response["choices"][0]["message"].as_object() else {
         return Ok(false);
@@ -499,7 +539,7 @@ fn append_openai_tool_calls(
         return Ok(false);
     }
     messages.push(Value::Object(message.clone()));
-    append_tool_results(config, tools, messages, tool_calls, control)?;
+    append_tool_results(config, tools, messages, tool_calls, control, streamed_tool)?;
     Ok(true)
 }
 
@@ -534,10 +574,19 @@ fn append_tool_results(
     messages: &mut Vec<Value>,
     tool_calls: &[Value],
     control: &StreamControl,
+    streamed_tool: Option<&str>,
 ) -> Result<()> {
     for call in tool_calls {
         check_tool_cancellation(config, control)?;
-        messages.push(execute_tool_call(config, tools, call)?);
+        if call["function"]["name"]
+            .as_str()
+            .is_some_and(|name| Some(name) == streamed_tool)
+        {
+            messages.push(json!({"role":"tool", "tool_call_id":call["id"], "content":
+                json!({"error":{"message":"Response delivery is automatic; write spoken prose in assistant content instead of calling the response tool."}}).to_string()}));
+        } else {
+            messages.push(execute_tool_call(config, tools, call)?);
+        }
     }
     Ok(())
 }
@@ -582,11 +631,12 @@ fn tool_call_arguments(config: &LlmProviderConfig, call: &Value) -> Result<Value
     })
 }
 
-fn openai_tool_descriptors(tools: &McpToolCatalog) -> Value {
+fn openai_tool_descriptors(tools: &McpToolCatalog, streamed_tool: Option<&str>) -> Value {
     Value::Array(
         tools
             .tools()
             .iter()
+            .filter(|tool| Some(tool.name.as_str()) != streamed_tool)
             .map(to_openai_chat_function_tool)
             .collect(),
     )

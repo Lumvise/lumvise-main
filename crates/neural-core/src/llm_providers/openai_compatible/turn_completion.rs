@@ -12,6 +12,11 @@ pub(super) fn finalized_response(messages: &[Value]) -> Option<String> {
 }
 
 fn acknowledged_response(result: &Value) -> Option<String> {
+    let result = assistant_result(result)?;
+    finalized_assistant_result(&result)
+}
+
+fn finalized_assistant_result(result: &Value) -> Option<String> {
     if result["isError"] == true || result.get("error").is_some() {
         return None;
     }
@@ -32,11 +37,21 @@ fn acknowledged_response(result: &Value) -> Option<String> {
             .and_then(Value::as_str)
             .map(str::to_owned);
     }
+    None
+}
+
+pub(super) fn assistant_result(result: &Value) -> Option<Value> {
+    if result["isError"] == true || result.get("error").is_some() {
+        return None;
+    }
+    if result["decision"].is_string() {
+        return Some(result.clone());
+    }
     if let Some(content) = result.get("structuredContent") {
-        return acknowledged_response(content);
+        return assistant_result(content);
     }
     result["content"].as_array()?.iter().find_map(|block| {
         let value: Value = serde_json::from_str(block["text"].as_str()?).ok()?;
-        acknowledged_response(&value)
+        assistant_result(&value)
     })
 }

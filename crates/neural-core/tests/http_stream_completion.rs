@@ -83,6 +83,38 @@ fn controlled_http_stream_preserves_split_unicode_and_returns_before_response_eo
     server.thread.join().unwrap();
 }
 
+#[test]
+fn streamed_text_can_call_a_blocking_tool_before_the_model_finishes() {
+    let server = ChunkedProvider::start(b"first".to_vec(), b"tail".to_vec());
+    let tool = ChunkedProvider::start(br#"{"accepted":true}"#.to_vec(), Vec::new());
+    tool.release.send(()).unwrap();
+    tool.release.send(()).unwrap();
+    let tool_client = reqwest::blocking::Client::new();
+    let mut delivered = Vec::new();
+    ReqwestLlmHttpClient::new()
+        .stream_text_until(&server.request(), &mut |chunk| {
+            delivered.push(chunk.clone());
+            if chunk == "tail" {
+                return Ok(ControlFlow::Break(()));
+            }
+            let receipt: serde_json::Value = tool_client
+                .post(&tool.endpoint)
+                .json(&json!({"content":chunk,"final":false}))
+                .send()
+                .unwrap()
+                .json()
+                .unwrap();
+            assert_eq!(receipt["accepted"], true);
+            server.release.send(()).unwrap();
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(delivered, ["first", "tail"]);
+    server.release.send(()).unwrap();
+    server.thread.join().unwrap();
+    tool.thread.join().unwrap();
+}
+
 // An exhausted caller deadline must fail before any bytes are sent, so the
 // provider lane frees immediately instead of waiting on the 180s ceiling.
 

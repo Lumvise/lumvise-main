@@ -171,7 +171,8 @@ impl TextToSpeechExecutor {
     /// Enqueues text for background streaming synthesis on the same bounded,
     /// isolating worker used by [`synthesize`](Self::synthesize) and returns
     /// as soon as the job is accepted — the caller never blocks on synthesis
-    /// completing. `on_event` runs on the worker thread as chunks are
+    /// completing. A full queue waits within `control` rather than dropping
+    /// a sentence or the stream's final close. `on_event` runs on the worker thread as chunks are
     /// produced, so it must be cheap and `Send + 'static` (typically a
     /// closure that forwards into a bounded transport channel).
     ///
@@ -191,14 +192,15 @@ impl TextToSpeechExecutor {
     where
         F: FnMut(Text2VoiceStreamEvent) -> NeuralResult<()> + Send + 'static,
     {
-        send(
+        send_stream(
             &self.sender,
             TextToSpeechWork::Stream(TextToSpeechStreamJob {
                 request,
-                control,
+                control: control.clone(),
                 on_event: Box::new(on_event),
             }),
             &self.isolated,
+            &control,
         )
     }
 }
@@ -381,6 +383,28 @@ fn split_sentences(text: &str) -> Vec<String> {
         sentences.push(trimmed.to_string());
     }
     sentences
+}
+
+fn send_stream(
+    sender: &SyncSender<TextToSpeechWork>,
+    mut job: TextToSpeechWork,
+    isolated: &Mutex<bool>,
+    control: &InvocationControl,
+) -> ExecutionResult<()> {
+    loop {
+        if let Some(error) = terminal(control) {
+            return Err(error);
+        }
+        if *isolated.lock() {
+            return Err(SpeechExecutionError::Unavailable);
+        }
+        match sender.try_send(job) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Disconnected(_)) => return Err(SpeechExecutionError::Unavailable),
+            Err(TrySendError::Full(pending)) => job = pending,
+        }
+        std::thread::sleep(SPEECH_POLL);
+    }
 }
 
 fn send<T>(sender: &SyncSender<T>, job: T, isolated: &Mutex<bool>) -> ExecutionResult<()> {

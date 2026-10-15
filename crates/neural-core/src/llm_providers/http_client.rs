@@ -144,7 +144,10 @@ impl ReqwestLlmHttpClient {
                 request_timeout(request).unwrap_or_default(),
             )
         })? {
-            if !chunk.is_empty() && on_chunk(chunk.to_vec())?.is_break() {
+            // Synchronous sinks can dispatch scoped MCP tools with blocking HTTP.
+            if !chunk.is_empty()
+                && tokio::task::block_in_place(|| on_chunk(chunk.to_vec()))?.is_break()
+            {
                 break;
             }
         }
