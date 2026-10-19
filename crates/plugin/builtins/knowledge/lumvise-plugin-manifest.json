@@ -4823,6 +4823,2300 @@
       "description": "Read an existing semantic_element_id for anchor inspection. This ID-only request has no project_root field; use an ID already discovered within the current project. The public element view omits project_root, so retain and verify the originating discovery scope."
     },
     {
+      "id": "create_document",
+      "name": "Create independent document",
+      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, kind, title and content. Use report for Markdown reports and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "document_kind": {
+            "enum": [
+              "report",
+              "canvas",
+              "ruleset",
+              "mission_log",
+              "context"
+            ],
+            "type": "string"
+          },
+          "metadata": {},
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "semantic_element_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "semantic_element"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "semantic_element_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "artifact_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "artifact"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "artifact_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "document"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "document_id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root",
+          "document_kind",
+          "title",
+          "content"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "document_id": {
+                "type": "string"
+              },
+              "document_kind": {
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ],
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "metadata": {},
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "references": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "document"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "document.create",
+      "name": "Assistant document create",
+      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, kind, title and content. Use report for Markdown reports and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "document_kind": {
+            "enum": [
+              "report",
+              "canvas",
+              "ruleset",
+              "mission_log",
+              "context"
+            ],
+            "type": "string"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "metadata": {},
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "semantic_element_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "semantic_element"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "semantic_element_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "artifact_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "artifact"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "artifact_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "document"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "document_id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root",
+          "document_kind",
+          "title",
+          "content"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "document_id": {
+                "type": "string"
+              },
+              "document_kind": {
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ],
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "metadata": {},
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "references": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "document"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "get_document",
+      "name": "Read independent document",
+      "description": "Read a document by its discovered document_id and exact project_root. The result includes its independent identity, content, grouping path, optional references and current revision. Read before editing; preserve human text and workflow metadata.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "document_id": {
+                "type": "string"
+              },
+              "document_kind": {
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ],
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "metadata": {},
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "references": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "document"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "document.get",
+      "name": "Assistant document read",
+      "description": "Read a document by its discovered document_id and exact project_root. The result includes its independent identity, content, grouping path, optional references and current revision. Read before editing; preserve human text and workflow metadata.",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "document_id": {
+                "type": "string"
+              },
+              "document_kind": {
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ],
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "metadata": {},
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "references": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "document"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "update_document",
+      "name": "Update independent document",
+      "description": "Update supplied document fields after a fresh get_document. Pass expected_revision from that read; stale revisions fail without writing. Unspecified fields remain. Organization path changes do not move source files. Preserve human edits and references; read back to verify a save.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "metadata": {},
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "semantic_element_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "semantic_element"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "semantic_element_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "artifact_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "artifact"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "artifact_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "document"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "document_id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "resolved",
+              "superseded",
+              "archived"
+            ],
+            "type": "string"
+          },
+          "superseded_by": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "document_id": {
+                "type": "string"
+              },
+              "document_kind": {
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ],
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "metadata": {},
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "references": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "document"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "document.update",
+      "name": "Assistant document update",
+      "description": "Update supplied document fields after a fresh get_document. Pass expected_revision from that read; stale revisions fail without writing. Unspecified fields remain. Organization path changes do not move source files. Preserve human edits and references; read back to verify a save.",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "metadata": {},
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "semantic_element_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "semantic_element"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "semantic_element_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "artifact_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "artifact"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "artifact_id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "target_kind": {
+                      "const": "document"
+                    }
+                  },
+                  "required": [
+                    "target_kind",
+                    "document_id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "resolved",
+              "superseded",
+              "archived"
+            ],
+            "type": "string"
+          },
+          "superseded_by": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "document_id": {
+                "type": "string"
+              },
+              "document_kind": {
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ],
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "metadata": {},
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "references": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "semantic_element_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "semantic_element"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "artifact"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "target_kind": {
+                          "const": "document"
+                        }
+                      },
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "list_documents",
+      "name": "List independent documents",
+      "description": "List independent documents in an exact project, optionally filtered by document_kind, query and include_inactive. Without a project, list accessible non-agent projects. Reports do not need source anchors; private Agent Spaces require an explicit scope and the calling agent's grants.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_kind": {
+            "enum": [
+              "report",
+              "canvas",
+              "ruleset",
+              "mission_log",
+              "context"
+            ],
+            "type": "string"
+          },
+          "include_inactive": {
+            "type": "boolean"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "document_id": {
+                  "type": "string"
+                },
+                "document_kind": {
+                  "enum": [
+                    "report",
+                    "canvas",
+                    "ruleset",
+                    "mission_log",
+                    "context"
+                  ],
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "string"
+                },
+                "metadata": {},
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "project_root": {
+                  "type": "string"
+                },
+                "references": {
+                  "items": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "semantic_element_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "semantic_element"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "semantic_element_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "artifact_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "artifact"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "artifact_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "document_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "document"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "document_id"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "status_changed_at": {
+                  "type": "string"
+                },
+                "superseded_by": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "document_id",
+                "semantic_element_id",
+                "project_root",
+                "document_kind",
+                "title",
+                "content",
+                "references",
+                "tags",
+                "metadata",
+                "status",
+                "revision"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "documents",
+          "total"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "document.list",
+      "name": "Assistant document list",
+      "description": "List independent documents in an exact project, optionally filtered by document_kind, query and include_inactive. Without a project, list accessible non-agent projects. Reports do not need source anchors; private Agent Spaces require an explicit scope and the calling agent's grants.",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_kind": {
+            "enum": [
+              "report",
+              "canvas",
+              "ruleset",
+              "mission_log",
+              "context"
+            ],
+            "type": "string"
+          },
+          "include_inactive": {
+            "type": "boolean"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "document_id": {
+                  "type": "string"
+                },
+                "document_kind": {
+                  "enum": [
+                    "report",
+                    "canvas",
+                    "ruleset",
+                    "mission_log",
+                    "context"
+                  ],
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "string"
+                },
+                "metadata": {},
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "project_root": {
+                  "type": "string"
+                },
+                "references": {
+                  "items": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "semantic_element_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "semantic_element"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "semantic_element_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "artifact_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "artifact"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "artifact_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "document_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "document"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "document_id"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "status_changed_at": {
+                  "type": "string"
+                },
+                "superseded_by": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "document_id",
+                "semantic_element_id",
+                "project_root",
+                "document_kind",
+                "title",
+                "content",
+                "references",
+                "tags",
+                "metadata",
+                "status",
+                "revision"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "documents",
+          "total"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "search_documents",
+      "name": "Search document content",
+      "description": "Search independent document title, content, grouping path and tags with a query and optional project/kind scope. Inspect returned mode rather than assuming vector retrieval. Results include standalone reports even when no source element is selected.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_kind": {
+            "enum": [
+              "report",
+              "canvas",
+              "ruleset",
+              "mission_log",
+              "context"
+            ],
+            "type": "string"
+          },
+          "include_inactive": {
+            "type": "boolean"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "document_id": {
+                  "type": "string"
+                },
+                "document_kind": {
+                  "enum": [
+                    "report",
+                    "canvas",
+                    "ruleset",
+                    "mission_log",
+                    "context"
+                  ],
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "string"
+                },
+                "metadata": {},
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "project_root": {
+                  "type": "string"
+                },
+                "references": {
+                  "items": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "semantic_element_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "semantic_element"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "semantic_element_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "artifact_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "artifact"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "artifact_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "document_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "document"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "document_id"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "status_changed_at": {
+                  "type": "string"
+                },
+                "superseded_by": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "document_id",
+                "semantic_element_id",
+                "project_root",
+                "document_kind",
+                "title",
+                "content",
+                "references",
+                "tags",
+                "metadata",
+                "status",
+                "revision"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "scores": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "documents",
+          "total",
+          "mode",
+          "scores"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "document.search",
+      "name": "Assistant document search",
+      "description": "Search independent document title, content, grouping path and tags with a query and optional project/kind scope. Inspect returned mode rather than assuming vector retrieval. Results include standalone reports even when no source element is selected.",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_kind": {
+            "enum": [
+              "report",
+              "canvas",
+              "ruleset",
+              "mission_log",
+              "context"
+            ],
+            "type": "string"
+          },
+          "include_inactive": {
+            "type": "boolean"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "document_id": {
+                  "type": "string"
+                },
+                "document_kind": {
+                  "enum": [
+                    "report",
+                    "canvas",
+                    "ruleset",
+                    "mission_log",
+                    "context"
+                  ],
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "string"
+                },
+                "metadata": {},
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "project_root": {
+                  "type": "string"
+                },
+                "references": {
+                  "items": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "semantic_element_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "semantic_element"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "semantic_element_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "artifact_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "artifact"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "artifact_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "document_id": {
+                            "type": "string"
+                          },
+                          "target_kind": {
+                            "const": "document"
+                          }
+                        },
+                        "required": [
+                          "target_kind",
+                          "document_id"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "status_changed_at": {
+                  "type": "string"
+                },
+                "superseded_by": {
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "document_id",
+                "semantic_element_id",
+                "project_root",
+                "document_kind",
+                "title",
+                "content",
+                "references",
+                "tags",
+                "metadata",
+                "status",
+                "revision"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "scores": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "documents",
+          "total",
+          "mode",
+          "scores"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "delete_document",
+      "name": "Delete independent document",
+      "description": "Remove a discovered document within its exact project scope. Read it first and preserve wanted content. Removing a citation target never implicitly deletes another report; existing citations may become broken references.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "document_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "document.delete",
+      "name": "Assistant document delete",
+      "description": "Remove a discovered document within its exact project scope. Read it first and preserve wanted content. Removing a citation target never implicitly deletes another report; existing citations may become broken references.",
+      "kind": "scoped_mcp_tool",
+      "scope": "assistant_session",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "document_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
       "id": "project_knowledge",
       "name": "Project Knowledge",
       "kind": "command",

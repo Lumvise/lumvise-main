@@ -138,19 +138,7 @@ pub(crate) fn stamp(
     previous: Option<&Lifecycle>,
     now: DateTime<Utc>,
 ) {
-    let now = now.to_rfc3339();
-    let lifecycle = &mut artifact.lifecycle;
-    lifecycle.revision = previous.map_or(0, |previous| previous.revision) + 1;
-    lifecycle.created_at = match previous {
-        Some(previous) => previous.created_at.clone(),
-        None => Some(now.clone()),
-    };
-    lifecycle.status_changed_at = match previous {
-        Some(previous) if previous.status != lifecycle.status => Some(now.clone()),
-        Some(previous) => previous.status_changed_at.clone(),
-        None => lifecycle.status_changed_at.clone(),
-    };
-    lifecycle.updated_at = Some(now);
+    crate::lifecycle::stamp(&mut artifact.lifecycle, previous, now);
 }
 
 /// Record equality that ignores the write stamps storage advances on every write.
@@ -170,14 +158,7 @@ pub(crate) fn same_content(left: &KnowledgeArtifact, right: &KnowledgeArtifact) 
 
 /// Active and not past its expiry. An expiry that does not parse never hides a record.
 pub(crate) fn is_active(artifact: &KnowledgeArtifact, now: DateTime<Utc>) -> bool {
-    let expired = artifact
-        .lifecycle
-        .expires_at
-        .as_deref()
-        .is_some_and(|expires_at| {
-            DateTime::parse_from_rfc3339(expires_at).is_ok_and(|expires_at| expires_at <= now)
-        });
-    artifact.lifecycle.status == Status::Active && !expired
+    crate::lifecycle::is_active(&artifact.lifecycle, now)
 }
 
 fn normalize_expiry(value: &str) -> Result<String, PluginError> {

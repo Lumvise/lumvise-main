@@ -3671,6 +3671,7 @@ dependencies = [
  "lumvise-plugin-protocol",
  "lumvise-plugin-runtime",
  "lumvise-plugin-sdk",
+ "lumvise-plugin-semantic",
  "lumvise-resource-routing",
  "md5",
  "serde",

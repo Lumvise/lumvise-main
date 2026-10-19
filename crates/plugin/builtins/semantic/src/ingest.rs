@@ -4,6 +4,8 @@ use chrono::Utc;
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
+mod provider_partition;
+
 use crate::{
     models::{
         IndexBatchRequest, IndexLogRequest, LatestIndexLogRequest, SemanticArtifact,
@@ -84,16 +86,18 @@ fn ingest_snapshot_page(
     }
     let elements = incoming_elements(batch, &[]);
     let relationships = incoming_relationships_unchecked(batch, &elements);
+    let (elements, relationships) = if page_index == 0 && partition_paths(batch).is_empty() {
+        provider_partition::preserve_foreign(context, batch, &elements, &relationships)?
+    } else {
+        (
+            elements.into_values().collect(),
+            relationships.into_values().collect(),
+        )
+    };
     let mut source_mutations = Vec::new();
     store_sources(&mut source_mutations, batch)?;
     storage::apply_mutations(context, &source_mutations)?;
-    storage::stage_project_snapshot(
-        context,
-        job_id,
-        page_index,
-        &elements.values().collect::<Vec<_>>(),
-        &relationships.values().collect::<Vec<_>>(),
-    )?;
+    storage::stage_project_snapshot(context, job_id, page_index, &elements, &relationships)?;
     let completed = page_index + 1 == page_count;
     if completed {
         storage::commit_project_snapshot(context, job_id)?;
@@ -134,8 +138,8 @@ fn sync_graph(
 ) -> Result<(), PluginError> {
     let paths = partition_paths(batch);
     if paths.is_empty() {
-        let elements = elements.values().collect::<Vec<_>>();
-        let relationships = relationships.values().collect::<Vec<_>>();
+        let (elements, relationships) =
+            provider_partition::preserve_foreign(context, batch, elements, relationships)?;
         storage::sync_structure(context, &batch.project_root, &elements, &relationships)?;
         return Ok(());
     }

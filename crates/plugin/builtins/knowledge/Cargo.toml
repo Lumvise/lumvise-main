@@ -24,6 +24,7 @@ lumvise-app-core.workspace = true
 lumvise-db-core.workspace = true
 lumvise-resource-routing.workspace = true
 lumvise-plugin-runtime.workspace = true
+lumvise-plugin-semantic.workspace = true
 sha2 = "0.10"
 tempfile.workspace = true
 

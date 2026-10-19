@@ -43,6 +43,8 @@ use sha2::{Digest, Sha256};
 
 #[path = "knowledge_protocol/canonical_identity.rs"]
 mod canonical_identity;
+#[path = "knowledge_protocol/documents.rs"]
+mod documents;
 #[path = "knowledge_protocol/retired_kind_migration.rs"]
 mod retired_kind_migration;
 #[path = "knowledge_protocol/search_cache.rs"]
@@ -201,6 +203,11 @@ impl MemoryStorageBroker {
             .expect("plugin.invoke operation counts")
             .entry(export_id)
             .or_default() += 1;
+        if request.input["plugin_id"] == "builtin.semantic"
+            && request.input["export_id"] == "ingest_index_batch"
+        {
+            return documents::ingest(self, request.input["input"].clone());
+        }
         Ok(semantic_response(&request.input))
     }
 
@@ -847,15 +854,20 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         .scoped_exports("assistant_session")
         .expect("assistant-scoped exports");
     assert_eq!(scoped.len(), 1);
-    assert_eq!(scoped[0].exports.len(), 8);
-    for name in ["knowledge.create", "knowledge.update"] {
+    assert_eq!(scoped[0].exports.len(), 14);
+    for name in [
+        "knowledge.create",
+        "knowledge.update",
+        "document.create",
+        "document.update",
+    ] {
         assert!(scoped[0].exports.iter().any(|export| export.id == name));
     }
     assert!(
         scoped[0]
             .exports
             .iter()
-            .all(|export| export.id.starts_with("knowledge."))
+            .all(|export| export.id.starts_with("knowledge.") || export.id.starts_with("document."))
     );
     assert!(
         system

@@ -136,6 +136,9 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
 ];
 
 pub(super) fn description(id: &str) -> &'static str {
+    if let Some(description) = crate::documents::description(id) {
+        return description;
+    }
     EXPORT_GUIDANCE
         .iter()
         .find(|(export_id, _)| *export_id == id)

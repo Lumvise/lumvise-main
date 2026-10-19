@@ -12,8 +12,8 @@ const EMBED_TEXT_BYTES: usize = 32 * 1024;
 const EMBED_REQUEST_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
-struct KnowledgeVector {
-    artifact_id: String,
+struct KnowledgeTextVector {
+    record_id: String,
     content_fingerprint: String,
     vector: Vec<f32>,
 }
@@ -21,11 +21,92 @@ struct KnowledgeVector {
 /// Owns derived vectors for this plugin process. Artifact reads still authorize every search.
 #[derive(Default)]
 pub(crate) struct KnowledgeSearchVectors {
-    records: Mutex<BTreeMap<String, Option<KnowledgeVector>>>,
+    records: Mutex<BTreeMap<String, Option<KnowledgeTextVector>>>,
 }
 
 impl KnowledgeSearchVectors {
-    fn find(&self, artifact_id: &str, context: &mut PluginContext<'_>) -> Option<KnowledgeVector> {
+    pub(crate) fn rank_texts(
+        &self,
+        query: &str,
+        texts: &[(String, String)],
+        context: &mut PluginContext<'_>,
+    ) -> Option<BTreeMap<String, f32>> {
+        let query = embed(context, &[query])?.pop()?;
+        let mut scores = BTreeMap::new();
+        let missing = texts
+            .iter()
+            .filter(|(id, text)| !self.append_cached_score(id, text, &query, context, &mut scores))
+            .collect::<Vec<_>>();
+        for batch in missing.chunks(EMBED_BATCH_SIZE) {
+            self.rank_missing(batch, &query, context, &mut scores)?;
+        }
+        Some(scores)
+    }
+
+    fn append_cached_score(
+        &self,
+        id: &str,
+        text: &str,
+        query: &[f32],
+        context: &mut PluginContext<'_>,
+        scores: &mut BTreeMap<String, f32>,
+    ) -> bool {
+        let Some(record) = self
+            .find(id, context)
+            .filter(|record| record.content_fingerprint == text_fingerprint(text))
+        else {
+            return false;
+        };
+        let Some(score) = cosine(query, &record.vector) else {
+            return false;
+        };
+        scores.insert(id.to_owned(), score);
+        true
+    }
+
+    fn rank_missing(
+        &self,
+        texts: &[&(String, String)],
+        query: &[f32],
+        context: &mut PluginContext<'_>,
+        scores: &mut BTreeMap<String, f32>,
+    ) -> Option<()> {
+        let inputs = texts
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>();
+        let embeddings = embed(context, &inputs)?;
+        let mut rows = Vec::new();
+        for ((id, text), vector) in texts.iter().zip(embeddings) {
+            scores.insert(id.clone(), cosine(query, &vector)?);
+            rows.push((
+                id.clone(),
+                KnowledgeTextVector {
+                    record_id: id.clone(),
+                    content_fingerprint: text_fingerprint(text),
+                    vector,
+                },
+            ));
+        }
+        let _ = self.store_rows(context, rows);
+        Some(())
+    }
+
+    fn store_rows(
+        &self,
+        context: &mut PluginContext<'_>,
+        rows: Vec<(String, KnowledgeTextVector)>,
+    ) -> Result<(), PluginError> {
+        storage::put_rows(context, storage::VECTORS, &rows)?;
+        self.remember(rows);
+        Ok(())
+    }
+
+    fn find(
+        &self,
+        artifact_id: &str,
+        context: &mut PluginContext<'_>,
+    ) -> Option<KnowledgeTextVector> {
         if let Some(cached) = self.records.lock().ok()?.get(artifact_id).cloned() {
             return cached;
         }
@@ -38,7 +119,7 @@ impl KnowledgeSearchVectors {
             .clone()
     }
 
-    fn remember(&self, rows: Vec<(String, KnowledgeVector)>) {
+    fn remember(&self, rows: Vec<(String, KnowledgeTextVector)>) {
         if let Ok(mut records) = self.records.lock() {
             records.extend(rows.into_iter().map(|(id, vector)| (id, Some(vector))));
         }
@@ -105,18 +186,19 @@ fn vector_results(
     context: &mut PluginContext<'_>,
     vectors: &KnowledgeSearchVectors,
 ) -> Option<(&'static str, Vec<Value>)> {
-    let query = embed(context, &[request.query.as_str()])?.pop()?;
-    let mut results = Vec::with_capacity(artifacts.len());
-    let missing = artifacts
+    let texts = artifacts
         .iter()
-        .filter(|artifact| {
-            let stored = vectors.find(&artifact.artifact_id, context);
-            !append_stored_result(artifact, stored.as_ref(), &query, &mut results)
-        })
+        .map(|artifact| (artifact.artifact_id.clone(), searchable_text(artifact)))
         .collect::<Vec<_>>();
-    for batch in missing.chunks(EMBED_BATCH_SIZE) {
-        append_embedded_results(batch, &query, &mut results, context, vectors)?;
-    }
+    let scores = vectors.rank_texts(&request.query, &texts, context)?;
+    let results = artifacts
+        .iter()
+        .filter_map(|artifact| {
+            scores
+                .get(&artifact.artifact_id)
+                .map(|score| result(artifact, *score))
+        })
+        .collect();
     Some(("vector", results))
 }
 
@@ -165,47 +247,6 @@ fn unavailable_rebuild(vectors_rebuilt: usize, error: PluginError) -> Value {
     })
 }
 
-fn append_stored_result(
-    artifact: &KnowledgeArtifact,
-    stored: Option<&KnowledgeVector>,
-    query: &[f32],
-    results: &mut Vec<Value>,
-) -> bool {
-    let Some(record) = stored else {
-        return false;
-    };
-    if record.content_fingerprint != content_fingerprint(artifact) {
-        return false;
-    }
-    let Some(score) = cosine(query, &record.vector) else {
-        return false;
-    };
-    results.push(result(artifact, score));
-    true
-}
-
-fn append_embedded_results(
-    artifacts: &[&KnowledgeArtifact],
-    query: &[f32],
-    results: &mut Vec<Value>,
-    context: &mut PluginContext<'_>,
-    cache: &KnowledgeSearchVectors,
-) -> Option<()> {
-    let texts = artifacts
-        .iter()
-        .map(|item| searchable_text(item))
-        .collect::<Vec<_>>();
-    let vectors = embed(
-        context,
-        &texts.iter().map(String::as_str).collect::<Vec<_>>(),
-    )?;
-    for (artifact, vector) in artifacts.iter().zip(&vectors) {
-        results.push(result(artifact, cosine(query, vector)?));
-    }
-    let _ = persist_vectors(artifacts, vectors, context, cache);
-    Some(())
-}
-
 fn persist_batch(
     artifacts: &[KnowledgeArtifact],
     context: &mut PluginContext<'_>,
@@ -234,8 +275,8 @@ fn persist_vectors(
         .iter()
         .zip(vectors)
         .map(|(artifact, vector)| {
-            let record = KnowledgeVector {
-                artifact_id: artifact.artifact_id.clone(),
+            let record = KnowledgeTextVector {
+                record_id: artifact.artifact_id.clone(),
                 content_fingerprint: content_fingerprint(artifact),
                 vector,
             };
@@ -244,13 +285,15 @@ fn persist_vectors(
         .collect::<Vec<_>>();
     // Match embedding batches to existing atomic storage batches, avoiding
     // two process round trips for each individual cached vector.
-    storage::put_rows(context, storage::VECTORS, &rows)?;
-    cache.remember(rows);
-    Ok(())
+    cache.store_rows(context, rows)
+}
+
+fn text_fingerprint(text: &str) -> String {
+    format!("{:x}", md5::compute(text.as_bytes()))
 }
 
 fn content_fingerprint(artifact: &KnowledgeArtifact) -> String {
-    format!("{:x}", md5::compute(searchable_text(artifact).as_bytes()))
+    text_fingerprint(&searchable_text(artifact))
 }
 
 fn lexical_results(request: &SearchRequest, artifacts: &[KnowledgeArtifact]) -> Vec<Value> {

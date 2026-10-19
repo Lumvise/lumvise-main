@@ -12,12 +12,14 @@ mod c4_report;
 mod c4_text;
 mod components;
 mod cultivation;
+mod documents;
 mod events;
 mod functional;
 #[cfg(test)]
 mod golden_tests;
 mod http;
 mod inheritance;
+mod lifecycle;
 mod manifest;
 mod md_nucleus;
 mod obsidian_reports;
