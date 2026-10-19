@@ -15,10 +15,17 @@ pub(crate) const EXPORTS: &[(&str, &str)] = &[
     ("document.search", "Assistant document search"),
     ("delete_document", "Delete independent document"),
     ("document.delete", "Assistant document delete"),
+    (
+        "convert_legacy_documents",
+        "Convert retired Knowledge records",
+    ),
 ];
 
 pub(crate) fn description(id: &str) -> Option<&'static str> {
     match id {
+        "convert_legacy_documents" => Some(
+            "Preview or apply the explicit project-scoped conversion of retired Knowledge records into independent documents. Defaults to preview=true. Apply with preview=false only when the document consumers are available. Preserves IDs, human content, lifecycle, references and binary attachments; generic tasks never become scheduled missions. Retries preserve staged document edits; conflicting legacy changes stop retirement.",
+        ),
         "create_document" | "document.create" => Some(
             "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, kind, title and content. Use report for Markdown reports and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
         ),
@@ -66,6 +73,12 @@ fn fields() -> Value {
 }
 
 pub(crate) fn input_schema(id: &str) -> Option<Value> {
+    if id == "convert_legacy_documents" {
+        return Some(object(
+            &["project_root"],
+            json!({"project_root": {"type": "string"}, "preview": {"type": "boolean", "default": true}}),
+        ));
+    }
     let required: &[&str] = match id {
         "create_document" | "document.create" => &[
             "document_id",
@@ -117,6 +130,7 @@ fn input_fields(id: &str) -> Value {
 fn record() -> Value {
     let mut properties = fields();
     properties["semantic_element_id"] = json!({"type": "string"});
+    properties["attachment_owner_id"] = json!({"type": "string"});
     properties["revision"] = json!({"type": "integer"});
     properties["status"] = json!({"type": "string"});
     for key in [
@@ -148,6 +162,15 @@ fn record() -> Value {
 
 pub(crate) fn output_schema(id: &str) -> Option<Value> {
     match id {
+        "convert_legacy_documents" => Some(object(
+            &["project_root", "preview", "total", "conversions"],
+            json!({
+                "project_root": {"type": "string"}, "preview": {"type": "boolean"}, "total": {"type": "integer"},
+                "conversions": {"type": "array", "items": object(&["artifact_id", "document_id", "document_kind", "already_staged"], json!({
+                    "artifact_id": {"type": "string"}, "document_id": {"type": "string"}, "document_kind": kind(), "already_staged": {"type": "boolean"}
+                }))}
+            }),
+        )),
         "create_document" | "document.create" | "get_document" | "document.get"
         | "update_document" | "document.update" => {
             Some(object(&["document"], json!({"document": record()})))

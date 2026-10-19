@@ -3,6 +3,8 @@
 //! Other plugins use the signed document exports. Graph representation and
 //! lifecycle updates stay internal; no source-file anchor is required.
 
+mod assets;
+mod conversion;
 mod records;
 mod schema;
 mod search;
@@ -32,6 +34,7 @@ pub(crate) fn invoke(
         "list_documents" | "document.list" => list(input, context),
         "search_documents" | "document.search" => search::search(input, context, vectors),
         "delete_document" | "document.delete" => delete(input, context),
+        "convert_legacy_documents" => conversion::convert(input, context),
         other => Err(PluginError::unknown_capability(other)),
     }
 }
@@ -48,13 +51,16 @@ fn create(input: Value, context: &mut PluginContext<'_>) -> Result<Value, Plugin
     }
     let mut document = new_document(request);
     crate::lifecycle::stamp(&mut document.lifecycle, None, Utc::now());
-    records::write(context, &document)?;
+    records::create(context, &document)?;
     Ok(json!({"document": document}))
 }
 
 fn new_document(request: CreateKnowledgeDocumentRequest) -> KnowledgeDocument {
     KnowledgeDocument {
         semantic_element_id: records::element_id(&request.document_id),
+        attachment_owner_id: (request.document_kind
+            == lumvise_contracts::KnowledgeDocumentKind::Canvas)
+            .then(|| assets::new_owner_id(&request.document_id)),
         document_id: request.document_id,
         project_root: request.project_root,
         document_kind: request.document_kind,

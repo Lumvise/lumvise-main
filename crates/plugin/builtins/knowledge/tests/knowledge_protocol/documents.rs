@@ -150,3 +150,49 @@ fn independent_documents_round_trip_through_the_real_protobuf_process() {
     );
     process.stop();
 }
+
+#[test]
+fn legacy_conversion_preview_and_apply_round_trip_through_the_real_protobuf_process() {
+    let broker = Arc::new(MemoryStorageBroker::default());
+    ingest(&broker, json!({"provider_instance_id": "filesystem", "project_root": "/project",
+        "semantic_sources": [{"semantic_source_id": "source:files", "kind": "repository", "name": "Sources", "root_path": "/project", "root_uri": "file:///project"}],
+        "semantic_elements": [{"semantic_element_id": "file:lib", "semantic_source_id": "source:files", "path": "src/lib.rs",
+            "semantic_element_type": "file", "semantic_element_name": "lib.rs", "parent_element_id": null,
+            "start_line": 1, "end_line": 3, "content_fingerprint": "fp1:0000000000000001:source-v1", "metadata": {}}],
+        "semantic_relationships": [], "semantic_artifacts": [], "replace_paths": [], "removed_paths": []
+    })).unwrap();
+    let mut process = DocumentProcess::launch(broker.clone());
+    process.call("create_knowledge", json!({"artifact_id": "report:legacy", "semantic_element_id": "file:lib",
+        "knowledge_type": "report", "title": "Existing report", "content": "# Keep this text", "project_root": "/project"}));
+    let preview = process.call(
+        "convert_legacy_documents",
+        json!({"project_root": "/project"}),
+    );
+    assert_eq!(preview["preview"], true);
+    assert_eq!(preview["total"], 1);
+    assert_eq!(
+        process.call("list_documents", json!({"project_root": "/project"}))["total"],
+        0
+    );
+    let applied = process.call(
+        "convert_legacy_documents",
+        json!({"project_root": "/project", "preview": false}),
+    );
+    assert_eq!(applied["preview"], false);
+    assert_eq!(applied["conversions"][0]["document_id"], "report:legacy");
+    process.stop();
+    let mut reopened = DocumentProcess::launch(broker);
+    let document = reopened.call(
+        "get_document",
+        json!({"project_root": "/project", "document_id": "report:legacy"}),
+    );
+    assert_eq!(document["document"]["content"], "# Keep this text");
+    assert_eq!(
+        reopened.call(
+            "convert_legacy_documents",
+            json!({"project_root": "/project", "preview": false})
+        )["total"],
+        0
+    );
+    reopened.stop();
+}

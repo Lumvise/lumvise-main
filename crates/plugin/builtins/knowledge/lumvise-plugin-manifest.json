@@ -5057,6 +5057,9 @@
               },
               "updated_at": {
                 "type": "string"
+              },
+              "attachment_owner_id": {
+                "type": "string"
               }
             },
             "required": [
@@ -5327,6 +5330,9 @@
               },
               "updated_at": {
                 "type": "string"
+              },
+              "attachment_owner_id": {
+                "type": "string"
               }
             },
             "required": [
@@ -5495,6 +5501,9 @@
                 "type": "string"
               },
               "updated_at": {
+                "type": "string"
+              },
+              "attachment_owner_id": {
                 "type": "string"
               }
             },
@@ -5674,6 +5683,9 @@
                 "type": "string"
               },
               "updated_at": {
+                "type": "string"
+              },
+              "attachment_owner_id": {
                 "type": "string"
               }
             },
@@ -5938,6 +5950,9 @@
                 "type": "string"
               },
               "updated_at": {
+                "type": "string"
+              },
+              "attachment_owner_id": {
                 "type": "string"
               }
             },
@@ -6213,6 +6228,9 @@
               },
               "updated_at": {
                 "type": "string"
+              },
+              "attachment_owner_id": {
+                "type": "string"
               }
             },
             "required": [
@@ -6392,6 +6410,9 @@
                   "type": "string"
                 },
                 "updated_at": {
+                  "type": "string"
+                },
+                "attachment_owner_id": {
                   "type": "string"
                 }
               },
@@ -6589,6 +6610,9 @@
                 },
                 "updated_at": {
                   "type": "string"
+                },
+                "attachment_owner_id": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -6776,6 +6800,9 @@
                   "type": "string"
                 },
                 "updated_at": {
+                  "type": "string"
+                },
+                "attachment_owner_id": {
                   "type": "string"
                 }
               },
@@ -6986,6 +7013,9 @@
                 },
                 "updated_at": {
                   "type": "string"
+                },
+                "attachment_owner_id": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -7111,6 +7141,84 @@
         "required": [
           "document_id",
           "deleted"
+        ],
+        "type": "object"
+      },
+      "execution": "foreground"
+    },
+    {
+      "id": "convert_legacy_documents",
+      "name": "Convert retired Knowledge records",
+      "description": "Preview or apply the explicit project-scoped conversion of retired Knowledge records into independent documents. Defaults to preview=true. Apply with preview=false only when the document consumers are available. Preserves IDs, human content, lifecycle, references and binary attachments; generic tasks never become scheduled missions. Retries preserve staged document edits; conflicting legacy changes stop retirement.",
+      "kind": "mcp_tool",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "preview": {
+            "default": true,
+            "type": "boolean"
+          },
+          "project_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "conversions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "already_staged": {
+                  "type": "boolean"
+                },
+                "artifact_id": {
+                  "type": "string"
+                },
+                "document_id": {
+                  "type": "string"
+                },
+                "document_kind": {
+                  "enum": [
+                    "report",
+                    "canvas",
+                    "ruleset",
+                    "mission_log",
+                    "context"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "document_id",
+                "document_kind",
+                "already_staged"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "preview": {
+            "type": "boolean"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_root",
+          "preview",
+          "total",
+          "conversions"
         ],
         "type": "object"
       },

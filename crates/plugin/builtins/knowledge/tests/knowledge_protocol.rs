@@ -165,7 +165,9 @@ impl MemoryStorageBroker {
             .expect("semantic operation counts")
             .entry(operation)
             .or_default() += 1;
-        if request.input["operation"] == "upsert_artifact" {
+        if request.input["operation"] == "upsert_artifact"
+            && request.input["artifact"]["metadata"]["knowledge"].is_object()
+        {
             let owner = request.input["artifact"]["semantic_element_id"]
                 .as_str()
                 .unwrap_or_default();

@@ -53,6 +53,10 @@ pub struct KnowledgeDocument {
     pub document_id: String,
     /// Index identity for this document, not an owning source-file anchor.
     pub semantic_element_id: String,
+    /// Internal resource owning this document's binary attachments, when present.
+    /// This is not a user-facing Requirements or Specification artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_owner_id: Option<String>,
     /// Project or Agent Space owning this document.
     pub project_root: String,
     /// Document workflow and presentation.

@@ -79,19 +79,50 @@ pub(super) fn required(
         })
 }
 
+pub(super) fn find_for_conversion(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    document_id: &str,
+) -> Result<Option<KnowledgeDocument>, PluginError> {
+    let elements =
+        crate::storage::elements_by_ids(context, root, &HashSet::from([element_id(document_id)]))?;
+    let element = elements
+        .first()
+        .map(|element| serde_json::to_value(element).expect("serializable semantic element"));
+    let Some(element) = element else {
+        return find(context, document_id);
+    };
+    if element["lifecycle"] == "inactive" {
+        return Err(super::invalid(
+            "document_conversion_conflict",
+            document_id,
+            "no previously deleted document at the conversion identity",
+        ));
+    }
+    decode(&element)
+}
+
 fn decode(element: &Value) -> Result<Option<KnowledgeDocument>, PluginError> {
-    let record = &element["metadata"]["indexer_metadata"]["knowledge_document"];
+    let mut record = element["metadata"]["indexer_metadata"]["knowledge_document"].clone();
     if record.is_null() {
         return Ok(None);
     }
-    let document: KnowledgeDocument = crate::parse(record.clone(), "stored Knowledge document")?;
-    if document.semantic_element_id != element["semantic_element_id"]
-        || document.project_root != element["project_root"]
-    {
+    if !record.is_object() || element["metadata"]["provider_instance_id"] != PROVIDER {
+        return Err(super::invalid(
+            "invalid_document_record",
+            &record.to_string(),
+            "document object owned by the Knowledge documents provider",
+        ));
+    }
+    // Archive imports and remote adapters own root/ID remapping. Do not keep a second copy.
+    record["semantic_element_id"] = element["semantic_element_id"].clone();
+    record["project_root"] = element["project_root"].clone();
+    let document: KnowledgeDocument = crate::parse(record, "stored Knowledge document")?;
+    if element["path"] != storage_path(&document.document_id) {
         return Err(super::invalid(
             "invalid_document_record",
             &document.document_id,
-            "matching document and indexed project identity",
+            "matching indexed document storage path",
         ));
     }
     Ok(Some(document))
@@ -105,19 +136,40 @@ pub(super) fn write(
     context: &mut PluginContext<'_>,
     document: &KnowledgeDocument,
 ) -> Result<(), PluginError> {
+    publish_document(context, document, vec![])
+}
+
+pub(super) fn create(
+    context: &mut PluginContext<'_>,
+    document: &KnowledgeDocument,
+) -> Result<(), PluginError> {
+    let assets = super::assets::new_resource(context, document)?;
+    publish_document(context, document, assets.into_iter().collect())
+}
+
+fn publish_document(
+    context: &mut PluginContext<'_>,
+    document: &KnowledgeDocument,
+    artifacts: Vec<Value>,
+) -> Result<(), PluginError> {
     let source = source_id(&document.project_root);
+    let mut payload = serde_json::to_value(document).expect("serializable document");
+    let fields = payload.as_object_mut().expect("document object");
+    fields.remove("project_root");
+    fields.remove("semantic_element_id");
     let element = json!({"semantic_element_id": document.semantic_element_id,
         "semantic_source_id": source, "semantic_element_type": "virtual_document",
         "semantic_element_name": document.title, "path": storage_path(&document.document_id),
         "parent_element_id": null, "start_line": null, "end_line": null,
         "content_fingerprint": null,
-        "metadata": {"knowledge_document": document}});
+        "metadata": {"knowledge_document": payload}});
     publish(
         context,
         &document.project_root,
         vec![element],
         vec![],
         vec![storage_path(&document.document_id)],
+        artifacts,
     )
 }
 
@@ -131,6 +183,7 @@ fn publish(
     elements: Vec<Value>,
     removed: Vec<String>,
     replace: Vec<String>,
+    artifacts: Vec<Value>,
 ) -> Result<(), PluginError> {
     crate::semantic::invoke_public(
         context,
@@ -140,7 +193,7 @@ fn publish(
             "replace_paths": replace, "removed_paths": removed,
             "semantic_sources": [{"semantic_source_id": source_id(root), "kind": "virtual_documents",
                 "name": "Knowledge documents", "root_path": null, "root_uri": format!("lumvise:documents/{}", hex::encode(root))}],
-            "semantic_elements": elements, "semantic_relationships": [], "semantic_artifacts": []
+            "semantic_elements": elements, "semantic_relationships": [], "semantic_artifacts": artifacts
         }),
     )?;
     Ok(())
@@ -155,6 +208,7 @@ pub(super) fn remove(
         &identity.project_root,
         vec![],
         vec![storage_path(&identity.document_id)],
+        vec![],
         vec![],
     )
 }

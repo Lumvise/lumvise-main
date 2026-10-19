@@ -3,16 +3,22 @@
 use std::sync::Arc;
 
 use lumvise_app_core::AppCoreHostCapabilityBroker;
-use lumvise_db_core::{LocalPersistence, RelationalPersistence, SemanticPersistence};
+use lumvise_db_core::{
+    LocalPersistence, RelationalPersistence, SemanticOperation, SemanticPersistence, SemanticResult,
+};
 use lumvise_plugin_knowledge::KnowledgePlugin;
 use lumvise_plugin_runtime::{HostCapabilityBroker, HostCapabilityRequest};
 use lumvise_plugin_sdk::{HostCallTransport, PluginApplication, PluginContext, PluginError};
 use lumvise_plugin_semantic::SemanticPlugin;
+use lumvise_resource_routing::InvocationControl;
 use serde_json::{Value, json};
 
 struct DocumentBoundaryHost {
     broker: Arc<AppCoreHostCapabilityBroker>,
     plugin_id: &'static str,
+    persistence: Arc<LocalPersistence>,
+    fail_document_write: Option<usize>,
+    fail_resource_write: Option<usize>,
 }
 
 impl DocumentBoundaryHost {
@@ -22,10 +28,13 @@ impl DocumentBoundaryHost {
 
     fn with_persistence(persistence: Arc<LocalPersistence>) -> Self {
         let semantic: Arc<dyn SemanticPersistence> = persistence.clone();
-        let relational: Arc<dyn RelationalPersistence> = persistence;
+        let relational: Arc<dyn RelationalPersistence> = persistence.clone();
         Self {
             broker: Arc::new(AppCoreHostCapabilityBroker::new(semantic, relational)),
             plugin_id: "builtin.knowledge",
+            persistence,
+            fail_document_write: None,
+            fail_resource_write: None,
         }
     }
 
@@ -37,17 +46,33 @@ impl DocumentBoundaryHost {
         let mut host = Self {
             broker: self.broker.clone(),
             plugin_id: "builtin.semantic",
+            persistence: self.persistence.clone(),
+            fail_document_write: None,
+            fail_resource_write: None,
         };
         SemanticPlugin.dispatch(export, input, &mut PluginContext::for_test(&mut host))
+    }
+
+    fn execute(&self, operation: SemanticOperation) -> SemanticResult {
+        SemanticPersistence::execute(
+            self.persistence.as_ref(),
+            operation,
+            &InvocationControl::sixty_seconds(),
+        )
+        .unwrap()
     }
 }
 
 impl HostCallTransport for DocumentBoundaryHost {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
         if capability == "plugin.invoke" && input["plugin_id"] == "builtin.semantic" {
+            fail_once(&mut self.fail_document_write)?;
             let output =
                 self.semantic(input["export_id"].as_str().unwrap(), input["input"].clone())?;
             return Ok(json!({"output": output}));
+        }
+        if capability == "storage.semantic" && input["operation"] == "upsert_artifact" {
+            fail_once(&mut self.fail_resource_write)?;
         }
         self.broker
             .invoke(HostCapabilityRequest {
@@ -64,6 +89,24 @@ impl HostCallTransport for DocumentBoundaryHost {
                 input,
             })
             .map_err(|error| PluginError::new("document_test_host_error", error.to_string(), false))
+    }
+}
+
+fn fail_once(remaining: &mut Option<usize>) -> Result<(), PluginError> {
+    match remaining {
+        Some(0) => {
+            *remaining = None;
+            Err(PluginError::new(
+                "injected_write_failure",
+                "test boundary write interrupted",
+                true,
+            ))
+        }
+        Some(count) => {
+            *count -= 1;
+            Ok(())
+        }
+        None => Ok(()),
     }
 }
 
@@ -169,3 +212,6 @@ fn identical_empty_reports_keep_distinct_explicit_document_identities() {
         2
     );
 }
+
+#[path = "document_persistence/conversion.rs"]
+mod conversion;
