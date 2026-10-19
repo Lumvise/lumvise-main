@@ -12,6 +12,8 @@ struct FakeDocumentGraph {
     elements: BTreeMap<String, Value>,
     writes: usize,
     embeddings: FakeDocumentEmbeddings,
+    reject_unscoped_reads: bool,
+    targeted_reads: Vec<Value>,
 }
 
 #[derive(Default)]
@@ -45,6 +47,13 @@ impl HostCallTransport for FakeDocumentGraph {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
         match (capability, input["operation"].as_str()) {
             ("neural.embed", _) => self.embeddings.embed(&input),
+            ("storage.semantic", Some("element")) if self.reject_unscoped_reads => {
+                Err(PluginError::new(
+                    "unscoped_document_read",
+                    "Expected an exact project-scoped document query",
+                    false,
+                ))
+            }
             ("storage.semantic", Some("element")) => Ok(
                 json!({"element": self.elements.get(input["semantic_element_id"].as_str().unwrap())}),
             ),
@@ -52,6 +61,10 @@ impl HostCallTransport for FakeDocumentGraph {
                 Ok(json!({"project_roots": self.roots()}))
             }
             ("storage.semantic", Some("scoped_read")) => Ok(self.scoped(&input)),
+            ("storage.semantic", Some("elements_by_ids_including_inactive")) => {
+                self.targeted_reads.push(input.clone());
+                Ok(self.targeted(&input))
+            }
             ("plugin.invoke", _) if input["export_id"] == "ingest_index_batch" => {
                 self.ingest(&input["input"])
             }
@@ -61,6 +74,23 @@ impl HostCallTransport for FakeDocumentGraph {
 }
 
 impl FakeDocumentGraph {
+    fn targeted(&self, input: &Value) -> Value {
+        let ids = input["semantic_element_ids"].as_array().unwrap();
+        let elements: Vec<&Value> = self
+            .elements
+            .values()
+            .filter(|row| {
+                let document_id =
+                    row["metadata"]["indexer_metadata"]["knowledge_document"]["document_id"]
+                        .as_str();
+                row["project_root"] == input["project_root"]
+                    && (ids.contains(&row["semantic_element_id"])
+                        || document_id
+                            .is_some_and(|id| ids.contains(&json!(super::records::element_id(id)))))
+            })
+            .collect();
+        json!({"elements": elements})
+    }
     fn call(&mut self, export: &str, input: Value) -> Result<Value, PluginError> {
         let mut context = PluginContext::for_test(self);
         KnowledgePlugin::default().dispatch(export, input, &mut context)
@@ -123,6 +153,40 @@ fn draft(id: &str, root: &str) -> Value {
 
 fn identity(id: &str, root: &str) -> Value {
     json!({"document_id": id, "project_root": root})
+}
+
+#[test]
+fn document_reads_use_project_scoped_queries_and_keep_adapter_qualified_identities() {
+    let mut graph = FakeDocumentGraph::default();
+    graph
+        .call("create_document", draft("remote-doc", "/remote"))
+        .unwrap();
+    let mut element = graph
+        .elements
+        .remove("knowledge-document:remote-doc")
+        .unwrap();
+    element["semantic_element_id"] = json!("adapter-owned-qualified-id");
+    graph
+        .elements
+        .insert("adapter-owned-qualified-id".into(), element);
+    graph.reject_unscoped_reads = true;
+    let result = graph
+        .call("get_document", identity("remote-doc", "/remote"))
+        .unwrap();
+    assert_eq!(
+        result["document"]["semantic_element_id"],
+        "adapter-owned-qualified-id"
+    );
+    assert_eq!(
+        graph.targeted_reads.last().unwrap()["project_root"],
+        "/remote"
+    );
+    assert!(
+        graph
+            .call("get_document", identity("remote-doc", "/other"))
+            .is_err()
+    );
+    assert_eq!(graph.writes, 1);
 }
 
 #[test]

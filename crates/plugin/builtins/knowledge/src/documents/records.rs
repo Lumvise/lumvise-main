@@ -68,7 +68,7 @@ pub(super) fn required(
 ) -> Result<KnowledgeDocument, PluginError> {
     crate::artifact::require(&identity.document_id, "document_id")?;
     crate::artifact::require(&identity.project_root, "project_root")?;
-    find(context, &identity.document_id)?
+    find_scoped(context, identity)?
         .filter(|document| document.project_root == identity.project_root)
         .ok_or_else(|| {
             super::invalid(
@@ -77,6 +77,29 @@ pub(super) fn required(
                 "document in the requested project",
             )
         })
+}
+
+fn find_scoped(
+    context: &mut PluginContext<'_>,
+    identity: &KnowledgeDocumentIdentity,
+) -> Result<Option<KnowledgeDocument>, PluginError> {
+    let elements = crate::storage::elements_by_ids(
+        context,
+        &identity.project_root,
+        &HashSet::from([element_id(&identity.document_id)]),
+    )?;
+    for element in elements {
+        if element.lifecycle == "inactive" {
+            continue;
+        }
+        let record = serde_json::to_value(element).expect("serializable semantic element");
+        if let Some(document) = decode(&record)?
+            && document.document_id == identity.document_id
+        {
+            return Ok(Some(document));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn find_for_conversion(
