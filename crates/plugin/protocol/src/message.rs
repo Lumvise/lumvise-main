@@ -20,7 +20,7 @@ impl ProtocolVersion {
 }
 
 /// Protocol implemented by this crate.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(6, 0);
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(7, 0);
 
 /// Disposition of one dirty graph element in a [`StorageTriggerRequest`].
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

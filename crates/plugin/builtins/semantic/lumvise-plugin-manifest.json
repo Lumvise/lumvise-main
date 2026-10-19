@@ -7,8 +7,8 @@
   "plugin_id": "builtin.semantic",
   "plugin_version": "0.1.35",
   "protocol": {
-    "min": 6,
-    "max": 6
+    "min": 7,
+    "max": 7
   },
   "targets": {},
   "files": {},

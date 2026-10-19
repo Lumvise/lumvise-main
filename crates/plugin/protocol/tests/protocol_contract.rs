@@ -22,8 +22,8 @@ fn codec_round_trips_host_hello_through_public_contract() {
     assert_eq!(decoded, message);
 }
 #[test]
-fn protobuf_protocol_uses_major_six() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(6, 0));
+fn protobuf_protocol_uses_major_seven() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(7, 0));
 }
 
 #[test]
@@ -192,9 +192,9 @@ fn stream_codec_reads_frame_written_by_public_writer() {
 }
 
 #[test]
-fn codec_rejects_unsupported_protocol_major_with_versions() {
+fn codec_rejects_previous_protocol_major_with_versions() {
     let invalid = WireMessage {
-        protocol: ProtocolVersion::new(3, 0),
+        protocol: ProtocolVersion::new(6, 0),
         body: MessageBody::HostShutdown {
             session_id: "session-1".into(),
             reason: None,
@@ -206,8 +206,8 @@ fn codec_rejects_unsupported_protocol_major_with_versions() {
     assert!(matches!(
         error,
         ProtocolError::UnsupportedProtocolMajor {
-            actual: 3,
-            expected: 6
+            actual: 6,
+            expected: 7
         }
     ));
 }
