@@ -25,6 +25,40 @@ fn convert(host: &mut DocumentBoundaryHost, preview: bool) -> Result<Value, Plug
     )
 }
 
+#[test]
+fn workflow_report_tags_preserve_browsable_reports_across_older_storage_kinds() {
+    let mut host = seeded();
+    legacy(
+        &mut host,
+        "living",
+        "specification",
+        "Human report",
+        &["living-report"],
+    );
+    legacy(
+        &mut host,
+        "diagram",
+        "definition",
+        "Architecture",
+        &["scoped-c4"],
+    );
+    legacy(
+        &mut host,
+        "functional",
+        "report",
+        "Source context",
+        &["living-report", "cultivation-functional"],
+    );
+    convert(&mut host, false).unwrap();
+    assert_eq!(document(&mut host, "living")["document_kind"], "report");
+    assert_eq!(document(&mut host, "diagram")["document_kind"], "report");
+    assert_eq!(
+        document(&mut host, "functional")["document_kind"],
+        "context"
+    );
+    assert_eq!(document(&mut host, "living")["content"], "Human report");
+}
+
 fn document(host: &mut DocumentBoundaryHost, id: &str) -> Value {
     host.knowledge(
         "get_document",

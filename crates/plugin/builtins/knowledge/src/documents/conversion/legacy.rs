@@ -21,6 +21,9 @@ pub(super) fn kind(artifact: &Value) -> Option<KnowledgeDocumentKind> {
     if tagged("ruleset") && tagged("agents") {
         return Some(KnowledgeDocumentKind::Ruleset);
     }
+    if (tagged("living-report") || tagged("scoped-c4")) && !tagged("cultivation-functional") {
+        return Some(KnowledgeDocumentKind::Report);
+    }
     match artifact["artifact_kind"].as_str()? {
         "specification" | "requirements" => None,
         "report" | "derived_summary" if !tagged("cultivation-functional") => {
