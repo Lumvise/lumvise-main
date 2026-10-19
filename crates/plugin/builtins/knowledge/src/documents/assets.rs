@@ -67,3 +67,34 @@ pub(super) fn retire_legacy(
     }
     Ok(())
 }
+
+pub(super) fn for_update(
+    context: &mut PluginContext<'_>,
+    document: &KnowledgeDocument,
+) -> Result<Option<Value>, PluginError> {
+    let Some(resource) = resource(document) else {
+        return Ok(None);
+    };
+    let response = context.host_call(
+        "storage.semantic",
+        json!({"operation": "artifact", "artifact_id": document.attachment_owner_id}),
+    )?;
+    let stored = &response["artifact"];
+    if stored.is_null()
+        || (stored["metadata"]["knowledge_document_assets"]["document_id"] == document.document_id
+            && stored["artifact_kind"] == "document_assets"
+            && stored["semantic_element_id"] == document.semantic_element_id)
+    {
+        return Ok(Some(resource));
+    }
+    if stored["metadata"]["knowledge"].is_object()
+        && super::conversion::is_staged_owner(document, stored)
+    {
+        return Ok(None); // An explicit conversion still owns retirement of this staged legacy record.
+    }
+    Err(super::invalid(
+        "document_assets_conflict",
+        &stored.to_string(),
+        "attachment resource owned by this document",
+    ))
+}

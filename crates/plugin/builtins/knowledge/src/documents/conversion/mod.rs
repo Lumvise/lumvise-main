@@ -31,6 +31,10 @@ struct PreparedDocument {
     staged: bool,
 }
 
+pub(super) fn is_staged_owner(document: &KnowledgeDocument, artifact: &Value) -> bool {
+    legacy::matches(document, artifact, &document.project_root)
+}
+
 pub(super) fn convert(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let request: ConversionRequest = crate::parse(input, "project-scoped document conversion")?;
     crate::artifact::require(&request.project_root, "project_root")?;

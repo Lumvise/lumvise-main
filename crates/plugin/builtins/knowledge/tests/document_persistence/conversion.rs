@@ -455,6 +455,26 @@ fn a_new_canvas_document_creates_its_explicit_attachment_owner_in_the_same_publi
 }
 
 #[test]
+fn product_artifact_creation_cannot_replace_a_document_attachment_owner() {
+    let mut host = DocumentBoundaryHost::new();
+    let mut request = report();
+    request["document_kind"] = json!("canvas");
+    let created = host.knowledge("create_document", request).unwrap();
+    let owner = created["document"]["attachment_owner_id"].as_str().unwrap();
+    let failure = host.knowledge("create_knowledge", json!({"artifact_id": owner,
+        "semantic_element_id": created["document"]["semantic_element_id"], "knowledge_type": "specification",
+        "title": "Collision", "content": "Must not replace attachment ownership", "project_root": "/project"})).unwrap_err();
+    assert_eq!(failure.code, "knowledge_id_conflict");
+    let SemanticResult::Artifact(Some(resource)) = host.execute(SemanticOperation::Artifact {
+        artifact_id: owner.into(),
+    }) else {
+        panic!("original attachment resource expected")
+    };
+    assert_eq!(resource.artifact_kind, "document_assets");
+    assert_eq!(host.knowledge("get_document", identity()).unwrap(), created);
+}
+
+#[test]
 fn retired_knowledge_with_an_inactive_source_owner_remains_convertible() {
     let mut host = seeded();
     legacy(

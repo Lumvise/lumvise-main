@@ -136,7 +136,8 @@ pub(super) fn write(
     context: &mut PluginContext<'_>,
     document: &KnowledgeDocument,
 ) -> Result<(), PluginError> {
-    publish_document(context, document, vec![])
+    let assets = super::assets::for_update(context, document)?;
+    publish_document(context, document, assets.into_iter().collect())
 }
 
 pub(super) fn create(

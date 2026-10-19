@@ -244,7 +244,12 @@ pub(crate) fn put_knowledge(
     context: &mut PluginContext<'_>,
     artifact: &KnowledgeArtifact,
 ) -> Result<KnowledgeArtifact, PluginError> {
-    let previous = get_knowledge(context, &artifact.artifact_id)?
+    let stored = raw_graph_artifact(context, &artifact.artifact_id)?;
+    validate_knowledge_owner(artifact, stored.as_ref())?;
+    let previous = stored
+        .as_ref()
+        .map(decode_graph_artifact::<KnowledgeArtifact>)
+        .transpose()?
         .filter(|previous| previous.project_root == artifact.project_root);
     let mut stamped = artifact.clone();
     crate::artifact::stamp(
@@ -454,16 +459,42 @@ fn get_graph_artifact<T: DeserializeOwned>(
     context: &mut PluginContext<'_>,
     artifact_id: &str,
 ) -> Result<Option<T>, PluginError> {
+    raw_graph_artifact(context, artifact_id)?
+        .as_ref()
+        .filter(|artifact| is_knowledge_artifact(artifact))
+        .map(decode_graph_artifact)
+        .transpose()
+}
+
+fn validate_knowledge_owner(
+    artifact: &KnowledgeArtifact,
+    stored: Option<&Value>,
+) -> Result<(), PluginError> {
+    if let Some(stored) = stored.filter(|stored| !is_knowledge_artifact(stored)) {
+        return Err(PluginError::new(
+            "knowledge_id_conflict",
+            format!(
+                "artifact ID `{}` belongs to `{}`; expected an unused ID or an existing Knowledge artifact",
+                artifact.artifact_id, stored["artifact_kind"]
+            ),
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn raw_graph_artifact(
+    context: &mut PluginContext<'_>,
+    artifact_id: &str,
+) -> Result<Option<Value>, PluginError> {
     let output = context.host_call(
         SEMANTIC_CAPABILITY,
         json!({"operation": "artifact", "artifact_id": artifact_id}),
     )?;
-    output
+    Ok(output
         .get("artifact")
         .filter(|artifact| !artifact.is_null())
-        .filter(|artifact| is_knowledge_artifact(artifact))
-        .map(decode_graph_artifact)
-        .transpose()
+        .cloned())
 }
 
 fn decode_graph_knowledge_list(output: &Value) -> Result<Vec<KnowledgeArtifact>, PluginError> {
