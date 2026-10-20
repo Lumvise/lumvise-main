@@ -47,20 +47,29 @@ pub(super) fn convert(input: Value, context: &mut PluginContext<'_>) -> Result<V
         rewrite_documents(context, &request.project_root, &converted)?;
         retire(context, &prepared)?;
     }
-    Ok(summary(&request, &prepared))
+    Ok(summary(&request, &prepared, &artifacts))
 }
 
-fn summary(request: &ConversionRequest, prepared: &[PreparedDocument]) -> Value {
+fn summary(
+    request: &ConversionRequest,
+    prepared: &[PreparedDocument],
+    artifacts: &[Value],
+) -> Value {
     let conversions: Vec<Value> = prepared
         .iter()
         .map(|item| {
             json!({"artifact_id": item.document.document_id,
         "document_id": item.document.document_id, "document_kind": item.document.document_kind,
+        "source_semantic_element_id": item.original["semantic_element_id"],
+        "source_content_sha256": legacy::content_signature(item.original["content"].as_str().unwrap_or_default()),
+        "status": item.document.lifecycle.status,
         "already_staged": item.staged})
         })
         .collect();
+    let retained = artifacts.iter().filter(|artifact| legacy::kind(artifact).is_none())
+        .map(|artifact| json!({"artifact_id": artifact["artifact_id"], "semantic_element_id": artifact["semantic_element_id"]})).collect::<Vec<_>>();
     json!({"project_root": request.project_root, "preview": request.preview,
-        "total": conversions.len(), "conversions": conversions})
+        "total": conversions.len(), "conversions": conversions, "retained": retained})
 }
 
 fn artifacts(context: &mut PluginContext<'_>, root: &str) -> Result<Vec<Value>, PluginError> {

@@ -68,6 +68,35 @@ fn document(host: &mut DocumentBoundaryHost, id: &str) -> Value {
         .clone()
 }
 
+#[test]
+fn ruleset_provenance_keeps_the_original_content_digest_after_a_human_edit() {
+    use sha2::{Digest, Sha256};
+    let mut host = seeded();
+    legacy(
+        &mut host,
+        "ruleset:digest",
+        "specification",
+        "Original executed rules",
+        &["agents", "ruleset"],
+    );
+    let digest = format!("{:x}", Sha256::digest(b"Original executed rules"));
+    let preview = convert(&mut host, true).unwrap();
+    assert_eq!(preview["conversions"][0]["source_content_sha256"], digest);
+    assert_eq!(
+        preview["conversions"][0]["source_semantic_element_id"],
+        "file:lib"
+    );
+    convert(&mut host, false).unwrap();
+    let ruleset = document(&mut host, "ruleset:digest");
+    let edited = host.knowledge("update_document", json!({"project_root":"/project",
+        "document_id":"ruleset:digest", "expected_revision":ruleset["revision"], "content":"Human's new instructions"})).unwrap();
+    assert_eq!(
+        edited["document"]["metadata"]["legacy_knowledge"]["content_sha256"],
+        digest
+    );
+    assert_eq!(edited["document"]["content"], "Human's new instructions");
+}
+
 fn revision(host: &DocumentBoundaryHost) -> i64 {
     let SemanticResult::SemanticRevision { commit_version } =
         host.execute(SemanticOperation::SemanticRevision)

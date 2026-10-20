@@ -124,8 +124,13 @@ fn metadata(artifact: &Value, converted: &BTreeSet<String>) -> Value {
     let mut metadata = rewritten.as_object().cloned().unwrap_or_default();
     metadata.insert("legacy_knowledge".into(), json!({"schema": 1, "artifact_id": artifact["artifact_id"],
         "knowledge_type": artifact["artifact_kind"], "semantic_element_id": artifact["semantic_element_id"],
-        "snapshot_sha256": signature(artifact), "graph_metadata": artifact["metadata"]}));
+        "snapshot_sha256": signature(artifact), "content_sha256": content_signature(artifact["content"].as_str().unwrap_or_default()),
+        "graph_metadata": artifact["metadata"]}));
     Value::Object(metadata)
+}
+
+pub(super) fn content_signature(content: &str) -> String {
+    hex::encode(Sha256::digest(content.as_bytes()))
 }
 
 pub(super) fn signature(artifact: &Value) -> String {
