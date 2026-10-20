@@ -1,25 +1,23 @@
 //! Md-file nucleus ingestion for the project knowledge root.
 //!
-//! When the semantic indexer upserts a markdown file element below
-//! `<project>/knowledge/`, the StorageTrigger reconciliation mirrors the file
-//! as a durable Knowledge artifact ("md nucleus") so projections can route by
-//! `metadata.nucleus.target_path`. When the element is tombstoned, an untouched seed
-//! is removed; authored database content remains durable. Artifact identity is deterministic from the md path, so
-//! re-delivered batches reconcile idempotently without rewriting unchanged
-//! nuclei. Database artifacts own authored Markdown after initial seeding.
-//!
-//! The StorageTrigger batch intentionally carries identities only, so this
-//! module reads element details through the identity-validated
-//! `storage.semantic` targeted-element read and never sees markdown source
-//! content: nuclei carry a placeholder body and a title derived from the file
-//! name.
+//! Indexed Markdown files below `<project>/knowledge/` seed independent Context documents.
+//! Source events carry identities, so the initial body is a link rather than a copy of file bytes.
+//! Database-authored content and deleted document identities survive subsequent source events.
 
 use sha2::{Digest, Sha256};
 
 use lumvise_plugin_sdk::{PluginContext, PluginError, StorageTriggerRequest};
 use serde_json::json;
 
-use crate::{KnowledgeArtifact, KnowledgeKind, semantic_context::SemanticElement, storage};
+use crate::{
+    documents::{self, DocumentGenerator},
+    semantic_context::SemanticElement,
+    storage,
+};
+use lumvise_contracts::{
+    CreateKnowledgeDocumentRequest, KnowledgeDocument, KnowledgeDocumentKind,
+    KnowledgeDocumentReference,
+};
 
 /// Convention: markdown files under `<project>/knowledge/` are nuclei.
 pub(crate) const KNOWLEDGE_ROOT: &str = "knowledge";
@@ -27,9 +25,8 @@ pub(crate) const KNOWLEDGE_ROOT: &str = "knowledge";
 const MD_NUCLEUS_TAG: &str = "md-nucleus";
 
 /// Reconciles md-file nuclei for one StorageTrigger batch: upserted markdown
-/// file elements under [`KNOWLEDGE_ROOT`] mirror into nucleus artifacts and
-/// tombstoned elements remove theirs. Non-md and out-of-root elements are
-/// ignored.
+/// file elements under [`KNOWLEDGE_ROOT`] seed source Context documents. Source
+/// removal retains independently owned bodies. Non-md and out-of-root elements are ignored.
 pub(crate) fn reconcile_for_change_batch(
     request: &StorageTriggerRequest,
     context: &mut PluginContext<'_>,
@@ -46,6 +43,9 @@ pub(crate) fn reconcile_for_change_batch(
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
     for element in storage::elements_by_ids(context, &request.project_root, &ids)? {
+        if element.element_kind != "file" {
+            continue;
+        }
         let Some(path) = nucleus_path(&element.path) else {
             continue;
         };
@@ -64,11 +64,11 @@ fn nucleus_path(path: &str) -> Option<String> {
     matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown").then(|| path.to_owned())
 }
 
-/// Deterministic nucleus artifact identity for one md path.
-fn nucleus_artifact_id(path: &str) -> String {
+/// Project-qualified identity avoids collisions for the same Markdown path in different projects.
+fn nucleus_document_id(project_root: &str, path: &str) -> String {
     format!(
         "knowledge-nucleus-{}",
-        hex::encode(Sha256::digest(path.as_bytes()))
+        hex::encode(Sha256::digest(format!("{project_root}\0{path}").as_bytes()))
     )
 }
 
@@ -80,40 +80,60 @@ fn reconcile_nucleus(
     element: &SemanticElement,
     path: &str,
 ) -> Result<(), PluginError> {
-    let seed = nucleus_seed(project_root, element, path);
-    let existing = storage::get_knowledge(context, &seed.artifact_id)?;
     if element.lifecycle != "active" {
-        if existing
-            .as_ref()
-            .is_some_and(|existing| crate::artifact::same_content(existing, &seed))
-        {
-            storage::remove_knowledge(context, &seed.artifact_id)?;
-        }
         return Ok(());
     }
-    if existing.is_some() {
+    let known = documents::known_source_documents(context, project_root)?;
+    if known.iter().any(|document| {
+        document.document_kind == KnowledgeDocumentKind::Context
+            && document.tags.iter().any(|tag| tag == MD_NUCLEUS_TAG)
+            && document.metadata["nucleus"]["target_path"] == path
+    }) {
         return Ok(());
     }
-    storage::put_knowledge(context, &seed).map(|_| ())
+    if documents::conversion_required_for_source(
+        context,
+        project_root,
+        &element.semantic_element_id,
+        MD_NUCLEUS_TAG,
+    )? {
+        return Err(PluginError::new(
+            "knowledge_conversion_required",
+            format!(
+                "Markdown source `{}` in `{project_root}` still has a retired nucleus artifact; preview and apply document conversion before seeding",
+                element.semantic_element_id
+            ),
+            false,
+        ));
+    }
+    let seed = nucleus_seed(project_root, element, path);
+    match documents::save_generated(
+        context,
+        &DocumentGenerator::MarkdownSeed.owner(&element.semantic_element_id),
+        seed,
+        None,
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) if error.code == "generated_document_deleted" => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
-fn nucleus_seed(project_root: &str, element: &SemanticElement, path: &str) -> KnowledgeArtifact {
-    KnowledgeArtifact {
-        artifact_id: nucleus_artifact_id(path),
-        semantic_element_id: element.semantic_element_id.clone(),
-        knowledge_type: KnowledgeKind::Definition,
+fn nucleus_seed(project_root: &str, element: &SemanticElement, path: &str) -> KnowledgeDocument {
+    documents::draft_document(CreateKnowledgeDocumentRequest {
+        document_id: nucleus_document_id(project_root, path),
+        project_root: project_root.into(),
+        document_kind: KnowledgeDocumentKind::Context,
         title: nucleus_title(element),
         content: nucleus_content(path, &element.semantic_element_id),
         tags: vec!["nucleus".into(), MD_NUCLEUS_TAG.into()],
-        dependencies: vec![],
-        metadata: json!({"nucleus": {"id": "md-nucleus", "artifact_role": "nucleus",
-            "status": "current", "source": "md-file-ingestion",
-            "target_path": path, "target_element_id": element.semantic_element_id,
-            "project_root": project_root}}),
-        path: Some(path.to_owned()),
-        project_root: Some(project_root.to_owned()),
-        lifecycle: Default::default(),
-    }
+        path: Some(path.into()),
+        references: vec![KnowledgeDocumentReference::SemanticElement {
+            semantic_element_id: element.semantic_element_id.clone(),
+        }],
+        metadata: json!({"nucleus":{"id":"md-nucleus","document_role":"source_context","status":"current","source":"md-file-ingestion",
+            "target_path":path,"target_element_id":element.semantic_element_id,"project_root":project_root}}),
+    })
 }
 
 /// Titles the nucleus from the file name without its md extension; the trigger

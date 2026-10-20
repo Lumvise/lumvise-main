@@ -163,6 +163,7 @@ pub(crate) struct ProjectProjectionSnapshot {
     pub published_at: String,
     pub semantic: SemanticContext,
     pub artifacts: Vec<crate::KnowledgeArtifact>,
+    pub documents: Vec<lumvise_contracts::KnowledgeDocument>,
 }
 
 #[derive(Deserialize)]
@@ -196,15 +197,17 @@ pub(crate) fn load_projection_snapshot(
     project_root: &str,
 ) -> Result<ProjectProjectionSnapshot, PluginError> {
     let snapshot = complete_project_snapshot(context, project_root, Some("knowledge"))?;
+    let partition = crate::documents::partition_indexed_elements(project_root, snapshot.elements)?;
     Ok(ProjectProjectionSnapshot {
         commit_version: snapshot.commit_version,
         published_at: snapshot.published_at,
         semantic: SemanticContext {
-            elements: snapshot.elements,
+            elements: partition.source_elements,
             relationships: snapshot.relationships,
             artifacts: Vec::new(),
         },
         artifacts: crate::storage::decode_graph_knowledge_artifacts(&snapshot.artifacts)?,
+        documents: partition.documents,
     })
 }
 
@@ -247,8 +250,9 @@ pub(crate) fn load(
     root_element_id: Option<&str>,
 ) -> Result<SemanticContext, PluginError> {
     let snapshot = complete_project_snapshot(context, project_root, None)?;
+    let partition = crate::documents::partition_indexed_elements(project_root, snapshot.elements)?;
     let mut semantic = SemanticContext {
-        elements: snapshot.elements,
+        elements: partition.source_elements,
         relationships: snapshot.relationships,
         artifacts: decode_semantic_artifacts(snapshot.artifacts)?,
     };

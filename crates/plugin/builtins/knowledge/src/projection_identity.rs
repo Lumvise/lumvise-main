@@ -1,4 +1,4 @@
-//! Owns the canonical JSON input to Knowledge projection hashes.
+//! Owns the canonical JSON input to Knowledge projection and document-content hashes.
 //! Projection owners call `canonical_projection_json`; output payloads remain unchanged.
 
 use serde_json::Value;

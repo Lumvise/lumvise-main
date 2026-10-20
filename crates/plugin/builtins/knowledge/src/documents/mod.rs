@@ -5,12 +5,14 @@
 
 mod assets;
 mod conversion;
+mod generated;
 mod records;
 mod schema;
 mod search;
 #[cfg(test)]
 mod tests;
 
+use crate::semantic_context::SemanticElement;
 use chrono::Utc;
 use lumvise_contracts::{
     CreateKnowledgeDocumentRequest, KnowledgeArtifactLifecycleV2, KnowledgeDocument,
@@ -19,6 +21,67 @@ use lumvise_contracts::{
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
+pub(crate) struct IndexedDocumentPartition {
+    pub(crate) source_elements: Vec<SemanticElement>,
+    pub(crate) documents: Vec<KnowledgeDocument>,
+}
+
+/// Decode documents from an already captured revision and keep them out of source generation.
+/// Example: partition_indexed_elements(root, snapshot.elements) performs no additional storage read.
+pub(crate) fn partition_indexed_elements(
+    root: &str,
+    elements: Vec<SemanticElement>,
+) -> Result<IndexedDocumentPartition, PluginError> {
+    let mut partition = IndexedDocumentPartition {
+        source_elements: Vec::new(),
+        documents: Vec::new(),
+    };
+    for element in elements {
+        if element.project_root != root {
+            return Err(invalid(
+                "indexed_document_scope_mismatch",
+                &format!(
+                    "{} in {}",
+                    element.semantic_element_id, element.project_root
+                ),
+                &format!("an element in project {root}"),
+            ));
+        }
+        if !records::is_document_record(&element.metadata) {
+            partition.source_elements.push(element);
+            continue;
+        }
+        let record = serde_json::to_value(&element).expect("indexed element is serializable");
+        if let Some(document) = records::decode(&record)?
+            && element.lifecycle != "inactive"
+        {
+            partition.documents.push(document);
+        }
+    }
+    Ok(partition)
+}
+
+/// Read a set of document identities within one exact project through the canonical owner.
+/// Example: find_documents(context, root, &ids) is the batched equivalent of scoped document reads.
+pub(crate) fn find_documents(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    ids: &std::collections::HashSet<String>,
+) -> Result<Vec<KnowledgeDocument>, PluginError> {
+    crate::artifact::require(root, "project_root")?;
+    for id in ids {
+        crate::artifact::require(id, "document_id")?;
+    }
+    let element_ids = ids.iter().map(|id| records::element_id(id)).collect();
+    let elements = crate::storage::elements_by_ids(context, root, &element_ids)?;
+    Ok(partition_indexed_elements(root, elements)?
+        .documents
+        .into_iter()
+        .filter(|document| ids.contains(&document.document_id))
+        .collect())
+}
+
+pub(crate) use generated::{DocumentGenerationOwner, DocumentGenerator, save as save_generated};
 pub(crate) use schema::{EXPORTS, description, input_schema, output_schema};
 
 pub(crate) fn invoke(
@@ -49,13 +112,15 @@ fn create(input: Value, context: &mut PluginContext<'_>) -> Result<Value, Plugin
             "unused document identity",
         ));
     }
-    let mut document = new_document(request);
+    let mut document = draft_document(request);
     crate::lifecycle::stamp(&mut document.lifecycle, None, Utc::now());
     records::create(context, &document)?;
     Ok(json!({"document": document}))
 }
 
-fn new_document(request: CreateKnowledgeDocumentRequest) -> KnowledgeDocument {
+/// Build a document proposal without exposing its indexed representation.
+/// Example: draft_document(request) assigns the Knowledge-owned index identity.
+pub(crate) fn draft_document(request: CreateKnowledgeDocumentRequest) -> KnowledgeDocument {
     KnowledgeDocument {
         semantic_element_id: records::element_id(&request.document_id),
         attachment_owner_id: (request.document_kind
@@ -72,6 +137,27 @@ fn new_document(request: CreateKnowledgeDocumentRequest) -> KnowledgeDocument {
         metadata: request.metadata,
         lifecycle: KnowledgeArtifactLifecycleV2::default(),
     }
+}
+
+/// Discover canonical source-document identities, including deleted ones, before automatic seeding.
+/// Example: known_source_documents(context, root) prevents recreating an intentionally removed seed.
+pub(crate) fn known_source_documents(
+    context: &mut PluginContext<'_>,
+    root: &str,
+) -> Result<Vec<KnowledgeDocument>, PluginError> {
+    crate::artifact::require(root, "project_root")?;
+    records::project_document_records(context, root, true)
+}
+
+/// Check source conversion readiness without decoding or adopting a retired body.
+/// Example: conversion_required_for_source(context, root, source_id, "md-nucleus").
+pub(crate) fn conversion_required_for_source(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    source_id: &str,
+    tag: &str,
+) -> Result<bool, PluginError> {
+    conversion::required_for_source(context, root, source_id, tag)
 }
 
 fn get(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {

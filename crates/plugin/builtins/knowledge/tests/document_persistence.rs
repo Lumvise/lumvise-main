@@ -13,6 +13,9 @@ use lumvise_plugin_semantic::SemanticPlugin;
 use lumvise_resource_routing::InvocationControl;
 use serde_json::{Value, json};
 
+#[path = "document_persistence/md_seed.rs"]
+mod md_seed;
+
 struct DocumentBoundaryHost {
     broker: Arc<AppCoreHostCapabilityBroker>,
     plugin_id: &'static str,

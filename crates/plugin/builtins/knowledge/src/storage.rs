@@ -455,6 +455,15 @@ fn put_graph_artifact(
         .ok_or_else(|| invalid_response("stored artifact identity", &output))
 }
 
+pub(crate) fn has_knowledge_record(
+    context: &mut PluginContext<'_>,
+    artifact_id: &str,
+) -> Result<bool, PluginError> {
+    Ok(raw_graph_artifact(context, artifact_id)?
+        .as_ref()
+        .is_some_and(is_knowledge_artifact))
+}
+
 fn get_graph_artifact<T: DeserializeOwned>(
     context: &mut PluginContext<'_>,
     artifact_id: &str,

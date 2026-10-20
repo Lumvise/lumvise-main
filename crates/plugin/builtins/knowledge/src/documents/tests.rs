@@ -7,9 +7,15 @@ use serde_json::{Value, json};
 
 use crate::KnowledgePlugin;
 
+#[path = "tests/generated.rs"]
+mod generated;
+#[path = "tests/indexed.rs"]
+mod indexed;
+
 #[derive(Default)]
 struct FakeDocumentGraph {
     elements: BTreeMap<String, Value>,
+    artifacts: BTreeMap<String, Value>,
     writes: usize,
     embeddings: FakeDocumentEmbeddings,
     reject_unscoped_reads: bool,
@@ -57,6 +63,9 @@ impl HostCallTransport for FakeDocumentGraph {
             ("storage.semantic", Some("element")) => Ok(
                 json!({"element": self.elements.get(input["semantic_element_id"].as_str().unwrap())}),
             ),
+            ("storage.semantic", Some("artifact")) => {
+                Ok(json!({"artifact": self.artifacts.get(input["artifact_id"].as_str().unwrap())}))
+            }
             ("storage.semantic", Some("project_roots")) => {
                 Ok(json!({"project_roots": self.roots()}))
             }
@@ -110,7 +119,11 @@ impl FakeDocumentGraph {
         let elements: Vec<&Value> = self
             .elements
             .values()
-            .filter(|row| &row["project_root"] == root && row["lifecycle"] != "inactive")
+            .filter(|row| {
+                &row["project_root"] == root
+                    && (input["request"]["Structure"]["include_inactive"] == true
+                        || row["lifecycle"] != "inactive")
+            })
             .collect();
         json!({"project_root": root, "elements": elements, "relationships": []})
     }

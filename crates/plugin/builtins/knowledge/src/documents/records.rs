@@ -79,27 +79,45 @@ pub(super) fn required(
         })
 }
 
+pub(super) enum DocumentState {
+    Missing,
+    Stored(KnowledgeDocument),
+    Deleted,
+}
+
 fn find_scoped(
     context: &mut PluginContext<'_>,
     identity: &KnowledgeDocumentIdentity,
 ) -> Result<Option<KnowledgeDocument>, PluginError> {
+    match scoped_state(context, identity)? {
+        DocumentState::Stored(document) => Ok(Some(document)),
+        DocumentState::Missing | DocumentState::Deleted => Ok(None),
+    }
+}
+
+pub(super) fn scoped_state(
+    context: &mut PluginContext<'_>,
+    identity: &KnowledgeDocumentIdentity,
+) -> Result<DocumentState, PluginError> {
     let elements = crate::storage::elements_by_ids(
         context,
         &identity.project_root,
         &HashSet::from([element_id(&identity.document_id)]),
     )?;
     for element in elements {
-        if element.lifecycle == "inactive" {
-            continue;
-        }
+        let deleted = element.lifecycle == "inactive";
         let record = serde_json::to_value(element).expect("serializable semantic element");
         if let Some(document) = decode(&record)?
             && document.document_id == identity.document_id
         {
-            return Ok(Some(document));
+            return Ok(if deleted {
+                DocumentState::Deleted
+            } else {
+                DocumentState::Stored(document)
+            });
         }
     }
-    Ok(None)
+    Ok(DocumentState::Missing)
 }
 
 pub(super) fn find_for_conversion(
@@ -125,9 +143,14 @@ pub(super) fn find_for_conversion(
     decode(&element)
 }
 
-fn decode(element: &Value) -> Result<Option<KnowledgeDocument>, PluginError> {
+pub(super) fn is_document_record(metadata: &Value) -> bool {
+    metadata["provider_instance_id"] == PROVIDER
+        || !metadata["indexer_metadata"]["knowledge_document"].is_null()
+}
+
+pub(super) fn decode(element: &Value) -> Result<Option<KnowledgeDocument>, PluginError> {
     let mut record = element["metadata"]["indexer_metadata"]["knowledge_document"].clone();
-    if record.is_null() {
+    if record.is_null() && element["metadata"]["provider_instance_id"] != PROVIDER {
         return Ok(None);
     }
     if !record.is_object() || element["metadata"]["provider_instance_id"] != PROVIDER {
@@ -279,10 +302,18 @@ fn project_documents(
     context: &mut PluginContext<'_>,
     root: &str,
 ) -> Result<Vec<KnowledgeDocument>, PluginError> {
+    project_document_records(context, root, false)
+}
+
+pub(super) fn project_document_records(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    include_deleted: bool,
+) -> Result<Vec<KnowledgeDocument>, PluginError> {
     let response = context.host_call(
         "storage.semantic",
         json!({"operation": "scoped_read", "request": {
-            "Structure": {"scope": {"project_root": root}, "max_depth": 0, "include_inactive": false}
+            "Structure": {"scope": {"project_root": root}, "max_depth": 0, "include_inactive": include_deleted}
         }}),
     )?;
     let elements = response["elements"].as_array().ok_or_else(|| {

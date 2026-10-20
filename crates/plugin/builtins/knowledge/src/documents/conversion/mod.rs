@@ -35,6 +35,20 @@ pub(super) fn is_staged_owner(document: &KnowledgeDocument, artifact: &Value) ->
     legacy::matches(document, artifact, &document.project_root)
 }
 
+pub(super) fn required_for_source(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    element_id: &str,
+    workflow_tag: &str,
+) -> Result<bool, PluginError> {
+    Ok(artifacts(context, root)?.iter().any(|artifact| {
+        artifact["semantic_element_id"] == element_id
+            && artifact["metadata"]["knowledge"]["tags"]
+                .as_array()
+                .is_some_and(|tags| tags.iter().any(|tag| tag == workflow_tag))
+    }))
+}
+
 pub(super) fn convert(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let request: ConversionRequest = crate::parse(input, "project-scoped document conversion")?;
     crate::artifact::require(&request.project_root, "project_root")?;
