@@ -82,6 +82,7 @@ struct MemoryStorageBroker {
     plugin_invoke_operations: Mutex<BTreeMap<String, usize>>,
     failure: Mutex<Option<(String, String)>>,
     canonical_artifact_id: Mutex<Option<String>>,
+    operation_fault: Mutex<Option<(String, usize)>>,
 }
 
 impl Default for MemoryStorageBroker {
@@ -103,6 +104,7 @@ impl Default for MemoryStorageBroker {
             plugin_invoke_operations: Mutex::default(),
             failure: Mutex::default(),
             canonical_artifact_id: Mutex::default(),
+            operation_fault: Mutex::default(),
         }
     }
 }
@@ -167,6 +169,7 @@ impl MemoryStorageBroker {
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        self.take_operation_fault(&operation)?;
         *self
             .semantic_operations
             .lock()
@@ -211,8 +214,9 @@ impl MemoryStorageBroker {
             .plugin_invoke_operations
             .lock()
             .expect("plugin.invoke operation counts")
-            .entry(export_id)
+            .entry(export_id.clone())
             .or_default() += 1;
+        self.take_operation_fault(&export_id)?;
         if request.input["plugin_id"] == "builtin.semantic"
             && request.input["export_id"] == "ingest_index_batch"
         {
@@ -228,6 +232,28 @@ impl MemoryStorageBroker {
             .get(export_id)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Fails the next call of one operation once, after `successes` calls. Example: `fail_operation_after("upsert_artifact", 0)`.
+    fn fail_operation_after(&self, operation: &str, successes: usize) {
+        *self.operation_fault.lock().expect("operation fault") =
+            Some((operation.into(), successes));
+    }
+
+    fn take_operation_fault(&self, operation: &str) -> Result<(), HostCapabilityError> {
+        let mut fault = self.operation_fault.lock().expect("operation fault");
+        let Some((name, remaining)) = fault.as_mut() else {
+            return Ok(());
+        };
+        if name.as_str() != operation {
+            return Ok(());
+        }
+        if *remaining == 0 {
+            *fault = None;
+            return Err(host_error(operation, "injected_write_failure"));
+        }
+        *remaining -= 1;
+        Ok(())
     }
 
     fn row_count(&self, plugin_id: &str, table: &str) -> usize {

@@ -47,7 +47,7 @@ impl HostCallTransport for SchedulingFakeHost {
             }
             ("storage.plugin", "trim_rows_by_key") => Ok(json!({})),
             ("runtime.project_execution", "submit") => self.submit(input),
-            ("storage.semantic", "project_snapshot") => Ok(self.project_snapshot()),
+            ("storage.semantic", "project_snapshot") => Ok(self.project_snapshot(&input)),
             ("storage.semantic", "selective_subgraph") => Ok(self.selective_subgraph(&input)),
             ("storage.semantic", "elements_by_ids_including_inactive") => {
                 let mut response = self.elements_by_ids(&input);
@@ -119,10 +119,15 @@ impl SchedulingFakeHost {
         Ok(json!({"job_id": format!("job-{}", self.submitted.len())}))
     }
 
-    fn project_snapshot(&self) -> Value {
-        json!({"commit_version":1,"published_at":"test","project_root":"/repo",
-            "elements":self.elements.iter().map(|element| serde_json::to_value(element).unwrap()).chain(self.graph.elements.values().cloned()).collect::<Vec<_>>(),"relationships":self.relationships,
-            "artifacts":[]})
+    fn project_snapshot(&self, input: &Value) -> Value {
+        let elements = self
+            .elements
+            .iter()
+            .map(|element| serde_json::to_value(element).unwrap())
+            .collect::<Vec<_>>();
+        let relationships = serde_json::to_value(&self.relationships).unwrap();
+        self.graph
+            .snapshot_with_sources(input, &elements, relationships.as_array().unwrap())
     }
 
     fn selective_subgraph(&self, input: &Value) -> Value {

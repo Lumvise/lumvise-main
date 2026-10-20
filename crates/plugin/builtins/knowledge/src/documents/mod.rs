@@ -6,7 +6,10 @@
 mod assets;
 mod conversion;
 mod generated;
+mod publication;
+mod record_format;
 mod records;
+mod reference_graph;
 mod schema;
 mod search;
 #[cfg(test)]
@@ -28,39 +31,72 @@ pub(crate) struct IndexedDocumentPartition {
     pub(crate) documents: Vec<KnowledgeDocument>,
 }
 
+/// Keep internal document index records out of source-only generation and projections.
+/// Example: !is_document_index(&element.metadata) retains filesystem elements.
+pub(crate) fn is_document_index(metadata: &Value) -> bool {
+    records::is_document_record(metadata)
+}
+
+/// Internal payload/resources are consumed through documents, never as product Knowledge.
+/// Example: snapshot.artifacts.retain(|row| !is_document_artifact(row)).
+pub(crate) fn is_document_artifact(artifact: &Value) -> bool {
+    matches!(
+        artifact["artifact_kind"].as_str(),
+        Some("knowledge_document" | "document_assets")
+    ) || artifact["metadata"]["knowledge_document"].is_object()
+        || artifact["metadata"]["knowledge_document_assets"].is_object()
+}
+
 /// Decode documents from an already captured revision and keep them out of source generation.
-/// Example: partition_indexed_elements(root, snapshot.elements) performs no additional storage read.
+/// Example: partition_indexed_elements(root, snapshot.elements, &snapshot.artifacts) performs no live read.
 pub(crate) fn partition_indexed_elements(
     root: &str,
     elements: Vec<SemanticElement>,
+    artifacts: &[Value],
 ) -> Result<IndexedDocumentPartition, PluginError> {
     let mut partition = IndexedDocumentPartition {
         source_elements: Vec::new(),
         documents: Vec::new(),
     };
+    let roots: Vec<Value> = elements.iter().map(|element| json!(element)).collect();
     for element in elements {
-        if element.project_root != root {
-            return Err(invalid(
-                "indexed_document_scope_mismatch",
-                &format!(
-                    "{} in {}",
-                    element.semantic_element_id, element.project_root
-                ),
-                &format!("an element in project {root}"),
-            ));
-        }
-        if !records::is_document_record(&element.metadata) {
-            partition.source_elements.push(element);
-            continue;
-        }
-        let record = serde_json::to_value(&element).expect("indexed element is serializable");
-        if let Some(document) = records::decode(&record)?
-            && element.lifecycle != "inactive"
-        {
-            partition.documents.push(document);
-        }
+        partition.append(root, element, artifacts, &roots)?;
     }
     Ok(partition)
+}
+
+impl IndexedDocumentPartition {
+    fn append(
+        &mut self,
+        root: &str,
+        element: SemanticElement,
+        artifacts: &[Value],
+        roots: &[Value],
+    ) -> Result<(), PluginError> {
+        records::validate_element_scope(root, &element)?;
+        if !records::is_document_record(&element.metadata) {
+            self.source_elements.push(element);
+            return Ok(());
+        }
+        let record = json!(element);
+        if let Some(document) = records::decode(&record, artifacts, roots)?
+            && element.lifecycle != "inactive"
+        {
+            self.documents.push(document);
+        }
+        Ok(())
+    }
+}
+
+/// Resolve a targeted indexed page through the document owner, never through source metadata.
+/// Example: partition_current_elements(context, root, changed_elements) keeps exact caller scope.
+pub(crate) fn partition_current_elements(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    elements: Vec<SemanticElement>,
+) -> Result<IndexedDocumentPartition, PluginError> {
+    let (elements, artifacts) = records::captured_records(context, root, elements)?;
+    partition_indexed_elements(root, elements, &artifacts)
 }
 
 /// Read a set of document identities within one exact project through the canonical owner.
@@ -76,7 +112,7 @@ pub(crate) fn find_documents(
     }
     let element_ids = ids.iter().map(|id| records::element_id(id)).collect();
     let elements = crate::storage::elements_by_ids(context, root, &element_ids)?;
-    Ok(partition_indexed_elements(root, elements)?
+    Ok(partition_current_elements(context, root, elements)?
         .documents
         .into_iter()
         .filter(|document| ids.contains(&document.document_id))

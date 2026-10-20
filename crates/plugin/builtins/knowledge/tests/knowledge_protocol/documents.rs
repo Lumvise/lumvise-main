@@ -102,6 +102,60 @@ impl DocumentProcess {
         }
     }
 
+    /// Like `call`, but returns the plugin's failure code instead of panicking.
+    fn try_call(&mut self, export: &str, input: Value) -> Result<Value, String> {
+        let mut response = self.plugin.exchange(MessageBody::HostInvoke {
+            session_id: "documents".into(),
+            invocation_id: export.into(),
+            capability_id: export.into(),
+            input,
+        });
+        loop {
+            match response.body {
+                MessageBody::PluginResult {
+                    outcome: WireOutcome::Succeeded { value },
+                    ..
+                } => return Ok(value),
+                MessageBody::PluginResult {
+                    outcome: WireOutcome::Failed { error },
+                    ..
+                } => return Err(error.code),
+                MessageBody::PluginHostCall {
+                    session_id,
+                    invocation_id,
+                    call_id,
+                    capability_id,
+                    input,
+                } => {
+                    let outcome = match self.broker.invoke(HostCapabilityRequest {
+                        plugin_id: PLUGIN_ID.into(),
+                        invocation_id,
+                        call_id: call_id.clone(),
+                        capability_id,
+                        required_version: "^1.4.0".into(),
+                        input,
+                    }) {
+                        Ok(value) => WireOutcome::Succeeded { value },
+                        Err(error) => WireOutcome::Failed {
+                            error: lumvise_plugin_protocol::PluginWireError {
+                                code: "host_capability_failed".into(),
+                                message: error.to_string(),
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                    };
+                    response = self.plugin.exchange(MessageBody::HostHostResult {
+                        session_id,
+                        call_id,
+                        outcome,
+                    });
+                }
+                result => panic!("document export {export} did not reach a result: {result:?}"),
+            }
+        }
+    }
+
     fn stop(mut self) {
         let result = self.plugin.exchange(MessageBody::HostShutdown {
             session_id: "documents".into(),
@@ -142,7 +196,8 @@ fn independent_documents_round_trip_through_the_real_protobuf_process() {
         json!({"project_root": "/project", "query": "architecture"}),
     );
     assert_eq!(search["documents"][0]["document_id"], "report:independent");
-    assert_eq!(broker.plugin_invoke_count("ingest_index_batch"), 2);
+    // Create publishes its project root and then its pointer; the update publishes only its pointer.
+    assert_eq!(broker.plugin_invoke_count("ingest_index_batch"), 3);
     process.call("delete_document", identity);
     assert_eq!(
         process.call("list_documents", json!({"project_root": "/project"}))["total"],
@@ -198,4 +253,64 @@ fn legacy_conversion_preview_and_apply_round_trip_through_the_real_protobuf_proc
         0
     );
     reopened.stop();
+}
+
+#[test]
+fn a_failed_body_stage_through_the_real_protobuf_process_keeps_the_previous_body() {
+    let broker = Arc::new(MemoryStorageBroker::default());
+    let mut process = DocumentProcess::launch(broker.clone());
+    let identity = json!({"document_id": "report:process", "project_root": "/project"});
+    let created = process.call(
+        "create_document",
+        json!({
+            "document_id": "report:process", "project_root": "/project", "document_kind": "report",
+            "title": "Process body", "content": "# Process body marker", "path": "Technical/Process"
+        }),
+    );
+    let revised = json!({
+        "document_id": "report:process", "project_root": "/project",
+        "expected_revision": 1, "content": "# Revised"
+    });
+    broker.fail_operation_after("upsert_artifact", 0);
+    assert!(
+        process
+            .try_call("update_document", revised.clone())
+            .is_err()
+    );
+    assert_eq!(process.call("get_document", identity.clone()), created);
+    let retried = process.call("update_document", revised);
+    assert_eq!(retried["document"]["revision"], 2);
+    assert_eq!(
+        process.call("get_document", identity)["document"]["content"],
+        "# Revised"
+    );
+    process.stop();
+}
+
+#[test]
+fn a_failed_pointer_publication_through_the_real_protobuf_process_keeps_the_previous_body() {
+    let broker = Arc::new(MemoryStorageBroker::default());
+    let mut process = DocumentProcess::launch(broker.clone());
+    let identity = json!({"document_id": "report:process", "project_root": "/project"});
+    let created = process.call(
+        "create_document",
+        json!({
+            "document_id": "report:process", "project_root": "/project", "document_kind": "report",
+            "title": "Process body", "content": "# Process body marker", "path": "Technical/Process"
+        }),
+    );
+    let revised = json!({
+        "document_id": "report:process", "project_root": "/project",
+        "expected_revision": 1, "content": "# Revised"
+    });
+    broker.fail_operation_after("ingest_index_batch", 0);
+    assert!(
+        process
+            .try_call("update_document", revised.clone())
+            .is_err()
+    );
+    assert_eq!(process.call("get_document", identity.clone()), created);
+    let retried = process.call("update_document", revised);
+    assert_eq!(retried["document"]["revision"], 2);
+    process.stop();
 }

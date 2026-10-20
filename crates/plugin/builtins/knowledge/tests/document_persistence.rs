@@ -25,6 +25,8 @@ struct DocumentBoundaryHost {
     fail_document_write: Option<usize>,
     fail_resource_write: Option<usize>,
     generation: Option<generation::FakeFunctionalJobs>,
+    /// Successful outer writes in order: `artifact` for staged bodies, `publish` for index publications.
+    writes: Vec<&'static str>,
 }
 
 impl DocumentBoundaryHost {
@@ -42,6 +44,7 @@ impl DocumentBoundaryHost {
             fail_document_write: None,
             fail_resource_write: None,
             generation: None,
+            writes: Vec::new(),
         }
     }
 
@@ -57,6 +60,7 @@ impl DocumentBoundaryHost {
             fail_document_write: None,
             fail_resource_write: None,
             generation: None,
+            writes: Vec::new(),
         };
         SemanticPlugin.dispatch(export, input, &mut PluginContext::for_test(&mut host))
     }
@@ -82,12 +86,15 @@ impl HostCallTransport for DocumentBoundaryHost {
             fail_once(&mut self.fail_document_write)?;
             let output =
                 self.semantic(input["export_id"].as_str().unwrap(), input["input"].clone())?;
+            self.writes.push("publish");
             return Ok(json!({"output": output}));
         }
-        if capability == "storage.semantic" && input["operation"] == "upsert_artifact" {
+        let upsert = capability == "storage.semantic" && input["operation"] == "upsert_artifact";
+        if upsert {
             fail_once(&mut self.fail_resource_write)?;
         }
-        self.broker
+        let value = self
+            .broker
             .invoke(HostCapabilityRequest {
                 plugin_id: self.plugin_id.into(),
                 invocation_id: "document-boundary".into(),
@@ -101,7 +108,13 @@ impl HostCallTransport for DocumentBoundaryHost {
                 .into(),
                 input,
             })
-            .map_err(|error| PluginError::new("document_test_host_error", error.to_string(), false))
+            .map_err(|error| {
+                PluginError::new("document_test_host_error", error.to_string(), false)
+            })?;
+        if upsert {
+            self.writes.push("artifact");
+        }
+        Ok(value)
     }
 }
 
@@ -226,5 +239,7 @@ fn identical_empty_reports_keep_distinct_explicit_document_identities() {
     );
 }
 
+#[path = "document_persistence/body_artifacts.rs"]
+mod body_artifacts;
 #[path = "document_persistence/conversion.rs"]
 mod conversion;

@@ -38,7 +38,8 @@ fn generated_content_uses_the_existing_document_owner_and_revision_without_an_ar
     let writes = graph.writes;
     assert_eq!(save(&mut graph, proposal(), Some(1)).unwrap(), created);
     assert_eq!(graph.writes, writes);
-    assert_eq!(graph.elements.len(), 1);
+    // The project root and the single generated document node.
+    assert_eq!(graph.elements.len(), 2);
     graph.reject_unscoped_reads = true;
     let mut changed = proposal();
     changed.content = "New generated purpose".into();
@@ -168,8 +169,14 @@ fn unowned_documents_and_archived_generated_bodies_remain_preserved() {
     assert_eq!(read(&mut fresh)["status"], "archived");
     let mut expired = FakeDocumentGraph::default();
     save(&mut expired, proposal(), None).unwrap();
-    expired.elements.values_mut().next().unwrap()["metadata"]["indexer_metadata"]["knowledge_document"]
-        ["expires_at"] = json!("2000-01-01T00:00:00Z");
+    // The lifecycle lives in the staged body; the node carries only its pointer.
+    let body = expired.elements.values().next().unwrap()["metadata"]["indexer_metadata"]
+        ["knowledge_document"]["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    expired.artifacts.get_mut(&body).unwrap()["metadata"]["knowledge_document"]["expires_at"] =
+        json!("2000-01-01T00:00:00Z");
     assert_eq!(
         save(&mut expired, proposal(), Some(1)).unwrap_err().code,
         "generated_document_inactive"

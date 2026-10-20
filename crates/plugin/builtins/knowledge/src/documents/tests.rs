@@ -3,6 +3,8 @@
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
+#[path = "tests/artifact_body.rs"]
+mod artifact_body;
 #[path = "tests/generated.rs"]
 mod generated;
 #[path = "tests/indexed.rs"]
@@ -51,7 +53,8 @@ fn document_reads_use_project_scoped_queries_and_keep_adapter_qualified_identiti
             .call("get_document", identity("remote-doc", "/other"))
             .is_err()
     );
-    assert_eq!(graph.writes, 1);
+    // The first document publishes its project root, then its pointer; the body is staged between them.
+    assert_eq!(graph.writes, 2);
 }
 
 #[test]
@@ -65,10 +68,14 @@ fn creates_and_reopens_a_report_without_any_source_element() {
         .unwrap();
     assert_eq!(opened, created);
     assert_eq!(opened["document"]["revision"], 1);
-    assert_eq!(graph.elements.len(), 1);
-    let element = graph.elements.values().next().unwrap();
+    // The project root and the document node; the body lives in an artifact, not in either element.
+    assert_eq!(graph.elements.len(), 2);
+    let element = graph
+        .elements
+        .values()
+        .find(|element| element["element_kind"] == "virtual_document")
+        .unwrap();
     assert!(element["parent_element_id"].is_null());
-    assert_eq!(element["element_kind"], "virtual_document");
 }
 
 #[test]
@@ -92,7 +99,8 @@ fn grouping_and_content_updates_preserve_unspecified_metadata_and_reject_stale_w
         )
         .unwrap_err();
     assert_eq!(stale.code, "document_revision_conflict");
-    assert_eq!(graph.writes, 2);
+    // Create publishes root and pointer; the accepted update publishes its pointer; the stale write publishes nothing.
+    assert_eq!(graph.writes, 3);
     assert_eq!(
         updated["document"]["metadata"],
         draft("overview", "/project")["metadata"]
@@ -119,7 +127,7 @@ fn project_mismatch_does_not_expose_or_overwrite_another_document() {
         .unwrap_err();
     assert_eq!(missing.code, "document_not_found");
     assert_eq!(duplicate.code, "document_exists");
-    assert_eq!(graph.writes, 1);
+    assert_eq!(graph.writes, 2);
 }
 
 #[test]

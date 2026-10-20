@@ -261,7 +261,7 @@ fn retry_after_interruption_preserves_human_edits_to_an_already_staged_document(
     let mut host = seeded();
     legacy(&mut host, "report:a", "report", "First", &[]);
     legacy(&mut host, "report:b", "report", "Second", &[]);
-    host.fail_document_write = Some(1);
+    host.fail_document_write = Some(2);
     assert_eq!(
         convert(&mut host, false).unwrap_err().code,
         "injected_write_failure"
@@ -290,7 +290,7 @@ fn retry_after_interruption_preserves_human_edits_to_an_already_staged_document(
 fn a_changed_legacy_record_during_an_interrupted_conversion_requires_review() {
     let mut host = seeded();
     legacy(&mut host, "report:a", "report", "First", &[]);
-    host.fail_resource_write = Some(0);
+    host.fail_resource_write = Some(1);
     assert_eq!(
         convert(&mut host, false).unwrap_err().code,
         "injected_write_failure"
@@ -345,7 +345,7 @@ fn retry_after_partial_retirement_keeps_the_complete_identity_map_and_document_e
 fn a_deleted_staged_document_is_not_resurrected_by_a_conversion_retry() {
     let mut host = seeded();
     legacy(&mut host, "report:a", "report", "First", &[]);
-    host.fail_resource_write = Some(0);
+    host.fail_resource_write = Some(1);
     assert_eq!(
         convert(&mut host, false).unwrap_err().code,
         "injected_write_failure"

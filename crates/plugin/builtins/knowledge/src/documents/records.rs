@@ -10,7 +10,7 @@ use lumvise_contracts::{
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
-const PROVIDER: &str = "knowledge.documents";
+use super::{publication, record_format as format};
 
 pub(super) fn element_id(document_id: &str) -> String {
     format!("knowledge-document:{document_id}")
@@ -56,10 +56,39 @@ pub(super) fn find(
     document_id: &str,
 ) -> Result<Option<KnowledgeDocument>, PluginError> {
     let element = crate::storage::semantic_element(context, &element_id(document_id))?;
+    if element
+        .as_ref()
+        .is_some_and(|row| !is_document_record(&row["metadata"]))
+    {
+        return Err(super::invalid(
+            "document_identity_conflict",
+            document_id,
+            "an unused index identity or a Knowledge-owned document",
+        ));
+    }
     match element {
-        Some(element) if element["lifecycle"] != "inactive" => decode(&element),
+        Some(element) if element["lifecycle"] != "inactive" => {
+            find_scoped(context, &indexed_identity(&element, document_id)?)
+        }
         _ => Ok(None),
     }
+}
+
+fn indexed_identity(
+    element: &Value,
+    document_id: &str,
+) -> Result<KnowledgeDocumentIdentity, PluginError> {
+    let root = element["project_root"].as_str().ok_or_else(|| {
+        super::invalid(
+            "invalid_document_record",
+            &element.to_string(),
+            "project_root string",
+        )
+    })?;
+    Ok(KnowledgeDocumentIdentity {
+        project_root: root.into(),
+        document_id: document_id.into(),
+    })
 }
 
 pub(super) fn required(
@@ -104,13 +133,13 @@ pub(super) fn scoped_state(
         &identity.project_root,
         &HashSet::from([element_id(&identity.document_id)]),
     )?;
-    for element in elements {
-        let deleted = element.lifecycle == "inactive";
-        let record = serde_json::to_value(element).expect("serializable semantic element");
-        if let Some(document) = decode(&record)?
+    let (elements, artifacts) = captured_records(context, &identity.project_root, elements)?;
+    let roots: Vec<Value> = elements.iter().map(|row| json!(row)).collect();
+    for element in roots.iter() {
+        if let Some(document) = decode(element, &artifacts, &roots)?
             && document.document_id == identity.document_id
         {
-            return Ok(if deleted {
+            return Ok(if element["lifecycle"] == "inactive" {
                 DocumentState::Deleted
             } else {
                 DocumentState::Stored(document)
@@ -125,57 +154,40 @@ pub(super) fn find_for_conversion(
     root: &str,
     document_id: &str,
 ) -> Result<Option<KnowledgeDocument>, PluginError> {
-    let elements =
-        crate::storage::elements_by_ids(context, root, &HashSet::from([element_id(document_id)]))?;
-    let element = elements
-        .first()
-        .map(|element| serde_json::to_value(element).expect("serializable semantic element"));
-    let Some(element) = element else {
-        return find(context, document_id);
-    };
-    if element["lifecycle"] == "inactive" {
-        return Err(super::invalid(
+    match scoped_state(
+        context,
+        &KnowledgeDocumentIdentity {
+            project_root: root.into(),
+            document_id: document_id.into(),
+        },
+    )? {
+        DocumentState::Stored(document) => Ok(Some(document)),
+        DocumentState::Missing => find(context, document_id),
+        DocumentState::Deleted => Err(super::invalid(
             "document_conversion_conflict",
             document_id,
             "no previously deleted document at the conversion identity",
-        ));
+        )),
     }
-    decode(&element)
 }
 
 pub(super) fn is_document_record(metadata: &Value) -> bool {
-    metadata["provider_instance_id"] == PROVIDER
-        || !metadata["indexer_metadata"]["knowledge_document"].is_null()
+    format::is_owned(metadata)
 }
 
-pub(super) fn decode(element: &Value) -> Result<Option<KnowledgeDocument>, PluginError> {
-    let mut record = element["metadata"]["indexer_metadata"]["knowledge_document"].clone();
-    if record.is_null() && element["metadata"]["provider_instance_id"] != PROVIDER {
+pub(super) fn decode(
+    element: &Value,
+    artifacts: &[Value],
+    roots: &[Value],
+) -> Result<Option<KnowledgeDocument>, PluginError> {
+    let Some(locator) = format::locator(element)? else {
         return Ok(None);
-    }
-    if !record.is_object() || element["metadata"]["provider_instance_id"] != PROVIDER {
-        return Err(super::invalid(
-            "invalid_document_record",
-            &record.to_string(),
-            "document object owned by the Knowledge documents provider",
-        ));
-    }
-    // Archive imports and remote adapters own root/ID remapping. Do not keep a second copy.
-    record["semantic_element_id"] = element["semantic_element_id"].clone();
-    record["project_root"] = element["project_root"].clone();
-    let document: KnowledgeDocument = crate::parse(record, "stored Knowledge document")?;
-    if element["path"] != storage_path(&document.document_id) {
-        return Err(super::invalid(
-            "invalid_document_record",
-            &document.document_id,
-            "matching indexed document storage path",
-        ));
-    }
-    Ok(Some(document))
-}
-
-fn storage_path(document_id: &str) -> String {
-    format!("@documents/{}", hex::encode(document_id))
+    };
+    let artifact = artifacts
+        .iter()
+        .find(|row| row["artifact_id"] == locator["artifact_id"])
+        .unwrap_or(&Value::Null);
+    format::decode(element, artifact, roots).map(Some)
 }
 
 pub(super) fn write(
@@ -183,7 +195,7 @@ pub(super) fn write(
     document: &KnowledgeDocument,
 ) -> Result<(), PluginError> {
     let assets = super::assets::for_update(context, document)?;
-    publish_document(context, document, assets.into_iter().collect())
+    publication::write(context, document, assets.into_iter().collect())
 }
 
 pub(super) fn create(
@@ -191,73 +203,14 @@ pub(super) fn create(
     document: &KnowledgeDocument,
 ) -> Result<(), PluginError> {
     let assets = super::assets::new_resource(context, document)?;
-    publish_document(context, document, assets.into_iter().collect())
-}
-
-fn publish_document(
-    context: &mut PluginContext<'_>,
-    document: &KnowledgeDocument,
-    artifacts: Vec<Value>,
-) -> Result<(), PluginError> {
-    let source = source_id(&document.project_root);
-    let mut payload = serde_json::to_value(document).expect("serializable document");
-    let fields = payload.as_object_mut().expect("document object");
-    fields.remove("project_root");
-    fields.remove("semantic_element_id");
-    let element = json!({"semantic_element_id": document.semantic_element_id,
-        "semantic_source_id": source, "semantic_element_type": "virtual_document",
-        "semantic_element_name": document.title, "path": storage_path(&document.document_id),
-        "parent_element_id": null, "start_line": null, "end_line": null,
-        "content_fingerprint": null,
-        "metadata": {"knowledge_document": payload}});
-    publish(
-        context,
-        &document.project_root,
-        vec![element],
-        vec![],
-        vec![storage_path(&document.document_id)],
-        artifacts,
-    )
-}
-
-fn source_id(root: &str) -> String {
-    format!("knowledge-documents:{}", hex::encode(root))
-}
-
-fn publish(
-    context: &mut PluginContext<'_>,
-    root: &str,
-    elements: Vec<Value>,
-    removed: Vec<String>,
-    replace: Vec<String>,
-    artifacts: Vec<Value>,
-) -> Result<(), PluginError> {
-    crate::semantic::invoke_public(
-        context,
-        "ingest_index_batch",
-        json!({
-            "provider_instance_id": PROVIDER, "project_root": root,
-            "replace_paths": replace, "removed_paths": removed,
-            "semantic_sources": [{"semantic_source_id": source_id(root), "kind": "virtual_documents",
-                "name": "Knowledge documents", "root_path": null, "root_uri": format!("lumvise:documents/{}", hex::encode(root))}],
-            "semantic_elements": elements, "semantic_relationships": [], "semantic_artifacts": artifacts
-        }),
-    )?;
-    Ok(())
+    publication::write(context, document, assets.into_iter().collect())
 }
 
 pub(super) fn remove(
     context: &mut PluginContext<'_>,
     identity: &KnowledgeDocumentIdentity,
 ) -> Result<(), PluginError> {
-    publish(
-        context,
-        &identity.project_root,
-        vec![],
-        vec![storage_path(&identity.document_id)],
-        vec![],
-        vec![],
-    )
+    publication::remove(context, identity)
 }
 
 pub(super) fn list(
@@ -310,24 +263,112 @@ pub(super) fn project_document_records(
     root: &str,
     include_deleted: bool,
 ) -> Result<Vec<KnowledgeDocument>, PluginError> {
-    let response = context.host_call(
-        "storage.semantic",
-        json!({"operation": "scoped_read", "request": {
-            "Structure": {"scope": {"project_root": root}, "max_depth": 0, "include_inactive": include_deleted}
-        }}),
-    )?;
-    let elements = response["elements"].as_array().ok_or_else(|| {
-        super::invalid(
-            "invalid_document_storage",
-            &response.to_string(),
-            "elements array",
-        )
-    })?;
+    let elements = project_elements(context, root, include_deleted)?;
+    let artifacts = read_indexed_bodies(context, &elements)?;
     elements
         .iter()
         .filter(|element| element["project_root"] == root)
-        .filter_map(|element| decode(element).transpose())
+        .filter(|element| include_deleted || element["lifecycle"] != "inactive")
+        .filter_map(|element| decode(element, &artifacts, &elements).transpose())
         .collect()
+}
+
+pub(super) fn project_elements(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    include_deleted: bool,
+) -> Result<Vec<Value>, PluginError> {
+    Ok(scoped_elements(
+        context,
+        root,
+        json!({"Structure": {"scope": {"project_root": root},
+        "max_depth":0,"include_inactive":include_deleted}}),
+    )?
+    .into_iter()
+    .filter(|element| element["project_root"] == root)
+    .collect())
+}
+
+pub(super) fn scoped_elements(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    request: Value,
+) -> Result<Vec<Value>, PluginError> {
+    let response = context.host_call(
+        "storage.semantic",
+        json!({"operation":"scoped_read","request":request}),
+    )?;
+    if response["project_root"] != root {
+        return Err(super::invalid(
+            "invalid_document_storage",
+            &response["project_root"].to_string(),
+            &format!("scoped elements for project {root}"),
+        ));
+    }
+    response_array(&response, "elements")
+}
+
+pub(super) fn captured_records(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    mut elements: Vec<crate::semantic_context::SemanticElement>,
+) -> Result<(Vec<crate::semantic_context::SemanticElement>, Vec<Value>), PluginError> {
+    for element in &elements {
+        validate_element_scope(root, element)?;
+    }
+    let records: Vec<Value> = elements.iter().map(|element| json!(element)).collect();
+    let artifacts = read_indexed_bodies(context, &records)?;
+    let roots = artifacts
+        .iter()
+        .filter_map(|artifact| artifact["semantic_element_id"].as_str().map(str::to_owned))
+        .collect();
+    elements.extend(crate::storage::elements_by_ids(context, root, &roots)?);
+    Ok((elements, artifacts))
+}
+
+fn read_indexed_bodies(
+    context: &mut PluginContext<'_>,
+    elements: &[Value],
+) -> Result<Vec<Value>, PluginError> {
+    let mut artifacts = Vec::new();
+    for element in elements {
+        if let Some(locator) = format::locator(element)? {
+            let response = context.host_call(
+                "storage.semantic",
+                json!({"operation":"artifact",
+                "artifact_id":locator["artifact_id"]}),
+            )?;
+            artifacts.push(response["artifact"].clone());
+        }
+    }
+    Ok(artifacts)
+}
+
+pub(super) fn validate_element_scope(
+    root: &str,
+    element: &crate::semantic_context::SemanticElement,
+) -> Result<(), PluginError> {
+    if element.project_root == root {
+        return Ok(());
+    }
+    Err(super::invalid(
+        "indexed_document_scope_mismatch",
+        &format!(
+            "{} in {}",
+            element.semantic_element_id, element.project_root
+        ),
+        &format!("an element in project {root}"),
+    ))
+}
+
+fn response_array(response: &Value, field: &str) -> Result<Vec<Value>, PluginError> {
+    response[field].as_array().cloned().ok_or_else(|| {
+        super::invalid(
+            "invalid_document_storage",
+            &response.to_string(),
+            &format!("{field} array"),
+        )
+    })
 }
 
 pub(super) fn matches(

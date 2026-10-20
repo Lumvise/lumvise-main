@@ -336,7 +336,7 @@ fn user_requests_submit_interactive_and_refresh_submits_background() {
     assert_eq!(host.submit_requests.len(), 1);
     assert_eq!(host.submit_requests[0]["priority"], json!("interactive"));
     assert_eq!(
-        host.submit_requests[0]["input"]["artifact_id"],
+        host.submit_requests[0]["input"]["document_id"],
         json!("knowledge-cultivation-functional-fn-a")
     );
 

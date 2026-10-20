@@ -320,10 +320,8 @@ fn changed_sources(
     context: &mut PluginContext<'_>,
 ) -> Result<(HashSet<String>, Vec<SemanticElement>), PluginError> {
     let mut changed = ids.iter().cloned().collect::<HashSet<_>>();
-    let partition = documents::partition_indexed_elements(
-        root,
-        storage::elements_by_ids(context, root, &changed)?,
-    )?;
+    let selected = storage::elements_by_ids(context, root, &changed)?;
+    let partition = documents::partition_current_elements(context, root, selected)?;
     let additional = partition
         .documents
         .iter()
@@ -333,12 +331,9 @@ fn changed_sources(
         .collect::<HashSet<_>>();
     let mut elements = partition.source_elements;
     if !additional.is_empty() {
+        let selected = storage::elements_by_ids(context, root, &additional)?;
         elements.extend(
-            documents::partition_indexed_elements(
-                root,
-                storage::elements_by_ids(context, root, &additional)?,
-            )?
-            .source_elements,
+            documents::partition_current_elements(context, root, selected)?.source_elements,
         );
         changed.extend(additional);
     }

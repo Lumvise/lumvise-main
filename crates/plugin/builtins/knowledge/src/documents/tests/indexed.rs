@@ -1,6 +1,10 @@
 use super::*;
 use crate::{documents, semantic_context::SemanticElement};
 
+fn captured_artifacts(graph: &FakeDocumentGraph) -> Vec<Value> {
+    graph.artifacts.values().cloned().collect()
+}
+
 fn indexed(graph: &FakeDocumentGraph) -> Vec<SemanticElement> {
     graph
         .elements
@@ -25,7 +29,9 @@ fn one_captured_revision_partitions_documents_without_turning_them_into_generati
         .clone();
     let mut elements = indexed(&graph);
     elements.push(source_element());
-    let partition = documents::partition_indexed_elements("/project", elements).unwrap();
+    let artifacts = captured_artifacts(&graph);
+    let partition =
+        documents::partition_indexed_elements("/project", elements, &artifacts).unwrap();
     assert_eq!(partition.source_elements.len(), 1);
     assert_eq!(
         partition.source_elements[0].semantic_element_id,
@@ -44,7 +50,9 @@ fn deleted_index_records_do_not_reappear_as_source_elements_or_visible_documents
     graph
         .call("delete_document", identity("report", "/project"))
         .unwrap();
-    let partition = documents::partition_indexed_elements("/project", indexed(&graph)).unwrap();
+    let artifacts = captured_artifacts(&graph);
+    let partition =
+        documents::partition_indexed_elements("/project", indexed(&graph), &artifacts).unwrap();
     assert!(partition.source_elements.is_empty());
     assert!(partition.documents.is_empty());
     assert_eq!(
@@ -100,7 +108,12 @@ fn malformed_or_falsely_owned_document_payloads_fail_instead_of_becoming_sources
             _ => unreachable!(),
         }
         assert!(
-            documents::partition_indexed_elements("/project", vec![element]).is_err(),
+            documents::partition_indexed_elements(
+                "/project",
+                vec![element],
+                &captured_artifacts(&graph)
+            )
+            .is_err(),
             "{corrupt}"
         );
     }
@@ -110,5 +123,5 @@ fn malformed_or_falsely_owned_document_payloads_fail_instead_of_becoming_sources
 fn a_misrouted_snapshot_element_fails_before_any_foreign_body_is_exposed() {
     let mut element = source_element();
     element.project_root = "/private".into();
-    assert!(documents::partition_indexed_elements("/project", vec![element]).is_err());
+    assert!(documents::partition_indexed_elements("/project", vec![element], &[]).is_err());
 }

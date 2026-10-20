@@ -41,11 +41,17 @@ impl HostCallTransport for ConsumptionFakeHost {
             ("runtime.project_execution", "status") => self.job_status(&input),
             ("storage.semantic", "project_snapshot") => {
                 self.project_snapshots += 1;
-                Ok(
-                    json!({"commit_version":1,"published_at":"test","project_root":"/repo",
-                    "elements":self.elements.iter().map(|element| serde_json::to_value(element).unwrap()).chain(self.graph.elements.values().cloned()).collect::<Vec<_>>(),"relationships":self.relationships,
-                    "artifacts":[] }),
-                )
+                let elements = self
+                    .elements
+                    .iter()
+                    .map(|element| serde_json::to_value(element).unwrap())
+                    .collect::<Vec<_>>();
+                let relationships = serde_json::to_value(&self.relationships).unwrap();
+                Ok(self.graph.snapshot_with_sources(
+                    &input,
+                    &elements,
+                    relationships.as_array().unwrap(),
+                ))
             }
             ("storage.semantic", "selective_subgraph") => self.selective_subgraph(&input),
             ("storage.semantic", "elements_by_ids_including_inactive") => {
@@ -59,6 +65,7 @@ impl HostCallTransport for ConsumptionFakeHost {
             }
             ("storage.semantic", "scoped_read")
                 if self.fail_report_lookup
+                    && input["request"]["Structure"].is_object()
                     && input["request"]["Structure"]["include_inactive"] != true =>
             {
                 Err(PluginError::new(
@@ -147,9 +154,21 @@ impl ConsumptionFakeHost {
                     || ids.contains(relationship.target_element_id.as_str())
             })
             .collect::<Vec<_>>();
+        // Like the owner: endpoints of the kept edges outside the subtree travel as external elements.
+        let external_elements: Vec<&SemanticElement> = self
+            .elements
+            .iter()
+            .filter(|element| {
+                !ids.contains(element.semantic_element_id.as_str())
+                    && relationships.iter().any(|edge| {
+                        edge.source_element_id == element.semantic_element_id
+                            || edge.target_element_id == element.semantic_element_id
+                    })
+            })
+            .collect();
         let subgraph = json!({"commit_version":1,"published_at":"test",
             "project_root":"/repo","root_element_id":root_id,"elements":elements,
-            "relationships":relationships,"artifacts":[],"external_elements":[]});
+            "relationships":relationships,"artifacts":[],"external_elements":external_elements});
         Ok(json!({"subgraph": subgraph}))
     }
 
@@ -320,6 +339,25 @@ fn dispatch_storage_change(host: &mut ConsumptionFakeHost, element_id: &str) {
         .expect("storage change dispatch succeeds");
 }
 
+/// Canonical document reads for assertions: the owner decodes locator and body together.
+fn document(graph: &mut FakeDocumentGraph, document_id: &str) -> Value {
+    graph
+        .call(
+            "get_document",
+            json!({"document_id": document_id, "project_root": "/repo"}),
+        )
+        .expect("document is readable through its owner")["document"]
+        .clone()
+}
+
+fn documents_total(graph: &mut FakeDocumentGraph) -> u64 {
+    graph
+        .call("list_documents", json!({"project_root": "/repo"}))
+        .expect("documents list through their owner")["total"]
+        .as_u64()
+        .unwrap()
+}
+
 fn seed_two_successes(host: &mut ConsumptionFakeHost) {
     for (element_id, job_id) in [("file:src/a.rs", "job-a"), ("file:src/z.rs", "job-z")] {
         seed_job(
@@ -347,7 +385,7 @@ fn poll_batches_shared_report_refresh_and_stores_with_selective_subgraphs() {
         1
     );
     assert_eq!(host.project_snapshots, 0);
-    assert_eq!(host.graph.elements.len(), 4);
+    assert_eq!(documents_total(&mut host.graph), 4);
     assert_eq!(
         host.graph
             .published_document_ids
@@ -357,8 +395,10 @@ fn poll_batches_shared_report_refresh_and_stores_with_selective_subgraphs() {
         1
     );
     assert_eq!(
-        host.graph.elements["knowledge-document:knowledge-cultivation-functional-file-src-a-rs"]["metadata"]
-            ["indexer_metadata"]["knowledge_document"]["metadata"]["provenance"]["relationship_count"],
+        document(
+            &mut host.graph,
+            "knowledge-cultivation-functional-file-src-a-rs"
+        )["metadata"]["provenance"]["relationship_count"],
         2
     );
 }
@@ -372,7 +412,7 @@ fn report_refresh_failure_keeps_every_successful_job_for_retry() {
     let error = dispatch_poll(&mut host).expect_err("refresh failure propagates");
 
     assert_eq!(error.code, "injected_refresh_failure");
-    assert_eq!(host.graph.elements.len(), 2);
+    assert_eq!(documents_total(&mut host.graph), 2);
     assert_eq!(host.rows_in(JOBS), 2);
 
     host.fail_report_lookup = false;
@@ -403,10 +443,12 @@ fn later_stale_job_does_not_discard_earlier_successful_consumption() {
     assert_eq!(error.code, "stale_project_execution_output");
     assert!(!host.rows.contains_key(&(JOBS.into(), pending_key(&first))));
     assert!(host.rows.contains_key(&(JOBS.into(), pending_key(&stale))));
-    assert!(
-        host.graph
-            .elements
-            .contains_key("knowledge-document:knowledge-cultivation-functional-file-src-a-rs")
+    assert_eq!(
+        document(
+            &mut host.graph,
+            "knowledge-cultivation-functional-file-src-a-rs"
+        )["document_kind"],
+        "context"
     );
     assert_eq!(
         host.selective_roots

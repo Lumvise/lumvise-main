@@ -5,6 +5,9 @@ use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SemanticElement {
     pub project_root: String,
@@ -141,6 +144,10 @@ pub(crate) fn load_selective_subgraph(
     subgraph.elements.append(&mut subgraph.external_elements);
     subgraph
         .elements
+        .retain(|element| !crate::documents::is_document_index(&element.metadata));
+    subgraph.relationships = source_relationships(&subgraph.elements, subgraph.relationships);
+    subgraph
+        .elements
         .sort_by(|left, right| left.semantic_element_id.cmp(&right.semantic_element_id));
     subgraph
         .elements
@@ -213,8 +220,12 @@ fn project_snapshot(
     project_root: &str,
     include_artifacts: bool,
 ) -> Result<ProjectProjectionSnapshot, PluginError> {
-    let snapshot = complete_project_snapshot(context, project_root, Some("knowledge"))?;
-    let partition = crate::documents::partition_indexed_elements(project_root, snapshot.elements)?;
+    let snapshot = complete_project_snapshot(context, project_root, None)?;
+    let partition = crate::documents::partition_indexed_elements(
+        project_root,
+        snapshot.elements,
+        &snapshot.artifacts,
+    )?;
     let artifacts = if include_artifacts {
         crate::storage::decode_graph_knowledge_artifacts(&snapshot.artifacts)?
     } else {
@@ -224,8 +235,8 @@ fn project_snapshot(
         commit_version: snapshot.commit_version,
         published_at: snapshot.published_at,
         semantic: SemanticContext {
+            relationships: source_relationships(&partition.source_elements, snapshot.relationships),
             elements: partition.source_elements,
-            relationships: snapshot.relationships,
             artifacts: Vec::new(),
         },
         artifacts,
@@ -272,10 +283,14 @@ pub(crate) fn load(
     root_element_id: Option<&str>,
 ) -> Result<SemanticContext, PluginError> {
     let snapshot = complete_project_snapshot(context, project_root, None)?;
-    let partition = crate::documents::partition_indexed_elements(project_root, snapshot.elements)?;
+    let partition = crate::documents::partition_indexed_elements(
+        project_root,
+        snapshot.elements,
+        &snapshot.artifacts,
+    )?;
     let mut semantic = SemanticContext {
+        relationships: source_relationships(&partition.source_elements, snapshot.relationships),
         elements: partition.source_elements,
-        relationships: snapshot.relationships,
         artifacts: decode_semantic_artifacts(snapshot.artifacts)?,
     };
     if let Some(root) = root_element_id {
@@ -287,6 +302,7 @@ pub(crate) fn load(
 fn decode_semantic_artifacts(records: Vec<Value>) -> Result<Vec<SemanticArtifact>, PluginError> {
     records
         .into_iter()
+        .filter(|record| !crate::documents::is_document_artifact(record))
         .map(|record| {
             serde_json::from_value(record.clone()).map_err(|error| {
                 PluginError::new(
@@ -295,6 +311,23 @@ fn decode_semantic_artifacts(records: Vec<Value>) -> Result<Vec<SemanticArtifact
                     false,
                 )
             })
+        })
+        .collect()
+}
+
+fn source_relationships(
+    elements: &[SemanticElement],
+    relationships: Vec<SemanticRelationship>,
+) -> Vec<SemanticRelationship> {
+    let ids: BTreeSet<&str> = elements
+        .iter()
+        .map(|element| element.semantic_element_id.as_str())
+        .collect();
+    relationships
+        .into_iter()
+        .filter(|edge| {
+            ids.contains(edge.source_element_id.as_str())
+                && ids.contains(edge.target_element_id.as_str())
         })
         .collect()
 }
