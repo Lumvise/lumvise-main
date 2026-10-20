@@ -40,7 +40,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
             "foreign".into(),
             serde_json::json!({
                 "artifact_id": "foreign", "semantic_element_id": "element-a",
-                "knowledge_type": "definition", "title": "Foreign",
+                "knowledge_type": "specification", "title": "Foreign",
                 "content": "Must stay isolated", "tags": [], "metadata": {}
             }),
         );
@@ -103,7 +103,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
             PLUGIN_ID,
             CREATE_EXPORT_ID,
             serde_json::json!({
-                "artifact_id": "missing-element", "knowledge_type": "definition",
+                "artifact_id": "missing-element", "knowledge_type": "specification",
                 "title": "Missing", "content": "Element absent"
             }),
         )
@@ -141,7 +141,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
                 CREATE_EXPORT_ID,
                 serde_json::json!({
                     "artifact_id": artifact_id, "semantic_element_id": "element-a",
-                    "knowledge_type": "definition", "title": title,
+                    "knowledge_type": "specification", "title": title,
                     "content": "Shared lexical content", "tags": ["rust"],
                     "project_root": "/project"
                 }),
@@ -181,7 +181,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
     broker.sync_elements("/other", vec![test_element("element-other", "/other")]);
     let mismatched = system.invoke(PLUGIN_ID, CREATE_EXPORT_ID, serde_json::json!({
         "artifact_id":"wrong-project", "semantic_element_id":"element-a", "project_root":"/other",
-        "knowledge_type":"definition", "title":"Invalid scope", "content":"Must not appear in either project"
+        "knowledge_type":"specification", "title":"Invalid scope", "content":"Must not appear in either project"
     })).unwrap();
     assert!(
         matches!(mismatched, WireOutcome::Failed { error } if error.code == "knowledge_project_mismatch")
@@ -192,7 +192,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
             "knowledge.create",
             serde_json::json!({
                 "artifact_id": "artifact-path", "semantic_element_id": "element-other",
-                "knowledge_type": "definition", "title": "Pathed",
+                "knowledge_type": "specification", "title": "Pathed",
                 "content": "Pathed unique content", "tags": ["vault"],
                 "path": "notes/deep.md", "project_root": "/other",
                 "mcp_owner_id": "workspace", "plugin_id": "builtin.knowledge", "session_id": "voice-edit"
@@ -430,7 +430,7 @@ fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
     let create_body = serde_json::json!({
         "artifact_id": artifact_id,
         "semantic_element_id": "element-a",
-        "knowledge_type": "decision",
+        "knowledge_type": "specification",
         "title": "HTTP v2",
         "content": "String identifiers survive the HTTP envelope.",
         "project_root": "/project"
@@ -710,7 +710,7 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
         serde_json::json!({
             "method": "POST", "path": "/api/knowledge/write", "path_parameters": {}, "query": {},
             "body": {"artifact_id": "artifact-http", "semantic_element_id": "element-a",
-                "knowledge_type": "annotation", "title": "HTTP", "content": "Written"},
+                "knowledge_type": "specification", "title": "HTTP", "content": "Written"},
             "body_size_bytes": 128
         }),
     );

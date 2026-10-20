@@ -13,7 +13,7 @@ fn create_returns_the_stored_identity_and_preserves_an_unrelated_local_record() 
         CREATE_EXPORT_ID,
         serde_json::json!({
             "artifact_id": "note", "semantic_element_id": "file:remote", "project_root": "/other",
-            "knowledge_type": "definition", "title": "Online note", "content": "Online information"
+            "knowledge_type": "specification", "title": "Online note", "content": "Online information"
         }),
     );
     assert_eq!(created["artifact"]["artifact_id"], "qualified:note");

@@ -12,26 +12,10 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeArtifactKindV2 {
+    /// Product expectations and acceptance requirements.
+    Requirements,
     /// Product or technical specification.
     Specification,
-    /// Tracked defect or concern.
-    Issue,
-    /// Assigned task.
-    TaskAssignment,
-    /// Domain definition.
-    Definition,
-    /// Contextual annotation.
-    Annotation,
-    /// Generated or authored report.
-    Report,
-    /// Durable decision.
-    Decision,
-    /// Resumable work state or handoff between agents or sessions.
-    Checkpoint,
-    /// Open question awaiting an answer.
-    Question,
-    /// Intended steps toward a goal.
-    Plan,
 }
 
 /// Lifecycle state of a Knowledge artifact.
@@ -329,11 +313,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn artifact_kinds_are_exactly_requirements_and_specification() {
+        for kind in ["requirements", "specification"] {
+            let decoded: KnowledgeArtifactKindV2 =
+                serde_json::from_value(serde_json::json!(kind)).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), kind);
+        }
+        for kind in [
+            "issue",
+            "task_assignment",
+            "definition",
+            "annotation",
+            "report",
+            "decision",
+            "checkpoint",
+            "question",
+            "plan",
+            "manual_note",
+            "derived_summary",
+        ] {
+            assert!(
+                serde_json::from_value::<KnowledgeArtifactKindV2>(serde_json::json!(kind)).is_err()
+            );
+        }
+    }
+
+    #[test]
     fn knowledge_crud_contracts_round_trip_string_artifact_ids() {
         let request = CreateKnowledgeArtifactRequestV2 {
             artifact_id: "artifact:architecture/42".into(),
             semantic_element_id: "file:src/lib.rs".into(),
-            knowledge_type: KnowledgeArtifactKindV2::Decision,
+            knowledge_type: KnowledgeArtifactKindV2::Requirements,
             title: "Choose string identifiers".into(),
             content: "Artifact identifiers remain opaque strings.".into(),
             tags: vec!["architecture".into()],
@@ -384,7 +394,7 @@ mod tests {
         let full = UpdateKnowledgeArtifactRequestV2 {
             artifact_id: "artifact:annotation:42".into(),
             semantic_element_id: Some("file:src/lib.rs".into()),
-            knowledge_type: Some(KnowledgeArtifactKindV2::Annotation),
+            knowledge_type: Some(KnowledgeArtifactKindV2::Specification),
             title: Some("Updated artifact".into()),
             content: Some("Updated content".into()),
             tags: Some(vec!["live".into()]),
@@ -402,7 +412,7 @@ mod tests {
             serde_json::json!({
                 "artifact_id": "artifact:annotation:42",
                 "semantic_element_id": "file:src/lib.rs",
-                "knowledge_type": "annotation",
+                "knowledge_type": "specification",
                 "title": "Updated artifact",
                 "dependencies": [],
                 "content": "Updated content",
@@ -421,7 +431,7 @@ mod tests {
     fn record_without_lifecycle_fields_reads_as_active_revision_zero() {
         let stored = serde_json::json!({
             "artifact_id": "artifact:task:1", "semantic_element_id": "file:src/lib.rs",
-            "knowledge_type": "task_assignment", "title": "Fix parser", "content": "Body"
+            "knowledge_type": "requirements", "title": "Fix parser", "content": "Body"
         });
         let mut artifact: KnowledgeArtifactV2 =
             serde_json::from_value(stored).expect("deserialize record without lifecycle");

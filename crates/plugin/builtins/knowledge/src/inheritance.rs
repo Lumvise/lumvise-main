@@ -733,7 +733,7 @@ mod tests {
         inactive.lifecycle = "inactive".into();
         let mut wrong_project = target.clone();
         wrong_project.project_root = "/elsewhere".into();
-        let owned = artifact(0, KnowledgeKind::Annotation);
+        let owned = artifact(0, KnowledgeKind::Specification);
         let mut host = transfer_candidate_host(vec![owned.clone(), owned.clone()]);
         host.elements.extend([
             source("/new", target.clone()).element,
@@ -790,8 +790,8 @@ mod tests {
     fn transfer_candidates_rank_only_sources_that_own_artifacts() {
         let target = element("target", "run", "function", "src/lib.rs", 0, "same");
         let mut host = transfer_candidate_host(vec![
-            artifact(0, KnowledgeKind::Decision),
-            artifact(1, KnowledgeKind::Annotation),
+            artifact(0, KnowledgeKind::Requirements),
+            artifact(1, KnowledgeKind::Specification),
         ]);
         host.elements[0].content_fingerprint = Some("fp1:0000000000000001:changed".into());
         host.elements.push(
@@ -880,18 +880,7 @@ mod tests {
         }
     }
 
-    fn knowledge_kinds() -> [KnowledgeKind; 10] {
-        [
-            KnowledgeKind::Specification,
-            KnowledgeKind::Issue,
-            KnowledgeKind::TaskAssignment,
-            KnowledgeKind::Definition,
-            KnowledgeKind::Annotation,
-            KnowledgeKind::Report,
-            KnowledgeKind::Decision,
-            KnowledgeKind::Checkpoint,
-            KnowledgeKind::Question,
-            KnowledgeKind::Plan,
-        ]
+    fn knowledge_kinds() -> [KnowledgeKind; 2] {
+        [KnowledgeKind::Requirements, KnowledgeKind::Specification]
     }
 }

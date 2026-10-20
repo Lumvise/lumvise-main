@@ -79,7 +79,7 @@ fn create_long_notes(system: &PluginSystem, content: &str) {
             CREATE_EXPORT_ID,
             serde_json::json!({
                 "artifact_id": format!("note-{index}"), "semantic_element_id": "file:note",
-                "knowledge_type": "definition", "title": format!("Note {index}"),
+                "knowledge_type": "specification", "title": format!("Note {index}"),
                 "content": content, "project_root": "/work/demo"
             }),
         );

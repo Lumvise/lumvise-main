@@ -162,8 +162,11 @@ fn legacy_conversion_preview_and_apply_round_trip_through_the_real_protobuf_proc
         "semantic_relationships": [], "semantic_artifacts": [], "replace_paths": [], "removed_paths": []
     })).unwrap();
     let mut process = DocumentProcess::launch(broker.clone());
-    process.call("create_knowledge", json!({"artifact_id": "report:legacy", "semantic_element_id": "file:lib",
-        "knowledge_type": "report", "title": "Existing report", "content": "# Keep this text", "project_root": "/project"}));
+    let mut historical = test_artifact("report:legacy", "file:lib", "Existing report");
+    historical.artifact_kind = "report".into();
+    historical.content = Some("# Keep this text".into());
+    historical.metadata["knowledge"]["project_root"] = json!("/project");
+    broker.upsert_artifact(historical, "text/markdown");
     let preview = process.call(
         "convert_legacy_documents",
         json!({"project_root": "/project"}),

@@ -64,7 +64,7 @@ impl TransferDependencyFakeHost {
             CREATE_EXPORT_ID,
             json!({
                 "artifact_id": artifact_id, "semantic_element_id": "original",
-                "project_root": "/source", "knowledge_type": "definition",
+                "project_root": "/source", "knowledge_type": "specification",
                 "title": artifact_id, "content": "Source knowledge", "dependencies": dependencies
             }),
         )

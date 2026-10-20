@@ -196,8 +196,30 @@ pub(crate) fn load_projection_snapshot(
     context: &mut PluginContext<'_>,
     project_root: &str,
 ) -> Result<ProjectProjectionSnapshot, PluginError> {
+    project_snapshot(context, project_root, true)
+}
+
+/// Read sources and canonical documents from one revision without decoding unused artifact bodies.
+/// Example: load_document_snapshot(context, root) lets C4 reach its explicit legacy-content hold.
+pub(crate) fn load_document_snapshot(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+) -> Result<ProjectProjectionSnapshot, PluginError> {
+    project_snapshot(context, project_root, false)
+}
+
+fn project_snapshot(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+    include_artifacts: bool,
+) -> Result<ProjectProjectionSnapshot, PluginError> {
     let snapshot = complete_project_snapshot(context, project_root, Some("knowledge"))?;
     let partition = crate::documents::partition_indexed_elements(project_root, snapshot.elements)?;
+    let artifacts = if include_artifacts {
+        crate::storage::decode_graph_knowledge_artifacts(&snapshot.artifacts)?
+    } else {
+        Vec::new()
+    };
     Ok(ProjectProjectionSnapshot {
         commit_version: snapshot.commit_version,
         published_at: snapshot.published_at,
@@ -206,7 +228,7 @@ pub(crate) fn load_projection_snapshot(
             relationships: snapshot.relationships,
             artifacts: Vec::new(),
         },
-        artifacts: crate::storage::decode_graph_knowledge_artifacts(&snapshot.artifacts)?,
+        artifacts,
         documents: partition.documents,
     })
 }

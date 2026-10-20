@@ -27,7 +27,7 @@ pub(crate) fn description(id: &str) -> Option<&'static str> {
             "Preview or apply the explicit project-scoped conversion of retired Knowledge records into independent documents. Defaults to preview=true. Apply with preview=false only when the document consumers are available. Preserves IDs, human content, lifecycle, references and binary attachments; generic tasks never become scheduled missions. Retries preserve staged document edits; conflicting legacy changes stop retirement.",
         ),
         "create_document" | "document.create" => Some(
-            "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, kind, title and content. Use report for Markdown reports and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
+            "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, document_kind, title and content. Use report for Markdown reports, context for reference notes, and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
         ),
         "get_document" | "document.get" => Some(
             "Read a document by its discovered document_id and exact project_root. The result includes its independent identity, content, grouping path, optional references and current revision. Read before editing; preserve human text and workflow metadata.",

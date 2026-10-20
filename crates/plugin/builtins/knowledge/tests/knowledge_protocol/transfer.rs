@@ -65,7 +65,7 @@ fn knowledge_transfer_requires_explicit_selection_and_is_idempotent() {
             CREATE_EXPORT_ID,
             serde_json::json!({
                 "artifact_id": artifact_id, "semantic_element_id": "shared-fn",
-                "knowledge_type": "definition", "title": title,
+                "knowledge_type": "specification", "title": title,
                 "content": format!("{title} knowledge"), "project_root": "/source-project",
                 "metadata": metadata
             }),

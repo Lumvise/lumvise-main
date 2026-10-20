@@ -1,34 +1,113 @@
 use super::*;
 
 #[test]
-fn retired_knowledge_kinds_read_converted_and_leave_the_contract() {
-    let workspace = tempfile::tempdir().expect("retired kind workspace");
+fn retired_kinds_require_explicit_conversion_and_polling_preserves_them() {
+    let workspace = tempfile::tempdir().unwrap();
     let broker = Arc::new(MemoryStorageBroker::default());
     seed_retired_knowledge(&broker);
     let system = start_packaged_knowledge(&workspace, broker.clone());
-
+    let semantic = signed_semantic_fixture(workspace.path(), &SigningKey::from_bytes(&[48; 32]));
+    system.install(&semantic).unwrap();
+    system.start("builtin.semantic").unwrap();
     let before = read_project_artifacts(&broker);
-    assert_eq!(before.len(), 2);
-    assert_eq!(before[0]["artifact_id"], "aaa-inactive-note");
-    assert_stored_kinds(&broker, "manual_note", "manual_note");
-    assert_public_read_maps_retired_kinds(&system);
-
+    for artifact_id in ["aaa-inactive-note", "retired-note"] {
+        let outcome = system
+            .invoke(
+                PLUGIN_ID,
+                GET_EXPORT_ID,
+                serde_json::json!({"artifact_id":artifact_id}),
+            )
+            .unwrap();
+        let WireOutcome::Failed { error } = outcome else {
+            panic!("retired record requires conversion")
+        };
+        assert_eq!(error.code, "knowledge_conversion_required");
+    }
     assert_succeeds(
         &system,
         ARTIFACT_GENERATION_POLL_EXPORT_ID,
-        serde_json::json!({"delivery_id": "retired-kinds", "scheduled_at_unix_seconds": 0}),
+        serde_json::json!({"delivery_id":"retired-kinds","scheduled_at_unix_seconds":0}),
     );
+    assert_eq!(read_project_artifacts(&broker), before);
+    let preview = invoke_value(
+        &system,
+        "convert_legacy_documents",
+        serde_json::json!({"project_root":"/work/demo"}),
+    );
+    assert_eq!(preview["preview"], true);
+    assert_eq!(preview["total"], 2);
+    assert_eq!(read_project_artifacts(&broker), before);
+    invoke_value(
+        &system,
+        "convert_legacy_documents",
+        serde_json::json!({"project_root":"/work/demo","preview":false}),
+    );
+    for (id, status, revision, body) in [
+        ("retired-note", "active", 3, "Retired body"),
+        ("aaa-inactive-note", "resolved", 7, "Inactive body"),
+    ] {
+        let document = invoke_value(
+            &system,
+            "get_document",
+            serde_json::json!({"project_root":"/work/demo","document_id":id}),
+        );
+        assert_eq!(document["document"]["content"], body);
+        assert_eq!(document["document"]["document_kind"], "context");
+        assert_eq!(document["document"]["status"], status);
+        assert_eq!(document["document"]["revision"], revision);
+    }
+    assert_eq!(
+        invoke_value(
+            &system,
+            "list_knowledge",
+            serde_json::json!({"project_root":"/work/demo"})
+        )["artifacts"],
+        serde_json::json!([])
+    );
+    system.stop(PLUGIN_ID).unwrap();
+    system.uninstall(PLUGIN_ID).unwrap();
+    system.stop("builtin.semantic").unwrap();
+    system.uninstall("builtin.semantic").unwrap();
+    make_tree_writable(workspace.path());
+}
 
-    assert_migration_preserved_records(&broker, &before);
-    assert_public_read_preserves_lifecycles(&system);
-    assert_replacement_contract_still_applies(&system);
-
-    system
-        .stop(PLUGIN_ID)
-        .expect("stop packaged Knowledge binary");
-    system
-        .uninstall(PLUGIN_ID)
-        .expect("detach Knowledge package");
+#[test]
+fn signed_current_artifact_schema_accepts_exactly_the_two_product_kinds() {
+    let workspace = tempfile::tempdir().unwrap();
+    let broker = Arc::new(MemoryStorageBroker::default());
+    broker.ensure_element("file:types", "/work/demo");
+    let system = start_packaged_knowledge(&workspace, broker);
+    for kind in ["requirements", "specification"] {
+        let artifact = invoke_value(
+            &system,
+            CREATE_EXPORT_ID,
+            serde_json::json!({"artifact_id":kind,
+            "semantic_element_id":"file:types","knowledge_type":kind,"title":kind,"content":"Body","project_root":"/work/demo"}),
+        );
+        assert_eq!(artifact["artifact"]["knowledge_type"], kind);
+    }
+    for kind in [
+        "issue",
+        "task_assignment",
+        "definition",
+        "annotation",
+        "report",
+        "decision",
+        "checkpoint",
+        "question",
+        "plan",
+        "manual_note",
+        "derived_summary",
+    ] {
+        let error = system.invoke(PLUGIN_ID,CREATE_EXPORT_ID,serde_json::json!({"artifact_id":kind,
+            "semantic_element_id":"file:types","knowledge_type":kind,"title":kind,"content":"Body"})).unwrap_err();
+        assert!(matches!(
+            error,
+            lumvise_plugin_runtime::PluginRuntimeError::SchemaValidation { .. }
+        ));
+    }
+    system.stop(PLUGIN_ID).unwrap();
+    system.uninstall(PLUGIN_ID).unwrap();
     make_tree_writable(workspace.path());
 }
 
@@ -130,129 +209,4 @@ fn read_project_artifacts(broker: &MemoryStorageBroker) -> Vec<serde_json::Value
         .as_array()
         .expect("project artifact array")
         .clone()
-}
-
-fn read_stored_kind(broker: &MemoryStorageBroker, artifact_id: &str) -> serde_json::Value {
-    broker
-        .invoke(HostCapabilityRequest {
-            plugin_id: PLUGIN_ID.into(),
-            invocation_id: "retired-kinds".into(),
-            call_id: "retired-kinds-read".into(),
-            capability_id: "storage.semantic".into(),
-            required_version: "^1.4.0".into(),
-            input: serde_json::json!({"operation": "artifact", "artifact_id": artifact_id}),
-        })
-        .expect("raw artifact read")["artifact"]["artifact_kind"]
-        .clone()
-}
-
-fn assert_stored_kinds(broker: &MemoryStorageBroker, inactive: &str, active: &str) {
-    assert_eq!(read_stored_kind(broker, "aaa-inactive-note"), inactive);
-    assert_eq!(read_stored_kind(broker, "retired-note"), active);
-}
-
-fn assert_public_read_maps_retired_kinds(system: &PluginSystem) {
-    for artifact_id in ["aaa-inactive-note", "retired-note"] {
-        let result = invoke_value(
-            system,
-            GET_EXPORT_ID,
-            serde_json::json!({"artifact_id": artifact_id}),
-        );
-        assert_eq!(result["artifact"]["knowledge_type"], "annotation");
-    }
-}
-
-fn assert_migration_preserved_records(broker: &MemoryStorageBroker, before: &[serde_json::Value]) {
-    assert_stored_kinds(broker, "manual_note", "annotation");
-    let after = read_project_artifacts(broker);
-    assert_eq!(after.len(), before.len());
-    for artifact_id in ["aaa-inactive-note", "retired-note"] {
-        let old = artifact_snapshot(before, artifact_id);
-        let new = artifact_snapshot(&after, artifact_id);
-        assert_eq!(old["content"], new["content"]);
-        assert_eq!(
-            old["metadata"]["knowledge"]["lifecycle"],
-            new["metadata"]["knowledge"]["lifecycle"]
-        );
-    }
-}
-
-fn artifact_snapshot<'a>(
-    artifacts: &'a [serde_json::Value],
-    artifact_id: &str,
-) -> &'a serde_json::Value {
-    artifacts
-        .iter()
-        .find(|artifact| artifact["artifact_id"] == artifact_id)
-        .expect("artifact snapshot")
-}
-
-fn assert_public_read_preserves_lifecycles(system: &PluginSystem) {
-    assert_read_lifecycle(
-        system,
-        "retired-note",
-        "active",
-        3,
-        "2026-09-03T00:00:00+00:00",
-        "2026-09-04T00:00:00+00:00",
-    );
-    assert_read_lifecycle(
-        system,
-        "aaa-inactive-note",
-        "resolved",
-        7,
-        "2026-09-01T00:00:00+00:00",
-        "2026-09-02T00:00:00+00:00",
-    );
-}
-
-fn assert_read_lifecycle(
-    system: &PluginSystem,
-    artifact_id: &str,
-    status: &str,
-    revision: u64,
-    created_at: &str,
-    updated_at: &str,
-) {
-    let result = invoke_value(
-        system,
-        GET_EXPORT_ID,
-        serde_json::json!({"artifact_id": artifact_id}),
-    );
-    assert_eq!(result["artifact"]["knowledge_type"], "annotation");
-    assert_eq!(result["artifact"]["status"], status);
-    assert_eq!(result["artifact"]["revision"], revision);
-    assert_eq!(result["artifact"]["created_at"], created_at);
-    assert_eq!(result["artifact"]["updated_at"], updated_at);
-}
-
-fn assert_replacement_contract_still_applies(system: &PluginSystem) {
-    let listed = invoke_value(
-        system,
-        LIST_EXPORT_ID,
-        serde_json::json!({"semantic_element_id": "file:retired"}),
-    );
-    assert_eq!(listed["artifacts"][0]["knowledge_type"], "annotation");
-
-    let retired_create = system
-        .invoke(
-            PLUGIN_ID,
-            CREATE_EXPORT_ID,
-            serde_json::json!({
-                "artifact_id": "new-note", "semantic_element_id": "file:retired",
-                "knowledge_type": "manual_note", "title": "New note", "content": "Body"
-            }),
-        )
-        .expect_err("signed schema rejects a retired Knowledge kind");
-    assert!(retired_create.to_string().contains("manual_note"));
-
-    let plan = invoke_value(
-        system,
-        CREATE_EXPORT_ID,
-        serde_json::json!({
-            "artifact_id": "new-plan", "semantic_element_id": "file:retired",
-            "knowledge_type": "plan", "title": "Plan", "content": "Steps"
-        }),
-    );
-    assert_eq!(plan["artifact"]["knowledge_type"], "plan");
 }

@@ -85,9 +85,11 @@ fn identical_markdown_paths_in_two_projects_keep_distinct_context_identities() {
 fn an_explicitly_converted_identity_stays_canonical_and_deletion_is_not_undone_by_source_events() {
     let mut host = DocumentBoundaryHost::new();
     source(&host, "/project", "file:auth");
-    host.knowledge("create_knowledge",json!({"project_root":"/project","artifact_id":"original-md-identity","knowledge_type":"definition",
-        "semantic_element_id":"file:auth","title":"Original authored note","content":"Keep the original body","tags":["nucleus","md-nucleus"],
-        "metadata":{"nucleus":{"target_path":PATH,"target_element_id":"file:auth"}}})).unwrap();
+    host.execute(SemanticOperation::UpsertArtifact { artifact: serde_json::from_value(json!({
+        "artifact_id":"original-md-identity","semantic_element_id":"file:auth","artifact_kind":"definition",
+        "title":"Original authored note","content":"Keep the original body","dependencies":[],
+        "metadata":{"knowledge":{"project_root":"/project","tags":["nucleus","md-nucleus"],
+        "metadata":{"nucleus":{"target_path":PATH,"target_element_id":"file:auth"}}}}})).unwrap(),media_type:"text/markdown".into() });
     assert_eq!(
         notify(&mut host, "/project", "file:auth").unwrap_err().code,
         "knowledge_conversion_required"

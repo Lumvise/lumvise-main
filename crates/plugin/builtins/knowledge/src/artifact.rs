@@ -12,16 +12,8 @@ pub use lumvise_contracts::{
 
 pub(crate) fn knowledge_type_label(kind: &KnowledgeKind) -> &'static str {
     match kind {
+        KnowledgeKind::Requirements => "requirements",
         KnowledgeKind::Specification => "specification",
-        KnowledgeKind::Issue => "issue",
-        KnowledgeKind::TaskAssignment => "task-assignment",
-        KnowledgeKind::Definition => "definition",
-        KnowledgeKind::Annotation => "annotation",
-        KnowledgeKind::Report => "report",
-        KnowledgeKind::Decision => "decision",
-        KnowledgeKind::Checkpoint => "checkpoint",
-        KnowledgeKind::Question => "question",
-        KnowledgeKind::Plan => "plan",
     }
 }
 
@@ -270,25 +262,25 @@ mod tests {
         let artifacts = vec![
             artifact(json!({
                 "artifact_id": "c4", "semantic_element_id": "file:src/a.rs",
-                "knowledge_type": "report", "title": "T", "content": "",
+                "knowledge_type": "specification", "title": "T", "content": "",
                 "tags": ["scoped-c4", "nucleus"], "dependencies": [],
                 "metadata": {}, "project_root": "/p1"
             })),
             artifact(json!({
                 "artifact_id": "canvas", "semantic_element_id": "folder:src",
-                "knowledge_type": "definition", "title": "T", "content": "",
+                "knowledge_type": "requirements", "title": "T", "content": "",
                 "tags": ["canvas"], "dependencies": [],
                 "metadata": {}, "project_root": "/p1"
             })),
             artifact(json!({
                 "artifact_id": "other", "semantic_element_id": "file:lib.rs",
-                "knowledge_type": "report", "title": "T", "content": "",
+                "knowledge_type": "specification", "title": "T", "content": "",
                 "tags": ["scoped-c4"], "dependencies": [],
                 "metadata": {}, "project_root": "/p2"
             })),
             artifact(json!({
                 "artifact_id": "unscoped", "semantic_element_id": "file:lib.rs",
-                "knowledge_type": "report", "title": "T", "content": "",
+                "knowledge_type": "specification", "title": "T", "content": "",
                 "tags": ["scoped-c4"], "dependencies": [],
                 "metadata": {}, "project_root": null
             })),
@@ -325,7 +317,9 @@ mod tests {
         let typed = ListAllRequest {
             semantic_element_ids: None,
             project_root: None,
-            knowledge_type: Some(serde_json::from_value(json!("definition")).expect("valid kind")),
+            knowledge_type: Some(
+                serde_json::from_value(json!("requirements")).expect("valid kind"),
+            ),
             tags: None,
             limit: None,
             include_inactive: None,
@@ -369,7 +363,7 @@ mod tests {
     fn record(id: &str, lifecycle: Value) -> KnowledgeArtifact {
         let mut value = json!({
             "artifact_id": id, "semantic_element_id": "file:src/a.rs",
-            "knowledge_type": "decision", "title": "T", "content": "C",
+            "knowledge_type": "specification", "title": "T", "content": "C",
             "tags": [], "dependencies": [], "metadata": {}, "project_root": "/p1"
         });
         value
@@ -399,7 +393,7 @@ mod tests {
         let timed = create(
             serde_json::from_value(json!({
                 "artifact_id": "a", "semantic_element_id": "file:src/a.rs",
-                "knowledge_type": "decision", "title": "T", "content": "C",
+                "knowledge_type": "specification", "title": "T", "content": "C",
                 "expires_at": "2027-01-01T02:00:00+02:00"
             }))
             .expect("create request"),

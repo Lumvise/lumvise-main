@@ -47,7 +47,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Inspect Knowledge's packaged export IDs; invoke only tools present in the enabled tool catalog. Agent workflow: search/read existing project knowledge, store readable anchored tasks/checkpoints, re-read on resume, then update completion with verified evidence. Other plugins are not enabled by this manifest."
+      "description": "Inspect Knowledge's packaged export IDs; invoke only tools present in the enabled tool catalog. Agent workflow: search/read existing project knowledge, store readable anchored Requirements and Specification artifacts, use documents for reports/context, re-read on resume, then record verified evidence. Other plugins are not enabled by this manifest."
     },
     {
       "id": "preview_knowledge_transfer",
@@ -252,16 +252,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -440,16 +432,8 @@
           "knowledge_type": {
             "type": "string",
             "enum": [
-              "specification",
-              "issue",
-              "task_assignment",
-              "definition",
-              "annotation",
-              "report",
-              "decision",
-              "checkpoint",
-              "question",
-              "plan"
+              "requirements",
+              "specification"
             ]
           },
           "title": {
@@ -571,16 +555,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -733,7 +709,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. For tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Use plan for intended steps toward a goal, checkpoint for handoffs and resumable work state (completed work, exact validation, limitations, next action) and question for an open question. Optional expires_at (RFC 3339) ends discovery of an active record. A new record starts active at revision 1. These are artifact conventions, not an atomic lease/claim guarantee."
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Use only requirements for expected outcomes and acceptance criteria, or specification for the agreed design and constraints. Reports and reference notes use create_document; plans, handoffs and open questions belong in Context documents. Agents owns executable missions and their status, owner, blockers and evidence. Optional expires_at (RFC 3339) ends discovery of an active record. A new record starts active at revision 1. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "knowledge.create",
@@ -758,16 +734,8 @@
           "knowledge_type": {
             "type": "string",
             "enum": [
-              "specification",
-              "issue",
-              "task_assignment",
-              "definition",
-              "annotation",
-              "report",
-              "decision",
-              "checkpoint",
-              "question",
-              "plan"
+              "requirements",
+              "specification"
             ]
           },
           "title": {
@@ -898,16 +866,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -1061,7 +1021,7 @@
       },
       "execution": "foreground",
       "scope": "assistant_session",
-      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. For tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Use plan for intended steps toward a goal, checkpoint for handoffs and resumable work state (completed work, exact validation, limitations, next action) and question for an open question. Optional expires_at (RFC 3339) ends discovery of an active record. A new record starts active at revision 1. These are artifact conventions, not an atomic lease/claim guarantee."
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Use only requirements for expected outcomes and acceptance criteria, or specification for the agreed design and constraints. Reports and reference notes use create_document; plans, handoffs and open questions belong in Context documents. Agents owns executable missions and their status, owner, blockers and evidence. Optional expires_at (RFC 3339) ends discovery of an active record. A new record starts active at revision 1. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "update_knowledge",
@@ -1084,16 +1044,8 @@
               {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               {
@@ -1299,16 +1251,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -1484,16 +1428,8 @@
               {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               {
@@ -1708,16 +1644,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -1958,16 +1886,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -2120,7 +2040,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. The record carries status, revision and timestamps; a record that is not active is history, not a current instruction. Restore tasks/checkpoints/handoffs by reconciling their status, owner, blockers and evidence with current source/tests before resuming; saved completion text alone is not verification."
+      "description": "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. The record carries status, revision and timestamps; a record that is not active is history, not a current instruction. Reconcile requirements and specifications with current source/tests before resuming; saved completion text alone is not verification. Read reports and plans through get_document, and mission state through Agents."
     },
     {
       "id": "list_knowledge_for_element",
@@ -2180,16 +2100,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -2343,7 +2255,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Read artifacts attached to one existing semantic_element_id from the current project. This ID-only request has no project_root field: verify each returned artifact's project_root. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Inspect nearby human instructions/tasks before editing; use get_knowledge for focused checkpoint/handoff restoration."
+      "description": "Read artifacts attached to one existing semantic_element_id from the current project. This ID-only request has no project_root field: verify each returned artifact's project_root. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Inspect nearby requirements and specifications before editing. Read report/context documents separately."
     },
     {
       "id": "list_knowledge",
@@ -2381,16 +2293,8 @@
               {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               {
@@ -2468,16 +2372,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -2631,7 +2527,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "List full artifacts with explicit current project_root and optional semantic_element_ids/type/tags/limit. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Review readable task status/owner/blockers and nearby instructions before creating duplicates; a result limit can omit records."
+      "description": "List full artifacts with explicit current project_root and optional semantic_element_ids/type/tags/limit. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Review nearby requirements and specifications before creating duplicates; a result limit can omit records."
     },
     {
       "id": "search_knowledge",
@@ -2671,16 +2567,8 @@
               {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               {
@@ -2749,16 +2637,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -2784,7 +2664,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Search readable project knowledge with explicit current project_root and optional narrow semantic_element_id/type filters before creating or changing a record. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Results contain IDs/titles/scores/status, not full content: follow with get_knowledge to restore instructions, tasks or checkpoints. Inspect vector/lexical mode; no result is not proof that related knowledge never existed."
+      "description": "Search readable project knowledge with explicit current project_root and optional narrow semantic_element_id/type filters before creating or changing a record. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Results contain IDs/titles/scores/status, not full content: follow with get_knowledge to restore requirements or specifications. Search reports and context through search_documents. Inspect vector/lexical mode; no result is not proof that related knowledge never existed."
     },
     {
       "id": "find_semantic_elements",
@@ -3872,16 +3752,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -4076,16 +3948,8 @@
               {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               {
@@ -4163,16 +4027,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -4198,7 +4054,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Search readable project knowledge with explicit current project_root and optional narrow semantic_element_id/type filters before creating or changing a record. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Results contain IDs/titles/scores/status, not full content: follow with get_knowledge to restore instructions, tasks or checkpoints. Inspect vector/lexical mode; no result is not proof that related knowledge never existed."
+      "description": "Search readable project knowledge with explicit current project_root and optional narrow semantic_element_id/type filters before creating or changing a record. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Results contain IDs/titles/scores/status, not full content: follow with get_knowledge to restore requirements or specifications. Search reports and context through search_documents. Inspect vector/lexical mode; no result is not proof that related knowledge never existed."
     },
     {
       "id": "knowledge.list_for_element",
@@ -4268,16 +4124,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -4431,7 +4279,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Read artifacts attached to one existing semantic_element_id from the current project. This ID-only request has no project_root field: verify each returned artifact's project_root. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Inspect nearby human instructions/tasks before editing; use get_knowledge for focused checkpoint/handoff restoration."
+      "description": "Read artifacts attached to one existing semantic_element_id from the current project. This ID-only request has no project_root field: verify each returned artifact's project_root. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Inspect nearby requirements and specifications before editing. Read report/context documents separately."
     },
     {
       "id": "knowledge.get",
@@ -4489,16 +4337,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -4651,7 +4491,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. The record carries status, revision and timestamps; a record that is not active is history, not a current instruction. Restore tasks/checkpoints/handoffs by reconciling their status, owner, blockers and evidence with current source/tests before resuming; saved completion text alone is not verification."
+      "description": "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. The record carries status, revision and timestamps; a record that is not active is history, not a current instruction. Reconcile requirements and specifications with current source/tests before resuming; saved completion text alone is not verification. Read reports and plans through get_document, and mission state through Agents."
     },
     {
       "id": "knowledge.find_elements",
@@ -4895,7 +4735,7 @@
     {
       "id": "create_document",
       "name": "Create independent document",
-      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, kind, title and content. Use report for Markdown reports and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
+      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, document_kind, title and content. Use report for Markdown reports, context for reference notes, and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
       "kind": "mcp_tool",
       "input_schema": {
         "additionalProperties": false,
@@ -5158,7 +4998,7 @@
     {
       "id": "document.create",
       "name": "Assistant document create",
-      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, kind, title and content. Use report for Markdown reports and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
+      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, document_kind, title and content. Use report for Markdown reports, context for reference notes, and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership.",
       "kind": "scoped_mcp_tool",
       "scope": "assistant_session",
       "input_schema": {
@@ -7521,7 +7361,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Read the canonical project Knowledge projection using projectRoot and changesSince. Preserve revision/scope when consuming it; readable artifacts remain the source of task/checkpoint content."
+      "description": "Read the canonical project Knowledge projection using projectRoot and changesSince. Preserve revision/scope when consuming it; Requirements and Specification remain artifacts; Report and Context bodies are documents."
     },
     {
       "id": "http.knowledge.manifest",
@@ -8687,16 +8527,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -8918,16 +8750,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -9080,7 +8904,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. For tasks use task_assignment or issue, recording status, owner, acceptance criteria, blockers and evidence when relevant. Use plan for intended steps toward a goal, checkpoint for handoffs and resumable work state (completed work, exact validation, limitations, next action) and question for an open question. Optional expires_at (RFC 3339) ends discovery of an active record. A new record starts active at revision 1. These are artifact conventions, not an atomic lease/claim guarantee."
+      "description": "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Use only requirements for expected outcomes and acceptance criteria, or specification for the agreed design and constraints. Reports and reference notes use create_document; plans, handoffs and open questions belong in Context documents. Agents owns executable missions and their status, owner, blockers and evidence. Optional expires_at (RFC 3339) ends discovery of an active record. A new record starts active at revision 1. These are artifact conventions, not an atomic lease/claim guarantee."
     },
     {
       "id": "http.knowledge.artifacts.update",
@@ -9149,16 +8973,8 @@
               "knowledge_type": {
                 "type": "string",
                 "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
+                  "requirements",
+                  "specification"
                 ]
               },
               "title": {
@@ -9654,16 +9470,8 @@
                 "knowledge_type": {
                   "type": "string",
                   "enum": [
-                    "specification",
-                    "issue",
-                    "task_assignment",
-                    "definition",
-                    "annotation",
-                    "report",
-                    "decision",
-                    "checkpoint",
-                    "question",
-                    "plan"
+                    "requirements",
+                    "specification"
                   ]
                 },
                 "title": {
@@ -9947,7 +9755,7 @@
         "additionalProperties": false
       },
       "execution": "background",
-      "description": "Recurring runtime consumer stores completed generated functional artifacts. Inspect pending/completed generation state; it is not an implementation-task scheduler or atomic claim service."
+      "description": "Recurring runtime consumer stores completed functional Context documents. Inspect pending/completed generation state; it is not an implementation-task scheduler or atomic claim service."
     }
   ],
   "host_capabilities": [

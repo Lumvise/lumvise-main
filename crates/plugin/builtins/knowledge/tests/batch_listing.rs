@@ -20,7 +20,7 @@ impl HostCallTransport for ScopedArtifactStorage {
 
 fn record(owner: &str, project: &str) -> Value {
     json!({"artifact_id":format!("note-{owner}"),"semantic_element_id":owner,
-        "artifact_kind":"annotation","title":"Note","content":"Content","dependencies":[],
+        "artifact_kind":"specification","title":"Note","content":"Content","dependencies":[],
         "metadata":{"knowledge":{"tags":["demo"],"metadata":{"retained":true},
             "path":null,"project_root":project}}})
 }

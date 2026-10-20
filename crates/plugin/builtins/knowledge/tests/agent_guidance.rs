@@ -81,7 +81,7 @@ fn assistant_aliases_reuse_public_guidance_without_changing_scope() {
 }
 
 #[test]
-fn task_writes_explain_readable_records_and_real_update_semantics() {
+fn artifact_writes_explain_the_two_kinds_and_real_update_semantics() {
     let manifest = packaged_manifest();
     let create = &export(&manifest, "create_knowledge").description;
     for concept in [
@@ -90,7 +90,10 @@ fn task_writes_explain_readable_records_and_real_update_semantics() {
         "project_root",
         "narrowest",
         "plain titles/content",
-        "task_assignment",
+        "requirements",
+        "specification",
+        "create_document",
+        "agents",
         "status",
         "owner",
         "acceptance criteria",
@@ -131,7 +134,7 @@ fn checkpoint_reads_require_scope_and_current_evidence_before_resume() {
     for concept in [
         "no project_root field",
         "returned artifact's project_root",
-        "checkpoints/handoffs",
+        "get_document",
         "current source/tests",
         "before resuming",
     ] {

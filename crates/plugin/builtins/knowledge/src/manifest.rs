@@ -578,10 +578,7 @@ fn invoke_export(
     match invocation {
         Invocation::Manifest => Ok(metadata()),
         Invocation::Projection => crate::projection::command(input, context),
-        Invocation::Poll => {
-            crate::storage::settle_retired_kinds(context);
-            crate::artifact_generation::poll(context, None)
-        }
+        Invocation::Poll => crate::artifact_generation::poll(context, None),
         Invocation::StorageTrigger => crate::events::storage_change(capability_id, input, context),
         other => invoke_artifact(
             other,
@@ -694,18 +691,7 @@ mod tests {
         assert_eq!(schema["properties"]["artifact_id"]["type"], "string");
         assert_eq!(
             schema["properties"]["knowledge_type"]["enum"],
-            serde_json::json!([
-                "specification",
-                "issue",
-                "task_assignment",
-                "definition",
-                "annotation",
-                "report",
-                "decision",
-                "checkpoint",
-                "question",
-                "plan"
-            ])
+            serde_json::json!(["requirements", "specification"])
         );
     }
 }

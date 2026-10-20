@@ -785,7 +785,7 @@ fn test_artifact(artifact_id: &str, semantic_element_id: &str, title: &str) -> S
     SemanticArtifact {
         artifact_id: artifact_id.into(),
         semantic_element_id: semantic_element_id.into(),
-        artifact_kind: "definition".into(),
+        artifact_kind: "specification".into(),
         title: title.into(),
         content_ref: None,
         content: None,
@@ -835,7 +835,7 @@ fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
         CREATE_EXPORT_ID,
         serde_json::json!({
             "artifact_id": "lifecycle-decision", "semantic_element_id": "file:lifecycle",
-            "knowledge_type": "decision", "title": "Lifecycle decision", "content": "Keep history.",
+            "knowledge_type": "specification", "title": "Lifecycle decision", "content": "Keep history.",
             "tags": [], "dependencies": [], "metadata": {}, "project_root": "/work/demo",
             "expires_at": "2099-01-01T00:00:00Z"
         }),

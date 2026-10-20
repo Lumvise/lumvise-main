@@ -191,7 +191,7 @@ fn scoped_c4_context(
     request: &C4Request,
     context: &mut PluginContext<'_>,
 ) -> Result<ScopedC4Context, PluginError> {
-    let snapshot = semantic_context::load_projection_snapshot(context, &request.project_root)?;
+    let snapshot = semantic_context::load_document_snapshot(context, &request.project_root)?;
     let semantic = snapshot.semantic;
     let requested = requested_target(&semantic.elements, request)?;
     let target = report_target(&semantic.elements, &semantic.relationships, &requested);

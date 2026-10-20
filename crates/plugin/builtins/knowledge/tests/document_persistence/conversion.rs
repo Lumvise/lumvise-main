@@ -13,9 +13,45 @@ fn legacy(
     content: &str,
     tags: &[&str],
 ) -> Value {
-    host.knowledge("create_knowledge", json!({"artifact_id": id, "semantic_element_id": "file:lib",
-        "knowledge_type": kind, "title": id, "content": content, "tags": tags,
-        "project_root": "/project", "path": "Architecture/Decisions", "metadata": {"human": "kept", "canvas": {"parentCanvasId": "parent"}}})).unwrap()["artifact"].clone()
+    let artifact = json!({"artifact_id":id,"semantic_element_id":"file:lib","artifact_kind":kind,
+        "title":id,"content":content,"dependencies":[],"metadata":{"knowledge":{"project_root":"/project",
+        "tags":tags,"path":"Architecture/Decisions","metadata":{"human":"kept","canvas":{"parentCanvasId":"parent"}},
+        "lifecycle":{"status":"active","revision":1,"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}}}});
+    store_legacy(host, artifact.clone());
+    read_legacy(host, id)
+}
+
+fn store_legacy(host: &DocumentBoundaryHost, artifact: Value) {
+    host.execute(SemanticOperation::UpsertArtifact {
+        artifact: serde_json::from_value(artifact).unwrap(),
+        media_type: "text/markdown".into(),
+    });
+}
+
+fn read_legacy(host: &DocumentBoundaryHost, id: &str) -> Value {
+    let SemanticResult::Artifact(Some(artifact)) = host.execute(SemanticOperation::Artifact {
+        artifact_id: id.into(),
+    }) else {
+        panic!("historical artifact {id} expected")
+    };
+    serde_json::to_value(artifact).unwrap()
+}
+
+fn edit_legacy(host: &DocumentBoundaryHost, id: &str, patch: Value) -> Value {
+    let mut artifact = read_legacy(host, id);
+    for (key, value) in patch.as_object().unwrap() {
+        if key == "status" {
+            artifact["metadata"]["knowledge"]["lifecycle"][key] = value.clone();
+        } else {
+            artifact[key] = value.clone();
+        }
+    }
+    let revision = artifact["metadata"]["knowledge"]["lifecycle"]["revision"]
+        .as_u64()
+        .unwrap();
+    artifact["metadata"]["knowledge"]["lifecycle"]["revision"] = json!(revision + 1);
+    store_legacy(host, artifact.clone());
+    artifact
 }
 
 fn convert(host: &mut DocumentBoundaryHost, preview: bool) -> Result<Value, PluginError> {
@@ -135,10 +171,12 @@ fn conversion_preview_is_read_only_and_retains_the_artifact_document_distinction
     assert_eq!(preview["total"], 2);
     assert_eq!(self::revision(&host), revision);
     assert_eq!(
-        host.knowledge("get_knowledge", json!({"artifact_id": "report:a"}))
-            .unwrap()["artifact"],
-        report
+        host.knowledge("get_knowledge", json!({"artifact_id":"report:a"}))
+            .unwrap_err()
+            .code,
+        "knowledge_conversion_required"
     );
+    assert_eq!(read_legacy(&host, "report:a"), report);
     assert_eq!(
         host.knowledge("list_documents", json!({"project_root": "/project"}))
             .unwrap()["total"],
@@ -150,13 +188,7 @@ fn conversion_preview_is_read_only_and_retains_the_artifact_document_distinction
 fn conversion_preserves_lifecycle_metadata_source_and_links_without_creating_missions() {
     let mut host = seeded();
     legacy(&mut host, "report:a", "report", "# Human report", &[]);
-    let archived = host
-        .knowledge(
-            "update_knowledge",
-            json!({"artifact_id": "report:a", "status": "archived"}),
-        )
-        .unwrap()["artifact"]
-        .clone();
+    let archived = edit_legacy(&host, "report:a", json!({"status":"archived"}));
     legacy(
         &mut host,
         "task:a",
@@ -166,16 +198,18 @@ fn conversion_preserves_lifecycle_metadata_source_and_links_without_creating_mis
     );
     convert(&mut host, false).unwrap();
     let report = document(&mut host, "report:a");
-    for field in [
-        "content",
-        "status",
-        "revision",
-        "created_at",
-        "updated_at",
-        "path",
-        "tags",
-    ] {
-        assert_eq!(report[field], archived[field], "preserve {field}");
+    assert_eq!(report["content"], archived["content"]);
+    for field in ["status", "revision", "created_at", "updated_at"] {
+        assert_eq!(
+            report[field], archived["metadata"]["knowledge"]["lifecycle"][field],
+            "preserve {field}"
+        );
+    }
+    for field in ["path", "tags"] {
+        assert_eq!(
+            report[field], archived["metadata"]["knowledge"][field],
+            "preserve {field}"
+        );
     }
     assert_eq!(report["metadata"]["human"], "kept");
     assert_eq!(report["references"][0]["semantic_element_id"], "file:lib");
@@ -207,6 +241,15 @@ fn an_existing_document_collision_stops_before_any_legacy_record_is_retired() {
     let error = convert(&mut host, false).unwrap_err();
     assert_eq!(error.code, "document_conversion_conflict");
     assert_eq!(self::revision(&host), revision);
+    assert_eq!(
+        host.knowledge(
+            "get_knowledge",
+            json!({"artifact_id":"report:architecture"})
+        )
+        .unwrap_err()
+        .code,
+        "knowledge_conversion_required"
+    );
     assert_eq!(
         document(&mut host, "report:architecture")["content"],
         "# A standalone report"
@@ -252,21 +295,13 @@ fn a_changed_legacy_record_during_an_interrupted_conversion_requires_review() {
         convert(&mut host, false).unwrap_err().code,
         "injected_write_failure"
     );
-    host.knowledge(
-        "update_knowledge",
-        json!({"artifact_id": "report:a", "content": "New legacy edit"}),
-    )
-    .unwrap();
+    edit_legacy(&host, "report:a", json!({"content":"New legacy edit"}));
     assert_eq!(
         convert(&mut host, false).unwrap_err().code,
         "document_conversion_conflict"
     );
     assert_eq!(document(&mut host, "report:a")["content"], "First");
-    assert_eq!(
-        host.knowledge("get_knowledge", json!({"artifact_id": "report:a"}))
-            .unwrap()["artifact"]["content"],
-        "New legacy edit"
-    );
+    assert_eq!(read_legacy(&host, "report:a")["content"], "New legacy edit");
 }
 
 #[test]
@@ -324,10 +359,7 @@ fn a_deleted_staged_document_is_not_resurrected_by_a_conversion_retry() {
         convert(&mut host, false).unwrap_err().code,
         "document_conversion_conflict"
     );
-    assert!(
-        host.knowledge("get_knowledge", json!({"artifact_id": "report:a"}))
-            .is_ok()
-    );
+    assert!(read_legacy(&host, "report:a")["metadata"]["knowledge"].is_object());
 }
 
 #[test]
