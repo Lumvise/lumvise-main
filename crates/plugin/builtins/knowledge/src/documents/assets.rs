@@ -15,7 +15,7 @@ pub(super) fn resource(document: &KnowledgeDocument) -> Option<Value> {
         json!({"artifact_id": owner, "semantic_element_id": document.semantic_element_id,
         "artifact_kind": "document_assets", "title": document.title,
         "content": null, "content_ref": null, "searchable_text": null,
-        "content_size_bytes": null, "dependencies": [],
+        "content_size_bytes": null,
         "metadata": {"knowledge_document_assets": {"document_id": document.document_id}}}),
     )
 }

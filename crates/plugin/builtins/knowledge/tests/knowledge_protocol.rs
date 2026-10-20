@@ -1,3 +1,7 @@
+#[path = "knowledge_protocol/semantic_fixture.rs"]
+mod semantic_fixture;
+use semantic_fixture::signed_semantic_fixture;
+
 #[path = "knowledge_protocol/lifecycle.rs"]
 mod lifecycle;
 #[path = "knowledge_protocol/manifest_process.rs"]
@@ -34,9 +38,9 @@ use lumvise_plugin_knowledge::{
     package_manifest_source,
 };
 use lumvise_plugin_package::{
-    BuildPackageRequest, ExecutionMode, ExportDescriptor, ExportSurface, HostCompatibility,
-    HttpStreamMode, InstalledPlugin, PluginManifest, ProtocolRange, PublisherIdentity,
-    build_package, install_verified_package, verify_package,
+    BuildPackageRequest, ExportDescriptor, ExportSurface, HostCompatibility, HttpStreamMode,
+    InstalledPlugin, PluginManifest, PublisherIdentity, build_package, install_verified_package,
+    verify_package,
 };
 use lumvise_plugin_protocol::{
     CURRENT_PROTOCOL_VERSION, FrameCodec, MessageBody, WireMessage, WireOutcome,
@@ -662,70 +666,6 @@ impl KnowledgePluginProcess {
         drop(self.input);
         assert!(self.child.wait().expect("wait for plugin").success());
     }
-}
-
-fn signed_semantic_fixture(workspace: &Path, signing_key: &SigningKey) -> InstalledPlugin {
-    const TARGET: &str = "knowledge-semantic-fixture-host";
-    let executable = std::fs::read(env!("CARGO_BIN_EXE_knowledge-test-semantic-plugin"))
-        .expect("read Semantic fixture binary");
-    let digest = hex::encode(Sha256::digest(&executable));
-    let executable_path = format!("bin/knowledge-test-semantic-plugin-{TARGET}");
-    let manifest = PluginManifest {
-        schema_version: 1,
-        publisher: PublisherIdentity {
-            publisher_id: "lumvise.test".into(),
-            key_id: "lumvise.test.semantic.1".into(),
-        },
-        plugin_id: "builtin.semantic".into(),
-        plugin_version: "0.1.0".into(),
-        protocol: ProtocolRange {
-            min: PACKAGE_PROTOCOL_VERSION,
-            max: PACKAGE_PROTOCOL_VERSION,
-        },
-        targets: BTreeMap::from([(TARGET.into(), executable_path.clone())]),
-        files: BTreeMap::from([(executable_path.clone(), digest)]),
-        exports: [
-            "get_semantic_tree",
-            "search_semantic_elements",
-            "semantic_graph",
-            "semantic_context",
-            "ingest_index_batch",
-        ]
-        .into_iter()
-        .map(|id| ExportDescriptor {
-            description: String::new(),
-            id: id.into(),
-            name: id.into(),
-            surface: ExportSurface::McpTool,
-            input_schema: serde_json::json!({"type": "object"}),
-            output_schema: serde_json::json!({"type": "object"}),
-            admission: None,
-            execution: ExecutionMode::Foreground,
-        })
-        .collect(),
-        host_capabilities: vec![lumvise_plugin_package::HostCapabilityRequirement {
-            id: "fixture.semantic.ingest".into(),
-            version: "^1.0".into(),
-        }],
-    };
-    let archive = workspace.join("semantic-fixture.lvp");
-    build_package(
-        &archive,
-        BuildPackageRequest {
-            manifest,
-            files: BTreeMap::from([(executable_path, executable)]),
-            signing_key,
-        },
-    )
-    .expect("build Semantic fixture package");
-    let verified = verify_package(
-        &archive,
-        &signing_key.verifying_key(),
-        &HostCompatibility::new(PACKAGE_PROTOCOL_VERSION, TARGET),
-    )
-    .expect("verify Semantic fixture package");
-    install_verified_package(&verified, &workspace.join("semantic-installed"))
-        .expect("install Semantic fixture package")
 }
 
 #[test]

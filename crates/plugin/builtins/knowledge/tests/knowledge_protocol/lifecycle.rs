@@ -408,6 +408,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         matches!(storage_denied, WireOutcome::Failed { error } if error.code == "permission_denied")
     );
     broker.allow_all();
+    assert_signed_canvas_creation(&system);
     system
         .stop(PLUGIN_ID)
         .expect("stop packaged Knowledge binary");
@@ -423,6 +424,27 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
     assert!(!system.is_installed(PLUGIN_ID).expect("runtime catalog"));
 
     make_tree_writable(workspace.path());
+}
+
+fn assert_signed_canvas_creation(system: &PluginSystem) {
+    let created = invoke_value(
+        system,
+        "create_document",
+        serde_json::json!({
+            "project_root": "/project", "document_id": "signed-canvas", "document_kind": "canvas",
+            "title": "Signed Canvas", "content": "{\"nodes\":[],\"edges\":[],\"layers\":[]}"
+        }),
+    );
+    assert_eq!(created["document"]["document_kind"], "canvas");
+    assert!(created["document"]["attachment_owner_id"].is_string());
+    let loaded = invoke_value(
+        system,
+        "get_document",
+        serde_json::json!({
+            "project_root": "/project", "document_id": "signed-canvas"
+        }),
+    );
+    assert_eq!(loaded["document"], created["document"]);
 }
 
 fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
