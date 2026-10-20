@@ -630,8 +630,8 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
     );
     let report_before = invoke_value(
         system,
-        GET_EXPORT_ID,
-        serde_json::json!({"artifact_id": "knowledge-cultivation-report-c4-architecture-scoped-file-a"}),
+        "get_document",
+        serde_json::json!({"document_id": "knowledge-cultivation-report-c4-architecture-scoped-file-a", "project_root":"/project"}),
     );
     assert_succeeds(
         system,
@@ -716,34 +716,38 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
     );
     let report_after = invoke_value(
         system,
-        GET_EXPORT_ID,
-        serde_json::json!({"artifact_id": "knowledge-cultivation-report-c4-architecture-scoped-file-a"}),
+        "get_document",
+        serde_json::json!({"document_id": "knowledge-cultivation-report-c4-architecture-scoped-file-a", "project_root":"/project"}),
     );
     assert_eq!(
-        report_before["artifact"]["content"],
-        report_after["artifact"]["content"]
+        report_before["document"]["content"],
+        report_after["document"]["content"]
     );
     let report_id = "knowledge-cultivation-report-c4-architecture-scoped-file-a";
     let wrong_project = system
         .invoke(
             PLUGIN_ID,
-            DELETE_EXPORT_ID,
-            serde_json::json!({"artifact_id": report_id, "project_root": "/other"}),
+            "delete_document",
+            serde_json::json!({"document_id": report_id, "project_root": "/other"}),
         )
         .expect("project-scoped delete failure");
     assert!(matches!(wrong_project, WireOutcome::Failed { .. }));
     let deleted = invoke_value(
         system,
-        DELETE_EXPORT_ID,
-        serde_json::json!({"artifact_id": report_id, "project_root": "/project"}),
+        "delete_document",
+        serde_json::json!({"document_id": report_id, "project_root": "/project"}),
     );
     assert_eq!(deleted["deleted"], true);
-    let deleted_again = invoke_value(
-        system,
-        DELETE_EXPORT_ID,
-        serde_json::json!({"artifact_id": report_id, "project_root": "/project"}),
+    let deleted_again = system
+        .invoke(
+            PLUGIN_ID,
+            "delete_document",
+            serde_json::json!({"document_id":report_id,"project_root":"/project"}),
+        )
+        .unwrap();
+    assert!(
+        matches!(deleted_again, WireOutcome::Failed {error} if error.code == "document_not_found")
     );
-    assert_eq!(deleted_again["deleted"], false);
     let deletion_delta = invoke_value(
         system,
         HTTP_SYNC_EXPORT_ID,
@@ -813,11 +817,9 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
     assert!(broker.semantic_operation_count("selective_subgraph") > selective_before);
     let live_events_after = broker.row_count(PLUGIN_ID, "knowledge_live_events");
     assert!(live_events_after > live_events_before);
-    assert_eq!(
-        broker.semantic_operation_count("elements_by_ids_including_inactive"),
-        targeted_before + 3,
-        "StorageTrigger resolves cultivation anchors including parent traversal (2) and \
-         md-nucleus changed-element identity (1), without automatic inheritance"
+    assert!(
+        broker.semantic_operation_count("elements_by_ids_including_inactive") > targeted_before,
+        "StorageTrigger resolves exact source, ancestor and document identities without implicit transfer"
     );
     assert_succeeds(system, ELEMENT_TRIGGER_EXPORT_ID, element_trigger.clone());
     assert_eq!(

@@ -10,6 +10,8 @@ mod records;
 mod schema;
 mod search;
 #[cfg(test)]
+pub(crate) mod test_graph;
+#[cfg(test)]
 mod tests;
 
 use crate::semantic_context::SemanticElement;
@@ -81,8 +83,11 @@ pub(crate) fn find_documents(
         .collect())
 }
 
-pub(crate) use generated::{DocumentGenerationOwner, DocumentGenerator, save as save_generated};
-pub(crate) use schema::{EXPORTS, description, input_schema, output_schema};
+pub(crate) use generated::is_generation_hold;
+pub(crate) use generated::{DocumentGenerator, save as save_generated};
+pub(crate) use schema::{
+    EXPORTS, description, input_schema, output_schema, record as record_schema,
+};
 
 pub(crate) fn invoke(
     export_id: &str,
@@ -147,6 +152,16 @@ pub(crate) fn known_source_documents(
 ) -> Result<Vec<KnowledgeDocument>, PluginError> {
     crate::artifact::require(root, "project_root")?;
     records::project_document_records(context, root, true)
+}
+
+/// Read current document records through their owner, without exposing graph payloads.
+/// Example: project_documents(context, root) supplies report refresh candidates.
+pub(crate) fn project_documents(
+    context: &mut PluginContext<'_>,
+    root: &str,
+) -> Result<Vec<KnowledgeDocument>, PluginError> {
+    crate::artifact::require(root, "project_root")?;
+    records::project_document_records(context, root, false)
 }
 
 /// Check source conversion readiness without decoding or adopting a retired body.
@@ -268,7 +283,13 @@ fn list(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginEr
 
 fn delete(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let identity: KnowledgeDocumentIdentity = crate::parse(input, "document identity and project")?;
-    records::required(context, &identity)?;
+    let document = records::required(context, &identity)?;
+    if document.document_kind == lumvise_contracts::KnowledgeDocumentKind::Report
+        && document.tags.iter().any(|tag| tag == "scoped-c4")
+        && let Some(target_id) = document.metadata["nucleus"]["target_element_id"].as_str()
+    {
+        crate::cultivation::forget_c4_report_intent(&identity.project_root, target_id, context)?;
+    }
     records::remove(context, &identity)?;
     Ok(json!({"document_id": identity.document_id, "deleted": true}))
 }

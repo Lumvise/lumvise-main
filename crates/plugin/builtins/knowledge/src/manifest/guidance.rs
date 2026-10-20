@@ -37,7 +37,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "delete_knowledge",
-        "Delete an artifact by artifact_id with explicit project_root matching its stored scope. Prefer a status change (resolved, superseded or archived) when the history should stay. Read it first and inspect dependents; deleting a scoped C4 report also forgets its refresh intent. Preserve human guidance unless removal is intended.",
+        "Delete an artifact by artifact_id with explicit project_root matching its stored scope. Prefer a status change (resolved, superseded or archived) when the history should stay. Read it first and inspect dependents. Preserve human guidance unless removal is intended.",
     ),
     (
         "preview_knowledge_transfer",
@@ -53,19 +53,19 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "run_cultivation",
-        "Run the requested cultivation mode within explicit project_root and optional target_id/target_path. Inspect the returned run and generated artifacts; generated summaries do not replace human acceptance criteria or verified task evidence.",
+        "Run the requested cultivation mode within explicit project_root and optional target_id/target_path. Inspect the returned run.document_ids and canonical Context documents; generated summaries do not replace human acceptance criteria or verified task evidence.",
     ),
     (
         "get_cultivation_run",
-        "Read a stored run by run_id and verify its project_root/mode/artifact IDs. This ID-only request has no project_root field; a recorded run is not evidence that every generated artifact or implementation task is complete.",
+        "Read a stored run by run_id and verify its project_root/mode/document IDs. This ID-only request has no project_root field; a recorded run is not evidence that every generated document or implementation task is complete.",
     ),
     (
         "ensure_c4_nucleus",
-        "Ensure a scoped C4 report for explicit project_root and a target_id or target_path. refresh/retry_failed may request generation work; inspect returned pending/failed state and read generated content before relying on it.",
+        "Ensure a scoped C4 report for explicit project_root and a target_id or target_path. refresh/retry_failed may request generation work; inspect returned pending, failed or held state and read generated documents before relying on them. A held report preserves authored content or an intentional deletion; review its reason_code instead of overwriting or creating a parallel body.",
     ),
     (
         "debug_c4_nucleus",
-        "Diagnose a scoped C4 nucleus without mutation using explicit project_root and optional target_id/target_path. Inspect functional artifacts and report state before requesting generation; diagnostics are not task completion.",
+        "Diagnose a scoped C4 nucleus without mutation using explicit project_root and optional target_id/target_path. Inspect functional Context documents and report state before requesting generation; diagnostics are not task completion.",
     ),
     (
         "project_knowledge",

@@ -1,4 +1,5 @@
 use super::*;
+use crate::documents::test_graph::FakeDocumentGraph;
 use crate::{KnowledgePlugin, functional, manifest::ELEMENT_TRIGGER_EXPORT_ID, semantic_context};
 use lumvise_plugin_sdk::{HostCallTransport, PluginApplication, PluginContext, PluginError};
 use serde_json::{Value, json};
@@ -9,13 +10,12 @@ struct ConsumptionFakeHost {
     rows: BTreeMap<(String, String), Value>,
     elements: Vec<SemanticElement>,
     relationships: Vec<semantic_context::SemanticRelationship>,
-    artifacts: HashMap<String, Value>,
+    graph: FakeDocumentGraph,
     statuses: HashMap<String, Value>,
     listed_tables: Vec<String>,
     selective_roots: Vec<String>,
     project_snapshots: usize,
-    upserted_artifact_ids: Vec<String>,
-    fail_artifact_lookup: bool,
+    fail_report_lookup: bool,
 }
 
 impl HostCallTransport for ConsumptionFakeHost {
@@ -43,45 +43,32 @@ impl HostCallTransport for ConsumptionFakeHost {
                 self.project_snapshots += 1;
                 Ok(
                     json!({"commit_version":1,"published_at":"test","project_root":"/repo",
-                    "elements":self.elements,"relationships":self.relationships,
-                    "artifacts":self.artifacts.values().collect::<Vec<_>>() }),
+                    "elements":self.elements.iter().map(|element| serde_json::to_value(element).unwrap()).chain(self.graph.elements.values().cloned()).collect::<Vec<_>>(),"relationships":self.relationships,
+                    "artifacts":[] }),
                 )
             }
             ("storage.semantic", "selective_subgraph") => self.selective_subgraph(&input),
             ("storage.semantic", "elements_by_ids_including_inactive") => {
-                Ok(self.elements_by_ids(&input))
+                let mut response = self.elements_by_ids(&input);
+                let documents = self.graph.host_call(capability, input)?;
+                response["elements"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(documents["elements"].as_array().unwrap().iter().cloned());
+                Ok(response)
             }
-            ("storage.semantic", "artifacts_for_elements") => self.artifacts_for_elements(&input),
-            ("storage.semantic", "upsert_artifact") => {
-                let mut artifact = input["artifact"].clone();
-                artifact["project_root"] = json!("/repo");
-                self.upserted_artifact_ids.push(
-                    artifact["artifact_id"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
-                );
-                self.artifacts.insert(
-                    artifact["artifact_id"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
-                    artifact,
-                );
-                Ok(json!({"artifact_id": input["artifact"]["artifact_id"]}))
-            }
-            ("storage.semantic", "artifact") => Ok(json!({
-                "artifact": self.artifacts.get(input["artifact_id"].as_str().unwrap_or_default())
-            })),
-            ("storage.semantic", "remove_artifact") => {
-                self.artifacts
-                    .remove(input["artifact_id"].as_str().unwrap_or_default());
-                Ok(json!({"removed": true}))
+            ("storage.semantic", "scoped_read")
+                if self.fail_report_lookup
+                    && input["request"]["Structure"]["include_inactive"] != true =>
+            {
+                Err(PluginError::new(
+                    "injected_refresh_failure",
+                    "report refresh failed",
+                    false,
+                ))
             }
             ("storage.semantic", "candidate_source_elements") => Ok(json!({"elements": []})),
-            (other, operation) => Err(PluginError::unknown_capability(&format!(
-                "{other}.{operation}"
-            ))),
+            _ => self.graph.host_call(capability, input),
         }
     }
 }
@@ -160,17 +147,9 @@ impl ConsumptionFakeHost {
                     || ids.contains(relationship.target_element_id.as_str())
             })
             .collect::<Vec<_>>();
-        let artifacts = self
-            .artifacts
-            .values()
-            .filter(|artifact| {
-                ids.contains(artifact["semantic_element_id"].as_str().unwrap_or_default())
-            })
-            .cloned()
-            .collect::<Vec<_>>();
         let subgraph = json!({"commit_version":1,"published_at":"test",
             "project_root":"/repo","root_element_id":root_id,"elements":elements,
-            "relationships":relationships,"artifacts":artifacts,"external_elements":[]});
+            "relationships":relationships,"artifacts":[],"external_elements":[]});
         Ok(json!({"subgraph": subgraph}))
     }
 
@@ -184,31 +163,6 @@ impl ConsumptionFakeHost {
         json!({"elements":self.elements.iter()
             .filter(|element| ids.contains(element.semantic_element_id.as_str()))
             .collect::<Vec<_>>()})
-    }
-
-    fn artifacts_for_elements(&mut self, input: &Value) -> Result<Value, PluginError> {
-        if self.fail_artifact_lookup {
-            return Err(PluginError::new(
-                "injected_refresh_failure",
-                "report refresh failed",
-                false,
-            ));
-        }
-        let ids = input["semantic_element_ids"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect::<std::collections::HashSet<_>>();
-        let artifacts = self
-            .artifacts
-            .values()
-            .filter(|artifact| {
-                ids.contains(artifact["semantic_element_id"].as_str().unwrap_or_default())
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(json!({"artifacts": artifacts}))
     }
 }
 
@@ -297,10 +251,7 @@ fn fixture(include_report: bool) -> ConsumptionFakeHost {
     };
     if include_report {
         let external_summary = functional_artifact(&host.elements[3]);
-        host.artifacts.insert(
-            external_summary.artifact_id.clone(),
-            graph_artifact(&external_summary),
-        );
+        seed_document(&mut host.graph, external_summary.clone());
         let report = crate::c4_report::report(
             "/repo",
             &root,
@@ -311,14 +262,14 @@ fn fixture(include_report: bool) -> ConsumptionFakeHost {
         );
         let mut stale_report = report;
         stale_report.metadata["nucleus"]["dependency_fingerprint"] = json!("old-fingerprint");
-        let encoded = graph_artifact(&stale_report);
-        host.artifacts.insert(stale_report.artifact_id, encoded);
+        seed_document(&mut host.graph, stale_report);
+        host.graph.published_document_ids.clear();
     }
     host
 }
 
-fn functional_artifact(element: &SemanticElement) -> crate::KnowledgeArtifact {
-    functional::generated_artifact(
+fn functional_artifact(element: &SemanticElement) -> KnowledgeDocument {
+    functional::generated_document(
         element,
         &[],
         &functional::FunctionalSummary {
@@ -331,15 +282,23 @@ fn functional_artifact(element: &SemanticElement) -> crate::KnowledgeArtifact {
     )
 }
 
-fn graph_artifact(artifact: &crate::KnowledgeArtifact) -> Value {
-    let encoded = serde_json::to_value(artifact).expect("knowledge artifact serializes");
-    json!({"project_root":"/repo","artifact_id":encoded["artifact_id"],
-        "semantic_element_id":encoded["semantic_element_id"],
-        "artifact_kind":encoded["knowledge_type"],"title":encoded["title"],
-        "content_ref":null,"content":encoded["content"],"searchable_text":null,
-        "dependencies":encoded["dependencies"],"content_size_bytes":null,
-        "metadata":{"knowledge":{"tags":encoded["tags"],"metadata":encoded["metadata"],
-            "path":encoded["path"],"project_root":encoded["project_root"]}}})
+fn seed_document(graph: &mut FakeDocumentGraph, document: KnowledgeDocument) {
+    let source = functional::source_element_id(&document)
+        .or_else(|| document.metadata["nucleus"]["target_element_id"].as_str())
+        .unwrap()
+        .to_owned();
+    let generator = if document.document_kind == lumvise_contracts::KnowledgeDocumentKind::Report {
+        documents::DocumentGenerator::C4Report
+    } else {
+        documents::DocumentGenerator::FunctionalContext
+    };
+    documents::save_generated(
+        &mut PluginContext::for_test(graph),
+        &generator.owner(&source),
+        document,
+        None,
+    )
+    .unwrap();
 }
 
 fn dispatch_poll(host: &mut ConsumptionFakeHost) -> Result<Value, PluginError> {
@@ -388,17 +347,18 @@ fn poll_batches_shared_report_refresh_and_stores_with_selective_subgraphs() {
         1
     );
     assert_eq!(host.project_snapshots, 0);
-    assert_eq!(host.artifacts.len(), 4);
+    assert_eq!(host.graph.elements.len(), 4);
     assert_eq!(
-        host.upserted_artifact_ids
+        host.graph
+            .published_document_ids
             .iter()
             .filter(|id| id.starts_with("knowledge-cultivation-report-c4-architecture-scoped-"))
             .count(),
         1
     );
     assert_eq!(
-        host.artifacts["knowledge-cultivation-functional-file-src-a-rs"]["metadata"]["knowledge"]["metadata"]
-            ["provenance"]["relationship_count"],
+        host.graph.elements["knowledge-document:knowledge-cultivation-functional-file-src-a-rs"]["metadata"]
+            ["indexer_metadata"]["knowledge_document"]["metadata"]["provenance"]["relationship_count"],
         2
     );
 }
@@ -407,15 +367,15 @@ fn poll_batches_shared_report_refresh_and_stores_with_selective_subgraphs() {
 fn report_refresh_failure_keeps_every_successful_job_for_retry() {
     let mut host = fixture(false);
     seed_two_successes(&mut host);
-    host.fail_artifact_lookup = true;
+    host.fail_report_lookup = true;
 
     let error = dispatch_poll(&mut host).expect_err("refresh failure propagates");
 
     assert_eq!(error.code, "injected_refresh_failure");
-    assert_eq!(host.artifacts.len(), 2);
+    assert_eq!(host.graph.elements.len(), 2);
     assert_eq!(host.rows_in(JOBS), 2);
 
-    host.fail_artifact_lookup = false;
+    host.fail_report_lookup = false;
     let response = dispatch_poll(&mut host).expect("retry completes stored jobs");
 
     assert_eq!(response["completed"], 2);
@@ -444,8 +404,9 @@ fn later_stale_job_does_not_discard_earlier_successful_consumption() {
     assert!(!host.rows.contains_key(&(JOBS.into(), pending_key(&first))));
     assert!(host.rows.contains_key(&(JOBS.into(), pending_key(&stale))));
     assert!(
-        host.artifacts
-            .contains_key("knowledge-cultivation-functional-file-src-a-rs")
+        host.graph
+            .elements
+            .contains_key("knowledge-document:knowledge-cultivation-functional-file-src-a-rs")
     );
     assert_eq!(
         host.selective_roots
@@ -460,7 +421,7 @@ fn later_stale_job_does_not_discard_earlier_successful_consumption() {
 fn current_summary_change_skips_job_and_failure_table_reads() {
     let mut host = fixture(false);
     let element = host.elements[1].clone();
-    let artifact = functional::generated_artifact(
+    let artifact = functional::generated_document(
         &element,
         &[],
         &functional::FunctionalSummary {
@@ -471,8 +432,7 @@ fn current_summary_change_skips_job_and_failure_table_reads() {
             effects: vec![],
         },
     );
-    host.artifacts
-        .insert(artifact.artifact_id.clone(), graph_artifact(&artifact));
+    seed_document(&mut host.graph, artifact);
 
     dispatch_storage_change(&mut host, &element.semantic_element_id);
 

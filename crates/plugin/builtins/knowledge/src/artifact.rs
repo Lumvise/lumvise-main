@@ -141,21 +141,6 @@ pub(crate) fn stamp(
     crate::lifecycle::stamp(&mut artifact.lifecycle, previous, now);
 }
 
-/// Record equality that ignores the write stamps storage advances on every write.
-pub(crate) fn same_content(left: &KnowledgeArtifact, right: &KnowledgeArtifact) -> bool {
-    let unstamped = |artifact: &KnowledgeArtifact| KnowledgeArtifact {
-        lifecycle: Lifecycle {
-            revision: 0,
-            created_at: None,
-            updated_at: None,
-            status_changed_at: None,
-            ..artifact.lifecycle.clone()
-        },
-        ..artifact.clone()
-    };
-    unstamped(left) == unstamped(right)
-}
-
 /// Active and not past its expiry. An expiry that does not parse never hides a record.
 pub(crate) fn is_active(artifact: &KnowledgeArtifact, now: DateTime<Utc>) -> bool {
     crate::lifecycle::is_active(&artifact.lifecycle, now)

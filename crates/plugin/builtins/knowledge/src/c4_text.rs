@@ -20,7 +20,7 @@ pub(crate) fn display_label(group: &ComponentGroup) -> String {
 pub(crate) fn lazy_c4_link(element: &SemanticElement, label: &str) -> String {
     let report_path = c4_report_path(element);
     let destination = format!(
-        "Lumvise Knowledge/{}/Nuclei/{}",
+        "Lumvise Knowledge/{}/Reports/{}",
         project_slug(&element.project_root),
         report_path.trim_end_matches(".md")
     );

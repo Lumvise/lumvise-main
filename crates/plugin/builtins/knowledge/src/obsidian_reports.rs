@@ -1,80 +1,86 @@
-//! Projects report artifacts into read-only Obsidian pages.
+//! Projects independent report documents into read-only Obsidian pages.
 //!
 //! Report derivation remains owned by the C4/Nucleus domain. Knowledge calls this module only
 //! while assembling the single revision-consistent Obsidian projection.
 
 use serde_json::{Value, json};
 
-use crate::KnowledgeArtifact;
 use crate::projection_identity::canonical_projection_json;
+use lumvise_contracts::{KnowledgeDocument, KnowledgeDocumentKind, KnowledgeDocumentReference};
 
-pub(crate) fn is_report(artifact: &KnowledgeArtifact) -> bool {
-    artifact.metadata["cultivation_report"].as_bool() == Some(true)
-        || artifact.tags.iter().any(|tag| {
-            matches!(
-                tag.as_str(),
-                "nucleus" | "cultivation-report" | "cultivation-nucleus"
-            )
-        })
+#[cfg(test)]
+mod tests;
+
+pub(crate) fn is_report(document: &KnowledgeDocument) -> bool {
+    document.document_kind == KnowledgeDocumentKind::Report
+        && crate::lifecycle::is_active(&document.lifecycle, chrono::Utc::now())
 }
 
-pub(crate) fn project(project_root: &str, artifact: &KnowledgeArtifact) -> Value {
-    let properties = c4_report_properties(artifact);
-    let content_hash = report_content_hash(artifact, &properties);
-    let target_path = artifact.metadata["nucleus"]["target_path"]
-        .as_str()
-        .unwrap_or_default();
-    let path_hint = artifact.metadata["obsidian"]["path"]
-        .as_str()
-        .unwrap_or("C4 Architecture.md");
-    let title = report_projection_title(path_hint, artifact);
+pub(crate) fn project(document: &KnowledgeDocument) -> Value {
+    let properties = c4_report_properties(document);
+    let content_hash = report_content_hash(document, &properties);
+    let path_hint = report_path(document);
+    let title = format!("{} (Report)", document.title);
     json!({
-        "elementId": artifact.artifact_id, "space": "nuclei", "kind": "nucleus_report",
-        "title": title, "markdown": artifact.content, "contentMd5": content_hash,
-        "pathHint": path_hint, "sourceId": project_root,
-        "sourceRefs": [{"entityKind": "semantic_element",
-            "entityId": artifact.semantic_element_id, "path": target_path}],
-        "syncToken": format!("artifact:{}:{content_hash}", artifact.artifact_id),
-        "changeMarker": format!("artifact:{}:{content_hash}", artifact.artifact_id),
+        "elementId": document.document_id, "space": "reports", "kind": "report",
+        "title": title, "markdown": document.content, "contentMd5": content_hash,
+        "pathHint": path_hint, "sourceId": document.project_root,
+        "sourceRefs": report_references(document),
+        "syncToken": format!("document:{}:{content_hash}", document.document_id),
+        "changeMarker": format!("document:{}:{content_hash}", document.document_id),
         "ownership": {"content": "lumvise", "source": "lumvise"},
         "writePolicy": "readonly", "properties": properties,
         "children": [], "artifacts": [], "linkTargets": []
     })
 }
 
-fn report_projection_title(path_hint: &str, artifact: &KnowledgeArtifact) -> String {
-    let report_name = std::path::Path::new(path_hint)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or(&artifact.title);
-    format!(
-        "{} ({})",
-        report_name,
-        crate::artifact::knowledge_type_label(&artifact.knowledge_type)
-    )
+fn report_path(document: &KnowledgeDocument) -> String {
+    if document.path.is_none()
+        && let Some(path) = document.metadata["obsidian"]["path"].as_str()
+    {
+        return path.into();
+    }
+    let title = document.title.replace(['/', '\\'], "-");
+    let filename = format!("{title}.md");
+    document
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| format!("{}/{filename}", path.trim_matches('/')))
+        .unwrap_or(filename)
 }
 
-fn report_content_hash(artifact: &KnowledgeArtifact, properties: &Value) -> String {
+fn report_references(document: &KnowledgeDocument) -> Vec<Value> {
+    std::iter::once(json!({"entityKind":"document","entityId":document.document_id,"path":document.path.as_deref().unwrap_or_default()}))
+        .chain(document.references.iter().map(|reference| match reference {
+            KnowledgeDocumentReference::SemanticElement {semantic_element_id} => json!({"entityKind":"semantic_element","entityId":semantic_element_id,"path":""}),
+            KnowledgeDocumentReference::Artifact {artifact_id} => json!({"entityKind":"artifact","entityId":artifact_id,"path":""}),
+            KnowledgeDocumentReference::Document {document_id} => json!({"entityKind":"document","entityId":document_id,"path":""}),
+        })).collect()
+}
+
+fn report_content_hash(document: &KnowledgeDocument, properties: &Value) -> String {
     let signature = if properties.as_object().is_none_or(serde_json::Map::is_empty) {
-        artifact.content.clone()
+        document.content.clone()
     } else {
         format!(
             "{}\n\nproperties:{}",
-            artifact.content,
+            document.content,
             canonical_projection_json(properties)
         )
     };
     crate::functional::stable_content_hash(&signature)
 }
 
-fn c4_report_properties(artifact: &KnowledgeArtifact) -> Value {
-    let project_root = artifact.metadata["nucleus"]["project_root"]
+fn c4_report_properties(document: &KnowledgeDocument) -> Value {
+    let Some(target_id) = document.metadata["nucleus"]["target_element_id"]
         .as_str()
-        .unwrap_or_default();
-    let target_id = artifact.metadata["nucleus"]["target_element_id"]
-        .as_str()
-        .unwrap_or(&artifact.semantic_element_id);
+        .filter(|_| document.tags.iter().any(|tag| tag == "scoped-c4"))
+    else {
+        return json!({});
+    };
+    let project_root = document.project_root.as_str();
     json!({"c4Update": {
         "label": "Update C4 Architecture",
         "href": format!("obsidian://lumvise-c4?sourceId={}&elementId={}&refresh=true",

@@ -1,13 +1,15 @@
-use lumvise_contracts::{ArtifactDependency, ArtifactDependencyTarget};
+use lumvise_contracts::{
+    CreateKnowledgeDocumentRequest, KnowledgeDocument, KnowledgeDocumentKind,
+    KnowledgeDocumentReference,
+};
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
 use crate::{
-    KnowledgeArtifact, KnowledgeKind,
     c4_text::{c4_report_path, c4_text, display_label, lazy_c4_link, project_note_link},
     components::{ComponentGroup, component_relationships, scoped_component_groups},
-    functional,
+    documents, functional,
     semantic_context::{SemanticElement, SemanticRelationship},
 };
 
@@ -20,33 +22,29 @@ pub(crate) fn report(
     target: &SemanticElement,
     elements: &[SemanticElement],
     relationships: &[SemanticRelationship],
-    artifacts: &[KnowledgeArtifact],
+    contexts: &[KnowledgeDocument],
     fingerprint: &str,
-) -> KnowledgeArtifact {
+) -> KnowledgeDocument {
     let groups = scoped_component_groups(elements, target, relationships);
-    let dependencies = elements
+    let references = elements
         .iter()
-        .map(|element| ArtifactDependency {
-            target: ArtifactDependencyTarget::SemanticElement {
-                semantic_element_id: element.semantic_element_id.clone(),
-            },
+        .map(|element| KnowledgeDocumentReference::SemanticElement {
+            semantic_element_id: element.semantic_element_id.clone(),
         })
         .chain(
-            artifacts
+            contexts
                 .iter()
                 .filter(|item| functional::is_usable(item))
-                .map(|item| ArtifactDependency {
-                    target: ArtifactDependencyTarget::Artifact {
-                        artifact_id: item.artifact_id.clone(),
-                    },
+                .map(|item| KnowledgeDocumentReference::Document {
+                    document_id: item.document_id.clone(),
                 }),
         )
         .collect();
-    let jobs = ArtifactJobIndex::from_artifacts(artifacts);
-    KnowledgeArtifact {
-        artifact_id: report_id(&target.semantic_element_id),
-        semantic_element_id: target.semantic_element_id.clone(),
-        knowledge_type: KnowledgeKind::Report,
+    let jobs = FunctionalJobIndex::from_documents(contexts);
+    documents::draft_document(CreateKnowledgeDocumentRequest {
+        document_id: report_id(&target.semantic_element_id),
+        project_root: project_root.into(),
+        document_kind: KnowledgeDocumentKind::Report,
         title: report_title(target),
         content: report_content(&groups, elements, relationships, &jobs),
         tags: vec![
@@ -55,12 +53,10 @@ pub(crate) fn report(
             "cultivation-report".into(),
             "scoped-c4".into(),
         ],
-        dependencies,
+        references,
         metadata: report_metadata(project_root, target, &groups, &jobs, fingerprint),
         path: None,
-        project_root: Some(project_root.into()),
-        lifecycle: Default::default(),
-    }
+    })
 }
 
 /// Semantic elements whose functional summaries this C4 report indexes.
@@ -84,7 +80,7 @@ pub(crate) fn report_id(target_id: &str) -> String {
 
 /// Change key for the report's inputs.
 ///
-/// Elements and artifacts stay itemised — the scope caps them at
+/// Elements and contexts stay itemised — the scope caps them at
 /// `MAX_C4_ELEMENTS` — but relationships are unbounded: a wide folder target
 /// reaches tens of thousands, and listing them verbatim produced an 11 MB
 /// string that was sorted, joined, persisted in metadata and re-serialised on
@@ -93,9 +89,9 @@ pub(crate) fn report_id(target_id: &str) -> String {
 pub(crate) fn fingerprint(
     elements: &[SemanticElement],
     relationships: &[SemanticRelationship],
-    artifacts: &[KnowledgeArtifact],
+    contexts: &[KnowledgeDocument],
 ) -> String {
-    let mut parts = vec!["schema:c4-report-v9".to_owned()];
+    let mut parts = vec!["schema:c4-report-v10".to_owned()];
     parts.extend(elements.iter().map(|item| {
         format!(
             "element:{}:{}",
@@ -104,13 +100,13 @@ pub(crate) fn fingerprint(
         )
     }));
     parts.extend(
-        artifacts
+        contexts
             .iter()
             .filter(|item| functional::is_usable(item))
             .map(|item| {
                 format!(
-                    "artifact:{}:{}",
-                    item.artifact_id,
+                    "document:{}:{}",
+                    item.document_id,
                     functional::functional_content_hash(item)
                 )
             }),
@@ -147,7 +143,7 @@ fn report_content(
     groups: &[ComponentGroup],
     elements: &[SemanticElement],
     relationships: &[SemanticRelationship],
-    jobs: &ArtifactJobIndex,
+    jobs: &FunctionalJobIndex,
 ) -> String {
     let mut sections = vec![format!(
         "## Functional Component Map\n\n{}",
@@ -165,7 +161,7 @@ fn report_content(
 /// pending: dropping it made the whole "Component Jobs" heading disappear
 /// whenever a freshly scoped folder had no summaries, which reads as a
 /// broken report rather than as work still queued.
-fn component_lines(groups: &[ComponentGroup], jobs: &ArtifactJobIndex) -> Vec<String> {
+fn component_lines(groups: &[ComponentGroup], jobs: &FunctionalJobIndex) -> Vec<String> {
     groups
         .iter()
         .take(MAX_COMPONENT_JOB_SECTIONS)
@@ -193,13 +189,13 @@ fn report_metadata(
     project_root: &str,
     target: &SemanticElement,
     groups: &[ComponentGroup],
-    jobs: &ArtifactJobIndex,
+    jobs: &FunctionalJobIndex,
     fingerprint: &str,
 ) -> Value {
     json!({
         "cultivation_report": true, "cultivation_nucleus": true, "scoped_c4_nucleus": true,
         "nucleus": {"id": "c4-architecture-scoped", "title": report_title(target),
-            "artifact_role": "nucleus",
+            "document_role": "nucleus",
             "mission": "Document a scoped C4 architecture model for the selected semantic element.",
             "missing_functional_element_ids": jobs.missing_component_element_ids(groups),
             "status": "current", "last_observed_change_id": 0,
@@ -226,7 +222,7 @@ fn project_structure_diagram(
     groups: &[ComponentGroup],
     elements: &[SemanticElement],
     relationships: &[SemanticRelationship],
-    jobs: &ArtifactJobIndex,
+    jobs: &FunctionalJobIndex,
 ) -> String {
     let project_root = groups
         .first()
@@ -293,29 +289,30 @@ fn linked_group_label(_project_root: &str, group: &ComponentGroup) -> String {
     )
 }
 
-struct ArtifactJobIndex {
+struct FunctionalJobIndex {
     by_element_id: HashMap<String, String>,
 }
 
-impl ArtifactJobIndex {
-    fn from_artifacts(artifacts: &[KnowledgeArtifact]) -> Self {
-        let mut ordered = artifacts
+impl FunctionalJobIndex {
+    fn from_documents(contexts: &[KnowledgeDocument]) -> Self {
+        let mut ordered = contexts
             .iter()
-            .filter(|item| item.tags.iter().any(|tag| tag == "cultivation-functional"))
+            .filter(|item| functional::is_usable(item))
             .collect::<Vec<_>>();
         ordered.sort_by_key(|item| {
             (
-                item.artifact_id
+                item.document_id
                     .starts_with("knowledge-cultivation-functional-"),
-                item.artifact_id.as_str(),
+                item.document_id.as_str(),
             )
         });
         let by_element_id = ordered
             .into_iter()
             .filter_map(|item| {
                 let job = item.metadata["job"].as_str()?.trim();
+                let source = functional::source_element_id(item)?;
                 (!functional::is_unresolved_functional_job(job))
-                    .then(|| (item.semantic_element_id.clone(), job.into()))
+                    .then(|| (source.to_owned(), job.into()))
             })
             .collect();
         Self { by_element_id }

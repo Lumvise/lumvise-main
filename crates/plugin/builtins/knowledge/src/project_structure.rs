@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
+use lumvise_contracts::KnowledgeDocument;
 use lumvise_plugin_sdk::PluginError;
 use serde_json::{Value, json};
 
@@ -9,7 +10,13 @@ use crate::semantic_context::{SemanticContext, SemanticElement, SemanticRelation
 use crate::{KnowledgeArtifact, artifact::knowledge_type_label, functional};
 
 type ChildElements<'a> = BTreeMap<String, Vec<&'a SemanticElement>>;
-type ArtifactsByElement<'a> = BTreeMap<String, Vec<&'a KnowledgeArtifact>>;
+type NotesByElement<'a> = BTreeMap<String, Vec<SourceNote<'a>>>;
+
+#[derive(Clone, Copy)]
+enum SourceNote<'a> {
+    Artifact(&'a KnowledgeArtifact),
+    Context(&'a KnowledgeDocument),
+}
 type RelationshipsBySource<'a> = BTreeMap<String, Vec<&'a SemanticRelationship>>;
 type ElementPathHints = BTreeMap<String, String>;
 type SemanticLinkTargets = BTreeMap<String, Value>;
@@ -18,14 +25,16 @@ pub(crate) fn project(
     project_root: &str,
     semantic: SemanticContext,
     artifacts: Vec<KnowledgeArtifact>,
+    documents: Vec<KnowledgeDocument>,
 ) -> Result<Value, PluginError> {
-    project_selected(project_root, semantic, artifacts, None)
+    project_selected(project_root, semantic, artifacts, documents, None)
 }
 
 pub(crate) fn project_selected(
     project_root: &str,
     semantic: SemanticContext,
     artifacts: Vec<KnowledgeArtifact>,
+    documents: Vec<KnowledgeDocument>,
     selected_element_ids: Option<&BTreeSet<String>>,
 ) -> Result<Value, PluginError> {
     let elements = semantic
@@ -34,7 +43,7 @@ pub(crate) fn project_selected(
         .filter(|item| item.lifecycle == "active" && item.project_root == project_root)
         .collect::<Vec<_>>();
     let children = child_element_map(&elements);
-    let notes = project_artifacts(&artifacts, &elements);
+    let notes = project_notes(&artifacts, &documents, &elements);
     let relationships = relationships_by_source(&semantic.relationships, &elements);
     let paths = element_path_hints(&elements);
     let link_targets = semantic_link_targets(&elements, &paths);
@@ -68,7 +77,7 @@ fn project_spaces() -> Value {
 fn structure_element(
     element: &SemanticElement,
     children: &ChildElements<'_>,
-    artifacts: &ArtifactsByElement<'_>,
+    artifacts: &NotesByElement<'_>,
     relationships: &RelationshipsBySource<'_>,
     paths: &ElementPathHints,
     available_link_targets: &SemanticLinkTargets,
@@ -174,7 +183,7 @@ fn projected_link_targets(
 fn structure_markdown(
     element: &SemanticElement,
     children: &[&SemanticElement],
-    artifacts: &ArtifactsByElement<'_>,
+    artifacts: &NotesByElement<'_>,
     relationships: &RelationshipsBySource<'_>,
     paths: &ElementPathHints,
 ) -> String {
@@ -183,7 +192,7 @@ fn structure_markdown(
     markdown.push_str(&c4_trigger(element));
     append_relationship_sections(&mut markdown, element, children, relationships);
     if element.element_kind == "file" {
-        append_artifact_sections(&mut markdown, "## Artifacts", element, artifacts);
+        append_artifact_sections(&mut markdown, "## Knowledge", element, artifacts);
     }
     append_child_sections(
         &mut markdown,
@@ -270,7 +279,7 @@ fn relation_kind(item: &SemanticRelationship, kinds: &[&str]) -> bool {
 fn append_child_sections(
     markdown: &mut String,
     children: &[&SemanticElement],
-    artifacts: &ArtifactsByElement<'_>,
+    artifacts: &NotesByElement<'_>,
     paths: &ElementPathHints,
     inline_artifacts: bool,
 ) {
@@ -287,7 +296,7 @@ fn append_child_sections(
 
 fn child_section(
     child: &SemanticElement,
-    artifacts: &ArtifactsByElement<'_>,
+    artifacts: &NotesByElement<'_>,
     paths: &ElementPathHints,
     inline_artifacts: bool,
 ) -> String {
@@ -309,11 +318,11 @@ fn child_section(
             .get(&child.semantic_element_id)
             .is_some_and(|items| !items.is_empty())
     {
-        lines.push("- Artifacts: `@artifacts`".into());
+        lines.push("- Knowledge context is available in this project note.".into());
     }
     let mut markdown = lines.join("\n");
     if inline_artifacts {
-        append_artifact_sections(&mut markdown, "#### Artifacts", child, artifacts);
+        append_artifact_sections(&mut markdown, "#### Knowledge", child, artifacts);
     }
     markdown
 }
@@ -322,7 +331,7 @@ fn append_artifact_sections(
     markdown: &mut String,
     heading: &str,
     owner: &SemanticElement,
-    artifacts: &ArtifactsByElement<'_>,
+    artifacts: &NotesByElement<'_>,
 ) {
     let sections = artifacts
         .get(&owner.semantic_element_id)
@@ -360,7 +369,7 @@ fn projected_children(
 fn projected_artifacts(
     file: &SemanticElement,
     descendants: &[&SemanticElement],
-    artifacts: &ArtifactsByElement<'_>,
+    artifacts: &NotesByElement<'_>,
 ) -> Vec<Value> {
     std::iter::once(file)
         .chain(
@@ -375,128 +384,83 @@ fn projected_artifacts(
                 .get(&owner.semantic_element_id)
                 .into_iter()
                 .flatten()
-                .map(move |artifact| projected_artifact(owner, artifact))
+                .filter_map(move |note| match note {
+                    SourceNote::Artifact(artifact) => Some(projected_artifact(owner, artifact)),
+                    SourceNote::Context(_) => None,
+                })
         })
         .collect()
 }
 
 fn projected_artifact(owner: &SemanticElement, artifact: &KnowledgeArtifact) -> Value {
-    let markdown = artifact_summary(artifact);
+    let markdown = artifact_summary(&SourceNote::Artifact(artifact));
     json!({"artifactId": artifact.artifact_id, "title": artifact.title,
         "markdown": markdown, "ownerElementId": owner.semantic_element_id,
         "ownerTitle": owner.name, "ownerKind": owner.element_kind,
         "contentMd5": content_md5(&markdown)})
 }
 
-fn artifact_summary(artifact: &KnowledgeArtifact) -> String {
-    let fields = [
-        ("Job", "job", "responsibility"),
-        ("Receives", "receives", "input"),
-        ("Outcome", "outcome", "output"),
-        ("Effects", "effects", "side-effect"),
-        ("Interface", "source_interface", "interface"),
-        ("C4 Level", "c4_level", "architecture"),
-        ("Responsibility", "responsibility", "responsibility"),
-        ("Interface", "interface", "interface"),
-        ("Contains", "contains", "dependency"),
-        ("Dependencies", "dependencies", "dependency"),
-    ];
-    let mut lines = fields
-        .iter()
-        .filter_map(|(label, key, kind)| detail_section(artifact, label, key, kind))
-        .collect::<Vec<_>>();
-    if artifact.metadata["job"].as_str().is_none() {
-        lines.extend(
-            [
-                ("Function", "function", "definition"),
-                ("Transformation", "transformation", "transformation"),
-            ]
-            .iter()
-            .filter_map(|(label, key, kind)| detail_section(artifact, label, key, kind)),
-        );
-    }
-    if lines.is_empty() {
-        return generic_artifact_summary(artifact);
-    }
-    lines.join("\n\n")
-}
-
-fn detail_section(
-    artifact: &KnowledgeArtifact,
-    label: &str,
-    key: &str,
-    kind: &str,
-) -> Option<String> {
-    let content = detail_content(artifact, key)?;
-    Some(format!("##### {label} (`{kind}`)\n\n{content}"))
-}
-
-fn detail_content(artifact: &KnowledgeArtifact, key: &str) -> Option<String> {
-    let value = &artifact.metadata[key];
-    if let Some(text) = value.as_str() {
-        return Some(if matches!(key, "source_interface" | "interface") {
-            format!("```text\n{text}\n```")
-        } else {
-            markdown_text(text)
-        });
-    }
-    let items = value
-        .as_array()?
-        .iter()
-        .filter_map(Value::as_str)
-        .filter(|item| useful_array_item(key, item))
-        .take(4)
-        .map(|item| format!("- {}", markdown_text(item)))
-        .collect::<Vec<_>>();
-    (!items.is_empty()).then(|| items.join("\n"))
-}
-
-fn generic_artifact_summary(artifact: &KnowledgeArtifact) -> String {
-    format!(
-        "##### {} (`{}`)\n\n{}",
-        artifact.title,
-        knowledge_type_label(&artifact.knowledge_type),
-        artifact.content
-    )
-}
-
-fn useful_array_item(key: &str, item: &str) -> bool {
-    match key {
-        "receives" => !item.starts_with("No explicit parameters are indexed;"),
-        "effects" => {
-            item != "No obvious external side effect is visible from the indexed source span."
-        }
-        _ => true,
+fn artifact_summary(note: &SourceNote<'_>) -> String {
+    match note {
+        SourceNote::Artifact(artifact) => format!(
+            "##### {} (`{}`)\n\n{}",
+            artifact.title,
+            knowledge_type_label(&artifact.knowledge_type),
+            artifact.content
+        ),
+        SourceNote::Context(document) => format!(
+            "##### {} (`context`)\n\n{}",
+            document.title, document.content
+        ),
     }
 }
 
-fn project_artifacts<'a>(
+fn project_notes<'a>(
     artifacts: &'a [KnowledgeArtifact],
+    documents: &'a [KnowledgeDocument],
     elements: &[SemanticElement],
-) -> ArtifactsByElement<'a> {
-    let element_ids = elements
+) -> NotesByElement<'a> {
+    let owners = elements
         .iter()
-        .map(|item| item.semantic_element_id.as_str())
-        .collect::<HashSet<_>>();
-    artifacts
+        .map(|element| {
+            (
+                element.semantic_element_id.as_str(),
+                element.project_root.as_str(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let artifact_notes = artifacts
         .iter()
         .filter(|artifact| {
-            element_ids.contains(artifact.semantic_element_id.as_str())
-                && !crate::obsidian_reports::is_report(artifact)
-                && (!artifact
-                    .tags
-                    .iter()
-                    .any(|tag| tag == "cultivation-functional")
-                    || functional::is_usable(artifact))
+            owners
+                .get(artifact.semantic_element_id.as_str())
+                .is_some_and(|root| Some(*root) == artifact.project_root.as_deref())
         })
-        .fold(BTreeMap::new(), |mut grouped, artifact| {
-            let values = grouped
-                .entry(artifact.semantic_element_id.clone())
-                .or_default();
-            values.push(artifact);
-            values.sort_by_key(|item| item.artifact_id.as_str());
-            grouped
-        })
+        .map(|artifact| {
+            (
+                artifact.semantic_element_id.clone(),
+                SourceNote::Artifact(artifact),
+            )
+        });
+    let context_notes = documents
+        .iter()
+        .filter(|document| functional::is_usable(document))
+        .filter_map(|document| {
+            let source = functional::source_element_id(document)?;
+            (owners.get(source).copied() == Some(document.project_root.as_str()))
+                .then(|| (source.to_owned(), SourceNote::Context(document)))
+        });
+    let mut notes = NotesByElement::new();
+    for (source, note) in artifact_notes.chain(context_notes) {
+        notes.entry(source).or_default().push(note);
+    }
+    for values in notes.values_mut() {
+        values.sort_by_key(|note| match note {
+            SourceNote::Artifact(artifact) => artifact.artifact_id.as_str(),
+            SourceNote::Context(document) => document.document_id.as_str(),
+        });
+    }
+    notes
 }
 
 fn relationships_by_source<'a>(
@@ -740,6 +704,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_pages_exclude_same_identity_knowledge_owned_by_a_foreign_project() {
+        let source = semantic_element("file:source", "file", "source.rs", "src/source.rs", None);
+        let mut context = functional::generated_document(
+            &source,
+            &[],
+            &functional::FunctionalSummary {
+                job: "Foreign explanation".into(),
+                source_interface: "fn run()".into(),
+                receives: vec![],
+                outcome: "Foreign output".into(),
+                effects: vec![],
+            },
+        );
+        context.project_root = "/other".into();
+        let specification = KnowledgeArtifact {
+            artifact_id: "foreign-spec".into(),
+            semantic_element_id: source.semantic_element_id.clone(),
+            knowledge_type: crate::KnowledgeKind::Specification,
+            title: "Foreign specification".into(),
+            content: "Foreign acceptance criteria".into(),
+            tags: vec![],
+            dependencies: vec![],
+            metadata: json!({}),
+            path: None,
+            project_root: Some("/other".into()),
+            lifecycle: Default::default(),
+        };
+        let semantic = SemanticContext {
+            elements: vec![source],
+            ..Default::default()
+        };
+        let projection = project("/project", semantic, vec![specification], vec![context]).unwrap();
+        let page = &projection["elements"][0];
+        assert!(!page["markdown"].as_str().unwrap().contains("Foreign"));
+        assert_eq!(page["artifacts"], json!([]));
+    }
+
+    #[test]
     fn selected_page_carries_cross_file_relationship_link_targets() {
         let source_file =
             semantic_element("file:src/file.rs", "file", "file.rs", "src/file.rs", None);
@@ -779,8 +781,14 @@ mod tests {
         };
         let selected = BTreeSet::from(["file:src/file.rs".to_owned()]);
 
-        let projection = project_selected("/project", semantic, Vec::new(), Some(&selected))
-            .expect("selected projection");
+        let projection = project_selected(
+            "/project",
+            semantic,
+            Vec::new(),
+            Vec::new(),
+            Some(&selected),
+        )
+        .expect("selected projection");
         let element = &projection["elements"][0];
 
         assert_eq!(projection["elements"].as_array().map(Vec::len), Some(1));

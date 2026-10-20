@@ -45,6 +45,19 @@ pub(crate) struct DocumentGenerationOwner {
     source_element_id: String,
 }
 
+/// These conflicts require review rather than another automatic overwrite attempt.
+/// Example: is_generation_hold(error) moves a completed job into its existing failure state.
+pub(crate) fn is_generation_hold(error: &PluginError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "generated_document_authored"
+            | "generated_document_deleted"
+            | "generated_document_inactive"
+            | "knowledge_conversion_required"
+            | "document_exists"
+    )
+}
+
 /// Publish one generated proposal through the canonical owner, preserving authored changes.
 /// Example: save(context, &DocumentGenerator::C4Report.owner(source_id), proposal, Some(read_revision)).
 pub(crate) fn save(
@@ -63,7 +76,7 @@ pub(crate) fn save(
     if current.as_ref() == Some(&proposal) {
         return Ok(proposal);
     }
-    publish(context, &mut proposal, current.as_ref())?;
+    publish(context, owner, &mut proposal, current.as_ref())?;
     Ok(proposal)
 }
 
@@ -85,6 +98,7 @@ fn prepare(
 
 fn publish(
     context: &mut PluginContext<'_>,
+    owner: &DocumentGenerationOwner,
     proposal: &mut KnowledgeDocument,
     current: Option<&KnowledgeDocument>,
 ) -> Result<(), PluginError> {
@@ -96,7 +110,7 @@ fn publish(
     if current.is_some() {
         return records::write(context, proposal);
     }
-    refuse_global_collision(context, proposal)?;
+    refuse_global_collision(context, owner, proposal)?;
     records::create(context, proposal)
 }
 
@@ -271,6 +285,7 @@ fn signature(document: &KnowledgeDocument, fields: &[String]) -> String {
 
 fn refuse_global_collision(
     context: &mut PluginContext<'_>,
+    owner: &DocumentGenerationOwner,
     proposal: &KnowledgeDocument,
 ) -> Result<(), PluginError> {
     if crate::storage::has_knowledge_record(context, &proposal.document_id)? {
@@ -278,6 +293,25 @@ fn refuse_global_collision(
             "knowledge_conversion_required",
             &proposal.document_id,
             "no Knowledge artifact at this generated document identity; preview legacy conversion or review the collision before generating",
+        ));
+    }
+    let tag = match owner.generator {
+        DocumentGenerator::FunctionalContext => Some("cultivation-functional"),
+        DocumentGenerator::C4Report => Some("scoped-c4"),
+        DocumentGenerator::MarkdownSeed => None,
+    };
+    if let Some(tag) = tag
+        && super::conversion::required_for_source(
+            context,
+            &proposal.project_root,
+            &owner.source_element_id,
+            tag,
+        )?
+    {
+        return Err(super::invalid(
+            "knowledge_conversion_required",
+            &owner.source_element_id,
+            "explicit document conversion of the retained source workflow before creating another body",
         ));
     }
     if records::find(context, &proposal.document_id)?.is_none() {

@@ -1,13 +1,16 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
-use lumvise_contracts::{ArtifactDependency, ArtifactDependencyTarget};
+use lumvise_contracts::{
+    CreateKnowledgeDocumentRequest, KnowledgeDocument, KnowledgeDocumentKind,
+    KnowledgeDocumentReference,
+};
 use lumvise_plugin_sdk::PluginContext;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    KnowledgeArtifact, KnowledgeKind,
+    documents,
     semantic_context::{SemanticArtifact, SemanticElement, SemanticRelationship},
 };
 
@@ -26,15 +29,16 @@ pub(crate) struct FunctionalSummary {
     pub effects: Vec<String>,
 }
 
-/// Deterministic id of the functional artifact belonging to one element.
-pub(crate) fn artifact_id_for(element: &SemanticElement) -> String {
+/// Stable document identity of an element’s functional context.
+/// Example: document_id_for(element) retains the identity used by explicit conversion.
+pub(crate) fn document_id_for(element: &SemanticElement) -> String {
     format!(
         "knowledge-cultivation-functional-{}",
         safe_id(&element.semantic_element_id)
     )
 }
 
-/// The stored artifact is still exactly what this element would materialize
+/// The stored document is still exactly what this element would materialize
 /// to, so a cultivation run can skip re-deriving it — including the per-leaf
 /// LLM call — and skip the rewrite. Freshness is input-based: the provenance
 /// recorded at build time must match the element's current content
@@ -43,9 +47,13 @@ pub(crate) fn reusable_existing(
     mode: &str,
     element: &SemanticElement,
     touching: usize,
-    existing: Option<&KnowledgeArtifact>,
-) -> Option<KnowledgeArtifact> {
-    let existing = existing.filter(|item| is_usable(item))?;
+    existing: Option<&KnowledgeDocument>,
+) -> Option<KnowledgeDocument> {
+    let existing = existing.filter(|item| {
+        is_usable(item)
+            && item.project_root == element.project_root
+            && source_element_id(item) == Some(element.semantic_element_id.as_str())
+    })?;
     if existing.metadata["cultivation"]["mode"].as_str() != Some(mode) {
         return None;
     }
@@ -59,25 +67,25 @@ pub(crate) fn reusable_existing(
     Some(existing.clone())
 }
 
-pub(crate) fn leaf_artifact(
+pub(crate) fn leaf_document(
     mode: &str,
     element: &SemanticElement,
     relationships: &[SemanticRelationship],
     indexed_artifacts: &[SemanticArtifact],
     context: &mut PluginContext<'_>,
-) -> KnowledgeArtifact {
+) -> KnowledgeDocument {
     let source = source_text(element, indexed_artifacts);
     let inferred = functional_summary(element, &source);
     let summary = llm_summary(element, &source, context).unwrap_or(inferred);
-    artifact(mode, element, relationships, &summary)
+    context_document(mode, element, relationships, &summary)
 }
 
-pub(crate) fn composite_artifact(
+pub(crate) fn composite_document(
     mode: &str,
     element: &SemanticElement,
     relationships: &[SemanticRelationship],
-    children: &[KnowledgeArtifact],
-) -> KnowledgeArtifact {
+    children: &[KnowledgeDocument],
+) -> KnowledgeDocument {
     let resolved = children
         .iter()
         .filter(|item| resolved_job(item).is_some())
@@ -89,43 +97,89 @@ pub(crate) fn composite_artifact(
         outcome: joined_field(&resolved, "outcome", unresolved_outcome()),
         effects: array_field(&resolved, "effects", unresolved_effects()),
     };
-    let mut artifact = artifact(mode, element, relationships, &summary);
-    artifact.dependencies = resolved
-        .iter()
-        .map(|child| ArtifactDependency {
-            target: ArtifactDependencyTarget::Artifact {
-                artifact_id: child.artifact_id.clone(),
-            },
-        })
-        .collect();
-    artifact.metadata["cultivation"]["derived_from"] =
-        json!("immediate_child_functional_artifacts");
-    artifact
+    let mut document = context_document(mode, element, relationships, &summary);
+    document.references.extend(
+        resolved
+            .iter()
+            .map(|child| KnowledgeDocumentReference::Document {
+                document_id: child.document_id.clone(),
+            }),
+    );
+    document.metadata["cultivation"]["derived_from"] =
+        json!("immediate_child_functional_documents");
+    document
 }
 
-pub(crate) fn generated_artifact(
+pub(crate) fn generated_document(
     element: &SemanticElement,
     relationships: &[SemanticRelationship],
     summary: &FunctionalSummary,
-) -> KnowledgeArtifact {
-    artifact("mcp_local_llm", element, relationships, summary)
+) -> KnowledgeDocument {
+    context_document("mcp_local_llm", element, relationships, summary)
 }
 
-pub(crate) fn is_usable(artifact: &KnowledgeArtifact) -> bool {
-    artifact
-        .tags
+pub(crate) fn is_usable(document: &KnowledgeDocument) -> bool {
+    document.document_kind == KnowledgeDocumentKind::Context
+        && crate::lifecycle::is_active(&document.lifecycle, Utc::now())
+        && source_element_id(document).is_some()
+        && document
+            .tags
+            .iter()
+            .any(|tag| tag == "cultivation-functional")
+        && job(document).is_some_and(|value| !is_unresolved_functional_job(value))
+}
+
+/// Source provenance is distinct from the document’s own indexed identity.
+/// Example: source_element_id(context) selects the source used by C4 grouping.
+pub(crate) fn source_element_id(document: &KnowledgeDocument) -> Option<&str> {
+    document.metadata["provenance"]["semantic_element_id"]
+        .as_str()
+        .or_else(|| {
+            document
+                .references
+                .iter()
+                .find_map(|reference| match reference {
+                    KnowledgeDocumentReference::SemanticElement {
+                        semantic_element_id,
+                    } => Some(semantic_element_id.as_str()),
+                    _ => None,
+                })
+        })
+}
+
+/// Reconcile retained source-context identities before creating a generated body.
+/// Example: existing_for_source(history, element) preserves explicitly converted IDs.
+pub(crate) fn existing_for_source<'a>(
+    documents: &'a [KnowledgeDocument],
+    element: &SemanticElement,
+) -> Option<&'a KnowledgeDocument> {
+    let canonical = document_id_for(element);
+    documents
         .iter()
-        .any(|tag| tag == "cultivation-functional")
-        && job(artifact).is_some_and(|value| !is_unresolved_functional_job(value))
+        .filter(|document| {
+            document.project_root == element.project_root
+                && document.document_kind == KnowledgeDocumentKind::Context
+                && document
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "cultivation-functional")
+                && source_element_id(document) == Some(element.semantic_element_id.as_str())
+        })
+        .min_by_key(|document| {
+            (
+                document.document_id != canonical,
+                document.document_id.as_str(),
+            )
+        })
 }
 
-pub(crate) fn functional_content_hash(artifact: &KnowledgeArtifact) -> String {
+pub(crate) fn functional_content_hash(document: &KnowledgeDocument) -> String {
     let signature = json!({
-        "content": artifact.content, "job": artifact.metadata["job"],
-        "source_interface": artifact.metadata["source_interface"],
-        "receives": artifact.metadata["receives"], "receivers": artifact.metadata["receivers"],
-        "outcome": artifact.metadata["outcome"], "outtakes": artifact.metadata["outtakes"],
-        "effects": artifact.metadata["effects"]
+        "content": document.content, "job": document.metadata["job"],
+        "source_interface": document.metadata["source_interface"],
+        "receives": document.metadata["receives"], "receivers": document.metadata["receivers"],
+        "outcome": document.metadata["outcome"], "outtakes": document.metadata["outtakes"],
+        "effects": document.metadata["effects"]
     });
     stable_content_hash(&signature.to_string())
 }
@@ -167,25 +221,25 @@ pub(crate) fn aggregate_functional_jobs<'a>(jobs: impl Iterator<Item = &'a str>)
     }
 }
 
-fn artifact(
+fn context_document(
     mode: &str,
     element: &SemanticElement,
     relationships: &[SemanticRelationship],
     summary: &FunctionalSummary,
-) -> KnowledgeArtifact {
-    KnowledgeArtifact {
-        artifact_id: artifact_id_for(element),
-        semantic_element_id: element.semantic_element_id.clone(),
-        knowledge_type: KnowledgeKind::Report,
+) -> KnowledgeDocument {
+    documents::draft_document(CreateKnowledgeDocumentRequest {
+        document_id: document_id_for(element),
+        project_root: element.project_root.clone(),
+        document_kind: KnowledgeDocumentKind::Context,
         title: format!("Functional meaning: {}", element.name),
         content: functional_content(summary),
         tags: vec!["cultivation-functional".into()],
-        dependencies: Vec::new(),
+        references: vec![KnowledgeDocumentReference::SemanticElement {
+            semantic_element_id: element.semantic_element_id.clone(),
+        }],
         metadata: functional_metadata(mode, element, relationships, summary),
         path: None,
-        project_root: Some(element.project_root.clone()),
-        lifecycle: Default::default(),
-    }
+    })
 }
 
 fn functional_metadata(
@@ -555,17 +609,17 @@ fn llm_summary(
     serde_json::from_str(content).ok()
 }
 
-fn job(artifact: &KnowledgeArtifact) -> Option<&str> {
-    artifact.metadata["job"]
+fn job(document: &KnowledgeDocument) -> Option<&str> {
+    document.metadata["job"]
         .as_str()
-        .or_else(|| section(&artifact.content, "Job"))
+        .or_else(|| section(&document.content, "Job"))
 }
 
-fn resolved_job(artifact: &KnowledgeArtifact) -> Option<&str> {
-    job(artifact).filter(|value| !is_unresolved_functional_job(value))
+fn resolved_job(document: &KnowledgeDocument) -> Option<&str> {
+    job(document).filter(|value| !is_unresolved_functional_job(value))
 }
 
-fn joined_field(artifacts: &[&KnowledgeArtifact], field: &str, fallback: &str) -> String {
+fn joined_field(artifacts: &[&KnowledgeDocument], field: &str, fallback: &str) -> String {
     let values = unique_strings(
         artifacts
             .iter()
@@ -578,7 +632,7 @@ fn joined_field(artifacts: &[&KnowledgeArtifact], field: &str, fallback: &str) -
     }
 }
 
-fn array_field(artifacts: &[&KnowledgeArtifact], field: &str, fallback: &str) -> Vec<String> {
+fn array_field(artifacts: &[&KnowledgeDocument], field: &str, fallback: &str) -> Vec<String> {
     let values = artifacts
         .iter()
         .flat_map(|item| array_values(item, field))
@@ -591,14 +645,14 @@ fn array_field(artifacts: &[&KnowledgeArtifact], field: &str, fallback: &str) ->
     }
 }
 
-fn string_field<'a>(artifact: &'a KnowledgeArtifact, field: &str) -> Option<&'a str> {
-    artifact.metadata[field]
+fn string_field<'a>(document: &'a KnowledgeDocument, field: &str) -> Option<&'a str> {
+    document.metadata[field]
         .as_str()
-        .or_else(|| section(&artifact.content, heading(field)))
+        .or_else(|| section(&document.content, heading(field)))
 }
 
-fn array_values(artifact: &KnowledgeArtifact, field: &str) -> Vec<String> {
-    artifact.metadata[field]
+fn array_values(document: &KnowledgeDocument, field: &str) -> Vec<String> {
+    document.metadata[field]
         .as_array()
         .map(|values| {
             values
@@ -607,7 +661,7 @@ fn array_values(artifact: &KnowledgeArtifact, field: &str) -> Vec<String> {
                 .map(str::to_owned)
                 .collect()
         })
-        .unwrap_or_else(|| section_items(&artifact.content, heading(field)))
+        .unwrap_or_else(|| section_items(&document.content, heading(field)))
 }
 
 fn heading(field: &str) -> &str {
@@ -650,7 +704,7 @@ fn unique_strings<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
 
 fn markdown_items(items: &[String]) -> String {
     if items.is_empty() {
-        "- None declared by immediate child artifacts.".into()
+        "- None declared by immediate child contexts.".into()
     } else {
         items
             .iter()

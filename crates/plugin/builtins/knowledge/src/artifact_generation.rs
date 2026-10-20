@@ -1,9 +1,10 @@
+use lumvise_contracts::KnowledgeDocument;
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    KnowledgeArtifact, cultivation,
+    cultivation, documents,
     functional::{self, FunctionalSummary},
     semantic_context::SemanticElement,
     storage,
@@ -92,7 +93,7 @@ struct GeneratedFunctionalArtifacts {
 
 pub(crate) fn submit_missing(
     elements: &[SemanticElement],
-    artifacts: &[KnowledgeArtifact],
+    artifacts: &[KnowledgeDocument],
     retry_failed: bool,
     priority: SubmitPriority,
     context: &mut PluginContext<'_>,
@@ -225,7 +226,7 @@ pub(crate) fn generatable_count(elements: &[SemanticElement]) -> usize {
 
 pub(crate) fn missing_element_ids(
     elements: &[SemanticElement],
-    artifacts: &[KnowledgeArtifact],
+    artifacts: &[KnowledgeDocument],
 ) -> Vec<String> {
     elements
         .iter()
@@ -290,8 +291,15 @@ fn consume(
         JobDisposition::Succeeded => {}
     }
     let generated = decode_generated(job.output.as_ref().unwrap_or(&Value::Null), pending)?;
-    store_generated(pending, generated, context)?;
-    Ok(true)
+    match store_generated(pending, generated, context) {
+        Ok(()) => Ok(true),
+        Err(error) if documents::is_generation_hold(&error) => {
+            store_write_hold(pending, error, context)?;
+            storage::delete(context, JOBS, &pending_key(pending))?;
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn job_disposition(status: &str) -> Result<JobDisposition, PluginError> {
@@ -384,10 +392,41 @@ fn store_generated(
         outcome: generated.outcome,
         effects: generated.effects,
     };
-    let artifact = functional::generated_artifact(element, &subgraph.relationships, &summary);
-    storage::put_knowledge(context, &artifact)?;
+    let mut document = functional::generated_document(element, &subgraph.relationships, &summary);
+    let identities = documents::known_source_documents(context, &pending.project_root)?;
+    if let Some(existing) = functional::existing_for_source(&identities, element) {
+        document.document_id = existing.document_id.clone();
+    }
+    let current = documents::find_documents(
+        context,
+        &pending.project_root,
+        &std::collections::HashSet::from([document.document_id.clone()]),
+    )?
+    .into_iter()
+    .next();
+    documents::save_generated(
+        context,
+        &documents::DocumentGenerator::FunctionalContext.owner(&element.semantic_element_id),
+        document,
+        current.map(|document| document.lifecycle.revision),
+    )?;
     storage::delete(context, FAILURES, &pending_key(pending))?;
     Ok(())
+}
+
+fn store_write_hold(
+    pending: &PendingArtifactJob,
+    error: PluginError,
+    context: &mut PluginContext<'_>,
+) -> Result<(), PluginError> {
+    let failure = ArtifactGenerationFailure {
+        project_root: pending.project_root.clone(),
+        semantic_element_id: pending.semantic_element_id.clone(),
+        content_fingerprint: pending.content_fingerprint.clone(),
+        reason_code: error.code,
+        reason: error.message,
+    };
+    storage::put(context, FAILURES, &pending_key(pending), &failure)
 }
 
 fn decode_generated(
@@ -406,11 +445,12 @@ fn decode_generated(
     Err(stale_target(pending))
 }
 
-fn needs_generation(element: &SemanticElement, artifacts: &[KnowledgeArtifact]) -> bool {
+fn needs_generation(element: &SemanticElement, artifacts: &[KnowledgeDocument]) -> bool {
     element.lifecycle == "active"
         && target_input(element).is_some()
         && !artifacts.iter().any(|artifact| {
-            artifact.semantic_element_id == element.semantic_element_id
+            functional::source_element_id(artifact) == Some(element.semantic_element_id.as_str())
+                && artifact.project_root == element.project_root
                 && functional::is_usable(artifact)
                 && artifact.metadata["provenance"]["content_fingerprint"]
                     == json!(element.content_fingerprint)
@@ -434,7 +474,7 @@ fn target_input(element: &SemanticElement) -> Option<Value> {
         .filter(|line| *line >= start_line)?;
     (!fingerprint.is_empty() && !binary_source(&element.path)).then(|| {
         json!({
-            "artifact_id": crate::functional::artifact_id_for(element),
+            "artifact_id": crate::functional::document_id_for(element),
             "semantic_element_id": element.semantic_element_id,
             "element_kind": element.element_kind,
             "name": element.name,
@@ -469,7 +509,7 @@ fn binary_source(path: &str) -> bool {
 }
 fn skip_submission(
     element: &SemanticElement,
-    artifacts: &[KnowledgeArtifact],
+    artifacts: &[KnowledgeDocument],
     pending: &[PendingArtifactJob],
     failures: &[ArtifactGenerationFailure],
     retry_failed: bool,

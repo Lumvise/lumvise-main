@@ -1,8 +1,8 @@
+use lumvise_contracts::{CreateKnowledgeDocumentRequest, KnowledgeDocument, KnowledgeDocumentKind};
 use serde_json::{Value, json};
 
 use crate::{
-    KnowledgeArtifact, KnowledgeKind, c4_report, c4_text, functional, obsidian_reports,
-    project_structure,
+    c4_report, c4_text, documents, functional, obsidian_reports, project_structure,
     semantic_context::{SemanticContext, SemanticElement, SemanticRelationship},
 };
 
@@ -57,7 +57,7 @@ fn scoped_c4_report_matches_canonical_fixture() {
         &[],
         "schema:c4-report-v6|fixture",
     );
-    let projection = obsidian_reports::project("/repo", &report);
+    let projection = obsidian_reports::project(&report);
     let actual = json!({
         "content": report.content,
         "missing_functional_element_ids": report.metadata["nucleus"]["missing_functional_element_ids"],
@@ -77,7 +77,7 @@ fn scoped_c4_report_matches_canonical_fixture() {
 }
 
 #[test]
-fn nucleus_projection_title_uses_artifact_kind_label() {
+fn report_projection_title_uses_the_canonical_document_title() {
     let mut report = artifact(
         "nucleus-derived-summary",
         "folder:src",
@@ -86,20 +86,21 @@ fn nucleus_projection_title_uses_artifact_kind_label() {
         json!({"obsidian": {"path": "src/C4 Architecture.md"}}),
     );
     report.tags = vec!["nucleus".into(), "cultivation-report".into()];
+    report.document_kind = KnowledgeDocumentKind::Report;
 
-    let projection = obsidian_reports::project("/repo", &report);
+    let projection = obsidian_reports::project(&report);
 
     assert_eq!(report.title, "Stored report title");
     assert_eq!(
         projection["title"],
-        Value::String("C4 Architecture (report)".into())
+        Value::String("Stored report title (Report)".into())
     );
 }
 
 #[test]
 fn project_knowledge_matches_canonical_fixture() {
     let (context, artifacts) = project_fixture();
-    let actual = project_structure::project("/repo", context, artifacts)
+    let actual = project_structure::project("/repo", context, Vec::new(), artifacts)
         .expect("compiled project projection");
     assert_eq!(
         actual,
@@ -112,7 +113,7 @@ fn project_knowledge_matches_canonical_fixture() {
 #[test]
 fn project_file_nests_typed_artifacts_under_semantic_elements() {
     let (context, artifacts) = project_fixture();
-    let projection = project_structure::project("/repo", context, artifacts)
+    let projection = project_structure::project("/repo", context, Vec::new(), artifacts)
         .expect("compiled project projection");
     let markdown = projection["elements"][0]["markdown"]
         .as_str()
@@ -120,7 +121,7 @@ fn project_file_nests_typed_artifacts_under_semantic_elements() {
 
     assert!(
         markdown.contains(
-            "### run\n- Kind: `function`\n- Element ID: `fn:run`\n- Project context: [[src/lib.rs/run|run]]\n\n#### Artifacts\n\n##### Job (`responsibility`)\n\nRoutes requests to storage."
+            "### run\n- Kind: `function`\n- Element ID: `fn:run`\n- Project context: [[src/lib.rs/run|run]]\n\n#### Knowledge\n\n##### Functional meaning: run (`context`)\n\nFunctional body"
         ),
         "unexpected project file markdown: {markdown}"
     );
@@ -129,8 +130,8 @@ fn project_file_nests_typed_artifacts_under_semantic_elements() {
 #[test]
 fn project_knowledge_edges_match_canonical_fixture() {
     let (context, artifacts) = edge_fixture();
-    let actual =
-        project_structure::project("/repo", context, artifacts).expect("compiled edge projection");
+    let actual = project_structure::project("/repo", context, Vec::new(), artifacts)
+        .expect("compiled edge projection");
     assert_eq!(
         actual,
         fixture(include_str!(
@@ -198,7 +199,7 @@ fn scoped_relationships() -> Value {
     ])
 }
 
-fn project_fixture() -> (SemanticContext, Vec<KnowledgeArtifact>) {
+fn project_fixture() -> (SemanticContext, Vec<KnowledgeDocument>) {
     let elements = json!([
         semantic_element("file:src/lib.rs", "src/lib.rs", "file", "lib.rs"),
         child(
@@ -225,7 +226,7 @@ fn project_fixture() -> (SemanticContext, Vec<KnowledgeArtifact>) {
     )
 }
 
-fn edge_fixture() -> (SemanticContext, Vec<KnowledgeArtifact>) {
+fn edge_fixture() -> (SemanticContext, Vec<KnowledgeDocument>) {
     let elements = json!([
         semantic_element("folder:docs", "docs", "folder", "docs"),
         child(
@@ -288,20 +289,20 @@ fn artifact(
     title: &str,
     content: &str,
     metadata: Value,
-) -> KnowledgeArtifact {
-    KnowledgeArtifact {
-        artifact_id: id.into(),
-        semantic_element_id: owner.into(),
-        knowledge_type: KnowledgeKind::Report,
+) -> KnowledgeDocument {
+    let mut metadata = metadata;
+    metadata["provenance"] = json!({"semantic_element_id": owner});
+    documents::draft_document(CreateKnowledgeDocumentRequest {
+        document_id: id.into(),
+        project_root: "/repo".into(),
+        document_kind: KnowledgeDocumentKind::Context,
         title: title.into(),
         content: content.into(),
         tags: vec!["cultivation-functional".into()],
-        dependencies: Vec::new(),
+        references: Vec::new(),
         metadata,
         path: None,
-        project_root: Some("/repo".into()),
-        lifecycle: Default::default(),
-    }
+    })
 }
 
 fn fixture(source: &str) -> Value {

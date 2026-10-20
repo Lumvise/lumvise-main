@@ -13,6 +13,8 @@ use lumvise_plugin_semantic::SemanticPlugin;
 use lumvise_resource_routing::InvocationControl;
 use serde_json::{Value, json};
 
+#[path = "document_persistence/generation.rs"]
+mod generation;
 #[path = "document_persistence/md_seed.rs"]
 mod md_seed;
 
@@ -22,6 +24,7 @@ struct DocumentBoundaryHost {
     persistence: Arc<LocalPersistence>,
     fail_document_write: Option<usize>,
     fail_resource_write: Option<usize>,
+    generation: Option<generation::FakeFunctionalJobs>,
 }
 
 impl DocumentBoundaryHost {
@@ -38,6 +41,7 @@ impl DocumentBoundaryHost {
             persistence,
             fail_document_write: None,
             fail_resource_write: None,
+            generation: None,
         }
     }
 
@@ -52,6 +56,7 @@ impl DocumentBoundaryHost {
             persistence: self.persistence.clone(),
             fail_document_write: None,
             fail_resource_write: None,
+            generation: None,
         };
         SemanticPlugin.dispatch(export, input, &mut PluginContext::for_test(&mut host))
     }
@@ -68,6 +73,11 @@ impl DocumentBoundaryHost {
 
 impl HostCallTransport for DocumentBoundaryHost {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
+        if capability == "runtime.project_execution"
+            && let Some(generation) = self.generation.as_mut()
+        {
+            return generation.invoke(input);
+        }
         if capability == "plugin.invoke" && input["plugin_id"] == "builtin.semantic" {
             fail_once(&mut self.fail_document_write)?;
             let output =

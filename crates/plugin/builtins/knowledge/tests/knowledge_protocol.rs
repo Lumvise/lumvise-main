@@ -124,6 +124,7 @@ impl HostCapabilityBroker for MemoryStorageBroker {
         match request.capability_id.as_str() {
             "storage.plugin" => self.storage(request),
             "storage.semantic" => self.semantic_storage(request),
+            "fixture.semantic.ingest" => documents::ingest(self, request.input),
             "plugin.invoke" => self.plugin_invoke(request),
             "neural.embed" => self.embedding_response(&request.input),
             "runtime.background_job" => Ok(serde_json::json!({
@@ -651,7 +652,10 @@ fn signed_semantic_fixture(workspace: &Path, signing_key: &SigningKey) -> Instal
         },
         plugin_id: "builtin.semantic".into(),
         plugin_version: "0.1.0".into(),
-        protocol: ProtocolRange { min: 1, max: 1 },
+        protocol: ProtocolRange {
+            min: PACKAGE_PROTOCOL_VERSION,
+            max: PACKAGE_PROTOCOL_VERSION,
+        },
         targets: BTreeMap::from([(TARGET.into(), executable_path.clone())]),
         files: BTreeMap::from([(executable_path.clone(), digest)]),
         exports: [
@@ -659,6 +663,7 @@ fn signed_semantic_fixture(workspace: &Path, signing_key: &SigningKey) -> Instal
             "search_semantic_elements",
             "semantic_graph",
             "semantic_context",
+            "ingest_index_batch",
         ]
         .into_iter()
         .map(|id| ExportDescriptor {
@@ -672,7 +677,10 @@ fn signed_semantic_fixture(workspace: &Path, signing_key: &SigningKey) -> Instal
             execution: ExecutionMode::Foreground,
         })
         .collect(),
-        host_capabilities: Vec::new(),
+        host_capabilities: vec![lumvise_plugin_package::HostCapabilityRequirement {
+            id: "fixture.semantic.ingest".into(),
+            version: "^1.0".into(),
+        }],
     };
     let archive = workspace.join("semantic-fixture.lvp");
     build_package(
@@ -687,7 +695,7 @@ fn signed_semantic_fixture(workspace: &Path, signing_key: &SigningKey) -> Instal
     let verified = verify_package(
         &archive,
         &signing_key.verifying_key(),
-        &HostCompatibility::new(1, TARGET),
+        &HostCompatibility::new(PACKAGE_PROTOCOL_VERSION, TARGET),
     )
     .expect("verify Semantic fixture package");
     install_verified_package(&verified, &workspace.join("semantic-installed"))

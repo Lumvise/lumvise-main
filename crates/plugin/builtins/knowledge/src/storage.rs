@@ -213,31 +213,6 @@ pub(crate) fn selective_subgraph(
     crate::semantic_context::load_selective_subgraph(context, project_root, root_element_id)
 }
 
-pub(crate) fn decode_selective_knowledge_artifacts(
-    artifacts: &[crate::semantic_context::SemanticArtifact],
-) -> Result<Vec<KnowledgeArtifact>, PluginError> {
-    artifacts
-        .iter()
-        .filter(|artifact| artifact.metadata["knowledge"].is_object())
-        .map(|artifact| {
-            let knowledge = &artifact.metadata["knowledge"];
-            let mut record = json!({
-                "artifact_id": artifact.artifact_id,
-                "semantic_element_id": artifact.semantic_element_id,
-                "knowledge_type": current_kind(&artifact.artifact_kind),
-                "title": artifact.title,
-                "content": artifact.content,
-                "tags": knowledge["tags"],
-                "metadata": knowledge["metadata"],
-                "dependencies": artifact.dependencies,
-                "project_root": knowledge["project_root"]
-            });
-            merge_lifecycle(&mut record, knowledge);
-            decode(&record, "selective semantic artifacts")
-        })
-        .collect()
-}
-
 /// The only Knowledge write path: stamps revision and timestamps from the stored
 /// record, then persists and returns the stamped record.
 pub(crate) fn put_knowledge(
@@ -822,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_kinds_read_as_their_replacements_in_both_decoders() {
+    fn retired_kinds_read_as_their_replacements_in_graph_decoder() {
         for (stored, current) in [
             ("manual_note", KnowledgeKind::Annotation),
             ("derived_summary", KnowledgeKind::Report),
@@ -830,18 +805,6 @@ mod tests {
             let graph: KnowledgeArtifact =
                 decode_graph_artifact(&row("a", stored)).expect("graph decode");
             assert_eq!(graph.knowledge_type, current);
-
-            let semantic: crate::semantic_context::SemanticArtifact =
-                serde_json::from_value(json!({
-                    "project_root": "/repo", "artifact_id": "a",
-                    "semantic_element_id": "file:src/a.rs", "artifact_kind": stored,
-                    "title": "Title", "content": "Body", "content_ref": null,
-                    "searchable_text": null, "content_size_bytes": null,
-                    "metadata": row("a", stored)["metadata"].clone()
-                }))
-                .expect("semantic artifact");
-            let selective = decode_selective_knowledge_artifacts(&[semantic]).expect("selective");
-            assert_eq!(selective[0].knowledge_type, current);
         }
     }
 

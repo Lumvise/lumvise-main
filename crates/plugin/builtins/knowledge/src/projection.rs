@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::KnowledgeArtifact;
+use lumvise_contracts::KnowledgeDocument;
 
 const PROJECTION_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_CACHED_PROJECTS: usize = 4;
@@ -41,8 +42,12 @@ pub(crate) fn project(
     context: &mut PluginContext<'_>,
 ) -> Result<Value, PluginError> {
     let snapshot = crate::semantic_context::load_projection_snapshot(context, project_root)?;
-    let mut projection =
-        build_project_projection(project_root, snapshot.semantic, snapshot.artifacts)?;
+    let mut projection = build_project_projection(
+        project_root,
+        snapshot.semantic,
+        snapshot.artifacts,
+        snapshot.documents,
+    )?;
     let signature = json!([projection["spaces"], projection["elements"]]).to_string();
     projection["projectRoot"] = json!(project_root);
     projection["generatedAt"] = json!(Utc::now().to_rfc3339());
@@ -101,10 +106,19 @@ fn current_or_build_projection(
         return Ok(cached);
     }
     let snapshot = crate::semantic_context::load_projection_snapshot(context, project_root)?;
-    let sync_token = snapshot_sync_token(project_root, &snapshot.semantic, &snapshot.artifacts)?;
+    let sync_token = snapshot_sync_token(
+        project_root,
+        &snapshot.semantic,
+        &snapshot.artifacts,
+        &snapshot.documents,
+    )?;
     let published_at = snapshot.published_at.clone();
-    let mut projection =
-        build_project_projection(project_root, snapshot.semantic, snapshot.artifacts)?;
+    let mut projection = build_project_projection(
+        project_root,
+        snapshot.semantic,
+        snapshot.artifacts,
+        snapshot.documents,
+    )?;
     projection["projectRoot"] = json!(project_root);
     projection["generatedAt"] = json!(published_at);
     projection["syncToken"] = json!(&sync_token);
@@ -123,13 +137,15 @@ fn build_project_projection(
     project_root: &str,
     semantic: crate::semantic_context::SemanticContext,
     artifacts: Vec<KnowledgeArtifact>,
+    documents: Vec<KnowledgeDocument>,
 ) -> Result<Value, PluginError> {
-    let reports = artifacts
+    let reports = documents
         .iter()
         .filter(|artifact| crate::obsidian_reports::is_report(artifact))
-        .map(|artifact| crate::obsidian_reports::project(project_root, artifact))
+        .map(|artifact| crate::obsidian_reports::project(artifact))
         .collect::<Vec<_>>();
-    let mut projection = crate::project_structure::project(project_root, semantic, artifacts)?;
+    let mut projection =
+        crate::project_structure::project(project_root, semantic, artifacts, documents)?;
     append_report_projection(&mut projection, reports)?;
     Ok(projection)
 }
@@ -145,7 +161,7 @@ fn append_report_projection(
         .as_array_mut()
         .ok_or_else(invalid_projection_shape)?
         .push(
-            json!({"spaceId": "nuclei", "title": "Nuclei", "status": "ready",
+            json!({"spaceId": "reports", "title": "Reports", "status": "ready",
             "writePolicy": "readonly"}),
         );
     projection["elements"]
@@ -206,12 +222,14 @@ fn snapshot_sync_token(
     project_root: &str,
     semantic: &crate::semantic_context::SemanticContext,
     artifacts: &[KnowledgeArtifact],
+    documents: &[KnowledgeDocument],
 ) -> Result<String, PluginError> {
     let encoded = serde_json::to_vec(&(
         project_root,
         &semantic.elements,
         &semantic.relationships,
         artifacts,
+        documents,
     ))
     .map_err(|error| {
         PluginError::new(
@@ -314,6 +332,27 @@ fn invalid_projection_shape() -> PluginError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_document_edits_change_the_projection_sync_identity() {
+        let semantic = crate::semantic_context::SemanticContext::default();
+        let mut document =
+            crate::documents::draft_document(lumvise_contracts::CreateKnowledgeDocumentRequest {
+                document_id: "briefing".into(),
+                project_root: "/project".into(),
+                document_kind: lumvise_contracts::KnowledgeDocumentKind::Report,
+                title: "Briefing".into(),
+                content: "First revision".into(),
+                path: None,
+                tags: vec![],
+                references: vec![],
+                metadata: json!({}),
+            });
+        let before = snapshot_sync_token("/project", &semantic, &[], &[document.clone()]).unwrap();
+        document.content = "Reviewed revision".into();
+        let after = snapshot_sync_token("/project", &semantic, &[], &[document]).unwrap();
+        assert_ne!(before, after);
+    }
 
     #[test]
     fn sync_delta_returns_one_complete_reduced_batch() {

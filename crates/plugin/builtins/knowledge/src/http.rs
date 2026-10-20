@@ -3,7 +3,7 @@ use lumvise_contracts::ObsidianSyncRequestV1;
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
-use crate::{KnowledgeArtifact, cultivation, events, projection, storage};
+use crate::{cultivation, events, projection, storage};
 
 pub(crate) fn manifest(context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let output = context.host_call("storage.semantic", json!({"operation": "project_roots"}))?;
@@ -114,7 +114,7 @@ pub(crate) fn resolve_target(
 
 pub(crate) fn c4(input: &Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let body = input.get("body").cloned().unwrap_or(Value::Null);
-    let project_root = body["project_root"]
+    let _project_root = body["project_root"]
         .as_str()
         .ok_or_else(|| invalid_http(input, "JSON body project_root"))?
         .to_owned();
@@ -122,20 +122,20 @@ pub(crate) fn c4(input: &Value, context: &mut PluginContext<'_>) -> Result<Value
     if response["status"] != "ready" {
         return Ok(c4_incomplete_response(&response));
     }
-    let artifact: KnowledgeArtifact = serde_json::from_value(response["artifact"].clone())
-        .map_err(|error| {
+    let artifact: lumvise_contracts::KnowledgeDocument =
+        serde_json::from_value(response["document"].clone()).map_err(|error| {
             PluginError::new(
                 "invalid_knowledge_projection",
                 format!(
-                    "invalid C4 artifact `{}`; expected Knowledge artifact: {error}",
-                    response["artifact"]
+                    "invalid C4 document `{}`; expected Knowledge document: {error}",
+                    response["document"]
                 ),
                 false,
             )
         })?;
-    let projected = crate::obsidian_reports::project(&project_root, &artifact);
+    let projected = crate::obsidian_reports::project(&artifact);
     let mut ready = json!({"status": "ready", "created": response["created"],
-        "artifactId": artifact.artifact_id, "targetPath": projected["pathHint"]});
+        "documentId": artifact.document_id, "targetPath": projected["pathHint"]});
     if let Some(failed) = response.get("failed_element_ids") {
         ready["failedElementIds"] = failed.clone();
     }
@@ -143,17 +143,21 @@ pub(crate) fn c4(input: &Value, context: &mut PluginContext<'_>) -> Result<Value
 }
 
 fn c4_incomplete_response(response: &Value) -> Value {
+    if response["status"] == "held" {
+        return json!({"status":"held","created":false,"reasonCode":response["reason_code"],
+            "reason":response["reason"],"documentId":response["document_id"]});
+    }
     if response["status"] == "pending" {
         return json!({"status": "pending", "requestId": response["request_id"],
             "targetFingerprint": response["target_fingerprint"],
             "missingElementIds": response["missing_element_ids"],
             "pendingElementIds": response["pending_element_ids"],
             "failedElementIds": response["failed_element_ids"],
-            "artifactId": response["artifact_id"], "targetPath": response["target_path"]});
+            "documentId": response["document_id"], "targetPath": response["target_path"]});
     }
-    json!({"status": "not_ready", "reasonCode": response["reason_code"],
+    json!({"status": response["status"], "reasonCode": response["reason_code"],
         "reason": response["reason"], "targetFingerprint": response["target_fingerprint"],
-        "artifactId": response["artifact_id"], "targetPath": response["target_path"]})
+        "documentId": response["document_id"], "targetPath": response["target_path"]})
 }
 
 pub(crate) fn c4_debug(

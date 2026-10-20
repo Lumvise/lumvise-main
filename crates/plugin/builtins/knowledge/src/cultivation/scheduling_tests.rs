@@ -1,4 +1,5 @@
 use super::*;
+use crate::documents::test_graph::FakeDocumentGraph;
 use crate::{
     KnowledgePlugin,
     functional::{self, FunctionalSummary},
@@ -12,7 +13,7 @@ use std::collections::{BTreeMap, HashSet};
 struct SchedulingFakeHost {
     elements: Vec<SemanticElement>,
     relationships: Vec<semantic_context::SemanticRelationship>,
-    artifacts: Vec<KnowledgeArtifact>,
+    graph: FakeDocumentGraph,
     rows: BTreeMap<(String, String), Value>,
     listed_tables: Vec<String>,
     submitted: Vec<String>,
@@ -49,18 +50,16 @@ impl HostCallTransport for SchedulingFakeHost {
             ("storage.semantic", "project_snapshot") => Ok(self.project_snapshot()),
             ("storage.semantic", "selective_subgraph") => Ok(self.selective_subgraph(&input)),
             ("storage.semantic", "elements_by_ids_including_inactive") => {
-                Ok(self.elements_by_ids(&input))
-            }
-            ("storage.semantic", "artifacts_for_elements") => {
-                Ok(self.artifacts_for_elements(&input))
+                let mut response = self.elements_by_ids(&input);
+                let documents = self.graph.host_call(capability, input)?;
+                response["elements"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(documents["elements"].as_array().unwrap().iter().cloned());
+                Ok(response)
             }
             ("storage.semantic", "candidate_source_elements") => Ok(json!({"elements": []})),
-            ("storage.semantic", "artifact") => Ok(self.artifact(&input)),
-            ("storage.semantic", "upsert_artifact") => {
-                Ok(json!({"artifact_id": input["artifact"]["artifact_id"]}))
-            }
-            ("storage.semantic", "remove_artifact") => Ok(json!({"removed": true})),
-            (other, _) => Err(PluginError::unknown_capability(other)),
+            _ => self.graph.host_call(capability, input),
         }
     }
 }
@@ -122,15 +121,15 @@ impl SchedulingFakeHost {
 
     fn project_snapshot(&self) -> Value {
         json!({"commit_version":1,"published_at":"test","project_root":"/repo",
-            "elements":self.elements,"relationships":self.relationships,
-            "artifacts":self.artifacts.iter().map(graph_artifact).collect::<Vec<_>>()})
+            "elements":self.elements.iter().map(|element| serde_json::to_value(element).unwrap()).chain(self.graph.elements.values().cloned()).collect::<Vec<_>>(),"relationships":self.relationships,
+            "artifacts":[]})
     }
 
     fn selective_subgraph(&self, input: &Value) -> Value {
         json!({"subgraph":{"commit_version":1,"published_at":"test","project_root":"/repo",
             "root_element_id":input["root_element_id"],"elements":self.elements,
             "relationships":self.relationships,
-            "artifacts":self.artifacts.iter().map(semantic_artifact).collect::<Vec<_>>()}})
+            "artifacts":[]}})
     }
 
     fn elements_by_ids(&self, input: &Value) -> Value {
@@ -142,42 +141,32 @@ impl SchedulingFakeHost {
             .collect::<HashSet<_>>();
         json!({"elements":self.elements.iter().filter(|item| ids.contains(item.semantic_element_id.as_str())).collect::<Vec<_>>()})
     }
-
-    fn artifacts_for_elements(&self, input: &Value) -> Value {
-        let ids = input["semantic_element_ids"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect::<HashSet<_>>();
-        json!({"artifacts":self.artifacts.iter()
-            .filter(|item| ids.contains(item.semantic_element_id.as_str()))
-            .map(graph_artifact).collect::<Vec<_>>()})
-    }
-
-    fn artifact(&self, input: &Value) -> Value {
-        let artifact_id = input["artifact_id"].as_str().unwrap_or_default();
-        json!({"artifact":self.artifacts.iter()
-            .find(|item| item.artifact_id == artifact_id)
-            .map(graph_artifact)})
-    }
 }
 
-fn graph_artifact(artifact: &KnowledgeArtifact) -> Value {
-    json!({"artifact_id":artifact.artifact_id,"semantic_element_id":artifact.semantic_element_id,
-        "artifact_kind":artifact.knowledge_type,"title":artifact.title,"content":artifact.content,
-        "dependencies":artifact.dependencies,"metadata":{"knowledge":{
-            "tags":artifact.tags,"metadata":artifact.metadata,"path":artifact.path,
-            "project_root":artifact.project_root}}})
-}
-
-fn semantic_artifact(artifact: &KnowledgeArtifact) -> Value {
-    json!({"project_root":"/repo","artifact_id":artifact.artifact_id,
-        "semantic_element_id":artifact.semantic_element_id,"artifact_kind":artifact.knowledge_type,
-        "title":artifact.title,"content_ref":null,"content":artifact.content,
-        "searchable_text":null,"dependencies":artifact.dependencies,"content_size_bytes":null,
-        "metadata":{"knowledge":{"tags":artifact.tags,"metadata":artifact.metadata,
-            "path":artifact.path,"project_root":artifact.project_root}}})
+fn graph_with(documents: Vec<KnowledgeDocument>) -> FakeDocumentGraph {
+    let mut graph = FakeDocumentGraph::default();
+    for document in documents {
+        let source = functional::source_element_id(&document)
+            .or_else(|| document.metadata["nucleus"]["target_element_id"].as_str())
+            .unwrap()
+            .to_owned();
+        let generator =
+            if document.document_kind == lumvise_contracts::KnowledgeDocumentKind::Report {
+                documents::DocumentGenerator::C4Report
+            } else {
+                documents::DocumentGenerator::FunctionalContext
+            };
+        documents::save_generated(
+            &mut PluginContext::for_test(&mut graph),
+            &generator.owner(&source),
+            document,
+            None,
+        )
+        .unwrap();
+    }
+    graph.writes = 0;
+    graph.published_document_ids.clear();
+    graph
 }
 
 fn fixture() -> (
@@ -269,8 +258,8 @@ fn element(id: &str, kind: &str, name: &str, path: &str, parent: Option<&str>) -
     }
 }
 
-fn functional_artifact(element: &SemanticElement) -> KnowledgeArtifact {
-    functional::generated_artifact(
+fn functional_artifact(element: &SemanticElement) -> KnowledgeDocument {
+    functional::generated_document(
         element,
         &[],
         &FunctionalSummary {
@@ -325,7 +314,7 @@ fn change_trigger_refresh_submits_only_missing_summaries_consumed_by_saved_c4() 
     let mut host = SchedulingFakeHost {
         elements,
         relationships,
-        artifacts: vec![report],
+        graph: graph_with(vec![report]),
         ..Default::default()
     };
 
@@ -355,7 +344,7 @@ fn change_trigger_refreshes_existing_stale_summary_without_a_c4_report() {
     let mut host = SchedulingFakeHost {
         elements,
         relationships,
-        artifacts: vec![functional_artifact(&old_parameter)],
+        graph: graph_with(vec![functional_artifact(&old_parameter)]),
         ..Default::default()
     };
 
@@ -381,7 +370,7 @@ fn current_existing_summary_is_not_resubmitted_and_unrelated_change_is_not_gener
     let mut host = SchedulingFakeHost {
         elements,
         relationships,
-        artifacts: vec![current],
+        graph: graph_with(vec![current]),
         ..Default::default()
     };
 

@@ -127,7 +127,7 @@ fn input_fields(id: &str) -> Value {
     properties
 }
 
-fn record() -> Value {
+pub(crate) fn record() -> Value {
     let mut properties = fields();
     properties["semantic_element_id"] = json!({"type": "string"});
     properties["attachment_owner_id"] = json!({"type": "string"});
@@ -163,13 +163,19 @@ fn record() -> Value {
 pub(crate) fn output_schema(id: &str) -> Option<Value> {
     match id {
         "convert_legacy_documents" => Some(object(
-            &["project_root", "preview", "total", "conversions"],
-            json!({
-                "project_root": {"type": "string"}, "preview": {"type": "boolean"}, "total": {"type": "integer"},
-                "conversions": {"type": "array", "items": object(&["artifact_id", "document_id", "document_kind", "already_staged"], json!({
-                    "artifact_id": {"type": "string"}, "document_id": {"type": "string"}, "document_kind": kind(), "already_staged": {"type": "boolean"}
-                }))}
-            }),
+            &[
+                "project_root",
+                "preview",
+                "total",
+                "conversions",
+                "retained",
+            ],
+            json!({"project_root":{"type":"string"},"preview":{"type":"boolean"},"total":{"type":"integer"},
+                "conversions":{"type":"array","items":object(&["artifact_id","document_id","document_kind","source_semantic_element_id",
+                    "source_content_sha256","status","already_staged"],json!({"artifact_id":{"type":"string"},"document_id":{"type":"string"},
+                        "document_kind":kind(),"source_semantic_element_id":{"type":"string"},"source_content_sha256":{"type":"string"},
+                        "status":{"type":"string","enum":["active","resolved","superseded","archived"]},"already_staged":{"type":"boolean"}}))},
+                "retained":{"type":"array","items":object(&["artifact_id","semantic_element_id"],json!({"artifact_id":{"type":"string"},"semantic_element_id":{"type":"string"}}))}}),
         )),
         "create_document" | "document.create" | "get_document" | "document.get"
         | "update_document" | "document.update" => {

@@ -167,12 +167,12 @@ pub(super) fn output_schema(id: &str) -> Value {
                 "requestedTarget",
                 "reportTarget",
                 "scope",
-                "functionalArtifacts",
+                "functionalDocuments",
                 "report",
             ],
             json!({"status": {"const": "ok"}, "projectRoot": string(),
                 "requestedTarget": {"type": "object"}, "reportTarget": {"type": "object"},
-                "scope": {"type": "object"}, "functionalArtifacts": array(json!({"type": "object"})),
+                "scope": {"type": "object"}, "functionalDocuments": array(json!({"type": "object"})),
                 "report": {"type": "object"}}),
         ),
         ARTIFACT_GENERATION_POLL_EXPORT_ID => closed_object(
@@ -267,18 +267,12 @@ fn cultivation_run_schema() -> Value {
             "run_id",
             "mode",
             "project_root",
-            "artifact_ids",
-            "abstraction_ids",
-            "c4_artifact_ids",
-            "nucleus_ids",
-            "report_ids",
+            "document_ids",
             "diagnostics_created",
             "updated_at",
         ],
         json!({"run_id": string(), "mode": string(), "project_root": string(),
-            "artifact_ids": array(string()), "abstraction_ids": array(string()),
-            "c4_artifact_ids": array(string()), "nucleus_ids": array(string()),
-            "report_ids": array(string()), "diagnostics_created": boolean(), "updated_at": string()}),
+            "document_ids": array(string()), "diagnostics_created": boolean(), "updated_at": string()}),
     )
 }
 
@@ -364,37 +358,39 @@ pub(super) fn http_output_schema(id: &str) -> Value {
 }
 
 fn ensure_c4_output_schema() -> Value {
+    let mut ready = status_branch(
+        &["status", "created", "document", "provider_id", "model"],
+        &["failed_element_ids", "failure_reason"],
+        "ready",
+    );
+    ready["properties"]["document"] = crate::documents::record_schema();
     json!({"type": "object", "additionalProperties": false,
-    "properties": {"status": string(), "created": boolean(), "artifact": artifact_schema(),
+    "properties": {"status": string(), "created": boolean(), "document": nullable(crate::documents::record_schema()),
         "provider_id": nullable(string()), "model": nullable(string()), "request_id": string(),
         "target_fingerprint": string(), "missing_element_ids": array(string()),
-        "pending_element_ids": array(string()), "submitted": integer(), "artifact_id": string(),
+        "pending_element_ids": array(string()), "submitted": integer(), "document_id": string(),
         "target_path": string(), "reason_code": string(), "reason": string(),
         "failed_element_ids": array(string()), "failure_reason": string()},
-    "oneOf": [
-        status_branch(&["status", "created", "artifact", "provider_id", "model"],
-            &["failed_element_ids", "failure_reason"], "ready"),
+    "oneOf": [ready,
         status_branch(&["status", "request_id", "target_fingerprint", "missing_element_ids",
-            "pending_element_ids", "submitted", "artifact_id", "target_path"],
-            &["failed_element_ids"], "pending"),
-        required_status(&["status", "reason_code", "reason", "target_fingerprint",
-            "artifact_id", "target_path"], "not_ready")
+            "pending_element_ids", "submitted", "document_id", "target_path"], &["failed_element_ids"], "pending"),
+        required_status(&["status", "reason_code", "reason", "target_fingerprint", "document_id", "target_path"], "not_ready"),
+        required_status(&["status", "created", "document_id", "document", "reason_code", "reason"], "held")
     ]})
 }
 
 fn http_c4_output_schema() -> Value {
     json!({"type": "object", "additionalProperties": false,
-    "properties": {"status": string(), "created": boolean(), "artifactId": string(),
+    "properties": {"status": string(), "created": boolean(), "documentId": string(),
         "targetPath": string(), "requestId": string(), "targetFingerprint": string(),
         "missingElementIds": array(string()), "pendingElementIds": array(string()),
         "reasonCode": string(), "reason": string(), "failedElementIds": array(string())},
     "oneOf": [
-        status_branch(&["status", "created", "artifactId", "targetPath"],
-            &["failedElementIds"], "ready"),
+        status_branch(&["status", "created", "documentId", "targetPath"], &["failedElementIds"], "ready"),
         status_branch(&["status", "requestId", "targetFingerprint", "missingElementIds",
-            "pendingElementIds", "artifactId", "targetPath"], &["failedElementIds"], "pending"),
-        required_status(&["status", "reasonCode", "reason", "targetFingerprint",
-            "artifactId", "targetPath"], "not_ready")
+            "pendingElementIds", "documentId", "targetPath"], &["failedElementIds"], "pending"),
+        required_status(&["status", "reasonCode", "reason", "targetFingerprint", "documentId", "targetPath"], "not_ready"),
+        required_status(&["status", "created", "reasonCode", "reason", "documentId"], "held")
     ]})
 }
 

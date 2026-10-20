@@ -185,14 +185,6 @@ fn delete(input: Value, context: &mut PluginContext<'_>) -> Result<Value, Plugin
             false,
         ));
     }
-    if matches!(&artifact.knowledge_type, &KnowledgeKind::Report)
-        && artifact.tags.iter().any(|tag| tag == "scoped-c4")
-    {
-        let target_id = artifact.metadata["nucleus"]["target_element_id"]
-            .as_str()
-            .unwrap_or(&artifact.semantic_element_id);
-        cultivation::forget_c4_report_intent(&project_root, target_id, context)?;
-    }
     let deleted = storage::remove_knowledge(context, &artifact_id)?;
     Ok(json!({"artifact_id": artifact_id, "deleted": deleted}))
 }

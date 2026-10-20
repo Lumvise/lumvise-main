@@ -1910,7 +1910,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Delete an artifact by artifact_id with explicit project_root matching its stored scope. Prefer a status change (resolved, superseded or archived) when the history should stay. Read it first and inspect dependents; deleting a scoped C4 report also forgets its refresh intent. Preserve human guidance unless removal is intended."
+      "description": "Delete an artifact by artifact_id with explicit project_root matching its stored scope. Prefer a status change (resolved, superseded or archived) when the history should stay. Read it first and inspect dependents. Preserve human guidance unless removal is intended."
     },
     {
       "id": "get_knowledge",
@@ -3100,11 +3100,7 @@
               "run_id",
               "mode",
               "project_root",
-              "artifact_ids",
-              "abstraction_ids",
-              "c4_artifact_ids",
-              "nucleus_ids",
-              "report_ids",
+              "document_ids",
               "diagnostics_created",
               "updated_at"
             ],
@@ -3118,41 +3114,17 @@
               "project_root": {
                 "type": "string"
               },
-              "artifact_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "abstraction_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "c4_artifact_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "nucleus_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "report_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
               "diagnostics_created": {
                 "type": "boolean"
               },
               "updated_at": {
                 "type": "string"
+              },
+              "document_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "additionalProperties": false
@@ -3161,7 +3133,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Run the requested cultivation mode within explicit project_root and optional target_id/target_path. Inspect the returned run and generated artifacts; generated summaries do not replace human acceptance criteria or verified task evidence."
+      "description": "Run the requested cultivation mode within explicit project_root and optional target_id/target_path. Inspect the returned run.document_ids and canonical Context documents; generated summaries do not replace human acceptance criteria or verified task evidence."
     },
     {
       "id": "get_cultivation_run",
@@ -3191,11 +3163,7 @@
               "run_id",
               "mode",
               "project_root",
-              "artifact_ids",
-              "abstraction_ids",
-              "c4_artifact_ids",
-              "nucleus_ids",
-              "report_ids",
+              "document_ids",
               "diagnostics_created",
               "updated_at"
             ],
@@ -3209,41 +3177,17 @@
               "project_root": {
                 "type": "string"
               },
-              "artifact_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "abstraction_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "c4_artifact_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "nucleus_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "report_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
               "diagnostics_created": {
                 "type": "boolean"
               },
               "updated_at": {
                 "type": "string"
+              },
+              "document_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "additionalProperties": false
@@ -3252,7 +3196,7 @@
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Read a stored run by run_id and verify its project_root/mode/artifact IDs. This ID-only request has no project_root field; a recorded run is not evidence that every generated artifact or implementation task is complete."
+      "description": "Read a stored run by run_id and verify its project_root/mode/document IDs. This ID-only request has no project_root field; a recorded run is not evidence that every generated document or implementation task is complete."
     },
     {
       "id": "ensure_c4_nucleus",
@@ -3340,188 +3284,6 @@
           "created": {
             "type": "boolean"
           },
-          "artifact": {
-            "type": "object",
-            "required": [
-              "artifact_id",
-              "semantic_element_id",
-              "knowledge_type",
-              "title",
-              "content",
-              "tags",
-              "dependencies",
-              "metadata",
-              "status",
-              "revision"
-            ],
-            "properties": {
-              "artifact_id": {
-                "type": "string"
-              },
-              "semantic_element_id": {
-                "type": "string"
-              },
-              "knowledge_type": {
-                "type": "string",
-                "enum": [
-                  "specification",
-                  "issue",
-                  "task_assignment",
-                  "definition",
-                  "annotation",
-                  "report",
-                  "decision",
-                  "checkpoint",
-                  "question",
-                  "plan"
-                ]
-              },
-              "title": {
-                "type": "string"
-              },
-              "content": {
-                "type": "string"
-              },
-              "tags": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "metadata": {},
-              "dependencies": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "target"
-                  ],
-                  "additionalProperties": false,
-                  "properties": {
-                    "target": {
-                      "oneOf": [
-                        {
-                          "type": "object",
-                          "required": [
-                            "target_kind",
-                            "semantic_element_id"
-                          ],
-                          "properties": {
-                            "target_kind": {
-                              "const": "semantic_element"
-                            },
-                            "semantic_element_id": {
-                              "type": "string"
-                            }
-                          },
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "required": [
-                            "target_kind",
-                            "artifact_id"
-                          ],
-                          "properties": {
-                            "target_kind": {
-                              "const": "artifact"
-                            },
-                            "artifact_id": {
-                              "type": "string"
-                            }
-                          },
-                          "additionalProperties": false
-                        }
-                      ]
-                    }
-                  }
-                }
-              },
-              "path": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "project_root": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "active",
-                  "resolved",
-                  "superseded",
-                  "archived"
-                ]
-              },
-              "revision": {
-                "type": "integer"
-              },
-              "status_changed_at": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "expires_at": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "superseded_by": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "created_at": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "updated_at": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "additionalProperties": false
-          },
           "provider_id": {
             "anyOf": [
               {
@@ -3563,9 +3325,6 @@
           "submitted": {
             "type": "integer"
           },
-          "artifact_id": {
-            "type": "string"
-          },
           "target_path": {
             "type": "string"
           },
@@ -3583,6 +3342,156 @@
           },
           "failure_reason": {
             "type": "string"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "type": "object",
+                "required": [
+                  "document_id",
+                  "semantic_element_id",
+                  "project_root",
+                  "document_kind",
+                  "title",
+                  "content",
+                  "references",
+                  "tags",
+                  "metadata",
+                  "status",
+                  "revision"
+                ],
+                "properties": {
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "project_root": {
+                    "type": "string"
+                  },
+                  "document_kind": {
+                    "type": "string",
+                    "enum": [
+                      "report",
+                      "canvas",
+                      "ruleset",
+                      "mission_log",
+                      "context"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "properties": {
+                            "target_kind": {
+                              "const": "semantic_element"
+                            },
+                            "semantic_element_id": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "properties": {
+                            "target_kind": {
+                              "const": "artifact"
+                            },
+                            "artifact_id": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "target_kind",
+                            "document_id"
+                          ],
+                          "properties": {
+                            "target_kind": {
+                              "const": "document"
+                            },
+                            "document_id": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "metadata": {},
+                  "semantic_element_id": {
+                    "type": "string"
+                  },
+                  "attachment_owner_id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  },
+                  "status_changed_at": {
+                    "type": "string"
+                  },
+                  "superseded_by": {
+                    "type": "string"
+                  },
+                  "expires_at": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_id": {
+            "type": "string"
           }
         },
         "oneOf": [
@@ -3592,7 +3501,7 @@
             "required": [
               "status",
               "created",
-              "artifact",
+              "document",
               "provider_id",
               "model"
             ],
@@ -3601,11 +3510,150 @@
                 "const": "ready"
               },
               "created": {},
-              "artifact": {},
               "provider_id": {},
               "model": {},
               "failed_element_ids": {},
-              "failure_reason": {}
+              "failure_reason": {},
+              "document": {
+                "type": "object",
+                "required": [
+                  "document_id",
+                  "semantic_element_id",
+                  "project_root",
+                  "document_kind",
+                  "title",
+                  "content",
+                  "references",
+                  "tags",
+                  "metadata",
+                  "status",
+                  "revision"
+                ],
+                "properties": {
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "project_root": {
+                    "type": "string"
+                  },
+                  "document_kind": {
+                    "type": "string",
+                    "enum": [
+                      "report",
+                      "canvas",
+                      "ruleset",
+                      "mission_log",
+                      "context"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "references": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "target_kind",
+                            "semantic_element_id"
+                          ],
+                          "properties": {
+                            "target_kind": {
+                              "const": "semantic_element"
+                            },
+                            "semantic_element_id": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "target_kind",
+                            "artifact_id"
+                          ],
+                          "properties": {
+                            "target_kind": {
+                              "const": "artifact"
+                            },
+                            "artifact_id": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "target_kind",
+                            "document_id"
+                          ],
+                          "properties": {
+                            "target_kind": {
+                              "const": "document"
+                            },
+                            "document_id": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "metadata": {},
+                  "semantic_element_id": {
+                    "type": "string"
+                  },
+                  "attachment_owner_id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  },
+                  "status_changed_at": {
+                    "type": "string"
+                  },
+                  "superseded_by": {
+                    "type": "string"
+                  },
+                  "expires_at": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
             }
           },
           {
@@ -3618,7 +3666,7 @@
               "missing_element_ids",
               "pending_element_ids",
               "submitted",
-              "artifact_id",
+              "document_id",
               "target_path"
             ],
             "properties": {
@@ -3630,9 +3678,9 @@
               "missing_element_ids": {},
               "pending_element_ids": {},
               "submitted": {},
-              "artifact_id": {},
               "target_path": {},
-              "failed_element_ids": {}
+              "failed_element_ids": {},
+              "document_id": {}
             }
           },
           {
@@ -3643,7 +3691,7 @@
               "reason_code",
               "reason",
               "target_fingerprint",
-              "artifact_id",
+              "document_id",
               "target_path"
             ],
             "properties": {
@@ -3653,14 +3701,36 @@
               "reason_code": {},
               "reason": {},
               "target_fingerprint": {},
-              "artifact_id": {},
-              "target_path": {}
+              "target_path": {},
+              "document_id": {}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "created",
+              "document_id",
+              "document",
+              "reason_code",
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "held"
+              },
+              "created": {},
+              "document_id": {},
+              "document": {},
+              "reason_code": {},
+              "reason": {}
             }
           }
         ]
       },
       "execution": "foreground",
-      "description": "Ensure a scoped C4 report for explicit project_root and a target_id or target_path. refresh/retry_failed may request generation work; inspect returned pending/failed state and read generated content before relying on it."
+      "description": "Ensure a scoped C4 report for explicit project_root and a target_id or target_path. refresh/retry_failed may request generation work; inspect returned pending, failed or held state and read generated documents before relying on them. A held report preserves authored content or an intentional deletion; review its reason_code instead of overwriting or creating a parallel body."
     },
     {
       "id": "debug_c4_nucleus",
@@ -3706,7 +3776,7 @@
           "requestedTarget",
           "reportTarget",
           "scope",
-          "functionalArtifacts",
+          "functionalDocuments",
           "report"
         ],
         "properties": {
@@ -3725,20 +3795,20 @@
           "scope": {
             "type": "object"
           },
-          "functionalArtifacts": {
+          "report": {
+            "type": "object"
+          },
+          "functionalDocuments": {
             "type": "array",
             "items": {
               "type": "object"
             }
-          },
-          "report": {
-            "type": "object"
           }
         },
         "additionalProperties": false
       },
       "execution": "foreground",
-      "description": "Diagnose a scoped C4 nucleus without mutation using explicit project_root and optional target_id/target_path. Inspect functional artifacts and report state before requesting generation; diagnostics are not task completion."
+      "description": "Diagnose a scoped C4 nucleus without mutation using explicit project_root and optional target_id/target_path. Inspect functional Context documents and report state before requesting generation; diagnostics are not task completion."
     },
     {
       "id": "knowledge.list_dependents",
@@ -7192,12 +7262,30 @@
                     "context"
                   ],
                   "type": "string"
+                },
+                "source_semantic_element_id": {
+                  "type": "string"
+                },
+                "source_content_sha256": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "resolved",
+                    "superseded",
+                    "archived"
+                  ]
                 }
               },
               "required": [
                 "artifact_id",
                 "document_id",
                 "document_kind",
+                "source_semantic_element_id",
+                "source_content_sha256",
+                "status",
                 "already_staged"
               ],
               "type": "object"
@@ -7212,13 +7300,33 @@
           },
           "total": {
             "type": "integer"
+          },
+          "retained": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "artifact_id",
+                "semantic_element_id"
+              ],
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "semantic_element_id": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
           }
         },
         "required": [
           "project_root",
           "preview",
           "total",
-          "conversions"
+          "conversions",
+          "retained"
         ],
         "type": "object"
       },
@@ -8240,9 +8348,6 @@
           "created": {
             "type": "boolean"
           },
-          "artifactId": {
-            "type": "string"
-          },
           "targetPath": {
             "type": "string"
           },
@@ -8275,6 +8380,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "documentId": {
+            "type": "string"
           }
         },
         "oneOf": [
@@ -8284,7 +8392,7 @@
             "required": [
               "status",
               "created",
-              "artifactId",
+              "documentId",
               "targetPath"
             ],
             "properties": {
@@ -8292,9 +8400,9 @@
                 "const": "ready"
               },
               "created": {},
-              "artifactId": {},
               "targetPath": {},
-              "failedElementIds": {}
+              "failedElementIds": {},
+              "documentId": {}
             }
           },
           {
@@ -8306,7 +8414,7 @@
               "targetFingerprint",
               "missingElementIds",
               "pendingElementIds",
-              "artifactId",
+              "documentId",
               "targetPath"
             ],
             "properties": {
@@ -8317,9 +8425,9 @@
               "targetFingerprint": {},
               "missingElementIds": {},
               "pendingElementIds": {},
-              "artifactId": {},
               "targetPath": {},
-              "failedElementIds": {}
+              "failedElementIds": {},
+              "documentId": {}
             }
           },
           {
@@ -8330,7 +8438,7 @@
               "reasonCode",
               "reason",
               "targetFingerprint",
-              "artifactId",
+              "documentId",
               "targetPath"
             ],
             "properties": {
@@ -8340,8 +8448,28 @@
               "reasonCode": {},
               "reason": {},
               "targetFingerprint": {},
-              "artifactId": {},
-              "targetPath": {}
+              "targetPath": {},
+              "documentId": {}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "created",
+              "reasonCode",
+              "reason",
+              "documentId"
+            ],
+            "properties": {
+              "status": {
+                "const": "held"
+              },
+              "created": {},
+              "reasonCode": {},
+              "reason": {},
+              "documentId": {}
             }
           }
         ]
@@ -8458,7 +8586,7 @@
           "requestedTarget",
           "reportTarget",
           "scope",
-          "functionalArtifacts",
+          "functionalDocuments",
           "report"
         ],
         "properties": {
@@ -8477,14 +8605,14 @@
           "scope": {
             "type": "object"
           },
-          "functionalArtifacts": {
+          "report": {
+            "type": "object"
+          },
+          "functionalDocuments": {
             "type": "array",
             "items": {
               "type": "object"
             }
-          },
-          "report": {
-            "type": "object"
           }
         },
         "additionalProperties": false

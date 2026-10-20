@@ -12,9 +12,14 @@ impl PluginApplication for SemanticFixture {
         &self,
         capability_id: &str,
         input: Value,
-        _context: &mut PluginContext<'_>,
+        plugin_context: &mut PluginContext<'_>,
     ) -> Result<Value, PluginError> {
         match capability_id {
+            "ingest_index_batch" => {
+                // The test broker delegates to the real Semantic owner; no ingestion rules live here.
+                let output = plugin_context.host_call("fixture.semantic.ingest", input)?;
+                Ok(output["output"].clone())
+            }
             "get_semantic_tree" => Ok(tree()),
             "search_semantic_elements" => Ok(search()),
             "semantic_graph" => Ok(graph()),
