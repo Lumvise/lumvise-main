@@ -84,10 +84,10 @@ impl SemanticArtifactTask {
 #[serde(deny_unknown_fields)]
 struct SemanticArtifactRequest {
     semantic_element_id: String,
-    /// Accepted so workspace activity can link the job to its artifact
+    /// Accepted so workspace activity can link the job to its document
     /// (`project_execution::activity`); never part of the generation prompt.
-    #[serde(default, rename = "artifact_id")]
-    _artifact_id: Option<String>,
+    #[serde(default, rename = "document_id")]
+    _document_id: Option<String>,
     element_kind: String,
     name: String,
     path: String,
@@ -324,7 +324,7 @@ mod tests {
         std::fs::write(root.join("parser.rs"), "fn parse() {}\n").unwrap();
         SemanticArtifactRequest {
             semantic_element_id: "fn:parse".into(),
-            _artifact_id: None,
+            _document_id: None,
             element_kind: "function".into(),
             name: "parse".into(),
             path: "parser.rs".into(),
@@ -352,10 +352,10 @@ mod tests {
     }
 
     #[test]
-    fn prepared_task_accepts_artifact_id_without_putting_it_in_prompt() {
+    fn prepared_task_accepts_document_id_without_putting_it_in_prompt() {
         let root = TempDir::new().unwrap();
         request(root.path());
-        let input = json!({"semantic_element_id":"fn:parse", "artifact_id":"functional:parse", "element_kind":"function", "name":"parse", "path":"parser.rs", "start_line":1, "end_line":1, "content_fingerprint":"sha256:abc", "requested_artifact_kinds":["job","receives","outcome","effects"]});
+        let input = json!({"semantic_element_id":"fn:parse", "document_id":"functional:parse", "element_kind":"function", "name":"parse", "path":"parser.rs", "start_line":1, "end_line":1, "content_fingerprint":"sha256:abc", "requested_artifact_kinds":["job","receives","outcome","effects"]});
         let task = SemanticArtifactTask::prepare(input, root.path()).unwrap();
         assert!(!task.prompt().contains("functional:parse"));
     }

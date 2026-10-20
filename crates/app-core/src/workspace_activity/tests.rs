@@ -9,7 +9,7 @@ fn knowledge_entry(id: &str, project_root: &str) -> ActivityEntry {
         kind: ActivityKind::Knowledge,
         status: ActivityStatus::Queued,
         semantic_element_id: Some("function:parse".into()),
-        artifact_id: None,
+        document_id: None,
         detail: None,
     }
 }

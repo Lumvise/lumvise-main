@@ -474,7 +474,7 @@ fn target_input(element: &SemanticElement) -> Option<Value> {
         .filter(|line| *line >= start_line)?;
     (!fingerprint.is_empty() && !binary_source(&element.path)).then(|| {
         json!({
-            "artifact_id": crate::functional::document_id_for(element),
+            "document_id": crate::functional::document_id_for(element),
             "semantic_element_id": element.semantic_element_id,
             "element_kind": element.element_kind,
             "name": element.name,

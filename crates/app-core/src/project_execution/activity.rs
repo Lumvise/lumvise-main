@@ -31,7 +31,7 @@ impl ProjectExecutionState {
             semantic_element_id: request.input["semantic_element_id"]
                 .as_str()
                 .map(str::to_owned),
-            artifact_id: request.input["artifact_id"].as_str().map(str::to_owned),
+            document_id: request.input["document_id"].as_str().map(str::to_owned),
             detail: None,
         });
     }
@@ -67,7 +67,7 @@ mod tests {
             capability_id: "semantic.generate_functional_artifacts.v1".into(),
             idempotency_key: id.into(),
             priority: ProjectExecutionPriority::Interactive,
-            input: json!({"semantic_element_id": "function:parse", "artifact_id": "functional:parse", "name": "parse", "path": "src/parser.rs"}),
+            input: json!({"semantic_element_id": "function:parse", "document_id": "functional:parse", "name": "parse", "path": "src/parser.rs"}),
         }
     }
 
@@ -87,7 +87,7 @@ mod tests {
             .remove(0);
         assert_eq!(entry.status, ActivityStatus::Queued);
         assert_eq!(entry.semantic_element_id.as_deref(), Some("function:parse"));
-        assert_eq!(entry.artifact_id.as_deref(), Some("functional:parse"));
+        assert_eq!(entry.document_id.as_deref(), Some("functional:parse"));
         service
             .record_progress("provider", &job.job_id, "generating".into())
             .unwrap();

@@ -42,7 +42,7 @@ pub(crate) struct ActivityEntry {
     pub kind: ActivityKind,
     pub status: ActivityStatus,
     pub semantic_element_id: Option<String>,
-    pub artifact_id: Option<String>,
+    pub document_id: Option<String>,
     pub detail: Option<String>,
 }
 
@@ -60,7 +60,7 @@ impl ActivityEntry {
             kind,
             status: ActivityStatus::Queued,
             semantic_element_id: None,
-            artifact_id: None,
+            document_id: None,
             detail: None,
         }
     }
