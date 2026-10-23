@@ -15,7 +15,7 @@ use super::{super::records, rewrite};
 pub(super) fn kind(artifact: &Value) -> Option<KnowledgeDocumentKind> {
     let tags = artifact["metadata"]["knowledge"]["tags"].as_array();
     let tagged = |tag: &str| tags.is_some_and(|tags| tags.iter().any(|value| value == tag));
-    if tagged("canvas") {
+    if tagged("canvas") && is_legacy_canvas_scene(artifact["content"].as_str()) {
         return Some(KnowledgeDocumentKind::Canvas);
     }
     if tagged("ruleset") && tagged("agents") {
@@ -31,6 +31,16 @@ pub(super) fn kind(artifact: &Value) -> Option<KnowledgeDocumentKind> {
         }
         _ => Some(KnowledgeDocumentKind::Context),
     }
+}
+
+fn is_legacy_canvas_scene(content: Option<&str>) -> bool {
+    let Some(scene) = content.and_then(|content| serde_json::from_str::<Value>(content).ok())
+    else {
+        return false;
+    };
+    ["nodes", "edges", "layers"]
+        .iter()
+        .all(|field| scene.get(field).is_some_and(Value::is_array))
 }
 
 pub(super) fn document(

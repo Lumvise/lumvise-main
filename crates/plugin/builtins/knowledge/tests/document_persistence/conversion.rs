@@ -185,6 +185,44 @@ fn conversion_preview_is_read_only_and_retains_the_artifact_document_distinction
 }
 
 #[test]
+fn canvas_topic_tags_do_not_reclassify_plain_text_records() {
+    let mut host = seeded();
+    for kind in ["issue", "report", "specification"] {
+        legacy(
+            &mut host,
+            kind,
+            kind,
+            "Plain text about Canvas",
+            &["canvas"],
+        );
+    }
+    let preview = convert(&mut host, true).unwrap();
+    assert_eq!(preview["conversions"][0]["document_kind"], "context");
+    assert_eq!(preview["conversions"][1]["document_kind"], "report");
+    assert_eq!(preview["total"], 2);
+    assert_eq!(preview["retained"][0]["artifact_id"], "specification");
+}
+
+#[test]
+fn canvas_classification_requires_the_existing_scene_arrays() {
+    for (content, expected) in [
+        ("{", "context"),
+        ("[]", "context"),
+        (r#"{"nodes":[],"edges":[]}"#, "context"),
+        (r#"{"nodes":{},"edges":[],"layers":[]}"#, "context"),
+        (r#"{"nodes":[],"edges":[],"layers":[]}"#, "canvas"),
+    ] {
+        let mut host = seeded();
+        legacy(&mut host, "candidate", "issue", content, &["canvas"]);
+        let preview = convert(&mut host, true).unwrap();
+        assert_eq!(
+            preview["conversions"][0]["document_kind"], expected,
+            "content {content:?}; expected document kind {expected}"
+        );
+    }
+}
+
+#[test]
 fn conversion_preserves_lifecycle_metadata_source_and_links_without_creating_missions() {
     let mut host = seeded();
     legacy(&mut host, "report:a", "report", "# Human report", &[]);
