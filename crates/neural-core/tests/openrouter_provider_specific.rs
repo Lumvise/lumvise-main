@@ -419,6 +419,55 @@ fn openrouter_mcp_tool_calls_are_executed_through_scoped_server() {
 }
 
 #[test]
+fn openrouter_tool_result_uses_text_content_for_structured_and_recovered_calls() {
+    let text = "quoted \"text\" — line one\nline two";
+    for first_message in [
+        structured_tool_call_message(),
+        recovered_tool_call_message(),
+    ] {
+        let calls = openrouter_calls_for_tool_result(first_message, text);
+        assert_eq!(calls[1].payload["messages"][2]["content"], json!(text));
+    }
+}
+
+fn openrouter_calls_for_tool_result(first_message: Value, text: &str) -> Vec<LlmHttpRequest> {
+    let mcp = FakeMcpServer::spawn_with_result(
+        1,
+        json!({ "isError": false, "content": [{ "type": "text", "text": text }] }),
+    );
+    let http_client = OpenRouterFakeHttpClient::completion_sequence(vec![
+        json!({ "choices": [{ "message": first_message }] }),
+        json!({ "choices": [{ "message": { "content": "done" } }] }),
+    ]);
+    let registry = registry_with_client(http_client.clone());
+    let mut request = openrouter_request(false);
+    request.mcp_servers = vec![test_mcp_server(mcp.url())];
+    assert_eq!(
+        registry.complete("openrouter", &request).unwrap().content,
+        "done"
+    );
+    http_client.calls()
+}
+
+fn structured_tool_call_message() -> Value {
+    json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1",
+        "type":"function","function":{"name":"builtin_assistant__assistant_respond",
+        "arguments":"{\"content\":\"hi\"}"}}]})
+}
+
+fn recovered_tool_call_message() -> Value {
+    json!({"role":"assistant","content":
+        "call:builtin_assistant__assistant_respond{content:hi}"})
+}
+
+fn test_mcp_server(url: String) -> LlmMcpServerConfig {
+    LlmMcpServerConfig {
+        name: "test".to_string(),
+        url: format!("{url}/mcp"),
+    }
+}
+
+#[test]
 fn openrouter_completes_after_nine_tool_rounds_with_tools_enabled_throughout() {
     let tool_rounds = 9;
     let mcp = FakeMcpServer::spawn(tool_rounds);
@@ -570,6 +619,10 @@ struct FakeMcpServer {
 
 impl FakeMcpServer {
     fn spawn(tool_call_count: usize) -> Self {
+        Self::spawn_with_result(tool_call_count, json!({ "ok": true }))
+    }
+
+    fn spawn_with_result(tool_call_count: usize, tool_result: Value) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -579,7 +632,7 @@ impl FakeMcpServer {
         let handle = std::thread::spawn(move || {
             for _ in 0..=tool_call_count {
                 let (stream, _) = listener.accept().unwrap();
-                handle_mcp_connection(stream, &thread_calls, &thread_paths);
+                handle_mcp_connection(stream, &thread_calls, &thread_paths, &tool_result);
             }
         });
         Self {
@@ -607,6 +660,7 @@ fn handle_mcp_connection(
     mut stream: TcpStream,
     calls: &Arc<Mutex<Vec<String>>>,
     paths: &Arc<Mutex<Vec<String>>>,
+    tool_result: &Value,
 ) {
     let mut buffer = [0; 8192];
     let len = stream.read(&mut buffer).unwrap();
@@ -622,7 +676,7 @@ fn handle_mcp_connection(
     } else {
         let name = payload["params"]["name"].as_str().unwrap_or_default();
         calls.lock().unwrap().push(name.to_string());
-        json!({ "jsonrpc": "2.0", "id": payload["id"].clone(), "result": { "ok": true } })
+        json!({ "jsonrpc": "2.0", "id": payload["id"].clone(), "result": tool_result })
     };
     write_http_json(&mut stream, response);
 }

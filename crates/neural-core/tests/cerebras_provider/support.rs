@@ -24,6 +24,7 @@ pub struct CerebrasFakeHttpClient {
     completion_response: Value,
     completion_responses: Arc<Mutex<VecDeque<Value>>>,
     stream_chunks: Vec<String>,
+    stream_sequences: Arc<Mutex<VecDeque<Vec<String>>>>,
 }
 
 impl CerebrasFakeHttpClient {
@@ -33,6 +34,7 @@ impl CerebrasFakeHttpClient {
             completion_response: response,
             completion_responses: Arc::new(Mutex::new(VecDeque::new())),
             stream_chunks: Vec::new(),
+            stream_sequences: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -42,6 +44,7 @@ impl CerebrasFakeHttpClient {
             completion_response: json!({}),
             completion_responses: Arc::new(Mutex::new(VecDeque::from(responses))),
             stream_chunks: Vec::new(),
+            stream_sequences: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -51,6 +54,17 @@ impl CerebrasFakeHttpClient {
             completion_response: json!({}),
             completion_responses: Arc::new(Mutex::new(VecDeque::new())),
             stream_chunks: chunks,
+            stream_sequences: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub fn stream_sequence(rounds: Vec<Vec<String>>) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            completion_response: json!({}),
+            completion_responses: Arc::new(Mutex::new(VecDeque::new())),
+            stream_chunks: Vec::new(),
+            stream_sequences: Arc::new(Mutex::new(VecDeque::from(rounds))),
         }
     }
 
@@ -70,6 +84,9 @@ impl LlmHttpClient for CerebrasFakeHttpClient {
 
     fn stream_text(&self, request: &LlmHttpRequest) -> Result<Vec<String>> {
         self.calls.lock().unwrap().push(request.clone());
+        if let Some(round) = self.stream_sequences.lock().unwrap().pop_front() {
+            return Ok(round);
+        }
         Ok(self.stream_chunks.clone())
     }
 
@@ -202,6 +219,19 @@ pub fn completed_stream_events() -> Vec<LlmStreamEvent> {
 
 pub fn stream_delta(text: &str) -> String {
     sse_data(json!({ "choices": [{ "delta": { "content": text } }] }))
+}
+
+pub fn tool_call_stream_round(name: &str, arguments: &str) -> Vec<String> {
+    vec![sse_data(
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,
+        "id":"call-1","function":{"name":name,"arguments":arguments}}]},
+        "finish_reason":"tool_calls"}]}),
+    )]
+}
+
+pub fn final_text_stream_round(text: &str) -> Vec<String> {
+    vec![sse_data(json!({"choices":[{"delta":{"content":text},
+        "finish_reason":"stop"}]}))]
 }
 
 pub fn sse_data(value: Value) -> String {

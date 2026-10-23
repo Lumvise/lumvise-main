@@ -2,7 +2,7 @@
 mod support;
 
 use lumvise_neural_core::llm_providers::{
-    LlmMcpServerConfig, LlmModalityInputKind, LlmResponseFormat, LlmStreamEvent,
+    LlmMcpServerConfig, LlmModalityInputKind, LlmRequest, LlmResponseFormat, LlmStreamEvent,
 };
 use lumvise_neural_core::process::StreamControl;
 use lumvise_neural_core::{LlmProviderConfig, LlmProviderKind, NeuralError, SpawnConfig};
@@ -679,78 +679,34 @@ fn cerebras_never_delivers_a_malformed_native_tool_call_attempt() {
 #[test]
 fn cerebras_streaming_with_tools_emits_final_answer_events() {
     let mcp = FakeMcpServer::spawn(2);
-    let http_client = CerebrasFakeHttpClient::completion_sequence(vec![
-        json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": CEREBRAS_TEST_TOOL_NAME,
-                            "arguments": "{\"query\":\"stream\"}"
-                        }
-                    }]
-                }
-            }]
-        }),
-        json!({
-            "choices": [{ "message": { "content": "streamed final answer" } }]
-        }),
+    let http_client = CerebrasFakeHttpClient::stream_sequence(vec![
+        tool_call_stream_round(CEREBRAS_TEST_TOOL_NAME, "{\"query\":\"stream\"}"),
+        final_text_stream_round("streamed final answer"),
     ]);
     let registry = registry_with_client(http_client.clone());
-    let mut request = cerebras_request(true);
-    request.mcp_servers = vec![LlmMcpServerConfig {
-        name: "cerebras-tools".to_string(),
-        url: format!("{}/mcp/sse/builtin.tools/session-stream", mcp.url()),
-    }];
-
     let events = registry
-        .stream("cerebras", &request, StreamControl::unbounded())
+        .stream(
+            "cerebras",
+            &cerebras_streaming_mcp_request(mcp.url(), "session-stream"),
+            StreamControl::unbounded(),
+        )
         .unwrap();
-
-    assert_eq!(
-        events,
-        vec![
-            LlmStreamEvent::ContentDelta {
-                text: "streamed final answer".to_string()
-            },
-            LlmStreamEvent::Complete,
-        ]
-    );
+    assert_eq!(events, expected_streamed_final_answer());
     assert_eq!(mcp.tool_calls(), vec![CEREBRAS_TEST_TOOL_NAME.to_string()]);
 }
 
 #[test]
 fn cerebras_streaming_with_tools_reports_malformed_arguments_error() {
     let mcp = FakeMcpServer::spawn(1);
-    let http_client = CerebrasFakeHttpClient::completion_sequence(vec![json!({
-        "choices": [{
-            "message": {
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-bad",
-                    "type": "function",
-                    "function": {
-                        "name": CEREBRAS_TEST_TOOL_NAME,
-                        "arguments": "{broken"
-                    }
-                }]
-            }
-        }]
-    })]);
+    let bad_stream = tool_call_stream_round(CEREBRAS_TEST_TOOL_NAME, "{broken");
+    let http_client = CerebrasFakeHttpClient::stream_sequence(vec![bad_stream]);
     let registry = registry_with_client(http_client.clone());
-    let mut request = cerebras_request(true);
-    request.mcp_servers = vec![LlmMcpServerConfig {
-        name: "cerebras-tools".to_string(),
-        url: format!("{}/mcp/sse/builtin.tools/session-bad-stream", mcp.url()),
-    }];
-
     let error = registry
-        .stream("cerebras", &request, StreamControl::unbounded())
+        .stream(
+            "cerebras",
+            &cerebras_streaming_mcp_request(mcp.url(), "session-bad-stream"),
+            StreamControl::unbounded(),
+        )
         .unwrap_err()
         .to_string();
 
@@ -759,4 +715,22 @@ fn cerebras_streaming_with_tools_reports_malformed_arguments_error() {
         "error was: {error}"
     );
     assert!(mcp.tool_calls().is_empty());
+}
+
+fn cerebras_streaming_mcp_request(mcp_url: String, session: &str) -> LlmRequest {
+    let mut request = cerebras_request(true);
+    request.mcp_servers.push(LlmMcpServerConfig {
+        name: "cerebras-tools".to_string(),
+        url: format!("{mcp_url}/mcp/sse/builtin.tools/{session}"),
+    });
+    request
+}
+
+fn expected_streamed_final_answer() -> Vec<LlmStreamEvent> {
+    vec![
+        LlmStreamEvent::ContentDelta {
+            text: "streamed final answer".to_string(),
+        },
+        LlmStreamEvent::Complete,
+    ]
 }

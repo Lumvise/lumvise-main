@@ -20,10 +20,13 @@ use std::sync::Arc;
 
 mod catalog;
 mod streamed_response;
+// Keep structured and recovered tool calls on the same rendering rule.
+mod tool_result_content;
 mod tool_stream;
 mod turn_completion;
 
 use streamed_response::StreamedToolResponse;
+use tool_result_content::render_tool_result_content;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OpenAiCompatibleProviderSpec {
@@ -564,7 +567,7 @@ fn append_recovered_tool_call(
     messages.push(json!({
         "role": "tool",
         "tool_call_id": RECOVERED_CALL_ID,
-        "content": serde_json::to_string(&call.result).unwrap_or_else(|_| "{}".to_string()),
+        "content": render_tool_result_content(&call.result),
     }));
 }
 
@@ -606,7 +609,7 @@ fn execute_tool_call(
     Ok(json!({
         "role": "tool",
         "tool_call_id": id,
-        "content": serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+        "content": render_tool_result_content(&result),
     }))
 }
 
