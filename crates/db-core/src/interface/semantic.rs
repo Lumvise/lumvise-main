@@ -39,6 +39,9 @@ pub enum SemanticOperation {
         project_root: String,
         partition_paths: Vec<String>,
         page_count: usize,
+        /// The producer whose current records may be replaced at commit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_instance_id: Option<String>,
     },
     StageProjectSnapshot {
         snapshot_id: String,

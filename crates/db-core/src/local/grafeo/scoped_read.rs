@@ -60,6 +60,10 @@ impl GraphViewSource for GrafeoViewSource<'_> {
         self.store
             .location_elements(self.graph, root, path, line, inactive)
     }
+    fn path_prefix(&self, root: &str, prefix: &str, inactive: bool) -> Vec<SemanticElement> {
+        self.store
+            .path_prefix_elements(self.graph, root, prefix, inactive)
+    }
     fn edges(
         &self,
         root: &str,

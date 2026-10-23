@@ -12,6 +12,7 @@ pub(crate) mod graph_rows;
 pub(crate) mod graph_store;
 mod lifecycle;
 mod media;
+mod path_index;
 mod project_counts;
 mod scoped_read;
 pub(crate) mod semantic_graph_projection;

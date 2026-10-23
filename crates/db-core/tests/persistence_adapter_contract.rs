@@ -207,6 +207,7 @@ fn local_persistence_shares_fresh_composition_and_executes_both_contracts() {
     SemanticPersistence::execute(
         graph,
         SemanticOperation::BeginProjectSnapshot {
+            provider_instance_id: None,
             snapshot_id: "snapshot-1".into(),
             project_root: "/project".into(),
             partition_paths: vec![],

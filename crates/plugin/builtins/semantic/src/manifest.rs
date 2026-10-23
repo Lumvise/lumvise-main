@@ -234,7 +234,7 @@ pub(crate) fn source(target: &str, executable_sha256: &str) -> PluginManifest {
             },
             HostCapabilityRequirement {
                 id: "storage.semantic".into(),
-                version: "^1.3.0".into(),
+                version: "^1.5.0".into(),
             },
             HostCapabilityRequirement {
                 id: "semantic.snapshot".into(),

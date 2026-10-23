@@ -1,6 +1,6 @@
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub(crate) const ELEMENTS: &str = "semantic_elements";
@@ -56,6 +56,44 @@ pub(crate) fn structure_snapshot<E: DeserializeOwned, R: DeserializeOwned>(
         }}),
     )
     .map_err(|error| map_snapshot_scope_error(error, scope))
+}
+
+pub(crate) fn project_artifacts(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+) -> Result<Vec<Value>, PluginError> {
+    let mut artifacts: Vec<Map<String, Value>> = semantic_array(
+        context,
+        json!({"operation": "project_artifacts", "project_root": project_root,
+            "artifact_namespace": null}),
+        "artifacts",
+    )?;
+    for artifact in &mut artifacts {
+        artifact.insert(
+            "project_root".to_owned(),
+            Value::String(project_root.to_owned()),
+        );
+    }
+    Ok(artifacts.into_iter().map(Value::Object).collect())
+}
+
+pub(crate) fn semantic_revision(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+) -> Result<i64, PluginError> {
+    let output = context.host_call(
+        SEMANTIC_CAPABILITY,
+        json!({"operation": "semantic_revision", "project_root": project_root}),
+    )?;
+    output["commit_version"].as_i64().ok_or_else(|| {
+        PluginError::new(
+            "invalid_semantic_storage",
+            format!(
+                "invalid semantic revision response `{output}`; expected integer commit_version"
+            ),
+            false,
+        )
+    })
 }
 
 pub(crate) fn location_snapshot<E: DeserializeOwned, R: DeserializeOwned>(
@@ -174,29 +212,18 @@ const PAGE_LIMIT: usize = 500;
 const MUTATION_PAGE_LIMIT: usize = 500;
 const MUTATION_PAGE_BYTES: usize = 1024 * 1024;
 
-pub(crate) fn sync_structure<T: Serialize, R: Serialize>(
-    context: &mut PluginContext<'_>,
-    project_root: &str,
-    elements: &[T],
-    relationships: &[R],
-) -> Result<Value, PluginError> {
-    context.host_call(
-        SEMANTIC_CAPABILITY,
-        json!({"operation": "sync_structure", "project_root": project_root,
-            "elements": elements, "relationships": relationships}),
-    )
-}
-
 pub(crate) fn begin_project_snapshot(
     context: &mut PluginContext<'_>,
     snapshot_id: &str,
     project_root: &str,
+    provider_instance_id: &str,
     partition_paths: &[String],
     page_count: usize,
 ) -> Result<(), PluginError> {
     context.host_call(
         SEMANTIC_CAPABILITY,
         json!({"operation": "begin_project_snapshot", "snapshot_id": snapshot_id,
+            "provider_instance_id": provider_instance_id,
             "project_root": project_root, "partition_paths": partition_paths,
             "page_count": page_count}),
     )?;
@@ -231,6 +258,7 @@ pub(crate) fn commit_project_snapshot(
 pub(crate) fn sync_partition<T: Serialize, R: Serialize>(
     context: &mut PluginContext<'_>,
     project_root: &str,
+    provider_instance_id: &str,
     replace_paths: &[String],
     elements: &[T],
     relationships: &[R],
@@ -238,6 +266,7 @@ pub(crate) fn sync_partition<T: Serialize, R: Serialize>(
     context.host_call(
         SEMANTIC_CAPABILITY,
         json!({"operation": "sync_partition", "partition": {
+            "provider_instance_id": provider_instance_id,
             "project_root": project_root, "replace_paths": replace_paths},
             "elements": elements, "relationships": relationships}),
     )

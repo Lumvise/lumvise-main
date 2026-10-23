@@ -47,6 +47,7 @@ impl LocalPersistence {
 struct StagedProjectSnapshot {
     project_root: String,
     partition_paths: Vec<String>,
+    provider_instance_id: Option<String>,
     page_count: usize,
     pages: HashMap<
         usize,
@@ -141,7 +142,16 @@ impl SemanticPersistence for LocalPersistence {
                 project_root,
                 partition_paths,
                 page_count,
+                provider_instance_id,
             } => {
+                if provider_instance_id.is_some() {
+                    crate::SemanticPartition {
+                        project_root: project_root.clone(),
+                        replace_paths: partition_paths.clone(),
+                        provider_instance_id: provider_instance_id.clone(),
+                    }
+                    .validate()?;
+                }
                 if page_count == 0 {
                     return Err(DbError::invalid_value(
                         "0",
@@ -163,6 +173,7 @@ impl SemanticPersistence for LocalPersistence {
                     StagedProjectSnapshot {
                         project_root,
                         partition_paths,
+                        provider_instance_id,
                         page_count,
                         pages: HashMap::new(),
                     },
@@ -200,7 +211,7 @@ impl SemanticPersistence for LocalPersistence {
                 })
             }
             SemanticOperation::CommitProjectSnapshot { snapshot_id } => {
-                let (project_root, partition_paths, page_count, pages) = {
+                let (project_root, partition_paths, provider_instance_id, page_count, pages) = {
                     let snapshots = self.staged_snapshots.lock().map_err(|_| {
                         DbError::Grafeo("snapshot staging registry poisoned".into())
                     })?;
@@ -210,6 +221,7 @@ impl SemanticPersistence for LocalPersistence {
                     (
                         snapshot.project_root.clone(),
                         snapshot.partition_paths.clone(),
+                        snapshot.provider_instance_id.clone(),
                         snapshot.page_count,
                         snapshot.pages.clone(),
                     )
@@ -229,13 +241,14 @@ impl SemanticPersistence for LocalPersistence {
                     relationships.extend(page_relationships);
                 }
                 let elements = coalesce_staged_elements(elements)?;
-                let report = if partition_paths.is_empty() {
+                let report = if partition_paths.is_empty() && provider_instance_id.is_none() {
                     storage.sync_semantic_structure(&project_root, &elements, &relationships)?
                 } else {
                     storage.sync_semantic_partition(
                         &crate::SemanticPartition {
                             project_root,
                             replace_paths: partition_paths,
+                            provider_instance_id,
                         },
                         &elements,
                         &relationships,

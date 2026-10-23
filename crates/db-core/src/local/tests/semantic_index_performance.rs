@@ -58,6 +58,7 @@ fn semantic_partition_sync_updates_only_the_requested_partition() {
         .unwrap();
 
     let partition = SemanticPartition {
+        provider_instance_id: None,
         project_root: "/repo".to_string(),
         replace_paths: vec!["src/module_42.rs".to_string()],
     };
@@ -157,6 +158,7 @@ fn persistent_semantic_partition_sync_survives_reopen() {
         .unwrap();
 
     let partition = SemanticPartition {
+        provider_instance_id: None,
         project_root: "/repo".to_string(),
         replace_paths: vec!["src/module_42.rs".to_string()],
     };

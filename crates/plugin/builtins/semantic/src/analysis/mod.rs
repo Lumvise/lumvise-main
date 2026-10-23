@@ -75,6 +75,9 @@ pub(crate) fn invoke(
     if request.limit == 0 {
         return Err(invalid("0", "positive limit"));
     }
+    if id == "get_code_snippet" {
+        return source::snippet(&request, context);
+    }
     let mut snapshot = active_snapshot(&request, context)?;
     if id == "ingest_runtime_trace" {
         return traces::ingest(&request, &snapshot, context);
@@ -139,7 +142,6 @@ fn dispatch(
         "get_graph_schema" => Ok(metrics::schema(snapshot)),
         "get_graph_metrics" => metrics::metrics(request, snapshot),
         "check_index_coverage" => metrics::coverage(request, snapshot),
-        "get_code_snippet" => source::snippet(request, snapshot, context),
         "search_code" => source::search(request, snapshot, context),
         "get_git_impact" => source::impact(request, snapshot, context),
         _ => Err(PluginError::unknown_capability(id)),

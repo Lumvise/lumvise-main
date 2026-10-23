@@ -20,6 +20,7 @@ pub(crate) use media_artifacts::media_kind;
 pub(crate) use media_artifacts::{MediaAssociationSource, artifact_inheritance_from_source};
 pub(crate) use projection_records::{BatchedGraphRows, ProjectionArtifact, ProjectionElement};
 pub(crate) use scoped::{GraphViewSource, scoped_from_source};
+pub(crate) use snapshot_source::{element_contains_line, normalized_path};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 impl SemanticProjectSnapshot {
     /// Builds a complete renderer graph using the same rules as local persistence.

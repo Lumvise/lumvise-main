@@ -394,10 +394,20 @@ fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
         SemanticOperation::ProjectArchive { .. } => "ProjectArchive",
         SemanticOperation::CreatePzSnapshot { .. } => "CreatePzSnapshot",
         SemanticOperation::SyncStructure { .. } => "SyncStructure",
+        SemanticOperation::BeginProjectSnapshot {
+            provider_instance_id: Some(_),
+            ..
+        } => "BeginProviderSnapshot",
         SemanticOperation::BeginProjectSnapshot { .. } => "BeginProjectSnapshot",
         SemanticOperation::StageProjectSnapshot { .. } => "StageProjectSnapshot",
         SemanticOperation::CommitProjectSnapshot { .. } => "CommitProjectSnapshot",
         SemanticOperation::AbortProjectSnapshot { .. } => "AbortProjectSnapshot",
+        // A decoder that discards ownership must fail verify_name, never publish unscoped.
+        SemanticOperation::SyncPartition { partition, .. }
+            if partition.provider_instance_id.is_some() =>
+        {
+            "SyncProviderPartition"
+        }
         SemanticOperation::SyncPartition { .. } => "SyncPartition",
         SemanticOperation::Element { .. } => "Element",
         SemanticOperation::ElementsByIds { .. } => "ElementsByIds",

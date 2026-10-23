@@ -72,6 +72,7 @@ fn staged_pages_reject_conflicting_ids_at_commit() {
     execute(
         &persistence,
         SemanticOperation::BeginProjectSnapshot {
+            provider_instance_id: None,
             snapshot_id: "duplicate-pages".into(),
             project_root: "/repo".into(),
             partition_paths: vec![],
@@ -114,6 +115,7 @@ fn staged_pages_coalesce_identical_source_records() {
     execute(
         &persistence,
         SemanticOperation::BeginProjectSnapshot {
+            provider_instance_id: None,
             snapshot_id: "repeated-source".into(),
             project_root: "/repo".into(),
             partition_paths: vec![],
@@ -269,6 +271,7 @@ fn sync_request(
     if partition {
         return SemanticOperation::SyncPartition {
             partition: SemanticPartition {
+                provider_instance_id: None,
                 project_root: "/repo".into(),
                 replace_paths: vec!["src".into()],
             },

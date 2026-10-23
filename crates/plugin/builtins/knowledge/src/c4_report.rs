@@ -80,12 +80,9 @@ pub(crate) fn report_id(target_id: &str) -> String {
 
 /// Change key for the report's inputs.
 ///
-/// Elements and contexts stay itemised — the scope caps them at
-/// `MAX_C4_ELEMENTS` — but relationships are unbounded: a wide folder target
-/// reaches tens of thousands, and listing them verbatim produced an 11 MB
-/// string that was sorted, joined, persisted in metadata and re-serialised on
-/// every freshness check. They are folded into one digest instead, which
-/// detects exactly the same changes at a bounded size.
+/// Whole-project inputs arrive before the report's display cap. Hash the complete
+/// sorted key so element and context IDs cannot exceed the graph value limit
+/// when this opaque freshness marker is persisted in report metadata.
 pub(crate) fn fingerprint(
     elements: &[SemanticElement],
     relationships: &[SemanticRelationship],
@@ -117,7 +114,10 @@ pub(crate) fn fingerprint(
         relationships.len(),
         relationship_digest(relationships)
     ));
-    parts.join("|")
+    format!(
+        "c4-inputs:{}",
+        functional::stable_content_hash(&parts.join("|"))
+    )
 }
 
 /// Digest over the relationship set. Per-edge hashes are sorted numerically
@@ -385,7 +385,6 @@ mod tests {
             .collect::<Vec<_>>();
         let key = fingerprint(&[], &relationships, &[]);
         assert!(key.len() < 512, "fingerprint length {}", key.len());
-        assert!(key.contains("relationships:44000:"));
     }
 
     #[test]
@@ -428,6 +427,41 @@ mod tests {
             lifecycle: "active".into(),
             metadata: json!({}),
         }
+    }
+
+    #[test]
+    fn fingerprint_stays_small_for_a_project_sized_element_set() {
+        let elements = (0..100_000)
+            .map(|index| {
+                element(
+                    &format!("filesystem:project:crates/application/renderer/workspace/modules/component_{index}.rs:function:component_{index}:"),
+                    "function",
+                    "component",
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        let key = fingerprint(&elements, &[], &[]);
+        assert!(
+            key.len() < 512,
+            "fingerprint length {}; expected less than 512",
+            key.len()
+        );
+    }
+
+    #[test]
+    fn fingerprint_reacts_to_element_changes_but_not_to_store_order() {
+        let one = element("one", "function", "One", None);
+        let mut two = element("two", "function", "Two", None);
+        let original = fingerprint(&[one.clone(), two.clone()], &[], &[]);
+        assert_eq!(original, fingerprint(&[two.clone(), one.clone()], &[], &[]));
+        assert_ne!(original, fingerprint(&[one.clone()], &[], &[]));
+        assert_ne!(
+            original,
+            fingerprint(&[one.clone(), two.clone(), two.clone()], &[], &[])
+        );
+        two.content_fingerprint = Some("changed-content".into());
+        assert_ne!(original, fingerprint(&[one, two], &[], &[]));
     }
 
     /// Converted documents index their sections as `markdown_section` and

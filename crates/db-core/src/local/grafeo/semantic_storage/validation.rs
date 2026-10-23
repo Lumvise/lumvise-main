@@ -81,6 +81,7 @@ pub(super) fn elements_in_partition(
     replace_paths: &[String],
 ) -> Vec<SemanticElement> {
     let partition = SemanticPartition {
+        provider_instance_id: None,
         project_root: String::new(),
         replace_paths: replace_paths.to_vec(),
     };

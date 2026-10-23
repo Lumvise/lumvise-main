@@ -673,6 +673,7 @@ fn semantic_partition_sync_preserves_unrelated_graph_regions() {
         .unwrap();
 
     let partition = SemanticPartition {
+        provider_instance_id: None,
         project_root: "/repo".to_string(),
         replace_paths: vec!["src/a.rs".to_string()],
     };

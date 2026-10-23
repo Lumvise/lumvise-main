@@ -30,6 +30,8 @@ pub(crate) struct FakeDocumentGraph {
     pub(crate) embeddings: FakeDocumentEmbeddings,
     pub(crate) reject_unscoped_reads: bool,
     pub(crate) targeted_reads: Vec<Value>,
+    /// Kinds of every `scoped_read` request, in order (`Structure`, `Location`, `PathPrefix`).
+    pub(crate) scoped_read_kinds: Vec<String>,
     fault: Option<(&'static str, usize)>,
 }
 
@@ -156,9 +158,29 @@ impl FakeDocumentGraph {
 
     /// The portable scoped selectors: `Structure` lists one project; `Location` resolves one exact path,
     /// where a record without a span matches every line, as the real path index does.
-    pub(crate) fn scoped(&self, input: &Value) -> Value {
+    pub(crate) fn scoped(&mut self, input: &Value) -> Value {
+        let kind = input["request"]
+            .as_object()
+            .and_then(|kinds| kinds.keys().next());
+        self.scoped_read_kinds
+            .push(kind.cloned().unwrap_or_default());
         if let Some(location) = input["request"].get("Location") {
             return self.location(location);
+        }
+        if let Some(prefix) = input["request"].get("PathPrefix") {
+            let root = &prefix["project_root"];
+            let elements: Vec<&Value> = self
+                .elements
+                .values()
+                .filter(|row| {
+                    &row["project_root"] == root
+                        && row["path"].as_str().is_some_and(|path| {
+                            path.starts_with(prefix["prefix"].as_str().unwrap_or("\0"))
+                        })
+                        && (prefix["include_inactive"] == true || row["lifecycle"] != "inactive")
+                })
+                .collect();
+            return json!({"project_root": root, "elements": elements, "relationships": []});
         }
         let root = &input["request"]["Structure"]["scope"]["project_root"];
         let elements: Vec<&Value> = self

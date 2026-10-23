@@ -528,7 +528,7 @@ fn descriptor(id: &str, name: &str, surface: ExportSurface) -> ExportDescriptor 
 fn host_capabilities() -> Vec<HostCapabilityRequirement> {
     [
         ("storage.plugin", "^1.0"),
-        ("storage.semantic", "^1.4.0"),
+        ("storage.semantic", "^1.5.0"),
         ("plugin.invoke", "^1.0"),
         ("neural.embed", "^1.0"),
         ("neural.llm", "^1.0"),

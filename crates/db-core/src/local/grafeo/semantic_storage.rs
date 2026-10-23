@@ -14,7 +14,7 @@ use crate::local::grafeo::graph_rows::{
     project_artifacts_selective, semantic_artifact_by_id, semantic_artifacts_for_elements,
     semantic_element_by_id, semantic_elements_for_paths_including_inactive,
     semantic_elements_for_project_including_inactive, semantic_relationships_for_project_edges,
-    semantic_relationships_from_many_native_edges, semantic_relationships_from_native_edges,
+    semantic_relationships_for_sources, semantic_relationships_from_native_edges,
     semantic_relationships_touching_elements,
 };
 #[cfg(test)]
@@ -136,6 +136,7 @@ impl<'db> SemanticStorage<'db> {
         }
     }
 }
+mod provider_selection;
 mod reads;
 mod sync;
 mod validation;

@@ -281,8 +281,8 @@ pub(super) fn project_elements(
     Ok(scoped_elements(
         context,
         root,
-        json!({"Structure": {"scope": {"project_root": root},
-        "max_depth":0,"include_inactive":include_deleted}}),
+        json!({"PathPrefix": {"project_root": root, "prefix": format::PATH_PREFIX,
+        "include_inactive": include_deleted}}),
     )?
     .into_iter()
     .filter(|element| element["project_root"] == root)

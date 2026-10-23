@@ -127,6 +127,7 @@ fn shared_artifact_validation_matches_shell_and_owner_rules() {
 #[test]
 fn shared_partition_validation_and_selection_match_existing_rules() {
     let partition = SemanticPartition {
+        provider_instance_id: None,
         project_root: "/repo".into(),
         replace_paths: vec!["src/".into()],
     };
@@ -136,14 +137,17 @@ fn shared_partition_validation_and_selection_match_existing_rules() {
     assert!(!partition.contains_path("src2/a.rs"));
     for partition in [
         SemanticPartition {
+            provider_instance_id: None,
             project_root: " ".into(),
             replace_paths: vec!["src".into()],
         },
         SemanticPartition {
+            provider_instance_id: None,
             project_root: "/repo".into(),
             replace_paths: vec![],
         },
         SemanticPartition {
+            provider_instance_id: None,
             project_root: "/repo".into(),
             replace_paths: vec![" ".into()],
         },

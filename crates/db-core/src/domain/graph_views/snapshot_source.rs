@@ -77,14 +77,18 @@ impl GraphViewSource for SemanticProjectSnapshot {
                 element.project_root == root
                     && path.is_some_and(|path| normalized_path(&element.path) == path)
                     && (inactive || element.lifecycle == "active")
-                    && element
-                        .start_line
-                        .filter(|value| *value >= 0)
-                        .is_none_or(|start| start <= line)
-                    && element
-                        .end_line
-                        .filter(|value| *value >= 0)
-                        .is_none_or(|end| end >= line)
+                    && element_contains_line(element, line)
+            })
+            .cloned()
+            .collect()
+    }
+    fn path_prefix(&self, root: &str, prefix: &str, inactive: bool) -> Vec<SemanticElement> {
+        self.elements
+            .iter()
+            .filter(|element| {
+                element.project_root == root
+                    && element.path.starts_with(prefix)
+                    && (inactive || element.lifecycle == "active")
             })
             .cloned()
             .collect()
@@ -98,8 +102,19 @@ impl GraphViewSource for SemanticProjectSnapshot {
             .count()
     }
 }
-fn normalized_path(path: &str) -> &str {
+pub(crate) fn normalized_path(path: &str) -> &str {
     path.trim().trim_start_matches("./").trim_start_matches('/')
+}
+
+pub(crate) fn element_contains_line(element: &SemanticElement, line: i64) -> bool {
+    element
+        .start_line
+        .filter(|value| *value >= 0)
+        .is_none_or(|start| start <= line)
+        && element
+            .end_line
+            .filter(|value| *value >= 0)
+            .is_none_or(|end| end >= line)
 }
 
 /// Per-read indexes keep complete subtree traversal linear in graph size.
@@ -191,5 +206,8 @@ impl GraphViewSource for SnapshotGraphIndex<'_> {
     }
     fn scope_count(&self, root: &str, inactive: bool) -> usize {
         self.snapshot.scope_count(root, inactive)
+    }
+    fn path_prefix(&self, root: &str, prefix: &str, inactive: bool) -> Vec<SemanticElement> {
+        self.snapshot.path_prefix(root, prefix, inactive)
     }
 }

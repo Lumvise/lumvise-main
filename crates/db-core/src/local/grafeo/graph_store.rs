@@ -1,15 +1,22 @@
 use super::element_lookup::SemanticElementLookup;
+use super::path_index::ElementPathIndex;
 use crate::{
     DbError, Result, SemanticElement, SemanticGraphProjection, SemanticGraphProjectionRequest,
 };
 use grafeo::{EdgeId, GrafeoDB, NodeId, Session, Value as GrafeoValue};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
-pub(crate) struct GraphStore {
+/// Owns the shared graph state; dropping it waits for any background checkpoint.
+pub(crate) struct GraphStore(Arc<GraphState>);
+
+pub(crate) struct GraphState {
+    /// Lets a commit hand its background checkpoint an owning handle.
+    weak_self: Weak<GraphState>,
     database: Arc<GrafeoDB>,
     graph_gate: RwLock<()>,
     write_admission: Mutex<()>,
@@ -21,10 +28,15 @@ pub(crate) struct GraphStore {
     // Search/path caches depend on semantic nodes, not artifact/vector writes.
     element_revision: AtomicU64,
     committed_semantic_entities: AtomicUsize,
+    /// Node + edge count taken after the last successful checkpoint; counting
+    /// scans the graph, so it is never refreshed per commit.
+    graph_entities: AtomicUsize,
+    automatic_checkpoint: Mutex<AutomaticCheckpoint>,
     last_checkpoint_error: Mutex<Option<String>>,
     work: GraphWork,
     projection_cache: Mutex<VecDeque<CachedProjection>>,
     element_lookup: Mutex<SemanticElementLookup>,
+    path_index: Mutex<ElementPathIndex>,
     /// A Grafeo commit whose SQL publication failed leaves graph bytes ahead
     /// of the SQL revision; stable reads stay closed until a later publication
     /// succeeds over the current graph.
@@ -32,7 +44,19 @@ pub(crate) struct GraphStore {
 }
 
 const SEMANTIC_ENTITIES_PER_CHECKPOINT: usize = 1_000;
+const CHECKPOINT_GRAPH_FRACTION: usize = 10;
 const PROJECTION_CACHE_CAPACITY: usize = 8;
+
+/// At most one automatic checkpoint runs at a time, on this background thread.
+#[derive(Default)]
+struct AutomaticCheckpoint {
+    running: bool,
+    handle: Option<JoinHandle<()>>,
+}
+
+fn checkpoint_threshold(graph_entities: usize) -> usize {
+    (graph_entities / CHECKPOINT_GRAPH_FRACTION).max(SEMANTIC_ENTITIES_PER_CHECKPOINT)
+}
 
 struct CachedProjection {
     commit_version: i64,
@@ -65,6 +89,8 @@ struct GraphWork {
     stable_read_attempts: AtomicUsize,
     #[cfg(test)]
     checkpoint_probe: Mutex<Option<CheckpointProbe>>,
+    #[cfg(test)]
+    checkpoints_started: AtomicUsize,
 }
 
 #[cfg(test)]
@@ -96,13 +122,17 @@ pub(crate) struct GraphTransaction<'graph> {
     semantic_node_ids: RefCell<BTreeMap<String, NodeId>>,
     semantic_labels: RefCell<HashMap<NodeId, bool>>,
     elements_changed: Cell<bool>,
+    /// Element nodes this transaction created or changed, and those it deleted.
+    touched_elements: RefCell<HashSet<u64>>,
+    deleted_elements: RefCell<HashSet<u64>>,
     #[cfg(test)]
     work: &'graph GraphWork,
 }
 
 impl GraphStore {
     pub(crate) fn new(database: GrafeoDB) -> Self {
-        Self {
+        Self(Arc::new_cyclic(|weak_self| GraphState {
+            weak_self: weak_self.clone(),
             database: Arc::new(database),
             graph_gate: RwLock::new(()),
             write_admission: Mutex::new(()),
@@ -110,14 +140,33 @@ impl GraphStore {
             revision: AtomicU64::new(0),
             element_revision: AtomicU64::new(0),
             committed_semantic_entities: AtomicUsize::new(0),
+            graph_entities: AtomicUsize::new(0),
+            automatic_checkpoint: Mutex::new(AutomaticCheckpoint::default()),
             last_checkpoint_error: Mutex::new(None),
             projection_cache: Mutex::new(VecDeque::with_capacity(PROJECTION_CACHE_CAPACITY)),
             element_lookup: Mutex::new(SemanticElementLookup::default()),
+            path_index: Mutex::new(ElementPathIndex::default()),
             semantic_publication_failure: Mutex::new(None),
             work: GraphWork::default(),
-        }
+        }))
     }
+}
 
+impl std::ops::Deref for GraphStore {
+    type Target = GraphState;
+
+    fn deref(&self) -> &GraphState {
+        &self.0
+    }
+}
+
+impl Drop for GraphStore {
+    fn drop(&mut self) {
+        self.0.join_automatic_checkpoint();
+    }
+}
+
+impl GraphState {
     // One full diff at a time: concurrent planners otherwise repeatedly invalidate
     // each other. Readers still use the independent graph gate.
     pub(crate) fn lock_structure_sync(
@@ -198,19 +247,22 @@ impl GraphStore {
         let Some(path) = path else {
             return Vec::new();
         };
-        let ids = self
-            .element_lookup
+        let mut index = self
+            .path_index
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .select_path(
-                graph,
-                self.element_revision.load(Ordering::Acquire),
-                project_root,
-                path,
-                line,
-                include_inactive,
-            );
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !index.is_built() {
+            index.rebuild(graph);
+        }
+        let ids = index.select_location(project_root, path);
+        drop(index);
         super::graph_rows::selective_elements(graph, &ids, Some(project_root), true)
+            .into_iter()
+            .filter(|element| {
+                (include_inactive || element.lifecycle == "active")
+                    && crate::domain::graph_views::element_contains_line(element, line)
+            })
+            .collect()
     }
 
     /// Materializes a complete read while graph writers are excluded.
@@ -334,36 +386,126 @@ impl GraphStore {
 
     /// Checkpoints a published graph while allowing stable readers to proceed.
     pub(crate) fn checkpoint(&self) -> Result<()> {
+        self.join_automatic_checkpoint();
         self.checkpoint_published_graph(false)
     }
 
     fn checkpoint_published_graph(&self, automatic: bool) -> Result<()> {
+        let started = Instant::now();
         // Writers wait here, not on the RwLock: a queued writer must not block new readers.
         let _admission = self
             .write_admission
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let _snapshot = self.graph_gate.read().unwrap_or_else(|p| p.into_inner());
-        if automatic
-            && self.committed_semantic_entities.load(Ordering::Acquire)
-                < SEMANTIC_ENTITIES_PER_CHECKPOINT
-        {
+        if automatic && !self.checkpoint_due() {
             return Ok(());
         }
+        #[cfg(test)]
+        self.work
+            .checkpoints_started
+            .fetch_add(1, Ordering::Relaxed);
+        tracing::info!(
+            event = "grafeo_checkpoint_started",
+            automatic,
+            admission_wait_ms = started.elapsed().as_millis() as u64,
+            changed_entities = self.committed_semantic_entities.load(Ordering::Acquire)
+        );
         #[cfg(test)]
         if let Some(probe) = self.work.checkpoint_probe.lock().unwrap().take() {
             probe.entered.send(()).unwrap();
             probe.release.recv().unwrap();
         }
-        self.database
+        let result = self
+            .database
             .wal_checkpoint()
-            .map_err(|error| DbError::Grafeo(format!("wal_checkpoint failed: {error}")))?;
+            .map_err(|error| DbError::Grafeo(format!("wal_checkpoint failed: {error}")));
+        tracing::info!(
+            event = "grafeo_checkpoint_finished",
+            automatic,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            success = result.is_ok()
+        );
+        result?;
         self.committed_semantic_entities.store(0, Ordering::Release);
+        self.graph_entities.store(
+            self.database.node_count() + self.database.edge_count(),
+            Ordering::Release,
+        );
         *self
             .last_checkpoint_error
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = None;
         Ok(())
+    }
+
+    fn checkpoint_due(&self) -> bool {
+        self.committed_semantic_entities.load(Ordering::Acquire)
+            >= checkpoint_threshold(self.graph_entities.load(Ordering::Acquire))
+    }
+
+    /// Starts the background checkpoint unless one is already in flight; that
+    /// one re-checks the counter when it finishes.
+    fn schedule_automatic_checkpoint(&self) {
+        let mut worker = self
+            .automatic_checkpoint
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if worker.running {
+            return;
+        }
+        let Some(state) = self.weak_self.upgrade() else {
+            return;
+        };
+        // The previous thread cleared `running` and is exiting.
+        if let Some(finished) = worker.handle.take() {
+            let _ = finished.join();
+        }
+        match std::thread::Builder::new()
+            .name("grafeo-checkpoint".into())
+            .spawn(move || state.run_automatic_checkpoints())
+        {
+            Ok(handle) => {
+                worker.running = true;
+                worker.handle = Some(handle);
+            }
+            Err(error) => tracing::error!(
+                error = %error,
+                "automatic semantic graph checkpoint thread failed to start"
+            ),
+        }
+    }
+
+    fn run_automatic_checkpoints(&self) {
+        loop {
+            let succeeded = self.automatic_checkpoint();
+            let mut worker = self
+                .automatic_checkpoint
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            // A failed checkpoint waits for the next due commit instead of spinning.
+            if !(succeeded && self.checkpoint_due()) {
+                worker.running = false;
+                return;
+            }
+        }
+    }
+
+    /// Waits for an in-flight automatic checkpoint so explicit checkpoints and
+    /// close never race it.
+    pub(crate) fn join_automatic_checkpoint(&self) {
+        let handle = self
+            .automatic_checkpoint
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .handle
+            .take();
+        if handle.is_some_and(|handle| handle.join().is_err()) {
+            self.automatic_checkpoint
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .running = false;
+        }
     }
 
     fn record_semantic_publication_while_writer_gate_held(&self, changed_entities: usize) -> bool {
@@ -378,12 +520,12 @@ impl GraphStore {
         let current = previous.saturating_add(changed_entities);
         self.committed_semantic_entities
             .store(current, Ordering::Release);
-        current >= SEMANTIC_ENTITIES_PER_CHECKPOINT
+        current >= checkpoint_threshold(self.graph_entities.load(Ordering::Acquire))
     }
 
-    fn automatic_checkpoint(&self) {
+    fn automatic_checkpoint(&self) -> bool {
         match self.checkpoint_published_graph(true) {
-            Ok(()) => {}
+            Ok(()) => true,
             Err(error) => {
                 let message = error.to_string();
                 *self
@@ -400,6 +542,7 @@ impl GraphStore {
                     error = %message,
                     "automatic semantic graph checkpoint failed after durable publication"
                 );
+                false
             }
         }
     }
@@ -500,7 +643,7 @@ impl GraphStore {
         if transaction.elements_changed.get() {
             self.element_revision.fetch_add(1, Ordering::Release);
         }
-        let result = transaction.finish(write_result);
+        let result = self.finish_indexed(transaction, write_result);
         self.revision.fetch_add(1, Ordering::Release);
         result.map(ConditionalGraphWrite::Applied)
     }
@@ -542,7 +685,7 @@ impl GraphStore {
         if transaction.elements_changed.get() {
             self.element_revision.fetch_add(1, Ordering::Release);
         }
-        let write_result = transaction.finish(write_result);
+        let write_result = self.finish_indexed(transaction, write_result);
         let mut checkpoint_due = false;
         let result = match write_result {
             Ok(value) => match after_commit(value) {
@@ -567,9 +710,49 @@ impl GraphStore {
         drop(_writer);
         drop(_admission);
         if checkpoint_due {
-            self.automatic_checkpoint();
+            self.schedule_automatic_checkpoint();
         }
         result
+    }
+
+    /// Commits, then folds the committed element changes into the path index before the
+    /// writer gate is released; a rolled-back transaction leaves the index untouched.
+    fn finish_indexed<R>(
+        &self,
+        transaction: GraphTransaction<'_>,
+        write_result: Result<R>,
+    ) -> Result<R> {
+        let touched = transaction.touched_elements.take();
+        let deleted = transaction.deleted_elements.take();
+        let result = transaction.finish(write_result);
+        if result.is_ok() {
+            self.path_index
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .apply(&self.database, &touched, &deleted);
+        }
+        result
+    }
+
+    /// Requires the caller's stable graph lease: writers cannot change the graph or the
+    /// index while this selects, so the ids and their hydration share one revision.
+    pub(super) fn path_prefix_elements(
+        &self,
+        graph: &GrafeoDB,
+        project_root: &str,
+        prefix: &str,
+        include_inactive: bool,
+    ) -> Vec<SemanticElement> {
+        let mut index = self
+            .path_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !index.is_built() {
+            index.rebuild(graph);
+        }
+        let ids = index.select(project_root, prefix);
+        drop(index);
+        super::graph_rows::selective_elements(graph, &ids, Some(project_root), include_inactive)
     }
 
     fn invalidate_projection_cache_after_publication_failure(&self, error: &DbError) {
@@ -635,6 +818,8 @@ impl<'graph> GraphTransaction<'graph> {
             semantic_node_ids: RefCell::new(BTreeMap::new()),
             semantic_labels: RefCell::new(HashMap::new()),
             elements_changed: Cell::new(false),
+            touched_elements: RefCell::new(HashSet::new()),
+            deleted_elements: RefCell::new(HashSet::new()),
             #[cfg(test)]
             work: _work,
         })
@@ -672,6 +857,7 @@ impl<'graph> GraphTransaction<'graph> {
         self.semantic_labels.borrow_mut().insert(node, semantic);
         if semantic {
             self.elements_changed.set(true);
+            self.touched_elements.borrow_mut().insert(node.0);
         }
         Ok(node)
     }
@@ -689,9 +875,6 @@ impl<'graph> GraphTransaction<'graph> {
     }
 
     fn note_element_mutation(&self, node_id: NodeId) {
-        if self.elements_changed.get() {
-            return;
-        }
         let semantic = *self
             .semantic_labels
             .borrow_mut()
@@ -703,6 +886,7 @@ impl<'graph> GraphTransaction<'graph> {
             });
         if semantic {
             self.elements_changed.set(true);
+            self.touched_elements.borrow_mut().insert(node_id.0);
         }
     }
 
@@ -720,6 +904,9 @@ impl<'graph> GraphTransaction<'graph> {
 
     pub(crate) fn delete_node(&self, node_id: NodeId) -> bool {
         self.note_element_mutation(node_id);
+        if self.touched_elements.borrow().contains(&node_id.0) {
+            self.deleted_elements.borrow_mut().insert(node_id.0);
+        }
         self.session.delete_node(node_id)
     }
 

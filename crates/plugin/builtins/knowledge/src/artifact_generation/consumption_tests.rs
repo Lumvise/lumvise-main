@@ -65,8 +65,8 @@ impl HostCallTransport for ConsumptionFakeHost {
             }
             ("storage.semantic", "scoped_read")
                 if self.fail_report_lookup
-                    && input["request"]["Structure"].is_object()
-                    && input["request"]["Structure"]["include_inactive"] != true =>
+                    && input["request"]["PathPrefix"].is_object()
+                    && input["request"]["PathPrefix"]["include_inactive"] != true =>
             {
                 Err(PluginError::new(
                     "injected_refresh_failure",

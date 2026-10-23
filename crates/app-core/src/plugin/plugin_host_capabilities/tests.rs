@@ -421,7 +421,7 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
             "storage.semantic",
         ]
     );
-    assert_eq!(host["storage.semantic"], semver::Version::new(1, 4, 0));
+    assert_eq!(host["storage.semantic"], semver::Version::new(1, 5, 0));
     assert!(
         host.iter()
             .filter(|(id, _)| **id != "storage.semantic")

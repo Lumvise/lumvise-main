@@ -1,7 +1,7 @@
-//! Compact semantic element lookup by name and project/path. GraphStore owns
+//! Compact semantic element lookup by name. GraphStore owns
 //! cache lifetime; callers hydrate only selected semantic records.
 
-use super::graph_rows::{value_non_negative_i64, value_string};
+use super::graph_rows::value_string;
 use crate::domain::element_search::ElementNameQuery;
 use grafeo::{GrafeoDB, NodeId, Value};
 use std::cmp::Reverse;
@@ -12,7 +12,6 @@ pub(super) struct SemanticElementLookup {
     revision: Option<u64>,
     index: SemanticElementIndex,
     scope_counts: HashMap<(String, bool), (u64, usize)>,
-    project_paths: HashMap<String, ProjectPathIndex>,
 }
 
 impl SemanticElementLookup {
@@ -63,70 +62,6 @@ impl SemanticElementLookup {
         self.index = SemanticElementIndex::from_graph(graph);
         self.revision = Some(revision);
     }
-
-    pub(super) fn select_path(
-        &mut self,
-        graph: &GrafeoDB,
-        revision: u64,
-        project_root: &str,
-        path: &str,
-        line: i64,
-        include_inactive: bool,
-    ) -> Vec<NodeId> {
-        let index = self
-            .project_paths
-            .entry(project_root.to_owned())
-            .or_default();
-        if index.revision != Some(revision) {
-            *index = ProjectPathIndex::from_graph(graph, project_root, revision);
-        }
-        index
-            .paths
-            .get(path)
-            .into_iter()
-            .flatten()
-            .filter(|entry| include_inactive || entry.lifecycle == "active")
-            .filter(|entry| {
-                entry.start_line.is_none_or(|start| start <= line)
-                    && entry.end_line.is_none_or(|end| line <= end)
-            })
-            .map(|entry| entry.node_id)
-            .collect()
-    }
-}
-
-/// Path reads must not build substring postings for every project's names.
-/// The stable graph lease supplies the revision used to invalidate this cache.
-#[derive(Default)]
-struct ProjectPathIndex {
-    revision: Option<u64>,
-    paths: HashMap<String, Vec<IndexedSemanticElement>>,
-}
-
-impl ProjectPathIndex {
-    fn from_graph(graph: &GrafeoDB, project_root: &str, revision: u64) -> Self {
-        let members = graph
-            .find_nodes_by_property("project_root", &Value::from(project_root))
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let ids = graph
-            .graph_store()
-            .nodes_by_label("SemanticElement")
-            .into_iter()
-            .filter(|id| members.contains(id))
-            .collect();
-        let mut paths: HashMap<String, Vec<IndexedSemanticElement>> = HashMap::new();
-        for entry in SemanticElementIndex::read_entries(graph, ids) {
-            paths
-                .entry(entry.normalized_path.clone())
-                .or_default()
-                .push(entry);
-        }
-        Self {
-            revision: Some(revision),
-            paths,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -143,10 +78,7 @@ struct IndexedSemanticElement {
     semantic_id: String,
     normalized_id: String,
     normalized_name: String,
-    normalized_path: String,
     lifecycle: String,
-    start_line: Option<i64>,
-    end_line: Option<i64>,
 }
 
 impl SemanticElementIndex {
@@ -169,8 +101,6 @@ impl SemanticElementIndex {
             "semantic_source_id",
             "path",
             "element_kind",
-            "start_line",
-            "end_line",
         ]
         .map(Into::into);
         let rows = store.get_nodes_properties_selective_batch(&ids, &keys);
@@ -244,17 +174,9 @@ impl IndexedSemanticElement {
         Some(Self {
             node_id,
             project_root: property("project_root").and_then(value_string)?,
-            normalized_path: property("path")
-                .and_then(value_string)?
-                .trim()
-                .trim_start_matches("./")
-                .trim_start_matches('/')
-                .to_owned(),
             lifecycle: property("lifecycle")
                 .and_then(value_string)
                 .unwrap_or_else(|| "active".into()),
-            start_line: property("start_line").and_then(value_non_negative_i64),
-            end_line: property("end_line").and_then(value_non_negative_i64),
             normalized_id: semantic_id.to_ascii_lowercase(),
             semantic_id,
             normalized_name: property("name")

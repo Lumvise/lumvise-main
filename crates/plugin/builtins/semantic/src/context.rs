@@ -55,6 +55,9 @@ fn context_snapshot(
     request: &SemanticContextRequestV2,
 ) -> Result<storage::ProjectSnapshot<SemanticElementV2, SemanticRelationshipV2, Value>, PluginError>
 {
+    if request.record_kind == "artifacts" && request.root_element_id.is_none() {
+        return unscoped_artifact_snapshot(context, request);
+    }
     if let Some(root) = request
         .root_element_id
         .as_deref()
@@ -88,6 +91,111 @@ fn context_snapshot(
         &serde_json::json!({"project_root": request.project_root}),
         None,
     )
+}
+
+fn unscoped_artifact_snapshot(
+    context: &mut PluginContext<'_>,
+    request: &SemanticContextRequestV2,
+) -> Result<storage::ProjectSnapshot<SemanticElementV2, SemanticRelationshipV2, Value>, PluginError>
+{
+    if !project_root_is_indexed(context, &request.project_root)? {
+        return storage::project_snapshot(
+            context,
+            &serde_json::json!({"project_root": request.project_root}),
+            None,
+        );
+    }
+    known_project_artifact_snapshot(context, &request.project_root)
+}
+
+fn known_project_artifact_snapshot(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+) -> Result<storage::ProjectSnapshot<SemanticElementV2, SemanticRelationshipV2, Value>, PluginError>
+{
+    let (revision, artifacts) = read_project_artifacts_at_revision(context, project_root)?;
+    let owner = first_artifact_owner(&artifacts)?;
+    let snapshot = artifact_structure_snapshot(context, project_root, owner.as_deref())?;
+    artifacts_at_unchanged_revision(context, snapshot, project_root, revision, artifacts)
+}
+
+fn read_project_artifacts_at_revision(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+) -> Result<(i64, Vec<Value>), PluginError> {
+    let revision = storage::semantic_revision(context, project_root)?;
+    let artifacts = storage::project_artifacts(context, project_root)?;
+    Ok((revision, artifacts))
+}
+
+fn first_artifact_owner(artifacts: &[Value]) -> Result<Option<String>, PluginError> {
+    artifacts
+        .first()
+        .map(|artifact| {
+            artifact["semantic_element_id"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    invalid(
+                        &artifact["semantic_element_id"].to_string(),
+                        "a string semantic_element_id on the first artifact",
+                    )
+                })
+        })
+        .transpose()
+}
+
+fn project_root_is_indexed(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+) -> Result<bool, PluginError> {
+    Ok(storage::graph_project_roots(context)?
+        .iter()
+        .any(|root| root == project_root))
+}
+
+fn artifact_structure_snapshot(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+    owner: Option<&str>,
+) -> Result<storage::ProjectSnapshot<SemanticElementV2, SemanticRelationshipV2, Value>, PluginError>
+{
+    let scope = owner
+        .map(|owner| serde_json::json!({"semantic_element": owner}))
+        .unwrap_or_else(|| serde_json::json!({"project_root": project_root}));
+    let snapshot = storage::structure_snapshot(context, &scope, 0, true)?;
+    if snapshot.project_root != project_root {
+        return Err(invalid(
+            project_root,
+            "project_root matching the active semantic project",
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn artifacts_at_unchanged_revision(
+    context: &mut PluginContext<'_>,
+    mut snapshot: storage::ProjectSnapshot<SemanticElementV2, SemanticRelationshipV2, Value>,
+    project_root: &str,
+    expected_revision: i64,
+    artifacts: Vec<Value>,
+) -> Result<storage::ProjectSnapshot<SemanticElementV2, SemanticRelationshipV2, Value>, PluginError>
+{
+    if snapshot.commit_version != expected_revision {
+        return Err(invalid(
+            &format!("{expected_revision} -> {}", snapshot.commit_version),
+            "an unchanged semantic revision while reading artifacts",
+        ));
+    }
+    let current_version = storage::semantic_revision(context, project_root)?;
+    if current_version != expected_revision {
+        return Err(invalid(
+            &format!("{expected_revision} -> {current_version}"),
+            "an unchanged semantic revision while reading artifacts",
+        ));
+    }
+    snapshot.artifacts = artifacts;
+    Ok(snapshot)
 }
 
 fn reaches_context_depth(

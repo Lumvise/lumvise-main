@@ -94,3 +94,20 @@ lumvise-resource-routing = { path = "crates/resource-routing" }
 lumvise-plugin-runtime = { path = "crates/plugin/runtime" }
 lumvise-plugin-sdk = { path = "crates/plugin/sdk" }
 lumvise-plugin-semantic = { path = "crates/plugin/builtins/semantic" }
+
+# Real-project checkpoints must fit the plugin deadline, including in development.
+[profile.dev.package.grafeo-common]
+opt-level = 2
+
+[profile.dev.package.grafeo-core]
+opt-level = 2
+
+[profile.dev.package.grafeo-engine]
+opt-level = 2
+
+# Keep source preparation and partition planning practical in development.
+[profile.dev.package.lumvise-db-core]
+opt-level = 2
+
+[profile.dev.package.lumvise-project-indexer]
+opt-level = 2

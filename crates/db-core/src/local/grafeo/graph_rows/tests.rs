@@ -27,6 +27,44 @@ fn semantic_relationships_are_stored_as_native_edges() {
 }
 
 #[test]
+fn source_relationship_lookup_includes_duplicate_nodes_and_excludes_other_sources() {
+    let store = graph_store();
+    store
+        .write(|graph| {
+            insert_element_node(graph, &element("source"), 1)?;
+            insert_element_node(graph, &element("target"), 1)?;
+            insert_element_node(graph, &element("other"), 1)?;
+            let duplicate = graph.create_node_with_props(
+                &["SemanticElement"],
+                [
+                    ("semantic_element_id", GrafeoValue::from("source")),
+                    ("project_root", GrafeoValue::from("/repo")),
+                ],
+            )?;
+            let target = graph.semantic_node_id("target").unwrap();
+            insert_relationship_edge_with_index(
+                graph,
+                &relationship("source", "target"),
+                &BTreeMap::from([("source".into(), duplicate), ("target".into(), target)]),
+            )?;
+            insert_relationship_node(graph, &relationship("other", "target"))
+        })
+        .unwrap();
+    store.read(|graph| {
+        let requested = BTreeSet::from(["source".into()]);
+        assert_eq!(
+            semantic_relationships_for_sources(graph, "/repo", &requested),
+            [relationship("source", "target")]
+        );
+        assert!(semantic_relationships_for_sources(graph, "/foreign", &requested).is_empty());
+        assert!(
+            semantic_relationships_for_sources(graph, "/repo", &BTreeSet::from(["target".into()]))
+                .is_empty()
+        );
+    });
+}
+
+#[test]
 fn semantic_element_replacement_keeps_one_resolvable_node() {
     let store = graph_store();
     store

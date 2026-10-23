@@ -379,7 +379,11 @@ fn publish_scan(
                 "started_at": started_at,
                 "completed_at": Utc::now().to_rfc3339(),
             }),
-        );
+        )
+        .inspect_err(|log_error| {
+            tracing::warn!(event = "project_import_terminal_log_failed",
+                project_root, index_log_id = %job_id, error = %log_error);
+        });
         return Err(error_response(
             "500 Internal Server Error",
             format!("project import failed: {error}"),

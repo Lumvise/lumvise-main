@@ -418,6 +418,7 @@ fn thousand_logical_entities_checkpoint_once_into_main_graph_file() {
     commit_semantic_entities(&store, 999, "BeforeThreshold");
     assert_eq!(store.committed_semantic_entities(), 999);
     commit_semantic_entities(&store, 1, "AtThreshold");
+    store.join_automatic_checkpoint();
     assert_eq!(store.committed_semantic_entities(), 0);
 
     let checkpoint_copy = directory.path().join("checkpoint-copy.grafeo");
@@ -428,6 +429,142 @@ fn thousand_logical_entities_checkpoint_once_into_main_graph_file() {
         2,
         "the threshold checkpoint writes committed nodes into the main container"
     );
+}
+
+fn pause_next_checkpoint(store: &GraphStore) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (entered, checkpoint_started) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    *store.work.checkpoint_probe.lock().unwrap() = Some(super::CheckpointProbe {
+        entered,
+        release: resume,
+    });
+    (checkpoint_started, release)
+}
+
+fn checkpoints_started(store: &GraphStore) -> usize {
+    store.work.checkpoints_started.load(Ordering::Relaxed)
+}
+
+#[test]
+fn due_commit_returns_while_background_checkpoint_is_paused() {
+    let store = GraphStore::new(GrafeoDB::new_in_memory());
+    let (entered, release) = pause_next_checkpoint(&store);
+
+    commit_semantic_entities(&store, super::SEMANTIC_ENTITIES_PER_CHECKPOINT, "Due");
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        store.committed_semantic_entities(),
+        super::SEMANTIC_ENTITIES_PER_CHECKPOINT,
+        "the commit returned before its checkpoint finished"
+    );
+
+    release.send(()).unwrap();
+    store.join_automatic_checkpoint();
+    assert_eq!(store.committed_semantic_entities(), 0);
+    assert_eq!(checkpoints_started(&store), 1);
+}
+
+#[test]
+fn due_commit_during_running_checkpoint_coalesces_into_one_more_run() {
+    let store = Arc::new(GraphStore::new(GrafeoDB::new_in_memory()));
+    let (entered, release) = pause_next_checkpoint(&store);
+    commit_semantic_entities(&store, super::SEMANTIC_ENTITIES_PER_CHECKPOINT, "First");
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    store.schedule_automatic_checkpoint();
+    assert_eq!(
+        checkpoints_started(&store),
+        1,
+        "no second checkpoint starts"
+    );
+
+    let writing_store = Arc::clone(&store);
+    let writer = thread::spawn(move || {
+        commit_semantic_entities(
+            &writing_store,
+            super::SEMANTIC_ENTITIES_PER_CHECKPOINT,
+            "Second",
+        )
+    });
+    release.send(()).unwrap();
+    writer.join().unwrap();
+    store.join_automatic_checkpoint();
+    store.join_automatic_checkpoint();
+
+    assert_eq!(checkpoints_started(&store), 2);
+    assert_eq!(store.committed_semantic_entities(), 0);
+}
+
+#[test]
+fn explicit_checkpoint_and_close_wait_for_in_flight_background_checkpoint() {
+    let store = Arc::new(GraphStore::new(GrafeoDB::new_in_memory()));
+    let (entered, release) = pause_next_checkpoint(&store);
+    commit_semantic_entities(&store, super::SEMANTIC_ENTITIES_PER_CHECKPOINT, "Due");
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    let explicit_store = Arc::clone(&store);
+    let (explicit_done, explicit_finished) = mpsc::channel();
+    let explicit = thread::spawn(move || {
+        explicit_store.checkpoint().unwrap();
+        explicit_done.send(()).unwrap();
+    });
+    assert!(
+        explicit_finished
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+    release.send(()).unwrap();
+    explicit_finished
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    explicit.join().unwrap();
+
+    let (entered, release) = pause_next_checkpoint(&store);
+    commit_semantic_entities(&store, super::SEMANTIC_ENTITIES_PER_CHECKPOINT, "Again");
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (closed, close_finished) = mpsc::channel();
+    let closing = thread::spawn(move || {
+        drop(store);
+        closed.send(()).unwrap();
+    });
+    assert!(
+        close_finished
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+    release.send(()).unwrap();
+    close_finished.recv_timeout(Duration::from_secs(5)).unwrap();
+    closing.join().unwrap();
+}
+
+#[test]
+fn checkpoint_threshold_is_the_larger_of_floor_and_a_tenth_of_the_graph() {
+    assert_eq!(super::checkpoint_threshold(0), 1_000);
+    assert_eq!(super::checkpoint_threshold(10_000), 1_000);
+    assert_eq!(super::checkpoint_threshold(100_000), 10_000);
+}
+
+#[test]
+fn large_graph_defers_checkpoint_until_a_tenth_of_its_entities_changed() {
+    let store = GraphStore::new(GrafeoDB::new_in_memory());
+    store.graph_entities.store(100_000, Ordering::Release);
+
+    commit_semantic_entities(&store, 9_999, "BelowTenth");
+    store.join_automatic_checkpoint();
+    assert_eq!(checkpoints_started(&store), 0);
+    commit_semantic_entities(&store, 1, "AtTenth");
+    store.join_automatic_checkpoint();
+    assert_eq!(checkpoints_started(&store), 1);
+    assert_eq!(store.committed_semantic_entities(), 0);
+}
+
+#[test]
+fn checkpoint_refreshes_the_cached_graph_entity_count() {
+    let store = GraphStore::new(GrafeoDB::new_in_memory());
+    commit_semantic_entities(&store, 1, "One");
+    assert_eq!(store.graph_entities.load(Ordering::Acquire), 0);
+    store.checkpoint().unwrap();
+    assert_eq!(store.graph_entities.load(Ordering::Acquire), 1);
 }
 
 fn commit_semantic_entities(store: &GraphStore, count: usize, label: &str) {

@@ -62,6 +62,7 @@ fn expired_sync_waiter_does_not_start_a_second_plan() {
     let result = persistence.execute(
         SemanticOperation::SyncPartition {
             partition: crate::SemanticPartition {
+                provider_instance_id: None,
                 project_root: "/expired".into(),
                 replace_paths: vec!["file.rs".into()],
             },

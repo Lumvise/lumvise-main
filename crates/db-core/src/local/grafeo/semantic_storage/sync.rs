@@ -93,6 +93,7 @@ impl<'db> SemanticStorage<'db> {
     /// let persistence = LocalPersistence::in_memory().unwrap();
     /// let control = InvocationControl::sixty_seconds();
     /// let partition = SemanticPartition {
+    ///     provider_instance_id: None,
     ///     project_root: "/repo".into(),
     ///     replace_paths: vec!["src/lib.rs".into()],
     /// };
@@ -419,28 +420,14 @@ pub(super) fn prepare_partition_structure_sync(
     input_relationships: &[SemanticRelationship],
 ) -> Result<PreparedStructureSync> {
     validate_unique_element_ids(elements)?;
-    let existing_partition = if partition_paths_are_exact(&partition.replace_paths, elements) {
-        let paths = incoming_partition_paths(&partition.replace_paths, elements);
-        semantic_elements_for_paths_including_inactive(database, &partition.project_root, &paths)
-    } else {
-        elements_in_partition(
-            &semantic_elements_for_project_including_inactive(database, &partition.project_root),
-            &partition.replace_paths,
-        )
-    };
+    let existing_partition =
+        provider_selection::select_owned_partition(database, partition, elements)?;
     validate_duplicate_repair_inputs(&existing_partition, elements)?;
     let plan = semantic_partition_plan(&existing_partition, elements, input_relationships);
     let owned_sources = owned_partition_source_ids(&plan.reconciled, &plan.inactive_elements);
     let relationships = relationships_owned_by_sources(&plan.relationships, &owned_sources);
-    let mut existing_relationships =
-        semantic_relationships_from_many_native_edges(database, &owned_sources);
-    if existing_relationships.is_empty() {
-        existing_relationships =
-            semantic_relationships_for_project_edges(database, &partition.project_root)
-                .into_iter()
-                .filter(|relationship| owned_sources.contains(&relationship.source_element_id))
-                .collect();
-    }
+    let existing_relationships =
+        semantic_relationships_for_sources(database, &partition.project_root, &owned_sources);
     let mut changed_relationship_sources =
         changed_relationship_source_ids(&existing_relationships, &relationships);
     changed_relationship_sources.extend(

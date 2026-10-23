@@ -24,6 +24,7 @@ pub(crate) trait GraphViewSource {
         inactive: bool,
     ) -> Vec<SemanticElement>;
     fn scope_count(&self, root: &str, inactive: bool) -> usize;
+    fn path_prefix(&self, root: &str, prefix: &str, inactive: bool) -> Vec<SemanticElement>;
 }
 pub(crate) fn scoped_from_source(
     source: &dyn GraphViewSource,
@@ -109,6 +110,21 @@ fn select_records(
                 .sort_by(|left, right| left.semantic_element_id.cmp(&right.semantic_element_id));
             let edges = location_ancestors(source, project_root, &elements);
             Ok((project_root.clone(), elements, edges, None))
+        }
+        ScopedSemanticRead::PathPrefix {
+            project_root,
+            prefix,
+            include_inactive,
+        } => {
+            source.validate_root(project_root)?;
+            if prefix.is_empty() {
+                return Err(DbError::invalid_value("", "non-empty path prefix"));
+            }
+            let mut elements = source.path_prefix(project_root, prefix, *include_inactive);
+            elements
+                .sort_by(|left, right| left.semantic_element_id.cmp(&right.semantic_element_id));
+            elements.dedup_by(|left, right| left.semantic_element_id == right.semantic_element_id);
+            Ok((project_root.clone(), elements, Vec::new(), None))
         }
     }
 }

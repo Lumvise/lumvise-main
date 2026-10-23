@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub(super) const PROVIDER: &str = "knowledge.documents";
+pub(super) const PATH_PREFIX: &str = "@documents/";
 pub(super) const ROOT_PATH: &str = "@documents/root";
 
 pub(super) fn storage_path(document_id: &str) -> String {

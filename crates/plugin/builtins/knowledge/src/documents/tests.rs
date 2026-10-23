@@ -163,6 +163,81 @@ fn document_search_reaches_content_and_respects_project_kind_and_agent_space_sco
 }
 
 #[test]
+fn listing_returns_each_project_its_live_documents_by_kind_and_status() {
+    let mut graph = FakeDocumentGraph::default();
+    for (id, kind, root) in [
+        ("report", "report", "/project"),
+        ("context", "context", "/project"),
+        ("canvas", "canvas", "/project"),
+        ("gone", "report", "/project"),
+        ("old", "report", "/project"),
+        ("foreign", "report", "/other"),
+    ] {
+        let mut request = draft(id, root);
+        request["document_kind"] = json!(kind);
+        graph.call("create_document", request).unwrap();
+    }
+    graph
+        .call("delete_document", identity("gone", "/project"))
+        .unwrap();
+    graph
+        .call(
+            "document.update",
+            json!({"document_id": "old", "project_root": "/project",
+        "expected_revision": 1, "status": "archived"}),
+        )
+        .unwrap();
+    let ids = |graph: &mut FakeDocumentGraph, filter: Value| -> Vec<String> {
+        graph.call("list_documents", filter).unwrap()["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|document| document["document_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        ids(&mut graph, json!({"project_root": "/project"})),
+        ["canvas", "context", "report"]
+    );
+    assert_eq!(
+        ids(
+            &mut graph,
+            json!({"project_root": "/project", "document_kind": "canvas"})
+        ),
+        ["canvas"]
+    );
+    assert_eq!(
+        ids(
+            &mut graph,
+            json!({"project_root": "/project", "include_inactive": true})
+        ),
+        ["canvas", "context", "old", "report"]
+    );
+    assert_eq!(
+        ids(&mut graph, json!({"project_root": "/other"})),
+        ["foreign"]
+    );
+    assert_eq!(
+        ids(&mut graph, json!({})),
+        ["canvas", "context", "foreign", "report"]
+    );
+}
+
+#[test]
+fn listing_selects_documents_by_path_prefix_and_never_scans_the_project_structure() {
+    let mut graph = FakeDocumentGraph::default();
+    graph
+        .call("create_document", draft("overview", "/project"))
+        .unwrap();
+    graph.scoped_read_kinds.clear();
+    let listed = graph
+        .call("list_documents", json!({"project_root": "/project"}))
+        .unwrap();
+    assert_eq!(listed["total"], 1);
+    assert_eq!(graph.scoped_read_kinds, ["PathPrefix"]);
+}
+
+#[test]
 fn removing_a_citation_target_preserves_the_citing_document_and_broken_reference() {
     let mut graph = FakeDocumentGraph::default();
     graph

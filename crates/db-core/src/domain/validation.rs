@@ -32,7 +32,7 @@ impl SemanticRelationship {
     }
 }
 impl SemanticPartition {
-    /// Checks the project and nonempty replacement paths.
+    /// Checks the project, optional provider, and required replacement selection.
     /// Example: `partition.validate()?`.
     pub fn validate(&self) -> Result<()> {
         validate_partition(self)
@@ -40,6 +40,9 @@ impl SemanticPartition {
     /// Selects an exact path or a descendant separated by `/`.
     /// Example: `assert!(partition.contains_path("src/lib.rs"))`.
     pub fn contains_path(&self, path: &str) -> bool {
+        if self.replace_paths.is_empty() {
+            return self.provider_instance_id.is_some();
+        }
         self.replace_paths.iter().any(|replace| {
             path == replace || path.starts_with(&format!("{}/", replace.trim_end_matches('/')))
         })
@@ -105,6 +108,9 @@ fn validate_relationship(relationship: &SemanticRelationship) -> Result<()> {
 }
 fn validate_partition(partition: &SemanticPartition) -> Result<()> {
     require_non_empty(&partition.project_root, "non-empty project root")?;
+    if let Some(provider) = &partition.provider_instance_id {
+        require_non_empty(provider, "non-empty semantic provider identity")?;
+    }
     if let Some(empty) = partition
         .replace_paths
         .iter()
@@ -115,7 +121,7 @@ fn validate_partition(partition: &SemanticPartition) -> Result<()> {
             "non-empty semantic replace path",
         ));
     }
-    if !partition.replace_paths.is_empty() {
+    if !partition.replace_paths.is_empty() || partition.provider_instance_id.is_some() {
         return Ok(());
     }
     Err(DbError::invalid_value(

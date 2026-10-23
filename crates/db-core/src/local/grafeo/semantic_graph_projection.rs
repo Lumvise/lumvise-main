@@ -216,6 +216,7 @@ mod tests {
         storage
             .sync_semantic_partition(
                 &crate::SemanticPartition {
+                    provider_instance_id: None,
                     project_root: "/repo".into(),
                     replace_paths: vec!["src/a.rs".into()],
                 },

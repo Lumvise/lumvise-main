@@ -30,6 +30,14 @@ pub enum ScopedSemanticRead {
         include_descendants: bool,
         include_inactive: bool,
     },
+    /// Selects every element of one project whose path starts with `prefix`, without
+    /// edges or artifacts. The prefix must be non-empty; matching is exact on the stored path.
+    /// Example: `PathPrefix { project_root: "/repo".into(), prefix: "@documents/".into(), include_inactive: false }`.
+    PathPrefix {
+        project_root: String,
+        prefix: String,
+        include_inactive: bool,
+    },
 }
 
 /// Root dependency traversal direction. Example: `SemanticDependencyDirection::Both`.

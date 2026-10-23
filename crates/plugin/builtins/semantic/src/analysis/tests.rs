@@ -1,12 +1,13 @@
 use crate::SemanticPlugin;
 use lumvise_plugin_sdk::{HostCallTransport, PluginApplication, PluginContext, PluginError};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 struct FakeCodeHost {
     snapshot: Value,
     rows: BTreeMap<String, Value>,
     calls: Vec<(String, Value)>,
+    scoped_snapshots: VecDeque<Value>,
 }
 
 impl FakeCodeHost {
@@ -28,6 +29,7 @@ impl FakeCodeHost {
             snapshot: json!({"project_root":"/project","commit_version":7,"published_at":"now","elements":elements,"relationships":relationships,"artifacts":[]}),
             rows: BTreeMap::new(),
             calls: Vec::new(),
+            scoped_snapshots: VecDeque::new(),
         }
     }
     fn invoke(&mut self, id: &str, mut input: Value) -> Result<Value, PluginError> {
@@ -41,6 +43,11 @@ impl HostCallTransport for FakeCodeHost {
         self.calls.push((capability.into(), input.clone()));
         match (capability, input["operation"].as_str().unwrap()) {
             ("storage.semantic", "project_snapshot") => Ok(self.snapshot.clone()),
+            ("storage.semantic", "scoped_read") => {
+                self.scoped_snapshots.pop_front().ok_or_else(|| {
+                    PluginError::new("unexpected_scoped_read", "no scoped fixture", false)
+                })
+            }
             ("storage.plugin", "ensure_table") => Ok(json!({})),
             ("storage.plugin", "list_rows") => Ok(
                 json!({"rows":self.rows.iter().map(|(key,value)|json!({"row_key":key,"value":value})).collect::<Vec<_>>(),"next_after_key":null}),
@@ -64,6 +71,39 @@ impl HostCallTransport for FakeCodeHost {
             _ => panic!("unexpected host call {capability}: {input}"),
         }
     }
+}
+
+fn scoped_graph(project_root: &str, commit_version: i64, elements: Vec<Value>) -> Value {
+    json!({"project_root":project_root,"commit_version":commit_version,
+        "published_at":"now","elements":elements,"relationships":[]})
+}
+
+fn queue_snippet_graphs(
+    host: &mut FakeCodeHost,
+    element_id: &str,
+    structure_version: i64,
+    location_version: i64,
+) {
+    let mut target = host.snapshot["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|element| element["semantic_element_id"] == element_id)
+        .unwrap()
+        .clone();
+    target["project_root"] = json!("/project");
+    let mut file = host.snapshot["elements"][0].clone();
+    file["project_root"] = json!("/project");
+    host.scoped_snapshots.push_back(scoped_graph(
+        "/project",
+        structure_version,
+        vec![target.clone()],
+    ));
+    host.scoped_snapshots.push_back(scoped_graph(
+        "/project",
+        location_version,
+        vec![file, target],
+    ));
 }
 
 #[test]
@@ -214,6 +254,7 @@ fn graph_metrics_pages_cycles_and_compact_dead_code_rows() {
 #[test]
 fn source_tools_use_host_boundary_and_preserve_symbol_context() {
     let mut host = FakeCodeHost::new();
+    queue_snippet_graphs(&mut host, "a", 7, 7);
     let snippet = host
         .invoke(
             "get_code_snippet",
@@ -223,6 +264,10 @@ fn source_tools_use_host_boundary_and_preserve_symbol_context() {
     assert_eq!(snippet["index_matches_source"], true);
     assert_eq!(host.calls.last().unwrap().1["start_line"], 1);
     assert_eq!(host.calls.last().unwrap().1["end_line"], 5);
+    assert_eq!(snippet["commit_version"], 7);
+    assert!(host.calls.iter().any(|(capability, input)| {
+        capability == "storage.semantic" && input["operation"] == "scoped_read"
+    }));
     let search = host
         .invoke("search_code", json!({"query":"alpha"}))
         .unwrap();
@@ -244,6 +289,127 @@ fn source_tools_use_host_boundary_and_preserve_symbol_context() {
     let impact = host.invoke("get_git_impact", json!({})).unwrap();
     assert_eq!(impact["unindexed_paths"], json!(["new.rs"]));
     assert_eq!(impact["direction"], "inbound");
+}
+
+#[test]
+fn code_snippet_reads_only_the_target_location_and_file_fingerprint() {
+    let mut host = FakeCodeHost::new();
+    queue_snippet_graphs(&mut host, "a", 7, 7);
+    host.snapshot = json!({"unrelated_project_payload":"must not be loaded"});
+    let snippet = host
+        .invoke(
+            "get_code_snippet",
+            json!({"semantic_element_id":"a","expected_commit_version":7}),
+        )
+        .unwrap();
+
+    assert_eq!(snippet["text"], "fn alpha() {}");
+    assert_eq!(snippet["index_matches_source"], true);
+    assert_eq!(snippet["element"]["semantic_element_id"], "a");
+    assert_eq!(snippet["commit_version"], 7);
+    let semantic_reads = host
+        .calls
+        .iter()
+        .filter(|(capability, input)| {
+            capability == "storage.semantic" && input["operation"] == "scoped_read"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(semantic_reads.len(), 2);
+    assert_eq!(
+        semantic_reads[0].1["request"]["Structure"]["scope"]["semantic_element"],
+        "a"
+    );
+    assert_eq!(semantic_reads[0].1["request"]["Structure"]["max_depth"], 0);
+    assert_eq!(
+        semantic_reads[1].1["request"]["Location"]["project_root"],
+        "/project"
+    );
+    assert_eq!(
+        semantic_reads[1].1["request"]["Location"]["path"],
+        "demo.rs"
+    );
+    assert_eq!(semantic_reads[1].1["request"]["Location"]["line"], 1);
+    assert!(host.calls.iter().all(|(capability, input)| {
+        !(capability == "storage.semantic" && input["operation"] == "project_snapshot")
+    }));
+}
+
+#[test]
+fn code_snippet_rejects_foreign_project_and_missing_or_inactive_elements() {
+    let mut foreign = FakeCodeHost::new();
+    let target = foreign.snapshot["elements"][1].clone();
+    foreign
+        .scoped_snapshots
+        .push_back(scoped_graph("/foreign", 7, vec![target]));
+    let error = foreign
+        .invoke("get_code_snippet", json!({"semantic_element_id":"a"}))
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_code_intelligence");
+
+    let mut missing = FakeCodeHost::new();
+    missing
+        .scoped_snapshots
+        .push_back(scoped_graph("/project", 7, vec![]));
+    let error = missing
+        .invoke("get_code_snippet", json!({"semantic_element_id":"missing"}))
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_code_intelligence");
+
+    let mut inactive = FakeCodeHost::new();
+    let mut target = inactive.snapshot["elements"][1].clone();
+    target["lifecycle"] = json!("inactive");
+    inactive
+        .scoped_snapshots
+        .push_back(scoped_graph("/project", 7, vec![target]));
+    let error = inactive
+        .invoke("get_code_snippet", json!({"semantic_element_id":"a"}))
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_code_intelligence");
+
+    let mut missing_range = FakeCodeHost::new();
+    let mut target = missing_range.snapshot["elements"][1].clone();
+    target["start_line"] = Value::Null;
+    missing_range
+        .scoped_snapshots
+        .push_back(scoped_graph("/project", 7, vec![target]));
+    let error = missing_range
+        .invoke("get_code_snippet", json!({"semantic_element_id":"a"}))
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_code_intelligence");
+}
+
+#[test]
+fn code_snippet_rejects_stale_and_between_read_revisions() {
+    let mut stale = FakeCodeHost::new();
+    queue_snippet_graphs(&mut stale, "a", 7, 7);
+    let error = stale
+        .invoke(
+            "get_code_snippet",
+            json!({"semantic_element_id":"a","expected_commit_version":6}),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_code_intelligence");
+    assert!(
+        !stale
+            .calls
+            .iter()
+            .any(|(capability, input)| capability == "project.source"
+                && input["operation"] == "read")
+    );
+
+    let mut changed = FakeCodeHost::new();
+    queue_snippet_graphs(&mut changed, "a", 7, 8);
+    let error = changed
+        .invoke("get_code_snippet", json!({"semantic_element_id":"a"}))
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_code_intelligence");
+    assert!(
+        !changed
+            .calls
+            .iter()
+            .any(|(capability, input)| capability == "project.source"
+                && input["operation"] == "read")
+    );
 }
 
 #[test]

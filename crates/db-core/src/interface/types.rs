@@ -569,6 +569,9 @@ pub struct SemanticBatchSyncReport {
 pub struct SemanticPartition {
     pub project_root: String,
     pub replace_paths: Vec<String>,
+    /// Restrict publication to this producer; None retains authoritative path replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_instance_id: Option<String>,
 }
 
 /// Desired durable registration for one ready compiled background export.

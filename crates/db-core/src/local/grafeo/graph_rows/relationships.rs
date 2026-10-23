@@ -119,13 +119,32 @@ pub(crate) fn semantic_relationships_from_native_edges(
         .collect()
 }
 
-pub(crate) fn semantic_relationships_from_many_native_edges(
+pub(crate) fn semantic_relationships_for_sources(
     database: &GrafeoDB,
+    project_root: &str,
     semantic_element_ids: &std::collections::BTreeSet<String>,
 ) -> Vec<SemanticRelationship> {
-    semantic_element_ids
+    // Duplicate identities can own edges on more than one native node during repair.
+    let nodes = semantic_element_ids
         .iter()
-        .flat_map(|element_id| semantic_relationships_from_native_edges(database, element_id))
+        .flat_map(|id| {
+            database.find_nodes_by_property(
+                SEMANTIC_ELEMENT_ID_PROPERTY,
+                &GrafeoValue::from(id.clone()),
+            )
+        })
+        .filter(|id| {
+            database.get_node(*id).is_some_and(|node| {
+                node.has_label("SemanticElement")
+                    && string_property(&node, PROJECT_ROOT_PROPERTY).as_deref()
+                        == Some(project_root)
+            })
+        })
+        .collect::<Vec<_>>();
+    selective_adjacency(database, &nodes, project_root)
+        .0
+        .into_iter()
+        .filter(|edge| semantic_element_ids.contains(&edge.source_element_id))
         .collect()
 }
 
