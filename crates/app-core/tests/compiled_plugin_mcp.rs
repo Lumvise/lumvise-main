@@ -212,6 +212,139 @@ fn global_mcp_tool_preserves_application_failure_and_success_status() {
     }
 }
 
+#[cfg(feature = "desktop-app")]
+mod renderer_command_tests {
+    use super::*;
+    use lumvise_app_core::{
+        AcquireResult, ActivationRequest, AppCoreDesktopBridge, AppRuntimeCoordinator,
+    };
+    use lumvise_frontend_core::DesktopVoiceBridge;
+
+    struct RendererCommandFixture {
+        bridge: AppCoreDesktopBridge,
+        app: Arc<AppCore>,
+        plugins: Arc<PluginSystem>,
+        _package: CompiledMcpFixture,
+        _runtime: TempDir,
+    }
+
+    impl RendererCommandFixture {
+        fn new(surface: ExportSurface) -> Self {
+            let package = CompiledMcpFixture::with_lane_surface(surface);
+            let plugins = Arc::new(PluginSystem::with_broker_and_sandbox(
+                fast_runtime_config(),
+                Arc::new(DenyAllHostCapabilityBroker),
+                Arc::new(TestSubprocessSandbox),
+            ));
+            plugins.install(&package.installed).unwrap();
+            plugins.start(PLUGIN_ID).unwrap();
+            let app =
+                Arc::new(AppCore::in_memory_with_plugin_system(Arc::clone(&plugins)).unwrap());
+            let runtime = tempfile::tempdir().unwrap();
+            let bridge = Self::bridge(Arc::clone(&app), runtime.path());
+            Self {
+                bridge,
+                app,
+                plugins,
+                _package: package,
+                _runtime: runtime,
+            }
+        }
+
+        fn bridge(app: Arc<AppCore>, root: &Path) -> AppCoreDesktopBridge {
+            let coordinator = AppRuntimeCoordinator::new(root.join("runtime"), |_| Ok(()));
+            let owner = match coordinator
+                .acquire_or_forward(ActivationRequest::default())
+                .unwrap()
+            {
+                AcquireResult::Owner(owner) => owner,
+                AcquireResult::Forwarded(_) => {
+                    panic!("renderer fixture must own its isolated runtime")
+                }
+            };
+            AppCoreDesktopBridge::new(app, owner).unwrap()
+        }
+
+        fn invoke(&self, export: &str, input: Value) -> Result<Value, String> {
+            self.bridge
+                .invoke_plugin_capability(PLUGIN_ID.into(), export.into(), input)
+        }
+    }
+
+    #[test]
+    fn renderer_command_preserves_input_without_publishing_an_mcp_tool() {
+        let fixture = RendererCommandFixture::new(ExportSurface::Command);
+        let input = json!({"session_epoch":7,"force_fail":false});
+        let output = fixture.invoke("lane.acquire", input.clone()).unwrap();
+        assert_eq!(
+            output,
+            json!({"capability_id":"lane.acquire","input":input})
+        );
+        let endpoints = fixture.app.plugin_endpoints();
+        assert!(!contains_tool(
+            &endpoints.plugin_mcp_tools().unwrap(),
+            "app_plugin.plugin.mcp-fixture.lane.acquire"
+        ));
+        assert!(
+            endpoints
+                .invoke_plugin_mcp_tool(PluginInvocationRequest {
+                    tool_name: "app_plugin.plugin.mcp-fixture.lane.acquire".into(),
+                    arguments: input,
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("ready compiled plugin tool")
+        );
+        assert_eq!(
+            fixture
+                .invoke("manifest", json!({"detail":"full"}))
+                .unwrap()["capability_id"],
+            "manifest"
+        );
+    }
+
+    #[test]
+    fn renderer_command_propagates_plugin_failure_and_readiness() {
+        let fixture = RendererCommandFixture::new(ExportSurface::Command);
+        assert!(
+            fixture
+                .invoke("lane.acquire", json!({"force_fail":true}))
+                .unwrap_err()
+                .contains("fixture application failure")
+        );
+        fixture.plugins.stop(PLUGIN_ID).unwrap();
+        assert!(
+            fixture
+                .invoke("lane.acquire", json!({}))
+                .unwrap_err()
+                .contains("not ready")
+        );
+    }
+
+    #[test]
+    fn renderer_does_not_admit_scoped_or_http_exports_as_commands() {
+        for surface in [
+            ExportSurface::ScopedMcpTool {
+                scope: "assistant_session".into(),
+            },
+            ExportSurface::HttpRoute {
+                method: lumvise_plugin_package::HttpMethod::Post,
+                path_template: "/fixture-command".into(),
+                stream_mode: lumvise_plugin_package::HttpStreamMode::Buffered,
+                sse_policy: None,
+            },
+        ] {
+            let fixture = RendererCommandFixture::new(surface);
+            assert!(
+                fixture
+                    .invoke("lane.acquire", json!({}))
+                    .unwrap_err()
+                    .contains("ready compiled plugin tool")
+            );
+        }
+    }
+}
+
 #[test]
 fn cli_scoped_tool_alias_and_wire_name_share_route_and_validation() {
     let fixture = CompiledMcpFixture::build();

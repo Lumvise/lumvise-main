@@ -1,6 +1,51 @@
 //! Plugin-neutral desktop voice and capability transport.
 
 use super::*;
+use lumvise_plugin_package::ExportSurface;
+use lumvise_plugin_protocol::WireOutcome;
+use lumvise_plugin_runtime::PluginInvocationRequest as RuntimePluginInvocationRequest;
+
+impl AppCoreDesktopBridge {
+    fn is_renderer_command(&self, plugin_id: &str, capability_id: &str) -> Result<bool, String> {
+        let installed = self
+            .app
+            .plugin_system()
+            .cataloged_plugins()
+            .map_err(|error| error.to_string())?;
+        Ok(installed.iter().any(|plugin| {
+            plugin.plugin_id == plugin_id
+                && plugin.exports.iter().any(|export| {
+                    export.id == capability_id && matches!(export.surface, ExportSurface::Command)
+                })
+        }))
+    }
+
+    fn invoke_renderer_command(
+        &self,
+        plugin_id: String,
+        capability_id: String,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let context = crate::plugin::surface_invocation_context(
+            "desktop-renderer-command",
+            Instant::now() + Duration::from_secs(60),
+        );
+        let request =
+            RuntimePluginInvocationRequest::new(&plugin_id, &capability_id, input, context);
+        match self
+            .app
+            .plugin_system()
+            .invoke_controlled(request)
+            .map_err(|error| error.to_string())?
+        {
+            WireOutcome::Succeeded { value } => Ok(value),
+            WireOutcome::Failed { error } => Err(format!(
+                "Renderer command {plugin_id}/{capability_id} failed ({}): {}",
+                error.code, error.message,
+            )),
+        }
+    }
+}
 
 impl DesktopVoiceBridge for PendingDesktopBridge {
     fn install_host_extension(
@@ -117,6 +162,9 @@ impl DesktopVoiceBridge for AppCoreDesktopBridge {
         capability_id: String,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        if self.is_renderer_command(&plugin_id, &capability_id)? {
+            return self.invoke_renderer_command(plugin_id, capability_id, input);
+        }
         let response = self
             .app
             .plugin_endpoints()
