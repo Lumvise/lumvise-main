@@ -26,7 +26,7 @@ mod tool_stream;
 mod turn_completion;
 
 use streamed_response::StreamedToolResponse;
-use tool_result_content::render_tool_result_content;
+use tool_result_content::append_tool_result;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OpenAiCompatibleProviderSpec {
@@ -219,6 +219,7 @@ impl OpenAiCompatibleChatProvider {
                 &response,
                 control,
                 speech.as_ref().map(|speech| speech.tool_name()),
+                self.spec.supports_image_snapshot,
             )? {
                 if let Some(content) = turn_completion::finalized_response(&messages) {
                     return Ok(content);
@@ -244,7 +245,11 @@ impl OpenAiCompatibleChatProvider {
                         return Ok(content);
                     }
                     native_tool_call_recovery::TextRecovery::Recovered(call) => {
-                        append_recovered_tool_call(&mut messages, &call);
+                        append_recovered_tool_call(
+                            &mut messages,
+                            &call,
+                            self.spec.supports_image_snapshot,
+                        );
                         if let Some(content) = turn_completion::finalized_response(&messages) {
                             return Ok(content);
                         }
@@ -531,6 +536,7 @@ fn append_openai_tool_calls(
     response: &Value,
     control: &StreamControl,
     streamed_tool: Option<&str>,
+    supports_images: bool,
 ) -> Result<bool> {
     let Some(message) = response["choices"][0]["message"].as_object() else {
         return Ok(false);
@@ -542,7 +548,15 @@ fn append_openai_tool_calls(
         return Ok(false);
     }
     messages.push(Value::Object(message.clone()));
-    append_tool_results(config, tools, messages, tool_calls, control, streamed_tool)?;
+    append_tool_results(
+        config,
+        tools,
+        messages,
+        tool_calls,
+        control,
+        streamed_tool,
+        supports_images,
+    )?;
     Ok(true)
 }
 
@@ -553,6 +567,7 @@ fn append_openai_tool_calls(
 fn append_recovered_tool_call(
     messages: &mut Vec<Value>,
     call: &native_tool_call_recovery::RecoveredCall,
+    supports_images: bool,
 ) {
     const RECOVERED_CALL_ID: &str = "native-recovered-1";
     messages.push(json!({
@@ -564,11 +579,11 @@ fn append_recovered_tool_call(
             "function": { "name": call.name, "arguments": call.arguments.to_string() },
         }],
     }));
-    messages.push(json!({
-        "role": "tool",
-        "tool_call_id": RECOVERED_CALL_ID,
-        "content": render_tool_result_content(&call.result),
-    }));
+    if let Some(visual) =
+        append_tool_result(messages, RECOVERED_CALL_ID, &call.result, supports_images)
+    {
+        messages.push(visual);
+    }
 }
 
 fn append_tool_results(
@@ -578,7 +593,9 @@ fn append_tool_results(
     tool_calls: &[Value],
     control: &StreamControl,
     streamed_tool: Option<&str>,
+    supports_images: bool,
 ) -> Result<()> {
+    let mut visuals = Vec::new();
     for call in tool_calls {
         check_tool_cancellation(config, control)?;
         if call["function"]["name"]
@@ -588,9 +605,20 @@ fn append_tool_results(
             messages.push(json!({"role":"tool", "tool_call_id":call["id"], "content":
                 json!({"error":{"message":"Response delivery is automatic; write spoken prose in assistant content instead of calling the response tool."}}).to_string()}));
         } else {
-            messages.push(execute_tool_call(config, tools, call)?);
+            let name = tool_call_name(config, call)?;
+            let id = call["id"].as_str().unwrap_or(&name);
+            if let Some(visual) = append_tool_result(
+                messages,
+                id,
+                &execute_tool_call(config, tools, call)?,
+                supports_images,
+            ) {
+                visuals.push(visual);
+            }
         }
     }
+    // Every tool receipt must precede the next user message, including parallel calls.
+    messages.extend(visuals);
     Ok(())
 }
 
@@ -600,17 +628,11 @@ fn execute_tool_call(
     call: &Value,
 ) -> Result<Value> {
     let name = tool_call_name(config, call)?;
-    let id = call["id"].as_str().unwrap_or(&name);
-    let result = tool_outcome_value(
+    tool_outcome_value(
         tools
             .invoker()
             .invoke(&name, tool_call_arguments(config, call)?),
-    )?;
-    Ok(json!({
-        "role": "tool",
-        "tool_call_id": id,
-        "content": render_tool_result_content(&result),
-    }))
+    )
 }
 
 fn tool_call_name(config: &LlmProviderConfig, call: &Value) -> Result<String> {

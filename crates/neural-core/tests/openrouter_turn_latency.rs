@@ -629,3 +629,41 @@ fn interleaved_tool_deltas_keep_each_argument_and_execute_in_index_order() {
     assert_eq!(calls[0]["arguments"]["content"], "First");
     assert_eq!(calls[1]["arguments"]["content"], "Second");
 }
+
+#[test]
+fn canvas_images_reach_the_next_model_round_after_all_parallel_tool_receipts() {
+    let assistant = ScopedAssistant::start(json!({"content":[
+        {"type":"text","text":"Canvas revision 4"},
+        {"type":"image","mimeType":"image/png","data":"rendered-pixels"}
+    ]}));
+    let calls = event(
+        json!({"tool_calls":[
+            {"index":0,"id":"preview-a","function":{"name":"lookup","arguments":"{\"id\":\"a\"}"}},
+            {"index":1,"id":"preview-b","function":{"name":"lookup","arguments":"{\"id\":\"b\"}"}}
+        ]}),
+        json!("tool_calls"),
+    );
+    let model = StreamedModel::new(vec![
+        vec![calls],
+        vec![event(
+            json!({"content":"The layout is readable."}),
+            json!("stop"),
+        )],
+    ]);
+    model
+        .registry()
+        .complete("openrouter", &assistant.request("canvas-review"))
+        .unwrap();
+    let requests = model.requests.lock().unwrap();
+    let messages = requests[1].payload["messages"].as_array().unwrap();
+    let roles: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| message["role"].as_str())
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "tool", "tool", "user", "user"]);
+    assert!(!messages[2].to_string().contains("rendered-pixels"));
+    assert_eq!(
+        messages[4]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,rendered-pixels"
+    );
+}

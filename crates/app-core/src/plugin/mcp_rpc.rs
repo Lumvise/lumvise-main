@@ -153,9 +153,7 @@ fn parse_tool_call(params: Option<Value>) -> std::result::Result<ToolCallParams,
 }
 
 fn tool_result(payload: Value, is_error: bool) -> std::result::Result<Value, JsonRpcError> {
-    let text =
-        serde_json::to_string(&payload).map_err(|error| invalid_params(error.to_string()))?;
-    Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
+    Ok(lumvise_mcp_core::encode_mcp_tool_result(payload, is_error))
 }
 
 fn initialize_result() -> Value {

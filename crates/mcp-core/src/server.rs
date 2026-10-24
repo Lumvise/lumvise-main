@@ -441,9 +441,7 @@ fn response_from_result(
 }
 
 fn tool_result(payload: Value) -> std::result::Result<Value, JsonRpcError> {
-    let text =
-        serde_json::to_string(&payload).map_err(|error| invalid_params(error.to_string()))?;
-    Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": false }))
+    Ok(crate::encode_mcp_tool_result(payload, false))
 }
 
 fn valid_initialize_params(params: &Value) -> bool {
