@@ -93,6 +93,11 @@ impl PluginRepositoryConfig {
     pub fn publisher_trust_path(&self) -> &Path {
         &self.publisher_trust_path
     }
+
+    /// Returns the host compatibility used to verify repository packages.
+    pub fn host(&self) -> &HostCompatibility {
+        &self.host
+    }
 }
 
 fn configured_state_root() -> PathBuf {

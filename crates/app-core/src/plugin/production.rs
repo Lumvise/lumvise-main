@@ -4,14 +4,14 @@
 //! permission gating, durable restore, and runtime construction remain hidden.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
 };
 
-use lumvise_plugin_package::{HostCompatibility, PluginReleaseIndexV2};
+use lumvise_plugin_package::{HostCompatibility, PluginReleaseIndexV2, PublisherTrustStore};
 use lumvise_plugin_runtime::{
     HostCapabilityBroker, HostCapabilityError, HostCapabilityRequest, PluginInvocationContext,
     PluginRepository, PluginRepositoryConfig, PluginRestoreFailure, PluginRestoreFailureKind,
@@ -43,6 +43,7 @@ const BUNDLED_RELEASE_DIR_ENV: &str = "LUMVISE_BUILTIN_RELEASE_DIR";
 #[derive(Clone, Debug)]
 pub struct PluginProductionConfig {
     repository: PluginRepositoryConfig,
+    host: HostCompatibility,
     host_capability_grants_path: PathBuf,
     runtime: PluginRuntimeConfig,
     builtin_trust_upgrade: BuiltinTrustUpgrade,
@@ -70,7 +71,12 @@ impl PluginProductionConfig {
         host: HostCompatibility,
     ) -> Self {
         Self {
-            repository: PluginRepositoryConfig::new(repository_root, publisher_trust_path, host),
+            repository: PluginRepositoryConfig::new(
+                repository_root,
+                publisher_trust_path,
+                host.clone(),
+            ),
+            host,
             host_capability_grants_path: host_capability_grants_path.into(),
             runtime: production_runtime_config(),
             builtin_trust_upgrade: BuiltinTrustUpgrade::production(),
@@ -80,10 +86,12 @@ impl PluginProductionConfig {
     /// Resolves standard per-user production paths and current Rust host target.
     pub fn configured() -> Self {
         let repository = PluginRepositoryConfig::configured();
+        let host = repository.host().clone();
         let host_capability_grants_path =
             repository.state_root().join("host-capability-grants.json");
         Self {
             repository,
+            host,
             host_capability_grants_path,
             runtime: production_runtime_config(),
             builtin_trust_upgrade: BuiltinTrustUpgrade::production(),
@@ -134,7 +142,7 @@ impl PluginProductionConfig {
             self.repository.publisher_trust_path(),
             &self.host_capability_grants_path,
             &index,
-            || installed_plugin_ids(&self.repository),
+            || installed_plugin_capabilities(&self.repository, &self.host),
         )?;
         install_bundled_artifacts(&self.repository, release_dir, &index)
     }
@@ -510,14 +518,37 @@ fn configured_bundled_release_dir() -> Option<PathBuf> {
     .find(|candidate| candidate.join("builtins-release.json").is_file())
 }
 
-fn installed_plugin_ids(config: &PluginRepositoryConfig) -> Result<BTreeSet<String>> {
+/// Maps each installed plugin to the Host Capabilities its installed versions request.
+///
+/// Versions are verified with the same publisher trust and host as the runtime restore.
+/// A plugin with a version that does not verify maps to `None`, so its grants stay untouched.
+fn installed_plugin_capabilities(
+    config: &PluginRepositoryConfig,
+    host: &HostCompatibility,
+) -> Result<BTreeMap<String, Option<BTreeSet<String>>>> {
+    let trust = PublisherTrustStore::load_json_file(config.publisher_trust_path())?;
     let repository = config.open()?;
-    Ok(repository
-        .registry()
-        .records
-        .iter()
-        .map(|record| record.plugin_id.clone())
-        .collect())
+    let mut installed = BTreeMap::new();
+    for record in &repository.registry().records {
+        let archive = config.repository_root().join(&record.archive_path);
+        let requested = installed
+            .entry(record.plugin_id.clone())
+            .or_insert_with(|| Some(BTreeSet::new()));
+        match trust.verify_package(&archive, host) {
+            Ok(package) => {
+                if let Some(ids) = requested {
+                    ids.extend(
+                        package
+                            .host_capabilities()
+                            .iter()
+                            .map(|requirement| requirement.id.clone()),
+                    );
+                }
+            }
+            Err(_) => *requested = None,
+        }
+    }
+    Ok(installed)
 }
 
 fn install_bundled_artifacts(

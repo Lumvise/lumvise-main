@@ -8,7 +8,13 @@ use super::{
 use crate::Result;
 use lumvise_plugin_package::{HostCompatibility, PluginReleaseIndexV2, PublisherTrustStore};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fs, fs::OpenOptions, io::Write, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    fs::OpenOptions,
+    io::Write,
+    path::Path,
+};
 
 const BUILTIN_PUBLISHER: &str = "lumvise.builtin";
 const DEVELOPMENT_KEY_ID: &str = "lumvise.release.1";
@@ -68,16 +74,14 @@ impl BuiltinTrustUpgrade {
         publish_policy(installed, &original, &document)
     }
 
-    /// Adds the bundled grants of a built-in that this pinned production bundle installs for the
-    /// first time. Records the installed policy already holds are never changed or removed, and a
-    /// built-in that was installed before keeps whatever an administrator left it.
+    /// Adds the bundled grants of indexed built-ins that the policy does not hold yet: every grant of a built-in that is not installed, and for an installed built-in only the grants none of its installed versions requested. Existing records are never changed or removed, so an administrator's removal of a requested grant stays in force.
     pub(super) fn grant_new_builtins(
         &self,
         release: &Path,
         trust: &Path,
         installed: &Path,
         index: &PluginReleaseIndexV2,
-        installed_plugins: impl FnOnce() -> Result<BTreeSet<String>>,
+        installed_plugins: impl FnOnce() -> Result<BTreeMap<String, Option<BTreeSet<String>>>>,
     ) -> Result<()> {
         // An unreadable or invalid installed policy is reported by the policy loader, not rewritten.
         let Ok(original) = fs::read(installed) else {
@@ -86,37 +90,44 @@ impl BuiltinTrustUpgrade {
         let Ok(mut document) = serde_json::from_slice::<GrantDocument>(&original) else {
             return Ok(());
         };
+        let bundled = release.join("host-capability-grants.json");
+        let bytes =
+            fs::read(&bundled).map_err(|error| invalid_policy(&bundled, error.to_string()))?;
+        let offered: GrantDocument = serde_json::from_slice(&bytes)
+            .map_err(|error| invalid_policy(&bundled, error.to_string()))?;
+        let held = |grant: &GrantRecord| {
+            document.grants.iter().any(|record| {
+                record.plugin_id == grant.plugin_id && record.capability_id == grant.capability_id
+            })
+        };
+        let candidates: Vec<GrantRecord> = offered
+            .grants
+            .into_iter()
+            .filter(|grant| {
+                !held(grant)
+                    && index
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.plugin_id == grant.plugin_id)
+            })
+            .collect();
+        // The usual start: every bundled grant is already held, so the registry is not even read.
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let installed_plugins = installed_plugins()?;
         let unrecorded = |plugin_id: &str| {
             document
                 .grants
                 .iter()
                 .all(|held| held.plugin_id != plugin_id)
         };
-        // The usual start: every bundled built-in has records, so the registry is not even read.
-        if !index
-            .artifacts
-            .iter()
-            .any(|artifact| unrecorded(&artifact.plugin_id))
-        {
-            return Ok(());
-        }
-        let installed_plugins = installed_plugins()?;
-        let is_new =
-            |plugin_id: &str| !installed_plugins.contains(plugin_id) && unrecorded(plugin_id);
-        let bundled = release.join("host-capability-grants.json");
-        let bytes =
-            fs::read(&bundled).map_err(|error| invalid_policy(&bundled, error.to_string()))?;
-        let offered: GrantDocument = serde_json::from_slice(&bytes)
-            .map_err(|error| invalid_policy(&bundled, error.to_string()))?;
-        let additions: Vec<GrantRecord> = offered
-            .grants
+        let additions: Vec<GrantRecord> = candidates
             .into_iter()
-            .filter(|grant| {
-                is_new(&grant.plugin_id)
-                    && index
-                        .artifacts
-                        .iter()
-                        .any(|artifact| artifact.plugin_id == grant.plugin_id)
+            .filter(|grant| match installed_plugins.get(&grant.plugin_id) {
+                None => unrecorded(&grant.plugin_id),
+                Some(Some(requested)) => !requested.contains(&grant.capability_id),
+                Some(None) => false,
             })
             .collect();
         // Only a bundle whose every archive verifies against the compiled production pin may add.
