@@ -12,6 +12,7 @@ document-ml = ["docling/pdf", "dep:docling-pdf", "dep:time"]
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
 lumvise-contracts.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 ignore = "0.4"
 sha2 = "0.10"

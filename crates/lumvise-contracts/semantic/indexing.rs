@@ -1,6 +1,32 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(test)]
+mod exact_dependency_tests {
+    use super::*;
+
+    #[test]
+    fn source_inputs_preserve_typed_exact_dependencies() {
+        let input = serde_json::json!({
+            "semantic_source_id":"source", "semantic_element_id":"document", "path":"note.md",
+            "semantic_element_type":"file", "semantic_element_name":"Note",
+            "revision_dependencies":[{"kind":"artifact", "record_id":"payload-17"}]
+        });
+        let decoded: SemanticElementUpsert = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(
+            decoded.revision_dependencies,
+            [super::super::SemanticRecordRef::artifact("payload-17")]
+        );
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()["revision_dependencies"],
+            input["revision_dependencies"]
+        );
+        let mut malformed = input;
+        malformed["revision_dependencies"][0]["kind"] = serde_json::json!("latest");
+        assert!(serde_json::from_value::<SemanticElementUpsert>(malformed).is_err());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SemanticSourceUpsert {
     pub semantic_source_id: String,
@@ -18,6 +44,9 @@ pub struct SemanticElementUpsert {
     pub semantic_element_type: String,
     pub semantic_element_name: String,
     pub parent_element_id: Option<String>,
+    /// Exact payload/evidence revisions required by this element, independent of current selection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revision_dependencies: Vec<super::SemanticRecordRef>,
     pub content_fingerprint: Option<String>,
     pub start_line: Option<i64>,
     pub end_line: Option<i64>,
@@ -38,6 +67,8 @@ pub struct SemanticRelationshipUpsert {
 pub struct IndexBatchRequest {
     pub provider_instance_id: String,
     pub project_root: String,
+    /// Unbound projections cannot publish; the producer supplies its durable observed base.
+    pub revision_observation: Option<super::SemanticIndexObservation>,
     #[serde(default)]
     pub replace_paths: Vec<String>,
     #[serde(default)]
@@ -45,6 +76,31 @@ pub struct IndexBatchRequest {
     pub semantic_sources: Vec<SemanticSourceUpsert>,
     pub semantic_elements: Vec<SemanticElementUpsert>,
     pub semantic_relationships: Vec<SemanticRelationshipUpsert>,
+}
+
+/// Frozen producer input returned by App Core's project.index capability.
+/// Example: replay this batch with operation_id as its Semantic ingestion job ID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceIndexPublication {
+    pub operation_id: String,
+    pub batch: IndexBatchRequest,
+}
+
+/// Source preparation either replays pending input or permits a scan against a frozen base token.
+/// Example: scan only after matching the Scan variant; Pending must be acknowledged first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceIndexPreparation {
+    Pending {
+        source: SemanticSourceUpsert,
+        publication: SourceIndexPublication,
+    },
+    Scan {
+        source: SemanticSourceUpsert,
+        base_token: String,
+        requires_full_scan: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

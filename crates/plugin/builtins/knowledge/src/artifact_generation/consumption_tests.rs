@@ -23,6 +23,21 @@ impl HostCallTransport for ConsumptionFakeHost {
         match (capability, input["operation"].as_str().unwrap_or_default()) {
             ("storage.plugin", "ensure_table") => Ok(json!({})),
             ("storage.plugin", "list_rows") => self.list_rows(&input),
+            ("storage.plugin", "get_row") => {
+                let key = (
+                    input["table_name"].as_str().unwrap().into(),
+                    input["row_key"].as_str().unwrap().into(),
+                );
+                Ok(json!({"row":self.rows.get(&key).map(|value| json!({"value":value}))}))
+            }
+            ("storage.plugin", "delete_row") => {
+                let key = (
+                    input["table_name"].as_str().unwrap().into(),
+                    input["row_key"].as_str().unwrap().into(),
+                );
+                self.rows.remove(&key);
+                Ok(json!({}))
+            }
             ("storage.plugin", "put_row") => {
                 self.rows.insert(
                     (
@@ -34,10 +49,14 @@ impl HostCallTransport for ConsumptionFakeHost {
                 Ok(json!({}))
             }
             ("storage.plugin", "trim_rows_by_key") => Ok(json!({})),
-            ("storage.plugin", "mutate_rows") => {
-                self.mutate_rows(&input);
-                Ok(json!({}))
-            }
+            ("storage.plugin", "mutate_rows") => storage::test_rows::apply(&mut self.rows, &input),
+            ("runtime.project_execution", "scope") => Ok(json!({"client_instance_id":"client-a"})),
+            ("storage.semantic", "revision_families") => Ok(
+                crate::semantic_context::test_source_reads::selected_sources(
+                    &self.elements,
+                    &input,
+                ),
+            ),
             ("runtime.project_execution", "status") => self.job_status(&input),
             ("storage.semantic", "project_snapshot") => {
                 self.project_snapshots += 1;
@@ -56,7 +75,7 @@ impl HostCallTransport for ConsumptionFakeHost {
             ("storage.semantic", "selective_subgraph") => self.selective_subgraph(&input),
             ("storage.semantic", "elements_by_ids_including_inactive") => {
                 let mut response = self.elements_by_ids(&input);
-                let documents = self.graph.host_call(capability, input)?;
+                let documents = self.graph.targeted_documents(input)?;
                 response["elements"]
                     .as_array_mut()
                     .unwrap()
@@ -101,20 +120,6 @@ impl ConsumptionFakeHost {
             .map(|(_, value)| json!({"value": value}))
             .collect::<Vec<_>>();
         Ok(json!({"rows": rows, "next_after_key": null}))
-    }
-
-    fn mutate_rows(&mut self, input: &Value) {
-        for mutation in input["mutations"].as_array().into_iter().flatten() {
-            if mutation["operation"] == "delete" {
-                self.rows.remove(&(
-                    mutation["table_name"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
-                    mutation["row_key"].as_str().unwrap_or_default().to_owned(),
-                ));
-            }
-        }
     }
 
     fn job_status(&self, input: &Value) -> Result<Value, PluginError> {
@@ -187,6 +192,7 @@ impl ConsumptionFakeHost {
 
 fn element(id: &str, kind: &str, name: &str, parent: Option<&str>) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "source".into(),
@@ -194,7 +200,7 @@ fn element(id: &str, kind: &str, name: &str, parent: Option<&str>) -> SemanticEl
         element_kind: kind.into(),
         name: name.into(),
         parent_element_id: parent.map(str::to_owned),
-        content_fingerprint: Some("fp-current".into()),
+        content_fingerprint: Some("fp1:0000000000000001:current".into()),
         start_line: Some(1),
         end_line: Some(8),
         lifecycle: "active".into(),
@@ -210,22 +216,40 @@ fn generated_output(element_id: &str, fingerprint: &str) -> Value {
 }
 
 fn pending_job(element_id: &str, job_id: &str, fingerprint: &str) -> PendingArtifactJob {
+    let source = element(element_id, "file", element_id, None);
     PendingArtifactJob {
-        job_id: job_id.into(),
+        client_instance_id: "client-a".into(),
+        project_id: "test-lineage".into(),
+        job_id: Some(job_id.into()),
         project_root: "/repo".into(),
         semantic_element_id: element_id.into(),
         content_fingerprint: fingerprint.into(),
         priority: SubmitPriority::Background,
         lost_resubmits: 0,
+        input: target_input(&source).unwrap(),
+        proposal: None,
+        document: GenerationDocumentBase {
+            document_id: functional::document_id_for(&source),
+            expected: None,
+        },
     }
 }
 
-fn seed_job(host: &mut ConsumptionFakeHost, job: PendingArtifactJob, status: Value) {
+fn seed_job(host: &mut ConsumptionFakeHost, mut job: PendingArtifactJob, status: Value) {
+    let lineage = host
+        .graph
+        .host_call(
+            "storage.semantic",
+            json!({"operation":"project_identity", "project_root":job.project_root}),
+        )
+        .unwrap();
+    job.project_id = lineage["identity"]["project_id"].as_str().unwrap().into();
     host.rows.insert(
         (JOBS.into(), pending_key(&job)),
         serde_json::to_value(&job).expect("pending job serializes"),
     );
-    host.statuses.insert(job.job_id.clone(), status);
+    host.statuses
+        .insert(job.job_id.as_ref().unwrap().clone(), status);
 }
 
 fn fixture(include_report: bool) -> ConsumptionFakeHost {
@@ -268,6 +292,7 @@ fn fixture(include_report: bool) -> ConsumptionFakeHost {
         relationships: relationships.clone(),
         ..Default::default()
     };
+    host.graph.seed_sources(&host.elements).unwrap();
     if include_report {
         let external_summary = functional_artifact(&host.elements[3]);
         seed_document(&mut host.graph, external_summary.clone());
@@ -362,8 +387,8 @@ fn seed_two_successes(host: &mut ConsumptionFakeHost) {
     for (element_id, job_id) in [("file:src/a.rs", "job-a"), ("file:src/z.rs", "job-z")] {
         seed_job(
             host,
-            pending_job(element_id, job_id, "fp-current"),
-            generated_output(element_id, "fp-current"),
+            pending_job(element_id, job_id, "fp1:0000000000000001:current"),
+            generated_output(element_id, "fp1:0000000000000001:current"),
         );
     }
 }
@@ -425,17 +450,17 @@ fn report_refresh_failure_keeps_every_successful_job_for_retry() {
 #[test]
 fn later_stale_job_does_not_discard_earlier_successful_consumption() {
     let mut host = fixture(true);
-    let first = pending_job("file:src/a.rs", "job-a", "fp-current");
-    let stale = pending_job("file:src/z.rs", "job-z", "fp-old");
+    let first = pending_job("file:src/a.rs", "job-a", "fp1:0000000000000001:current");
+    let stale = pending_job("file:src/z.rs", "job-z", "fp1:0000000000000001:current");
     seed_job(
         &mut host,
         first.clone(),
-        generated_output("file:src/a.rs", "fp-current"),
+        generated_output("file:src/a.rs", "fp1:0000000000000001:current"),
     );
     seed_job(
         &mut host,
         stale.clone(),
-        generated_output("file:src/z.rs", "fp-current"),
+        generated_output("file:src/z.rs", "fp1:0000000000000002:old"),
     );
 
     let error = dispatch_poll(&mut host).expect_err("stale later output propagates");
@@ -502,7 +527,7 @@ fn ungenerated_change_without_a_cultivation_candidate_skips_job_tables() {
 }
 
 #[test]
-fn selective_store_rejects_missing_inactive_and_stale_targets() {
+fn selective_store_never_publishes_missing_inactive_or_stale_targets() {
     for state in ["missing", "inactive", "stale"] {
         let mut host = fixture(false);
         if state == "missing" {
@@ -516,9 +541,9 @@ fn selective_store_rejects_missing_inactive_and_stale_targets() {
                 .lifecycle = "inactive".into();
         }
         let fingerprint = if state == "stale" {
-            "fp-old"
+            "fp1:0000000000000002:old"
         } else {
-            "fp-current"
+            "fp1:0000000000000001:current"
         };
         let pending = pending_job("file:src/a.rs", "job-a", fingerprint);
         seed_job(
@@ -527,15 +552,21 @@ fn selective_store_rejects_missing_inactive_and_stale_targets() {
             generated_output("file:src/a.rs", fingerprint),
         );
 
-        let error = dispatch_poll(&mut host).expect_err("invalid target rejects output");
-
-        assert_eq!(
-            error.code, "stale_project_execution_output",
-            "case: {state}"
-        );
-        assert!(
-            host.rows
-                .contains_key(&(JOBS.into(), pending_key(&pending)))
-        );
+        let outcome = dispatch_poll(&mut host);
+        if state == "stale" {
+            assert_eq!(outcome.unwrap_err().code, "stale_project_execution_output");
+            assert!(
+                host.rows
+                    .contains_key(&(JOBS.into(), pending_key(&pending)))
+            );
+        } else {
+            assert_eq!(outcome.unwrap(), json!({"pending":0, "completed":0}));
+            assert!(
+                !host
+                    .rows
+                    .contains_key(&(JOBS.into(), pending_key(&pending)))
+            );
+        }
+        assert_eq!(host.graph.writes, 0, "case: {state}");
     }
 }

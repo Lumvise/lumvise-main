@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crate::ArtifactTextVectorizer;
 use crate::local::grafeo::graph_rows::{
-    apply_artifact_vector_replace, prepare_artifact_vector_replace,
+    apply_artifact_vector_replace, artifact_is_current_in_project, prepare_artifact_vector_replace,
 };
 #[cfg(test)]
 use crate::local::grafeo::graph_rows::{
@@ -98,20 +98,6 @@ impl<'db> SemanticStorage<'db> {
                     "vector semantic element id matching current artifact owner",
                 ));
             }
-            let owner = self
-                .element(&artifact.semantic_element_id)?
-                .ok_or_else(|| {
-                    crate::DbError::invalid_value(
-                        &artifact.semantic_element_id,
-                        "existing owning semantic element for artifact",
-                    )
-                })?;
-            if owner.project_root != project_root {
-                return Err(crate::DbError::invalid_value(
-                    &stored.artifact_id,
-                    "semantic artifact in request project root",
-                ));
-            }
             let Some(source_text) = artifact_text(&artifact) else {
                 return Err(crate::DbError::invalid_value(
                     &stored.artifact_id,
@@ -124,15 +110,12 @@ impl<'db> SemanticStorage<'db> {
                     "vector source text matching current artifact searchable text",
                 ));
             }
-            if stored.vector.dimensions == 0
-                || stored.vector.dimensions != stored.vector.vector.len()
-                || !stored.vector.vector.iter().all(|value| value.is_finite())
-            {
-                return Err(crate::DbError::invalid_value(
+            crate::validate_vector_payload(&stored.artifact_id, &stored.vector).map_err(|_| {
+                crate::DbError::invalid_value(
                     &stored.artifact_id,
                     "finite vector matching declared dimensions",
-                ));
-            }
+                )
+            })?;
             writes.push((artifact, stored.source_text.as_str(), &stored.vector));
         }
         self.commit_preplanned_graph_write(
@@ -140,6 +123,16 @@ impl<'db> SemanticStorage<'db> {
                 writes
                     .iter()
                     .map(|(artifact, source_text, vector)| {
+                        if !artifact_is_current_in_project(
+                            database,
+                            project_root,
+                            &artifact.artifact_id,
+                        ) {
+                            return Err(crate::DbError::invalid_value(
+                                &artifact.artifact_id,
+                                format!("a current semantic artifact in project `{project_root}`"),
+                            ));
+                        }
                         prepare_artifact_vector_replace(database, artifact, source_text, vector)
                     })
                     .collect::<Result<Vec<_>>>()

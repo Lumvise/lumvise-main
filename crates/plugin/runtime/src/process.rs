@@ -25,6 +25,8 @@ const MAX_STDERR_BYTES: usize = 64 * 1024;
 const EXIT_STATUS_POLL: Duration = Duration::from_millis(5);
 const EXIT_STATUS_TIMEOUT: Duration = Duration::from_millis(500);
 
+mod host_calls;
+
 pub(crate) struct PluginProcess {
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<ChildStdin>>,
@@ -606,7 +608,13 @@ async fn host_call_outcome_async(
         required_version: required_version.clone(),
         input: call.input.clone(),
     };
-    let result = match invoke_host_capability_async(broker, request, context, deadline).await {
+    let access = InvocationAccess {
+        declared_host_capabilities: declared,
+        broker,
+        plugin_system,
+        context,
+    };
+    let result = match host_calls::invoke_scoped(request, access, deadline).await {
         Ok(value) if call.capability_id == "plugin.invoke" => {
             Box::pin(plugin_system.invoke_plugin_async(call.plugin_id, call.input, context)).await
         }

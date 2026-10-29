@@ -17,11 +17,10 @@ fn import_round_trips_structure_artifacts_blobs_and_vectors() {
     let exported = export(&source, &archive);
 
     let target = LocalPersistence::in_memory().unwrap();
-    sync(&target, vec![element("stale", "src/stale.rs")], vec![]);
     let imported = import(&target, &archive).expect("valid archive imports");
 
     assert_eq!(imported.structure.elements_upserted, 2);
-    assert_eq!(imported.structure.elements_marked_inactive, 1);
+    assert_eq!(imported.structure.elements_marked_inactive, 0);
     assert_eq!(imported.artifacts_imported, 1);
     assert_eq!(imported.artifacts_kept, 0);
     assert_eq!(imported.canonical_remote, None);
@@ -30,7 +29,6 @@ fn import_round_trips_structure_artifacts_blobs_and_vectors() {
         BTreeMap::from([
             ("a".to_owned(), "active".to_owned()),
             ("b".to_owned(), "active".to_owned()),
-            ("stale".to_owned(), "inactive".to_owned()),
         ])
     );
     let reexported = export(&target, &directory.path().join("target.pz"));
@@ -38,7 +36,7 @@ fn import_round_trips_structure_artifacts_blobs_and_vectors() {
 }
 
 #[test]
-fn import_keeps_existing_artifacts_authoritative() {
+fn import_rejects_conflicting_exact_artifact_without_changing_local_content() {
     let directory = tempfile::tempdir().unwrap();
     let archive = directory.path().join("source.pz");
     let source = LocalPersistence::in_memory().unwrap();
@@ -50,10 +48,7 @@ fn import_keeps_existing_artifacts_authoritative() {
     let mut local = artifact("Local edit");
     local.content = Some("kept locally".into());
     upsert(&target, local);
-    let imported = import(&target, &archive).expect("valid archive imports");
-
-    assert_eq!(imported.artifacts_imported, 0);
-    assert_eq!(imported.artifacts_kept, 1);
+    assert!(import(&target, &archive).is_err());
     let SemanticResult::Artifact(Some(stored)) = execute(
         &target,
         SemanticOperation::Artifact {
@@ -86,6 +81,41 @@ fn import_rejects_invalid_archive_without_touching_structure() {
         lifecycles(&target),
         BTreeMap::from([("stale".to_owned(), "active".to_owned())])
     );
+}
+
+#[test]
+fn import_validates_blob_collisions_before_publishing_graph_or_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.pz");
+    let source = LocalPersistence::in_memory().unwrap();
+    seed_exportable_project(&source);
+    export(&source, &path);
+    let archive =
+        lumvise_db_core::SemanticArchive::read(&path, "/repo", &InvocationControl::sixty_seconds())
+            .unwrap();
+    let blob = &archive.artifact_blobs[0];
+    let target = LocalPersistence::in_memory().unwrap();
+    execute(
+        &target,
+        SemanticOperation::ArtifactBlobPut {
+            content_ref: blob.content_ref.clone(),
+            artifact_id: "existing-owner".into(),
+            media_type: blob.media_type.clone(),
+            content: b"different bytes".to_vec(),
+        },
+    );
+    let failure = import(&target, &path).unwrap_err();
+    assert!(failure.to_string().contains("immutable blob reference"));
+    let SemanticResult::Element(existing) = execute(
+        &target,
+        SemanticOperation::Element {
+            semantic_element_id: "a".into(),
+        },
+    ) else {
+        panic!("expected exact element result");
+    };
+    assert!(existing.is_none());
+    sync(&target, vec![element("local", "src/local.rs")], vec![]);
 }
 
 #[test]
@@ -270,6 +300,7 @@ fn execute(persistence: &LocalPersistence, operation: SemanticOperation) -> Sema
 
 fn element(id: &str, path: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "source".into(),

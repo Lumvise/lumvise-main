@@ -79,7 +79,8 @@ pub(crate) fn invoke_compiled_controlled(
         PluginInvocationClass::Foreground,
         lifecycle.deadline,
     )
-    .with_route_identity(lifecycle.session_id, lifecycle.scope_id);
+    .with_route_identity(lifecycle.session_id, lifecycle.scope_id)
+    .with_scope_epoch(lifecycle.scope_epoch);
     let request = RuntimeInvocationRequest::new(plugin_id, export_id, arguments, context);
     let outcome = endpoints.app.plugin_system().invoke_controlled(request)?;
     Ok(invocation_response(outcome))

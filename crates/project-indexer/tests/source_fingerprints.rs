@@ -64,3 +64,74 @@ fn source_kind_and_established_text_size_boundary_select_the_existing_algorithms
         "file-byte-window-fp1-v1"
     );
 }
+
+fn fingerprint_probe_paths() -> (std::path::PathBuf, String) {
+    let root = std::env::var("LUMVISE_FINGERPRINT_PROBE_ROOT")
+        .expect("LUMVISE_FINGERPRINT_PROBE_ROOT missing; expected absolute project directory");
+    let image = std::env::var("LUMVISE_FINGERPRINT_PROBE_IMAGE")
+        .expect("LUMVISE_FINGERPRINT_PROBE_IMAGE missing; expected relative PNG path");
+    let root = std::path::PathBuf::from(root);
+    let path = std::path::Path::new(&image);
+    assert!(
+        root.is_absolute() && root.is_dir(),
+        "root {root:?}; expected absolute existing project directory"
+    );
+    assert!(
+        !path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png")),
+        "image {image:?}; expected relative PNG path without parent/current components"
+    );
+    (root, image)
+}
+
+#[test]
+#[ignore = "requires LUMVISE_FINGERPRINT_PROBE_ROOT/IMAGE; real-file diagnostic, no timing guarantee"]
+fn provisioned_png_read_sha_fingerprint_cpu_split() {
+    use lumvise_project_indexer::{FilesystemProjectSource, ProjectSource};
+    use sha2::{Digest, Sha256};
+    use std::{hint::black_box, time::Instant};
+    let (root, path) = fingerprint_probe_paths();
+    let source = FilesystemProjectSource::open(&root).unwrap();
+    let mut expected = None;
+    for iteration in 0..3 {
+        let started = Instant::now();
+        let read = source.read_file(&path).unwrap();
+        let read_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        let digest = Sha256::digest(black_box(&read.bytes));
+        let sha_us = started.elapsed().as_micros();
+        let started = Instant::now();
+        let fingerprint = SourceFingerprint::file(&path, black_box(&read.bytes));
+        let fingerprint_us = started.elapsed().as_micros();
+        let observed = (digest.to_vec(), fingerprint.clone());
+        if let Some(expected) = &expected {
+            assert_eq!(
+                &observed, expected,
+                "iteration {iteration}; expected identical immutable input digest and fp1"
+            );
+        }
+        expected = Some(observed);
+        let started = Instant::now();
+        let decoded = image::load_from_memory(black_box(&read.bytes)).unwrap();
+        let decode_us = started.elapsed().as_micros();
+        let (width, height) = (decoded.width(), decoded.height());
+        let started = Instant::now();
+        let resized = decoded
+            .resize_exact(9, 8, image::imageops::FilterType::Triangle)
+            .to_luma8();
+        black_box(resized);
+        let resize_us = started.elapsed().as_micros();
+        println!(
+            "{}",
+            serde_json::json!({"workload":"provisioned_png_fp1","debug_assertions":cfg!(debug_assertions),
+            "iteration":iteration,"path":path,"bytes":read.bytes.len(),"width":width,"height":height,
+            "read_us":read_us,"sha_us":sha_us,"fingerprint_us":fingerprint_us,"decode_us":decode_us,"resize_us":resize_us,
+            "fingerprint":fingerprint.encoded,"algorithm":fingerprint.algorithm})
+        );
+    }
+}

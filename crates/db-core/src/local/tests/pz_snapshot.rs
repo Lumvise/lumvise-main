@@ -12,6 +12,7 @@ use std::io::{Read, Write};
 
 fn element(id: &str, path: &str, lifecycle: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: format!("source-{id}"),
@@ -98,7 +99,7 @@ fn rewrite_manifest(path: &std::path::Path, mutate: impl FnOnce(&mut serde_json:
     let replacement = path.with_extension("rewritten.pz");
     let file = fs::File::create(&replacement).unwrap();
     let mut writer = zip::ZipWriter::new(file);
-    writer.set_zip64_comment(Some("PZ1"));
+    writer.set_zip64_comment(Some("PZ2"));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Stored)
         .large_file(true);
@@ -141,7 +142,8 @@ fn writes_valid_graph_only_package_and_selective_lookup() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph_db.pz");
     let result = db.create_semantic_snapshot("/repo", &path).unwrap();
-    assert_eq!(result.row_counts["elements.parquet"], 2);
+    // Retained bodies include inactive history; the selection still contains only two current elements.
+    assert_eq!(result.row_counts["elements.parquet"], 3);
     assert_eq!(result.row_counts["relationships.parquet"], 1);
     assert_eq!(result.row_counts["external_references.parquet"], 0);
     let package = fs::read(&path).unwrap();

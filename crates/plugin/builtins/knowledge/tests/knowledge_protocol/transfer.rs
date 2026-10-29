@@ -164,7 +164,8 @@ fn knowledge_transfer_requires_explicit_selection_and_is_idempotent() {
         .expect("transfer id")
         .to_owned();
     let apply_input = serde_json::json!({
-        "project_root": "/target-project", "transfer_ids": [&selected_transfer_id]
+        "project_root": "/target-project", "transfer_ids": [&selected_transfer_id],
+        "operation_id":"reviewed-transfer-1"
     });
     let applied = invoke_value(&system, APPLY_TRANSFER_EXPORT_ID, apply_input.clone());
     assert_eq!(
@@ -177,13 +178,39 @@ fn knowledge_transfer_requires_explicit_selection_and_is_idempotent() {
             .map(Vec::len),
         Some(0)
     );
+    let candidates_before_replay = broker.semantic_operation_count("candidate_source_elements");
+    let publications_before_replay = broker.semantic_operation_count("publish_revisions");
+    let attachments_before_replay = broker.semantic_operation_count("copy_artifact_attachment");
     let replay = invoke_value(&system, APPLY_TRANSFER_EXPORT_ID, apply_input);
     assert_eq!(
-        replay["copied_artifact_ids"].as_array().map(Vec::len),
+        replay, applied,
+        "identical retries return the complete original result"
+    );
+    assert_eq!(
+        broker.semantic_operation_count("candidate_source_elements"),
+        candidates_before_replay
+    );
+    assert_eq!(
+        broker.semantic_operation_count("publish_revisions"),
+        publications_before_replay
+    );
+    assert_eq!(
+        broker.semantic_operation_count("copy_artifact_attachment"),
+        attachments_before_replay
+    );
+    let fresh_review = invoke_value(
+        &system,
+        APPLY_TRANSFER_EXPORT_ID,
+        serde_json::json!({
+            "project_root":"/target-project", "transfer_ids":[&selected_transfer_id], "operation_id":"reviewed-transfer-2"
+        }),
+    );
+    assert_eq!(
+        fresh_review["copied_artifact_ids"].as_array().map(Vec::len),
         Some(0)
     );
     assert_eq!(
-        replay["already_copied_artifact_ids"]
+        fresh_review["already_copied_artifact_ids"]
             .as_array()
             .map(Vec::len),
         Some(1)
@@ -251,6 +278,7 @@ fn knowledge_transfer_requires_explicit_selection_and_is_idempotent() {
     );
 
     let upserts_before_invalid = broker.semantic_operation_count("upsert_artifact");
+    let publications_before_invalid = broker.semantic_operation_count("publish_revisions");
     let invalid = system
         .invoke(
             PLUGIN_ID,
@@ -262,6 +290,10 @@ fn knowledge_transfer_requires_explicit_selection_and_is_idempotent() {
     assert_eq!(
         broker.semantic_operation_count("upsert_artifact"),
         upserts_before_invalid
+    );
+    assert_eq!(
+        broker.semantic_operation_count("publish_revisions"),
+        publications_before_invalid
     );
 
     let next_trigger = serde_json::json!({

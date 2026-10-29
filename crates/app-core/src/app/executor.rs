@@ -125,6 +125,13 @@ fn initialize_desktop_app(
 
 /// Warms deferred voice engines behind the live UI; reports readiness as a phase event.
 fn spawn_voice_warmup(app: Arc<AppCore>, startup_bridge: Arc<PendingDesktopBridge>) {
+    if app.plugin_host_services.realtime_audio_selected() {
+        let _ = startup_bridge.record_startup_phase(
+            "voice_ready",
+            Some("realtime audio selected; local voice models load on first use"),
+        );
+        return;
+    }
     let stt = app.voice2text_service();
     let tts = app.text2voice_service();
     if stt.is_none() && tts.is_none() {

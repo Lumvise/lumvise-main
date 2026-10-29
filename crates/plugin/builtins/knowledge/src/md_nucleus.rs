@@ -91,21 +91,6 @@ fn reconcile_nucleus(
     }) {
         return Ok(());
     }
-    if documents::conversion_required_for_source(
-        context,
-        project_root,
-        &element.semantic_element_id,
-        MD_NUCLEUS_TAG,
-    )? {
-        return Err(PluginError::new(
-            "knowledge_conversion_required",
-            format!(
-                "Markdown source `{}` in `{project_root}` still has a retired nucleus artifact; preview and apply document conversion before seeding",
-                element.semantic_element_id
-            ),
-            false,
-        ));
-    }
     let seed = nucleus_seed(project_root, element, path);
     match documents::save_generated(
         context,
@@ -121,6 +106,7 @@ fn reconcile_nucleus(
 
 fn nucleus_seed(project_root: &str, element: &SemanticElement, path: &str) -> KnowledgeDocument {
     documents::draft_document(CreateKnowledgeDocumentRequest {
+        operation_id: None,
         document_id: nucleus_document_id(project_root, path),
         project_root: project_root.into(),
         document_kind: KnowledgeDocumentKind::Context,

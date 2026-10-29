@@ -3,6 +3,14 @@
 
 const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     (
+        "resolve_revision_families",
+        "Resolve explicitly requested element and artifact families in one project_root and selection_id. Returns selected IDs and the captured commit; an absent mapping means no selected family member. Supply expected_commit_version to fence multi-read observations. This read does not pin content, rewrite exact citations or refresh a producer's editing base.",
+    ),
+    (
+        "observe_index_base",
+        "Capture current working/local revision IDs and owned connection IDs for an explicit project_root, provider_instance_id, paths and artifact_ids before preparing a verified edit. Empty paths covers that provider. This read returns an observation, not graph bodies or historical access. Callers must preserve the original editing base, freeze input durably and replay it unchanged. A current server observation does not establish the base of stale local files; filesystem indexers use the existing project.index checkpoint owner. Never refresh this observation to authorize a rejected or interrupted edit.",
+    ),
+    (
         "manifest",
         "Inspect Semantic's packaged export IDs. Invoke only tools present in the enabled tool catalog; this manifest does not enable other plugins.",
     ),
@@ -32,7 +40,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "ingest_index_batch",
-        "Persist genuine source-indexer output for explicit project_root/provider_instance_id. Use the supported compiled project indexer with compiler-derived evidence where available; never fabricate semantic IDs, ranges, fingerprints, or relationships from an agent summary. replace_paths/removed_paths replace indexed partitions; snapshot pages require consistent job/page metadata. Keep workflow tasks and human notes out of source-index batches.",
+        "Persist genuine source-indexer output for explicit project_root/provider_instance_id. Use the supported compiled project indexer with compiler-derived evidence where available; never fabricate semantic IDs, ranges, fingerprints, or relationships from an agent summary. Single batches and the first of consistent snapshot pages require revision_observation captured before preparing the edit; never adopt a fresh head to authorize stale input. replace_paths/removed_paths define the owned scope. Both forms publish conditionally and return exact accepted revision remaps or a conflict. Retry the identical frozen request; an unpaged request has a stable derived job ID. Keep workflow tasks and human notes out of source-index batches.",
     ),
     (
         "record_index_log",

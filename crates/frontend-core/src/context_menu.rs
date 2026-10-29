@@ -32,7 +32,7 @@ impl AppSettings {
                 "input",
                 &audio_devices.inputs,
                 self.input_device_id.as_deref(),
-                "Loading microphones...",
+                "System default only",
             ),
             audio_device_section(
                 "speaker-output",
@@ -40,7 +40,7 @@ impl AppSettings {
                 "output",
                 &audio_devices.outputs,
                 self.output_device_id.as_deref(),
-                "Loading speakers...",
+                "System default only",
             ),
         ];
         ContextMenuModel { sections }
@@ -68,7 +68,7 @@ fn audio_device_section(
     prefix: &str,
     devices: &[AudioDeviceOption],
     selected_id: Option<&str>,
-    loading_label: &str,
+    empty_label: &str,
 ) -> ContextMenuSection {
     let mut items = vec![ContextMenuItem {
         id: format!("{prefix}:default"),
@@ -79,7 +79,7 @@ fn audio_device_section(
     if devices.is_empty() {
         items.push(ContextMenuItem {
             id: format!("{prefix}:loading"),
-            label: loading_label.to_string(),
+            label: empty_label.to_string(),
             enabled: false,
             checked: false,
         });

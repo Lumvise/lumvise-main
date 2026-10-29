@@ -13,11 +13,14 @@ pub(in crate::plugin) fn invoke_controlled(
     plugin_id: &str,
     input: Value,
     context: &PluginInvocationContext,
+    authority: &crate::plugin::knowledge_authority::KnowledgeAuthority,
 ) -> Result<Value, HostCapabilityError> {
     let bridge = invocation_control(context);
     let scoped = InvocationSemanticPersistence {
         semantic,
         control: bridge.control(),
+        context,
+        authority,
     };
     super::invoke(&scoped, writes, plugin_id, input)
 }
@@ -27,6 +30,8 @@ pub(in crate::plugin) fn invoke_controlled(
 struct InvocationSemanticPersistence<'a> {
     semantic: &'a dyn SemanticPersistence,
     control: InvocationControl,
+    context: &'a PluginInvocationContext,
+    authority: &'a crate::plugin::knowledge_authority::KnowledgeAuthority,
 }
 impl SemanticPersistence for InvocationSemanticPersistence<'_> {
     fn execute(
@@ -34,7 +39,13 @@ impl SemanticPersistence for InvocationSemanticPersistence<'_> {
         operation: SemanticOperation,
         _control: &InvocationControl,
     ) -> lumvise_db_core::Result<SemanticResult> {
-        self.semantic.execute(operation, &self.control)
+        crate::plugin::knowledge_authority::semantic_access::KnowledgeSemanticAccess {
+            semantic: self.semantic,
+            authority: self.authority,
+            context: self.context,
+            control: &self.control,
+        }
+        .execute(operation)
     }
     fn readiness(&self) -> lumvise_db_core::Result<SemanticReadiness> {
         self.semantic.readiness()
@@ -85,6 +96,10 @@ mod tests {
             Instant::now() + Duration::from_millis(500),
         );
         let writes = SemanticSnapshotWrites::new();
+        let authority = crate::plugin::knowledge_authority::KnowledgeAuthority::new(
+            std::sync::Arc::new(lumvise_db_core::LocalPersistence::in_memory().unwrap()),
+            std::sync::Arc::default(),
+        );
         std::thread::scope(|scope| {
             let worker = scope.spawn(|| {
                 invoke_controlled(
@@ -93,6 +108,7 @@ mod tests {
                     "builtin.semantic",
                     json!({"operation":"element", "semantic_element_id":"test"}),
                     &context,
+                    &authority,
                 )
             });
             let control = started_rx.recv_timeout(Duration::from_secs(1)).unwrap();

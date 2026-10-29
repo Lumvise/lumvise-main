@@ -426,6 +426,8 @@ impl PluginSystem {
         input: Value,
         context: &PluginInvocationContext,
     ) -> Result<WireOutcome, PluginRuntimeError> {
+        let entered_context = context.clone().enter_plugin(plugin_id, capability_id);
+        let context = &entered_context;
         context.ensure_active(plugin_id, self.config.invocation_deadline())?;
         let entry = self.entry(plugin_id)?;
         let (export, validators) = ready_export(&entry, plugin_id, capability_id)?;

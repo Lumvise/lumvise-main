@@ -13,7 +13,10 @@ impl<'db> SemanticStorage<'db> {
     pub fn remove_artifact(&self, artifact_id: &str) -> Result<bool> {
         require_non_empty(artifact_id, "non-empty semantic artifact id")?;
         let (removed, artifact) = self.commit_preplanned_graph_write(
-            |database| Ok(prepare_artifact_deletion(database, artifact_id)),
+            |database| {
+                super::revision_rows::require_unmanaged_artifact(database, artifact_id)?;
+                Ok(prepare_artifact_deletion(database, artifact_id))
+            },
             |graph, commit_version, collector, plan| {
                 let Some(artifact) = plan.artifact.clone() else {
                     return Ok((false, None));
@@ -35,7 +38,10 @@ impl<'db> SemanticStorage<'db> {
     pub fn remove_element(&self, semantic_element_id: &str) -> Result<bool> {
         require_non_empty(semantic_element_id, "non-empty semantic element id")?;
         let (removed, artifacts) = self.commit_preplanned_graph_write(
-            |database| Ok(prepare_element_deactivation(database, semantic_element_id)),
+            |database| {
+                super::revision_rows::require_unmanaged_element(database, semantic_element_id)?;
+                Ok(prepare_element_deactivation(database, semantic_element_id))
+            },
             |graph, commit_version, collector, plan| {
                 if !plan.exists {
                     return Ok((false, Vec::new()));

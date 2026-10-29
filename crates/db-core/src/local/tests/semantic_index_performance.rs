@@ -313,6 +313,7 @@ fn large_element(
     line: usize,
 ) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/large-repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "large-fixture".into(),
@@ -404,6 +405,7 @@ fn semantic_partition_batch_revision(
 
 fn indexed_element(id_prefix: &str, index: usize) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: format!("{id_prefix}:element:{index}"),
         semantic_source_id: "source".to_string(),

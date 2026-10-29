@@ -22,9 +22,18 @@ fn source(id: &str, path: &str, kind: &str, parent: Option<&str>) -> Value {
 /// file and the folder, the other cites the first document.
 fn seeded() -> FakeDocumentGraph {
     let mut graph = FakeDocumentGraph::default();
+    let observation = crate::publication_observation::read(
+        &mut PluginContext::for_test(&mut graph),
+        PROJECT,
+        json!({"kind":"partition", "partition":{"project_root":PROJECT,
+        "provider_instance_id":"filesystem", "replace_paths":[]}}),
+        &[],
+    )
+    .unwrap();
     graph
         .ingest(
             &json!({"provider_instance_id": "filesystem", "project_root": PROJECT,
+            "revision_observation":observation,
             "replace_paths": [], "removed_paths": [], "semantic_sources": [],
             "semantic_elements": [
                 source("folder:src", "src", "folder", None),
@@ -41,8 +50,7 @@ fn seeded() -> FakeDocumentGraph {
         )
         .unwrap();
     graph
-        .call(
-            "create_knowledge",
+        .seed_knowledge(
             json!({"project_root": PROJECT, "artifact_id": "requirement:search",
                 "semantic_element_id": "file:src/a.rs", "knowledge_type": "requirements",
                 "title": "Search requirement", "content": "Search must find sources."}),
@@ -212,7 +220,10 @@ fn selective_subgraph_drops_document_neighbours_and_their_citation_edges() {
             .map(|element| element["semantic_element_id"].as_str().unwrap()),
     );
     assert!(
-        raw_ids.contains("knowledge-document:overview"),
+        raw_ids.iter().any(|id| graph.elements.get(id).is_some_and(
+            |row| row["metadata"]["indexer_metadata"]["knowledge_document"]["document_id"]
+                == "overview"
+        )),
         "the owner returns document neighbours; this test proves they are dropped"
     );
 

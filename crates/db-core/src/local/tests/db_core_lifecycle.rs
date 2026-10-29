@@ -212,6 +212,7 @@ fn minor_semantic_structure_changes_transform_to_existing_identity() {
 
 fn element(id: &str, parent: Option<&str>) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),
@@ -230,6 +231,7 @@ fn element(id: &str, parent: Option<&str>) -> SemanticElement {
 
 fn indexed_element(id: &str, name: &str, path: &str, fingerprint: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

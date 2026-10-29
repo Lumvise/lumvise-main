@@ -1,14 +1,8 @@
 //! App-owned project import for the Knowledge Canvas UI.
 //!
-//! The renderer's folder import previously went through the `builtin.canvas`
-//! plugin's `import_folder` export. That still exists (it is the right home
-//! for sandbox-permitted paths and is tested), but the plugin runs in a child
-//! process that has no macOS TCC grant for the user's Documents/Desktop
-//! folders, while the app process does. The UI therefore calls this
-//! app-owned route, which scans with [`lumvise_project_indexer`] in the app
-//! process and publishes the projection through the semantic plugin's
-//! `ingest_index_batch` MCP tool — the same staged-page scheme the plugin
-//! module uses (`crates/plugin/builtins/canvas/src/import.rs`).
+//! UI/background and authorized compiled callers share `ProjectFolderImportService`.
+//! The service reads source in the app process; compiled callers receive no
+//! filesystem handles or broader sandbox access. Semantic still owns ingestion.
 //!
 //! Threading: every app-owned route handler already runs inside
 //! `tokio::task::spawn_blocking` (`mcp_http.rs`), so the scan — which can
@@ -26,13 +20,20 @@ use lumvise_contracts::IndexBatchRequest;
 use lumvise_db_core::{SemanticOperation, SemanticResult};
 use lumvise_project_indexer::{
     FilesystemProjectSource, ParallelTreeSitterProjectParser, PreparedProjectScan, ProjectIndexer,
-    ScanError, ScanScope, SemanticIndexProjection, SourceKind,
+    ScanError, ScanScope, SemanticIndexPages, SemanticIndexProjection, SourceKind,
 };
 use lumvise_resource_routing::InvocationControl;
 use serde_json::{Value, json};
 
 use super::mcp_http::{HttpRequest, HttpResponse, error_response, json_response};
 use crate::{AppCore, PluginInvocationRequest, PluginInvocationStatus};
+mod publication;
+mod revisions;
+mod service;
+pub(crate) use service::ProjectFolderImportService;
+#[cfg(test)]
+use service::{accepted_paths, collect_excluded, import_session, snapshot_pages};
+use service::{canonical_root, finished, scan_failure};
 
 pub(crate) const PROJECT_IMPORT_ENDPOINT: &str = "/api/project-import";
 
@@ -49,12 +50,6 @@ const IMPORTER_PLUGIN_ID: &str = "app.project-import";
 /// Names the app-owned PZ snapshot importer in index-log rows; the refresh
 /// poller skips projects whose latest import came from this importer.
 const PZ_IMPORTER_PLUGIN_ID: &str = "app.pz-import";
-/// Elements per staged ingestion page; keeps one `ingest_index_batch` call
-/// (validation + source mutations + one staging write) far below the
-/// invocation deadline. Relationships share the page schedule at a larger
-/// stride, so pages = max(element pages, relationship pages).
-const ELEMENTS_PER_PAGE: usize = 1000;
-const RELATIONSHIPS_PER_PAGE: usize = 5000;
 /// Upper bound for the skip report so one huge ignored tree cannot bloat the
 /// response; the walk stops expanding after this many exclusion points.
 const MAX_SKIP_REPORTS: usize = 500;
@@ -76,6 +71,7 @@ pub(crate) type ProjectImportSessions = BTreeMap<(PathBuf, String), ProjectImpor
 pub(crate) struct ProjectImportSession {
     indexer: ProjectIndexer<FilesystemProjectSource, ParallelTreeSitterProjectParser>,
     projection: SemanticIndexProjection,
+    source_checkout: Option<crate::index_publication::IndexSourceCheckout>,
     document_converter: Arc<lumvise_project_indexer::DocumentConverter>,
     refresh_retry: Option<RefreshRetry>,
 }
@@ -95,6 +91,29 @@ struct RefreshRetry {
     not_before: Instant,
 }
 
+impl ProjectImportSession {
+    fn complete_refresh_attempt(
+        &mut self,
+        result: &Result<Value, HttpResponse>,
+        now: Instant,
+        root: &str,
+    ) {
+        self.refresh_retry = match result {
+            Ok(_) => None,
+            Err(_) => {
+                let retry = RefreshRetry::after_failure(self.refresh_retry, now);
+                tracing::warn!(
+                    event = "project_refresh_deferred",
+                    project_root = root,
+                    failures = retry.failures,
+                    retry_in_secs = (retry.not_before - now).as_secs()
+                );
+                Some(retry)
+            }
+        };
+    }
+}
+
 impl RefreshRetry {
     /// Waits 1, 2, 4 ... minutes after consecutive failures, at most one hour.
     fn after_failure(previous: Option<Self>, now: Instant) -> Self {
@@ -107,27 +126,6 @@ impl RefreshRetry {
             not_before: now + delay,
         }
     }
-}
-
-fn import_session(
-    root: &Path,
-    converter: Arc<lumvise_project_indexer::DocumentConverter>,
-) -> Result<ProjectImportSession, HttpResponse> {
-    Ok(ProjectImportSession {
-        document_converter: Arc::clone(&converter),
-        indexer: ProjectIndexer::new(
-            FilesystemProjectSource::open(root).map_err(scan_failure)?,
-            ParallelTreeSitterProjectParser::new_with_document_converter(
-                parser_workers(),
-                Default::default(),
-                converter,
-            )
-            .map_err(scan_failure)?,
-        ),
-        projection: SemanticIndexProjection::new(root, PROVIDER_INSTANCE_ID)
-            .map_err(scan_failure)?,
-        refresh_retry: None,
-    })
 }
 
 /// Polls local indexed projects through the same serialized importer as the UI.
@@ -221,210 +219,9 @@ fn import_project(
     input: ImportInput,
     existing_only: bool,
 ) -> Result<Value, HttpResponse> {
-    let started_at = Utc::now().to_rfc3339();
-    let root = canonical_root(&input.folder_path)?;
-    let project_root = input
-        .project_root
-        .unwrap_or_else(|| root.to_string_lossy().into_owned());
-
-    // Keep scan acknowledgements across refreshes. Serialize publication with
-    // manual imports so a delayed batch cannot overwrite a newer source state.
-    let mut sessions = app.project_import_sessions.lock().map_err(|_| {
-        error_response(
-            "500 Internal Server Error",
-            "project import sessions poisoned; expected available importer",
-        )
-    })?;
-    // The refresh catalog is read before this lock. Recheck inside the same
-    // lifecycle gate as removal so an old catalog cannot resurrect a project.
-    if existing_only && !project_is_indexed(app, &project_root)? {
-        return Ok(finished(&project_root, 0, 0, 0, Vec::new(), &started_at));
-    }
-    let converter = super::document_conversion::converter(app)
-        .map_err(|error| error_response("500 Internal Server Error", error))?;
-    let mut configuration_changed = false;
-    let session = match sessions.entry((root.clone(), project_root.clone())) {
-        std::collections::btree_map::Entry::Occupied(mut entry) => {
-            if !Arc::ptr_eq(&entry.get().document_converter, &converter) {
-                entry.insert(import_session(&root, converter)?);
-                configuration_changed = true;
-            }
-            entry.into_mut()
-        }
-        std::collections::btree_map::Entry::Vacant(entry) => {
-            entry.insert(import_session(&root, converter)?)
-        }
-    };
-    let now = Instant::now();
-    if existing_only
-        && session
-            .refresh_retry
-            .is_some_and(|retry| now < retry.not_before)
-    {
-        // A failed refresh waits out its backoff; manual imports still run.
-        return Ok(finished(&project_root, 0, 0, 0, Vec::new(), &started_at));
-    }
-    let result = publish_scan(
-        app,
-        session,
-        &root,
-        &project_root,
-        input.replace_paths,
-        configuration_changed,
-        &started_at,
-    );
-    session.refresh_retry = match &result {
-        Ok(_) => None,
-        Err(_) => {
-            let retry = RefreshRetry::after_failure(session.refresh_retry, now);
-            tracing::warn!(event = "project_refresh_deferred", project_root = %project_root,
-                failures = retry.failures, retry_in_secs = (retry.not_before - now).as_secs());
-            Some(retry)
-        }
-    };
-    result
-}
-
-/// Scans one session's changes and publishes them as staged snapshot pages.
-fn publish_scan(
-    app: &AppCore,
-    session: &mut ProjectImportSession,
-    root: &Path,
-    project_root: &str,
-    replace_paths: Option<Vec<String>>,
-    configuration_changed: bool,
-    started_at: &str,
-) -> Result<Value, HttpResponse> {
-    let ProjectImportSession {
-        indexer,
-        projection,
-        ..
-    } = session;
-    let scope = match &replace_paths {
-        Some(paths) if !paths.is_empty() && !configuration_changed => {
-            ScanScope::Paths(paths.clone())
-        }
-        _ => ScanScope::Full,
-    };
-    let scan = indexer.prepare(scope).map_err(scan_failure)?;
-    let full_snapshot = scan.is_full_snapshot();
-    let files_scanned = scan
-        .changed_files()
-        .filter(|file| file.entry.kind == SourceKind::File)
-        .count();
-
-    if !scan.needs_publication() {
-        indexer.commit(scan).map_err(scan_failure)?;
-        return Ok(finished(project_root, 0, 0, 0, Vec::new(), started_at));
-    }
-
-    let mut batch = projection.project(&scan).map_err(scan_failure)?;
-    let skipped = if full_snapshot {
-        collect_excluded(root, &accepted_paths(&scan))
-    } else {
-        // A selective import replaces exactly the requested paths; policy
-        // exclusions outside that scope are not part of this import.
-        Vec::new()
-    };
-    // The caller-supplied identity wins so scoped reads later match the
-    // returned `projectRoot`; the source upsert keeps the real folder path.
-    batch.project_root = project_root.to_owned();
-    let elements_upserted = batch.semantic_elements.len();
-    let relationships_upserted = batch.semantic_relationships.len();
-
-    let job_id = format!("app-project-import-{}", Utc::now().timestamp_millis());
-    let pages = snapshot_pages(&batch, &job_id, full_snapshot);
-    let page_count = pages.len();
-    let source_id = batch
-        .semantic_sources
-        .first()
-        .map(|source| source.semantic_source_id.clone());
-
-    // Best-effort start marker so the UI can observe an in-flight import.
-    let _ = record_index_log(
-        app,
-        json!({
-            "provider_instance_id": PROVIDER_INSTANCE_ID,
-            "plugin_id": IMPORTER_PLUGIN_ID,
-            "semantic_source_id": source_id,
-            "project_root": project_root,
-            "index_log_id": job_id,
-            "status": "running",
-            "metrics": {
-                "filesScanned": files_scanned,
-                "elementsUpserted": elements_upserted,
-                "relationshipsUpserted": relationships_upserted,
-                "skipped": skipped.len(),
-                "pageCount": page_count,
-            },
-            "started_at": started_at,
-        }),
-    );
-
-    if let Err(error) = publish_pages(app, &pages) {
-        // Terminal state record; the staging area itself expires via TTL.
-        let _ = record_index_log(
-            app,
-            json!({
-                "provider_instance_id": PROVIDER_INSTANCE_ID,
-                "plugin_id": IMPORTER_PLUGIN_ID,
-                "project_root": project_root,
-                "index_log_id": job_id,
-                "status": "failed",
-                "metrics": {
-                    "filesScanned": files_scanned,
-                    "pageCount": page_count,
-                },
-                "error": error,
-                "started_at": started_at,
-                "completed_at": Utc::now().to_rfc3339(),
-            }),
-        )
-        .inspect_err(|log_error| {
-            tracing::warn!(event = "project_import_terminal_log_failed",
-                project_root, index_log_id = %job_id, error = %log_error);
-        });
-        return Err(error_response(
-            "500 Internal Server Error",
-            format!("project import failed: {error}"),
-        ));
-    }
-    indexer.commit(scan).map_err(scan_failure)?;
-
-    record_index_log(
-        app,
-        json!({
-            "provider_instance_id": PROVIDER_INSTANCE_ID,
-            "plugin_id": IMPORTER_PLUGIN_ID,
-            "project_root": project_root,
-            "index_log_id": job_id,
-            "status": "completed",
-            "metrics": {
-                "filesScanned": files_scanned,
-                "elementsUpserted": elements_upserted,
-                "relationshipsUpserted": relationships_upserted,
-                "skipped": skipped.len(),
-                "pageCount": page_count,
-            },
-            "started_at": started_at,
-            "completed_at": Utc::now().to_rfc3339(),
-        }),
-    )
-    .map_err(|error| {
-        error_response(
-            "500 Internal Server Error",
-            format!("project import published but the completion log failed: {error}"),
-        )
-    })?;
-
-    Ok(finished(
-        project_root,
-        files_scanned,
-        elements_upserted,
-        relationships_upserted,
-        skipped,
-        started_at,
-    ))
+    app.plugin_host_services
+        .project_import_service()
+        .import_native(input, app, existing_only)
 }
 
 /// Imports one project from its `.lv/graph.pz` snapshot archive. The archive
@@ -560,224 +357,6 @@ fn import_pz(app: &AppCore, input: ImportInput) -> Result<Value, HttpResponse> {
     Ok(response)
 }
 
-/// Splits one projection batch into staged ingestion pages. Page 0 carries the
-/// source upsert and the complete replacement partition (`replace_paths` +
-/// `removed_paths`) because the host takes the partition from the first page;
-/// a full snapshot deliberately keeps `replace_paths` empty so the commit
-/// replaces the whole project structure. Later pages carry the paths their
-/// elements cover (partial imports only).
-fn snapshot_pages(batch: &IndexBatchRequest, job_id: &str, full_snapshot: bool) -> Vec<Value> {
-    let elements = batch.semantic_elements.len();
-    let relationships = batch.semantic_relationships.len();
-    let page_count = elements
-        .div_ceil(ELEMENTS_PER_PAGE)
-        .max(relationships.div_ceil(RELATIONSHIPS_PER_PAGE))
-        .max(1);
-    // Serialize the shared fields once; re-serializing the whole batch per
-    // page made paging quadratic in project size.
-    let mut header = serde_json::to_value(batch).expect("index batch serializes");
-    let fields = header.as_object_mut().expect("index batch is an object");
-    for paged in [
-        "semantic_elements",
-        "semantic_relationships",
-        "semantic_sources",
-        "removed_paths",
-        "replace_paths",
-    ] {
-        fields.remove(paged);
-    }
-    (0..page_count)
-        .map(|index| {
-            let element_window = window(index, ELEMENTS_PER_PAGE, elements);
-            let relationship_window = window(index, RELATIONSHIPS_PER_PAGE, relationships);
-            let mut page = header.clone();
-            let object = page.as_object_mut().expect("index batch is an object");
-            if index == 0 {
-                object.insert("removed_paths".into(), json!(batch.removed_paths));
-            } else {
-                object.insert("removed_paths".into(), json!([]));
-            }
-            object.insert(
-                "semantic_sources".into(),
-                if index == 0 {
-                    json!(batch.semantic_sources)
-                } else {
-                    json!([])
-                },
-            );
-            let replace_paths = if full_snapshot {
-                json!([])
-            } else if index == 0 {
-                json!(batch.replace_paths)
-            } else {
-                let covered: BTreeSet<&String> = batch.semantic_elements
-                    [element_window.0..element_window.1]
-                    .iter()
-                    .map(|element| &element.path)
-                    .collect();
-                json!(covered)
-            };
-            object.insert("replace_paths".into(), replace_paths);
-            object.insert(
-                "semantic_elements".into(),
-                json!(batch.semantic_elements[element_window.0..element_window.1]),
-            );
-            object.insert(
-                "semantic_relationships".into(),
-                json!(batch.semantic_relationships[relationship_window.0..relationship_window.1]),
-            );
-            object.insert("ingestion_job_id".into(), json!(job_id));
-            object.insert("ingestion_page_index".into(), json!(index));
-            object.insert("ingestion_page_count".into(), json!(page_count));
-            page
-        })
-        .collect()
-}
-
-/// Half-open `[start, end)` window for one page, clamped to `total`.
-fn window(index: usize, per_page: usize, total: usize) -> (usize, usize) {
-    let start = (index * per_page).min(total);
-    let end = ((index + 1) * per_page).min(total);
-    (start, end.max(start))
-}
-
-/// Publishes every staged page through the semantic plugin's
-/// `ingest_index_batch` MCP tool.
-fn publish_pages(app: &AppCore, pages: &[Value]) -> Result<(), String> {
-    for page in pages {
-        let response = semantic(app, INGEST_EXPORT_ID, page.clone())?;
-        if response["accepted"] != json!(true) {
-            return Err(format!(
-                "semantic ingestion rejected an import page: {response}"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Validates and canonicalizes the requested folder.
-fn canonical_root(folder_path: &str) -> Result<PathBuf, HttpResponse> {
-    if folder_path.trim().is_empty() {
-        return Err(error_response("400 Bad Request", "folderPath is required"));
-    }
-    let path = PathBuf::from(folder_path);
-    if !path.exists() {
-        return Err(error_response(
-            "400 Bad Request",
-            format!("folder `{folder_path}` does not exist"),
-        ));
-    }
-    let canonical = path.canonicalize().map_err(|error| {
-        error_response(
-            "400 Bad Request",
-            format!("cannot canonicalize folder `{folder_path}`: {error}"),
-        )
-    })?;
-    if !canonical.is_dir() {
-        return Err(error_response(
-            "400 Bad Request",
-            format!("`{folder_path}` is not a directory"),
-        ));
-    }
-    Ok(canonical)
-}
-
-/// Accepted inventory paths from one prepared scan.
-fn accepted_paths(scan: &PreparedProjectScan) -> BTreeSet<String> {
-    scan.changed_files()
-        .map(|file| file.entry.path.clone())
-        .collect()
-}
-
-/// Walks the folder once and reports the exclusion points the scanner applied:
-/// every path that is absent from the accepted inventory, without descending
-/// into excluded subtrees (one entry per exclusion gate, not per file).
-fn collect_excluded(root: &Path, accepted: &BTreeSet<String>) -> Vec<(String, String)> {
-    let mut skipped = Vec::new();
-    walk_excluded(root, "", accepted, &mut skipped);
-    skipped
-}
-
-fn walk_excluded(
-    root: &Path,
-    relative: &str,
-    accepted: &BTreeSet<String>,
-    skipped: &mut Vec<(String, String)>,
-) {
-    if skipped.len() >= MAX_SKIP_REPORTS {
-        return;
-    }
-    let directory = if relative.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(relative)
-    };
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let child = if relative.is_empty() {
-            name.clone()
-        } else {
-            format!("{relative}/{name}")
-        };
-        let metadata = match entry.path().symlink_metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-        if !accepted.contains(&child) {
-            let reason = if metadata.is_symlink() {
-                "symlink (not followed)"
-            } else if !metadata.is_dir() && !metadata.is_file() {
-                "unsupported file type"
-            } else {
-                "excluded by ignore rules (project ignore files or scanner defaults)"
-            };
-            skipped.push((child, reason.to_owned()));
-            if skipped.len() >= MAX_SKIP_REPORTS {
-                return;
-            }
-            continue;
-        }
-        if metadata.is_dir() {
-            walk_excluded(root, &child, accepted, skipped);
-            if skipped.len() >= MAX_SKIP_REPORTS {
-                return;
-            }
-        }
-    }
-}
-
-/// Bounded syntax worker pool for the in-process scan.
-fn parser_workers() -> usize {
-    std::thread::available_parallelism()
-        .map(|workers| workers.get().min(4))
-        .unwrap_or(2)
-}
-
-fn finished(
-    project_root: &str,
-    files_scanned: usize,
-    elements_upserted: usize,
-    relationships_upserted: usize,
-    skipped: Vec<(String, String)>,
-    started_at: &str,
-) -> Value {
-    json!({
-        "projectRoot": project_root,
-        "filesScanned": files_scanned,
-        "elementsUpserted": elements_upserted,
-        "relationshipsUpserted": relationships_upserted,
-        "skipped": skipped
-            .into_iter()
-            .map(|(path, reason)| json!({"path": path, "reason": reason}))
-            .collect::<Vec<_>>(),
-        "startedAt": started_at,
-        "finishedAt": Utc::now().to_rfc3339(),
-    })
-}
-
 /// Invokes one `builtin.semantic` MCP export through the app's plugin
 /// endpoints (in-process dispatch into the compiled plugin, no HTTP hop).
 fn semantic(app: &AppCore, export_id: &str, input: Value) -> Result<Value, String> {
@@ -818,9 +397,7 @@ fn record_index_log(app: &AppCore, entry: Value) -> Result<Value, String> {
     semantic(app, RECORD_INDEX_LOG_EXPORT_ID, entry)
 }
 
-fn scan_failure(error: ScanError) -> HttpResponse {
-    error_response("500 Internal Server Error", error.to_string())
-}
-
+#[cfg(test)]
+mod shared_service_tests;
 #[cfg(test)]
 mod tests;

@@ -37,8 +37,9 @@ pub enum AppResourceSelection {
     Environment,
     Local,
     /// Decorates the selected local semantic store without changing its relational owner.
-    /// Example: `LocalWithSemantic { compose: Box::new(|local| Ok(local)) }`.
+    /// Example: `LocalWithSemantic { client_instance_id, compose: Box::new(|local| Ok(local)) }`.
     LocalWithSemantic {
+        client_instance_id: String,
         compose: Box<
             dyn FnOnce(Arc<dyn SemanticPersistence>) -> Result<Arc<dyn SemanticPersistence>, String>
                 + Send,
@@ -63,6 +64,7 @@ pub(super) struct RoutedResources {
     pub(super) speech_synthesizer: Option<Arc<dyn SpeechSynthesizer>>,
     pub(super) semantic: Arc<dyn SemanticPersistence>,
     pub(super) relational: Arc<dyn RelationalPersistence>,
+    pub(super) index_client_instance_id: Option<String>,
 }
 
 impl RoutedResources {
@@ -162,8 +164,12 @@ impl ResourceRouter {
         selection: AppResourceSelection,
     ) -> Result<(ResourceRoutingConfig, RoutedResources), String> {
         match selection {
-            AppResourceSelection::LocalWithSemantic { compose } => {
-                let (config, resources) = Self::build_selection(AppResourceSelection::Local)?;
+            AppResourceSelection::LocalWithSemantic {
+                compose,
+                client_instance_id,
+            } => {
+                let (config, mut resources) = Self::build_selection(AppResourceSelection::Local)?;
+                resources.index_client_instance_id = Some(client_instance_id);
                 Ok((config, resources.compose_semantic(compose)?))
             }
             AppResourceSelection::Local => {
@@ -186,7 +192,7 @@ impl ResourceRouter {
                 let config = storage_only_config();
                 let central = CentralResources::connect(
                     client,
-                    client_instance_id,
+                    client_instance_id.clone(),
                     &requested_central_capabilities(&config),
                 )
                 .map_err(|error| error.to_string())?;
@@ -195,7 +201,10 @@ impl ResourceRouter {
                     local: None,
                 };
                 Self::build_with_factories(&config, &factory)
-                    .map(|resources| (config, resources))
+                    .map(|mut resources| {
+                        resources.index_client_instance_id = Some(client_instance_id);
+                        (config, resources)
+                    })
                     .map_err(|error| error.to_string())
             }
         }
@@ -295,6 +304,7 @@ impl ResourceRouter {
             speech_synthesizer,
             semantic,
             relational,
+            index_client_instance_id: None,
         })
     }
 }

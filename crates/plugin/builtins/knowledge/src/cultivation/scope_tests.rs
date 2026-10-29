@@ -11,6 +11,7 @@ struct InteractingScope {
 
 fn element(id: &str, kind: &str, name: &str, path: &str, parent: Option<&str>) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "fixture".into(),

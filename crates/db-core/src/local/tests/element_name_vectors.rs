@@ -107,6 +107,7 @@ fn decoy_artifact(semantic_element_id: &str) -> SemanticArtifact {
 
 fn element(id: &str, name: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

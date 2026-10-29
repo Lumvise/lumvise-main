@@ -8,6 +8,7 @@
 
 mod artifact;
 mod artifact_generation;
+mod artifact_publication;
 mod c4_report;
 mod c4_text;
 mod components;
@@ -26,9 +27,12 @@ mod obsidian_reports;
 mod project_structure;
 mod projection;
 mod projection_identity;
+mod publication_journal;
+mod publication_observation;
 mod search;
 mod semantic;
 mod semantic_context;
+mod source_revisions;
 mod storage;
 mod transfer;
 
@@ -96,97 +100,17 @@ impl PluginApplication for KnowledgePlugin {
 }
 
 pub(crate) fn create(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
-    let request: lumvise_contracts::CreateKnowledgeArtifactRequestV2 =
-        parse(input, "Knowledge create request")?;
-    let element = storage::required_semantic_element(context, &request.semantic_element_id)?;
-    let mut artifact = artifact::create(request)?;
-    attach_project_scope(&mut artifact, &element)?;
-    let artifact = storage::put_knowledge(context, &artifact)?;
-    Ok(json!({"artifact": artifact}))
-}
-
-/// Reads a compiled Semantic element's `project_root` with explicit shape
-/// validation - a malformed or missing value is a hard error, never a silent
-/// empty-string default.
-fn element_project_root(element: &Value, semantic_element_id: &str) -> Result<String, PluginError> {
-    element["project_root"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            PluginError::new(
-                "invalid_semantic_element",
-                format!(
-                    "semantic element `{semantic_element_id}` has a malformed project_root; \
-                     expected a non-empty string"
-                ),
-                false,
-            )
-        })
-}
-
-fn attach_project_scope(
-    artifact: &mut KnowledgeArtifact,
-    element: &Value,
-) -> Result<(), PluginError> {
-    let owner = element_project_root(element, &artifact.semantic_element_id)?;
-    if let Some(declared) = artifact.project_root.as_deref() {
-        if declared != owner {
-            return Err(PluginError::new(
-                "knowledge_project_mismatch",
-                format!(
-                    "artifact `{}` declares project `{declared}`; expected anchor project `{owner}`",
-                    artifact.artifact_id
-                ),
-                false,
-            ));
-        }
-    }
-    artifact.project_root = Some(owner);
-    Ok(())
+    let request = parse(input, "Knowledge create request")?;
+    artifact_publication::create(context, request)
 }
 
 fn update(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
-    let request: lumvise_contracts::UpdateKnowledgeArtifactRequestV2 =
-        parse(input, "Knowledge update request")?;
-    artifact::require(&request.artifact_id, "artifact_id")?;
-    let current = required_artifact(context, &request.artifact_id)?;
-    if let Some(target) = request.superseded_by.as_deref() {
-        required_artifact(context, target)?;
-    }
-    let requested_project = request.project_root.clone();
-    let changed_anchor = request.semantic_element_id.is_some();
-    let validate_scope = changed_anchor || requested_project.is_some();
-    let mut artifact = artifact::update(current, request)?;
-    if changed_anchor {
-        artifact.project_root = requested_project;
-    }
-    if validate_scope {
-        let element = storage::required_semantic_element(context, &artifact.semantic_element_id)?;
-        attach_project_scope(&mut artifact, &element)?;
-    }
-    let artifact = storage::put_knowledge(context, &artifact)?;
-    Ok(json!({"artifact": artifact}))
+    let request = parse(input, "Knowledge update request")?;
+    artifact_publication::update(context, request)
 }
 
 fn delete(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
-    let artifact_id = required_input(&input, "artifact_id")?;
-    let project_root = required_input(&input, "project_root")?;
-    let Some(artifact) = storage::get_knowledge(context, &artifact_id)? else {
-        return Ok(json!({"artifact_id": artifact_id, "deleted": false}));
-    };
-    if artifact.project_root.as_deref() != Some(&project_root) {
-        return Err(PluginError::new(
-            "knowledge_project_mismatch",
-            format!(
-                "Knowledge artifact `{artifact_id}` belongs to `{:?}`; expected project_root `{project_root}`",
-                artifact.project_root
-            ),
-            false,
-        ));
-    }
-    let deleted = storage::remove_knowledge(context, &artifact_id)?;
-    Ok(json!({"artifact_id": artifact_id, "deleted": deleted}))
+    artifact_publication::remove(context, input)
 }
 
 fn get(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
@@ -198,10 +122,13 @@ fn list(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginEr
     let semantic_element_id = required_input(&input, "semantic_element_id")?;
     let include_inactive = input["include_inactive"].as_bool();
     storage::required_semantic_element(context, &semantic_element_id)?;
-    let mut artifacts = storage::artifacts_for_elements(
-        context,
-        &std::collections::HashSet::from([semantic_element_id]),
-    )?;
+    let mut artifacts = storage::observe_knowledge(context, |context| {
+        storage::artifacts_for_elements(
+            context,
+            &std::collections::HashSet::from([semantic_element_id]),
+            None,
+        )
+    })?;
     artifacts.retain(|artifact| artifact::is_discoverable(artifact, include_inactive));
     artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
     Ok(json!({"artifacts": artifacts}))
@@ -212,19 +139,36 @@ fn list(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginEr
 /// `include_inactive` is set; `GET /api/knowledge/projection-artifacts` stays unfiltered.
 fn list_all(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let request: artifact::ListAllRequest = parse(input, "Knowledge list request")?;
+    if request
+        .semantic_element_ids
+        .as_ref()
+        .is_some_and(|ids| ids.is_empty())
+    {
+        return Ok(json!({"artifacts":[]}));
+    }
+    for id in request.semantic_element_ids.iter().flatten() {
+        artifact::require(id, "semantic_element_ids item")?;
+    }
+    let records = storage::observe_knowledge(context, |context| {
+        list_requested_artifacts(context, &request)
+    })?;
+    let artifacts = artifact::filter_artifacts(records, &request);
+    Ok(json!({"artifacts": artifacts}))
+}
+
+fn list_requested_artifacts(
+    context: &mut PluginContext<'_>,
+    request: &artifact::ListAllRequest,
+) -> Result<Vec<KnowledgeArtifact>, PluginError> {
     let records = if let Some(ids) = &request.semantic_element_ids {
-        for id in ids {
-            artifact::require(id, "semantic_element_ids item")?;
-        }
-        storage::artifacts_for_elements(context, ids)?
+        storage::artifacts_for_elements(context, ids, request.project_root.as_deref())?
     } else {
         match request.project_root.as_deref() {
             Some(root) => storage::list_project_knowledge(context, root)?,
             None => storage::list_all_knowledge(context)?,
         }
     };
-    let artifacts = artifact::filter_artifacts(records, &request);
-    Ok(json!({"artifacts": artifacts}))
+    Ok(records)
 }
 
 fn list_dependents(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {

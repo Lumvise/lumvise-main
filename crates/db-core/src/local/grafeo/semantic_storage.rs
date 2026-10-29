@@ -1,5 +1,4 @@
-use crate::domain::artifact_content::SEARCHABLE_ARTIFACT_TEXT_LIMIT_BYTES;
-use crate::domain::matching::reconcile_semantic_elements;
+use crate::SemanticStructureReconciliation;
 use crate::interface::ProjectSnapshotScope;
 use crate::local::clock::Clock;
 use crate::local::grafeo::change_hooks::ChangeBuffer;
@@ -339,6 +338,7 @@ mod tests {
 
     fn element(id: &str, name: &str) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/repo".to_string(),
             semantic_element_id: id.to_string(),
             semantic_source_id: "source".to_string(),

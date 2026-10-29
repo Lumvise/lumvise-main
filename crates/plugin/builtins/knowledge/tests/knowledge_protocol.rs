@@ -23,19 +23,18 @@ use lumvise_db_core::{
     SemanticElement, SemanticOperation, SemanticPersistence, SemanticResult,
 };
 use lumvise_plugin_knowledge::{
-    APPLY_TRANSFER_EXPORT_ID, ARTIFACT_GENERATION_POLL_EXPORT_ID,
-    ASSISTANT_FIND_ELEMENTS_EXPORT_ID, ASSISTANT_GET_ELEMENT_EXPORT_ID, ASSISTANT_GET_EXPORT_ID,
-    ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID, CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID,
-    DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID, ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID,
-    GET_CULTIVATION_RUN_EXPORT_ID, GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID,
-    HTTP_C4_DEBUG_EXPORT_ID, HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID,
-    HTTP_DELETE_ARTIFACT_EXPORT_ID, HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID,
-    HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID, HTTP_PROJECTION_ARTIFACTS_EXPORT_ID,
-    HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID, HTTP_SYNC_EXPORT_ID,
-    HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_EXPORT_ID, MANIFEST_EXPORT_ID,
-    PACKAGE_PROTOCOL_VERSION, PLUGIN_ID, PREVIEW_TRANSFER_EXPORT_ID, PROJECTION_EXPORT_ID,
-    REBUILD_EXPORT_ID, RUN_CULTIVATION_EXPORT_ID, SEARCH_EXPORT_ID, UPDATE_EXPORT_ID,
-    package_manifest_source,
+    APPLY_TRANSFER_EXPORT_ID, ASSISTANT_FIND_ELEMENTS_EXPORT_ID, ASSISTANT_GET_ELEMENT_EXPORT_ID,
+    ASSISTANT_GET_EXPORT_ID, ASSISTANT_LIST_EXPORT_ID, ASSISTANT_SEARCH_EXPORT_ID,
+    CREATE_EXPORT_ID, DEBUG_C4_EXPORT_ID, DELETE_EXPORT_ID, ELEMENT_TRIGGER_EXPORT_ID,
+    ENSURE_C4_EXPORT_ID, FIND_ELEMENTS_EXPORT_ID, GET_CULTIVATION_RUN_EXPORT_ID,
+    GET_ELEMENT_EXPORT_ID, GET_EXPORT_ID, HTTP_C4_ACTION_EXPORT_ID, HTTP_C4_DEBUG_EXPORT_ID,
+    HTTP_C4_EXPORT_ID, HTTP_CREATE_ARTIFACT_EXPORT_ID, HTTP_DELETE_ARTIFACT_EXPORT_ID,
+    HTTP_EVENTS_EXPORT_ID, HTTP_EXPORT_EXPORT_ID, HTTP_MANIFEST_EXPORT_ID, HTTP_PAGE_EXPORT_ID,
+    HTTP_PROJECTION_ARTIFACTS_EXPORT_ID, HTTP_RESOLVE_TARGET_EXPORT_ID, HTTP_SETUP_EXPORT_ID,
+    HTTP_SYNC_EXPORT_ID, HTTP_UPDATE_ARTIFACT_EXPORT_ID, HTTP_WRITE_EXPORT_ID, LIST_EXPORT_ID,
+    MANIFEST_EXPORT_ID, PACKAGE_PROTOCOL_VERSION, PLUGIN_ID, PREVIEW_TRANSFER_EXPORT_ID,
+    PROJECTION_EXPORT_ID, REBUILD_EXPORT_ID, RUN_CULTIVATION_EXPORT_ID, SEARCH_EXPORT_ID,
+    UPDATE_EXPORT_ID, package_manifest_source,
 };
 use lumvise_plugin_package::{
     BuildPackageRequest, ExportDescriptor, ExportSurface, HostCompatibility, HttpStreamMode,
@@ -54,12 +53,18 @@ use sha2::{Digest, Sha256};
 
 #[path = "knowledge_protocol/canonical_identity.rs"]
 mod canonical_identity;
+#[path = "knowledge_protocol/current_artifact_kinds.rs"]
+mod current_artifact_kinds;
 #[path = "knowledge_protocol/documents.rs"]
 mod documents;
-#[path = "knowledge_protocol/retired_kind_migration.rs"]
-mod retired_kind_migration;
+#[path = "knowledge_protocol/memory_scope.rs"]
+mod memory_scope;
 #[path = "knowledge_protocol/search_cache.rs"]
 mod search_cache;
+#[path = "support/semantic_seed.rs"]
+mod semantic_seed;
+#[path = "knowledge_protocol/structure_seed.rs"]
+mod structure_seed;
 mod support;
 
 use support::{ControlledTestInvoke, fast_runtime_config, make_tree_writable};
@@ -133,6 +138,9 @@ impl HostCapabilityBroker for MemoryStorageBroker {
             "fixture.semantic.ingest" => documents::ingest(self, request.input),
             "plugin.invoke" => self.plugin_invoke(request),
             "neural.embed" => self.embedding_response(&request.input),
+            "runtime.project_execution" if request.input["operation"] == "scope" => {
+                Ok(serde_json::json!({"client_instance_id":"signed-knowledge-test-client"}))
+            }
             "runtime.background_job" => Ok(serde_json::json!({
                 "job_id": "knowledge-job-1", "status": "accepted"
             })),
@@ -180,6 +188,11 @@ impl MemoryStorageBroker {
             .expect("semantic operation counts")
             .entry(operation)
             .or_default() += 1;
+        if request.input["operation"] == "publish_revisions"
+            && let Some(qualified) = self.canonical_artifact_id.lock().unwrap().clone()
+        {
+            return self.qualified_publication(request, &qualified);
+        }
         if request.input["operation"] == "upsert_artifact"
             && request.input["artifact"]["metadata"]["knowledge"].is_object()
         {
@@ -195,6 +208,30 @@ impl MemoryStorageBroker {
             }
         }
         self.semantic.invoke(request)
+    }
+
+    fn qualified_publication(
+        &self,
+        mut request: HostCapabilityRequest,
+        qualified: &str,
+    ) -> Result<serde_json::Value, HostCapabilityError> {
+        let incoming =
+            request.input["publication"]["artifacts"][0]["artifact"]["artifact_id"].clone();
+        request.input["publication"]["artifacts"][0]["artifact"]["artifact_id"] =
+            serde_json::json!(qualified);
+        let mut output = self.semantic.invoke(request)?;
+        for remap in output["publication"]["value"]["remaps"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+        {
+            if remap["incoming"]["kind"] == "artifact"
+                && remap["incoming"]["record_id"] == qualified
+            {
+                remap["incoming"]["record_id"] = incoming.clone();
+            }
+        }
+        Ok(output)
     }
 
     fn semantic_operation_count(&self, operation: &str) -> usize {
@@ -267,71 +304,6 @@ impl MemoryStorageBroker {
             .get(&(plugin_id.to_owned(), table.to_owned()))
             .map_or(0, BTreeMap::len)
     }
-    fn active_project_structure(
-        &self,
-        project_root: &str,
-    ) -> (
-        Vec<SemanticElement>,
-        Vec<lumvise_db_core::SemanticRelationship>,
-    ) {
-        let result = SemanticPersistence::execute(
-            self.persistence.as_ref(),
-            SemanticOperation::ProjectSnapshot {
-                scope: ProjectSnapshotScope::ProjectRoot(project_root.to_owned()),
-                artifact_namespace: None,
-            },
-            &InvocationControl::sixty_seconds(),
-        );
-        match result {
-            Ok(SemanticResult::ProjectSnapshot(snapshot)) => (
-                snapshot
-                    .elements
-                    .into_iter()
-                    .filter(|element| element.lifecycle != "inactive")
-                    .collect(),
-                snapshot.relationships,
-            ),
-            Ok(other) => panic!(
-                "expected ProjectSnapshot result while loading active project structure, got {other:?}"
-            ),
-            Err(error) => {
-                panic!("expected ProjectSnapshot operation to succeed while seeding: {error}")
-            }
-        }
-    }
-
-    fn sync_elements(&self, project_root: &str, incoming: Vec<SemanticElement>) {
-        let (mut elements, relationships) = self.active_project_structure(project_root);
-        for element in incoming {
-            if let Some(existing) = elements
-                .iter_mut()
-                .find(|existing| existing.semantic_element_id == element.semantic_element_id)
-            {
-                *existing = element;
-            } else {
-                elements.push(element);
-            }
-        }
-        let result = SemanticPersistence::execute(
-            self.persistence.as_ref(),
-            SemanticOperation::SyncStructure {
-                project_root: project_root.to_owned(),
-                elements,
-                relationships,
-            },
-            &InvocationControl::sixty_seconds(),
-        );
-        match result {
-            Ok(SemanticResult::SyncStructure(_)) => {}
-            Ok(other) => panic!(
-                "expected SyncStructure result while seeding semantic elements, got {other:?}"
-            ),
-            Err(error) => {
-                panic!("expected SyncStructure operation to succeed while seeding: {error}")
-            }
-        }
-    }
-
     fn ensure_element(&self, semantic_element_id: &str, project_root: &str) {
         let result = SemanticPersistence::execute(
             self.persistence.as_ref(),
@@ -452,6 +424,17 @@ impl MemoryStorageBroker {
     ) -> Result<serde_json::Value, HostCapabilityError> {
         let operation = request.input["operation"].as_str().unwrap_or_default();
         let table = request.input["table_name"].as_str().unwrap_or_default();
+        if table == "knowledge_publications"
+            || request.input["mutations"]
+                .as_array()
+                .is_some_and(|mutations| {
+                    mutations
+                        .iter()
+                        .any(|mutation| mutation["table_name"] == "knowledge_publications")
+                })
+        {
+            return self.semantic.invoke(request);
+        }
         if table == "knowledge_vectors" && matches!(operation, "get_row" | "list_rows") {
             self.vector_reads.lock().unwrap().push((
                 operation.to_owned(),
@@ -731,6 +714,7 @@ fn seed_paged_knowledge(broker: &MemoryStorageBroker) {
 
 fn test_element(semantic_element_id: &str, project_root: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: project_root.into(),
         semantic_element_id: semantic_element_id.into(),
         semantic_source_id: "semantic-fixture".into(),
@@ -801,6 +785,7 @@ fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
         CREATE_EXPORT_ID,
         serde_json::json!({
             "artifact_id": "lifecycle-decision", "semantic_element_id": "file:lifecycle",
+            "operation_id":"create-lifecycle",
             "knowledge_type": "specification", "title": "Lifecycle decision", "content": "Keep history.",
             "tags": [], "dependencies": [], "metadata": {}, "project_root": "/work/demo",
             "expires_at": "2099-01-01T00:00:00Z"
@@ -828,12 +813,24 @@ fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
         &system,
         UPDATE_EXPORT_ID,
         serde_json::json!({
-            "artifact_id": "lifecycle-decision", "status": "resolved", "expected_revision": 1
+            "artifact_id": "lifecycle-decision", "status": "resolved", "expected_revision": 1,
+            "operation_id":"resolve-lifecycle"
         }),
     );
     assert_eq!(resolved["artifact"]["status"], "resolved");
     assert_eq!(resolved["artifact"]["revision"], 2);
     assert!(resolved["artifact"].get("expires_at").is_none());
+    assert_eq!(
+        invoke_value(
+            &system,
+            UPDATE_EXPORT_ID,
+            serde_json::json!({
+                "artifact_id":"lifecycle-decision", "status":"resolved", "expected_revision":1,
+                "operation_id":"resolve-lifecycle"
+            })
+        ),
+        resolved
+    );
 
     let list = |include_inactive: Option<bool>| {
         invoke_value(
@@ -845,7 +842,13 @@ fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
     assert_eq!(artifact_ids(&list(None)), ["legacy-record"]);
     assert_eq!(
         artifact_ids(&list(Some(true))),
-        ["legacy-record", "lifecycle-decision"]
+        vec![
+            "legacy-record".to_owned(),
+            resolved["artifact"]["artifact_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        ]
     );
 
     let search = |include_inactive: Option<bool>| {
@@ -864,7 +867,7 @@ fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
             .as_array()
             .expect("search results")
             .iter()
-            .all(|result| result["artifact_id"] != "lifecycle-decision")
+            .all(|result| result["artifact_id"] != resolved["artifact"]["artifact_id"])
     );
     let shown = search(Some(true));
     assert!(
@@ -872,8 +875,10 @@ fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
             .as_array()
             .expect("search results")
             .iter()
-            .any(|result| result["artifact_id"] == "lifecycle-decision"
-                && result["status"] == "resolved")
+            .any(
+                |result| result["artifact_id"] == resolved["artifact"]["artifact_id"]
+                    && result["status"] == "resolved"
+            )
     );
 
     let legacy = invoke_value(
@@ -893,9 +898,9 @@ fn knowledge_lifecycle_hides_inactive_records_and_rejects_stale_writes() {
     make_tree_writable(workspace.path());
 }
 
-fn start_packaged_knowledge(
+fn start_packaged_knowledge<B: HostCapabilityBroker + 'static>(
     workspace: &tempfile::TempDir,
-    broker: Arc<MemoryStorageBroker>,
+    broker: Arc<B>,
 ) -> PluginSystem {
     const TARGET: &str = "knowledge-lifecycle-host";
     let executable = std::fs::read(env!("CARGO_BIN_EXE_lumvise-plugin-knowledge"))

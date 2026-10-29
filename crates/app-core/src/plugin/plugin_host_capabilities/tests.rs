@@ -7,6 +7,8 @@ mod document_conversion;
 mod independent_streams;
 #[path = "tests/link_decision_dispatch.rs"]
 mod link_decision_dispatch;
+#[path = "tests/project_execution_scope.rs"]
+mod project_execution_scope;
 use lumvise_frontend_core::{AppSettingsPatch, AssistantEngine};
 use lumvise_neural_core::llm_providers::contract::{LlmProvider, LlmStreamEventSink};
 use lumvise_neural_core::llm_providers::{
@@ -406,12 +408,15 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
             "neural.embed",
             "neural.llm",
             "plugin.invoke",
+            "project.import",
+            "project.index",
             "project.source",
             "runtime.assistant_engine_availability",
             "runtime.audio_session",
             "runtime.background_job",
             "runtime.document_conversion_options",
             "runtime.exclusive_lane",
+            "runtime.knowledge_scope",
             "runtime.project_execution",
             "runtime.scoped_mcp",
             "runtime.speech_availability",
@@ -421,10 +426,20 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
             "storage.semantic",
         ]
     );
-    assert_eq!(host["storage.semantic"], semver::Version::new(1, 5, 0));
+    assert_eq!(host["storage.semantic"], semver::Version::new(1, 8, 0));
+    assert_eq!(host[PROJECT_EXECUTION], semver::Version::new(1, 1, 0));
+    assert_eq!(
+        host["runtime.knowledge_scope"],
+        semver::Version::new(1, 4, 0)
+    );
     assert!(
         host.iter()
-            .filter(|(id, _)| **id != "storage.semantic")
+            .filter(|(id, _)| ![
+                "storage.semantic",
+                PROJECT_EXECUTION,
+                "runtime.knowledge_scope"
+            ]
+            .contains(id))
             .all(|(_, version)| version == &semver::Version::new(1, 0, 0))
     );
 }
@@ -524,6 +539,45 @@ fn speech_availability_reports_ready_when_both_are_installed() {
 
     assert_eq!(result["available"], true);
     assert_eq!(result["missing"], json!([]));
+}
+
+#[test]
+fn replacing_or_clearing_speech_releases_cached_engines() {
+    let services = services();
+    let recognizer: Arc<dyn SpeechRecognizer> = Arc::new(InstalledRecognizer);
+    let synthesizer: Arc<dyn SpeechSynthesizer> = Arc::new(StreamingSynthesizer);
+    let replaced = Arc::downgrade(&recognizer);
+    let cleared = Arc::downgrade(&synthesizer);
+    services.install_speech_recognizer(recognizer);
+    services.install_speech_synthesizer(synthesizer);
+    services
+        .speech_to_text_executor()
+        .expect("recognizer executor");
+    services
+        .text_to_speech_executor("s1")
+        .expect("synthesizer executor");
+    services
+        .text_to_speech_executor("workspace:p")
+        .expect("workspace synthesizer executor");
+
+    services.install_speech_recognizer(Arc::new(InstalledRecognizer));
+    services.clear_speech_synthesizer();
+
+    // Executor workers drop their engine once their queue closes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while (replaced.upgrade().is_some() || cleared.upgrade().is_some())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        replaced.upgrade().is_none(),
+        "replaced recognizer stays loaded"
+    );
+    assert!(
+        cleared.upgrade().is_none(),
+        "cleared synthesizer stays loaded"
+    );
 }
 
 #[test]
@@ -868,7 +922,7 @@ fn stale_playback_status_reports_are_lifecycle_noise_not_failures() {
         .report_voice_playback_status("turn-2", VoicePlaybackStatus::Completed)
         .expect("active report applied");
     assert_eq!(
-        active.map(|(plugin_id, _, _)| plugin_id).as_deref(),
+        active.map(|owner| owner.plugin_id).as_deref(),
         Some("builtin.assistant")
     );
 }

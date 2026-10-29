@@ -42,6 +42,7 @@ pub(crate) fn report(
         .collect();
     let jobs = FunctionalJobIndex::from_documents(contexts);
     documents::draft_document(CreateKnowledgeDocumentRequest {
+        operation_id: None,
         document_id: report_id(&target.semantic_element_id),
         project_root: project_root.into(),
         document_kind: KnowledgeDocumentKind::Report,
@@ -414,6 +415,7 @@ mod tests {
 
     fn element(id: &str, kind: &str, name: &str, parent: Option<&str>) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/repo".into(),
             semantic_element_id: id.into(),
             semantic_source_id: "src".into(),

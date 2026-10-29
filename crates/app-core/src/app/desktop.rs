@@ -114,7 +114,10 @@ impl DesktopSemanticGraphBridge for AppCoreDesktopBridge {
             SemanticOperation::ProjectRoots,
             &InvocationControl::sixty_seconds(),
         ) {
-            Ok(SemanticResult::ProjectRoots(roots)) => Ok(roots),
+            Ok(SemanticResult::ProjectRoots(roots)) => Ok(roots
+                .into_iter()
+                .filter(|root| !lumvise_contracts::is_knowledge_space_root(root))
+                .collect()),
             Ok(result) => Err(format!(
                 "project roots returned unexpected semantic result: {result:?}"
             )),
@@ -127,6 +130,11 @@ impl DesktopSemanticGraphBridge for AppCoreDesktopBridge {
         request: DesktopSemanticGraphRequest,
     ) -> Result<CompactSemanticGraphProjection, String> {
         let project_root = resolved_graph_project_root(&request)?;
+        if lumvise_contracts::is_knowledge_space_root(&project_root) {
+            return Err(format!(
+                "private document space `{project_root}` requires its Knowledge owner"
+            ));
+        }
         let operation = SemanticOperation::ProjectRendererGraph(SemanticGraphProjectionRequest {
             project_root,
             target_path: request.target_path,

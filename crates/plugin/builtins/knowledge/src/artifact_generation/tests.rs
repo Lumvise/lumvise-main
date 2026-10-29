@@ -44,8 +44,7 @@ impl HostCallTransport for SubmitFakeHost {
                     input["table_name"].as_str().unwrap_or_default().to_string(),
                     input["row_key"].as_str().unwrap_or_default().to_string(),
                 ))
-                .cloned()
-                .unwrap_or(Value::Null)})),
+                .map(|value| json!({"value":value}))})),
             ("storage.plugin", "list_rows") => {
                 let table = input["table_name"].as_str().unwrap_or_default();
                 let prefix = input.get("key_prefix").and_then(Value::as_str);
@@ -62,20 +61,21 @@ impl HostCallTransport for SubmitFakeHost {
                     .collect();
                 Ok(json!({"rows": rows}))
             }
-            ("storage.plugin", "mutate_rows") => {
-                for mutation in input["mutations"].as_array().unwrap_or(&Vec::new()) {
-                    if mutation["operation"].as_str() == Some("delete") {
-                        self.rows.remove(&(
-                            mutation["table_name"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .to_string(),
-                            mutation["row_key"].as_str().unwrap_or_default().to_string(),
-                        ));
-                    }
-                }
-                Ok(json!({}))
+            ("storage.plugin", "mutate_rows") => storage::test_rows::apply(&mut self.rows, &input),
+            ("runtime.project_execution", "scope") => Ok(json!({"client_instance_id":"client-a"})),
+            ("storage.semantic", "project_identity") => {
+                Ok(json!({"identity":{"project_id":"test-lineage"}}))
             }
+            ("storage.semantic", "scoped_read") => {
+                Ok(json!({"project_root":"/project", "elements":[]}))
+            }
+            ("storage.semantic", "artifacts_for_elements") => Ok(json!({"artifacts":[]})),
+            ("storage.semantic", "revision_families") => Ok(
+                crate::semantic_context::test_source_reads::selected_sources(
+                    &self.elements,
+                    &input,
+                ),
+            ),
             ("runtime.project_execution", "status") => Err(PluginError::new(
                 "host_capability_unavailable",
                 "runtime.project_execution unavailable: job was not found",
@@ -118,6 +118,7 @@ impl HostCallTransport for SubmitFakeHost {
 
 fn generation_element(id: &str, path: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/project".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "src-1".into(),
@@ -251,12 +252,20 @@ fn a_rejected_resubmission_drops_the_stale_job() {
         submit_requests: Vec::new(),
     };
     let stale = PendingArtifactJob {
-        job_id: "job-lost-on-restart".into(),
+        job_id: Some("job-lost-on-restart".into()),
         project_root: element.project_root.clone(),
         semantic_element_id: element.semantic_element_id.clone(),
         content_fingerprint: "fp-1".into(),
         priority: SubmitPriority::Background,
         lost_resubmits: 0,
+        client_instance_id: "client-a".into(),
+        project_id: "test-lineage".into(),
+        input: target_input(&element).unwrap(),
+        proposal: None,
+        document: GenerationDocumentBase {
+            document_id: functional::document_id_for(&element),
+            expected: None,
+        },
     };
     {
         let mut context = PluginContext::for_test(&mut host);
@@ -367,12 +376,20 @@ fn resubmit_keeps_the_stored_priority() {
         submit_requests: Vec::new(),
     };
     let lost = PendingArtifactJob {
-        job_id: "job-lost".into(),
+        job_id: Some("job-lost".into()),
         project_root: element.project_root.clone(),
         semantic_element_id: element.semantic_element_id.clone(),
         content_fingerprint: "fp-1".into(),
         priority: SubmitPriority::Interactive,
         lost_resubmits: 0,
+        client_instance_id: "client-a".into(),
+        project_id: "test-lineage".into(),
+        input: target_input(&element).unwrap(),
+        proposal: None,
+        document: GenerationDocumentBase {
+            document_id: functional::document_id_for(&element),
+            expected: None,
+        },
     };
     {
         let mut context = PluginContext::for_test(&mut host);
@@ -395,12 +412,20 @@ fn a_repeatedly_lost_job_dead_letters_instead_of_resubmitting_forever() {
         submit_requests: Vec::new(),
     };
     let lost = PendingArtifactJob {
-        job_id: "job-lost".into(),
+        job_id: Some("job-lost".into()),
         project_root: element.project_root.clone(),
         semantic_element_id: element.semantic_element_id.clone(),
         content_fingerprint: "fp-1".into(),
         priority: SubmitPriority::Background,
         lost_resubmits: 0,
+        client_instance_id: "client-a".into(),
+        project_id: "test-lineage".into(),
+        input: target_input(&element).unwrap(),
+        proposal: None,
+        document: GenerationDocumentBase {
+            document_id: functional::document_id_for(&element),
+            expected: None,
+        },
     };
     {
         let mut context = PluginContext::for_test(&mut host);
@@ -429,12 +454,13 @@ fn a_repeatedly_lost_job_dead_letters_instead_of_resubmitting_forever() {
 }
 
 #[test]
-fn old_stored_jobs_without_new_fields_deserialize_with_defaults() {
-    let legacy: PendingArtifactJob = serde_json::from_str(
+fn old_unscoped_jobs_cannot_invent_an_observed_document_base() {
+    let legacy = serde_json::from_str::<PendingArtifactJob>(
         r#"{"job_id":"job-9","project_root":"/project",
             "semantic_element_id":"fn:a","content_fingerprint":"fp-1"}"#,
-    )
-    .expect("legacy job row still loads");
-    assert_eq!(legacy.priority, SubmitPriority::Background);
-    assert_eq!(legacy.lost_resubmits, 0);
+    );
+    assert!(
+        legacy.is_err(),
+        "unscoped work has no known client or editing base"
+    );
 }

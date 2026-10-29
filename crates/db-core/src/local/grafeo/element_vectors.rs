@@ -110,15 +110,14 @@ impl<'db> SemanticStorage<'db> {
                     "vector source text matching current element name",
                 ));
             }
-            if stored.vector.dimensions == 0
-                || stored.vector.dimensions != stored.vector.vector.len()
-                || !stored.vector.vector.iter().all(|value| value.is_finite())
-            {
-                return Err(crate::DbError::invalid_value(
-                    &stored.semantic_element_id,
-                    "finite vector matching declared dimensions",
-                ));
-            }
+            crate::validate_vector_payload(&stored.semantic_element_id, &stored.vector).map_err(
+                |_| {
+                    crate::DbError::invalid_value(
+                        &stored.semantic_element_id,
+                        "finite vector matching declared dimensions",
+                    )
+                },
+            )?;
             writes.push((element, stored.source_text.as_str(), &stored.vector));
         }
         self.commit_preplanned_graph_write(

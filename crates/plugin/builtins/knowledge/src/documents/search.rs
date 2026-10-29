@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 
 use crate::search::KnowledgeSearchVectors;
 
+const DOCUMENT_SEARCH_RESULTS: usize = 10;
+
 pub(super) fn search(
     input: Value,
     context: &mut PluginContext<'_>,
@@ -18,6 +20,26 @@ pub(super) fn search(
         crate::parse(input, "document search filters")?;
     request.query = None;
     let mut documents = super::records::list(context, &request)?;
+    let (mode, scores) = rank_documents(&query, &documents, context, vectors);
+    request.query = Some(query.clone());
+    documents.retain(|document| {
+        scores
+            .get(&document.semantic_element_id)
+            .is_some_and(|score| *score > 0.0)
+            || super::records::matches(document, &request)
+    });
+    order_documents(&mut documents, &scores, &query);
+    documents.truncate(DOCUMENT_SEARCH_RESULTS);
+    let scores = document_scores(&documents, &scores);
+    Ok(json!({"mode": mode, "total": documents.len(), "documents": documents, "scores": scores}))
+}
+
+fn rank_documents(
+    query: &str,
+    documents: &[KnowledgeDocument],
+    context: &mut PluginContext<'_>,
+    vectors: &KnowledgeSearchVectors,
+) -> (&'static str, BTreeMap<String, f32>) {
     let texts = documents
         .iter()
         .map(|document| {
@@ -27,17 +49,10 @@ pub(super) fn search(
             )
         })
         .collect::<Vec<_>>();
-    let (mode, scores) = match vectors.rank_texts(&query, &texts, context) {
+    match vectors.rank_texts(query, &texts, context) {
         Some(scores) => ("vector", scores),
-        None => {
-            request.query = Some(query.clone());
-            documents.retain(|document| super::records::matches(document, &request));
-            ("lexical", BTreeMap::new())
-        }
-    };
-    order_documents(&mut documents, &scores, &query);
-    let scores = document_scores(&documents, &scores);
-    Ok(json!({"mode": mode, "total": documents.len(), "documents": documents, "scores": scores}))
+        None => ("lexical", BTreeMap::new()),
+    }
 }
 
 fn searchable_text(document: &KnowledgeDocument) -> String {

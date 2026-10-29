@@ -216,7 +216,7 @@ fn large_artifact_content_spills_to_sql_and_keeps_searchable_graph_text() {
 }
 
 #[test]
-fn missing_blob_falls_back_to_searchable_text_for_small_content() {
+fn missing_blob_reports_unavailable_exact_bytes_even_when_preview_is_complete() {
     let db = DbCore::in_memory().unwrap();
     let storage = db.storage_manager().semantic_storage();
     storage
@@ -245,16 +245,21 @@ fn missing_blob_falls_back_to_searchable_text_for_small_content() {
         .unwrap();
     assert!(db.artifact_blobs().delete_blob(&content_ref).unwrap());
 
-    // A single read and the project listing must both survive the loss.
-    let stored = storage.artifact("damaged-note").unwrap().unwrap();
-    assert_eq!(stored.content.as_deref(), Some(content.as_str()));
-    let listed = storage.project_artifacts("/repo", None).unwrap();
-    assert!(listed.iter().any(|note| note.artifact_id == "damaged-note"
-        && note.content.as_deref() == Some(content.as_str())));
+    for error in [
+        storage.artifact("damaged-note").unwrap_err(),
+        storage.project_artifacts("/repo", None).unwrap_err(),
+    ] {
+        assert!(error.to_string().contains(&content_ref));
+        assert!(
+            error
+                .to_string()
+                .contains("available immutable artifact content bytes")
+        );
+    }
 }
 
 #[test]
-fn missing_blob_over_searchable_limit_stays_unhydrated() {
+fn missing_blob_over_searchable_limit_reports_unavailable_exact_bytes() {
     let db = DbCore::in_memory().unwrap();
     let storage = db.storage_manager().semantic_storage();
     storage
@@ -283,13 +288,14 @@ fn missing_blob_over_searchable_limit_stays_unhydrated() {
         .unwrap();
     assert!(db.artifact_blobs().delete_blob(&content_ref).unwrap());
 
-    // No complete copy remains on the node; hydration must not fabricate a
-    // truncated value.
-    let stored = storage.artifact("oversized-note").unwrap().unwrap();
-    assert_eq!(stored.content, None);
-    let searchable = stored.searchable_text.unwrap();
-    assert_eq!(searchable.chars().count(), 4096);
-    assert!(searchable.starts_with("searchable-prefix "));
+    // A preview cannot stand in for the exact historical body.
+    let error = storage.artifact("oversized-note").unwrap_err();
+    assert!(error.to_string().contains(&content_ref));
+    assert!(
+        error
+            .to_string()
+            .contains("available immutable artifact content bytes")
+    );
 }
 
 #[test]
@@ -718,6 +724,7 @@ fn unversioned_content_fingerprint_is_rejected() {
 
 fn element(id: &str, parent: Option<&str>) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),
@@ -799,6 +806,7 @@ fn indexed_element(
     fingerprint: &str,
 ) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

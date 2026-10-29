@@ -60,10 +60,18 @@ fn portable_fingerprint_record_preserves_matching_rules() {
 fn portable_reconciliation_reserves_incoming_identity_owners() {
     let existing = element("old");
     let incoming = vec![element("new"), element("old")];
-    let reconciled = SemanticStructureReconciliation::between(&[existing.clone()], &incoming);
+    let reconciled = SemanticStructureReconciliation::between(
+        &[existing.clone()],
+        &incoming,
+        "2026-10-24T00:00:00Z",
+    );
     assert!(reconciled.remaps.is_empty());
     assert_eq!(reconciled.active_elements.len(), 2);
-    let moved = SemanticStructureReconciliation::between(&[existing], &[element("new")]);
+    let moved = SemanticStructureReconciliation::between(
+        &[existing],
+        &[element("new")],
+        "2026-10-24T00:00:00Z",
+    );
     assert_eq!(moved.active_elements[0].semantic_element_id, "old");
     assert_eq!(moved.remaps[0].incoming_id, "new");
     assert_eq!(moved.remaps[0].resolved_id, "old");
@@ -71,6 +79,7 @@ fn portable_reconciliation_reserves_incoming_identity_owners() {
 
 fn element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "source".into(),

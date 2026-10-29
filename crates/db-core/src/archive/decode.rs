@@ -1,8 +1,8 @@
 use super::{PzManifest, SemanticArchive, verify_control};
 use crate::{
     ArtifactBlob, ArtifactTextVector, DbError, Result, SemanticArtifact, SemanticElement,
-    SemanticMatchEvidence, SemanticProjectSnapshot, SemanticRelationship, StoredArtifactTextVector,
-    StoredSemanticElementNameVector,
+    SemanticMatchEvidence, SemanticProjectSnapshot, SemanticRelationship, SemanticRevisionMetadata,
+    StoredArtifactTextVector, StoredSemanticElementNameVector,
 };
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Float32Array, Int64Array, ListArray, RecordBatch, StringArray,
@@ -10,7 +10,7 @@ use arrow_array::{
 use bytes::Bytes;
 use lumvise_resource_routing::InvocationControl;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 pub(super) fn read(
     manifest: PzManifest,
@@ -41,7 +41,39 @@ pub(super) fn read(
     artifact_text_vectors.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
     let mut artifact_blobs = decoded.blobs.into_values().collect::<Vec<_>>();
     artifact_blobs.sort_by(|left, right| left.content_ref.cmp(&right.content_ref));
+    let revisions = super::revisions::restore_revision_state(
+        project_root,
+        manifest.commit_version,
+        decoded.revision_metadata,
+        decoded.elements,
+        decoded.artifacts,
+    )?;
+    super::revisions::validate_archive_project_identity(&manifest.project_id, &revisions)?;
+    let selected = revisions
+        .snapshot(&manifest.selection_id, &manifest.published_at)?
+        .ok_or_else(|| {
+            DbError::invalid_value(&manifest.selection_id, "an archived current selection")
+        })?;
+    validate_body_blobs(&revisions, &artifact_blobs)?;
+    validate_selected_relationships(&selected.connections, &decoded.relationships)?;
+    let expected = revisions
+        .selection(&manifest.selection_id)
+        .expect("validated selection");
+    if decoded.selected_records != expected.records.iter().cloned().collect() {
+        return Err(DbError::invalid_value(
+            "selected",
+            "the exact archived selection's record membership",
+        ));
+    }
+    super::artifact_index::validate_associations(
+        tables,
+        &revisions.selected_associations(&manifest.selection_id),
+    )?;
     Ok(SemanticArchive {
+        display_name: manifest.project.display_name,
+        source_revision: manifest.project.source_revision,
+        selection_id: manifest.selection_id,
+        revision_state: Some(revisions),
         project_id: manifest.project_id,
         snapshot_id: manifest.snapshot_id,
         canonical_remote: manifest.project.canonical_remote,
@@ -49,9 +81,13 @@ pub(super) fn read(
             commit_version: manifest.commit_version,
             published_at: manifest.published_at,
             project_root: project_root.to_owned(),
-            elements: decoded.elements,
-            relationships: decoded.relationships,
-            artifacts: decoded.artifacts,
+            elements: selected.elements,
+            relationships: selected
+                .connections
+                .into_iter()
+                .map(|connection| connection.relationship)
+                .collect(),
+            artifacts: selected.artifacts,
         },
         artifact_blobs,
         artifact_text_vectors,
@@ -61,6 +97,8 @@ pub(super) fn read(
 
 /// Archive rows decoded into the records live writers accept.
 struct DecodedArchive {
+    selected_records: BTreeSet<crate::SemanticRecordRef>,
+    revision_metadata: Vec<SemanticRevisionMetadata>,
     elements: Vec<SemanticElement>,
     relationships: Vec<SemanticRelationship>,
     artifacts: Vec<SemanticArtifact>,
@@ -76,6 +114,8 @@ impl DecodedArchive {
         control: &InvocationControl,
     ) -> Result<Self> {
         let mut decoded = Self {
+            selected_records: BTreeSet::new(),
+            revision_metadata: vec![],
             elements: Vec::new(),
             relationships: Vec::new(),
             artifacts: Vec::new(),
@@ -84,6 +124,13 @@ impl DecodedArchive {
             element_name_vectors: Vec::new(),
         };
         for_each_row(tables, "elements.parquet", control, |row| {
+            if row.boolean("selected")? {
+                decoded
+                    .selected_records
+                    .insert(crate::SemanticRecordRef::element(
+                        row.required("semantic_element_id")?,
+                    ));
+            }
             decoded.elements.push(SemanticElement {
                 project_root: project_root.to_owned(),
                 semantic_element_id: row.required("semantic_element_id")?,
@@ -92,6 +139,9 @@ impl DecodedArchive {
                 element_kind: row.required("element_kind")?,
                 name: row.required("name")?,
                 parent_element_id: row.text("parent_element_id")?,
+                revision_dependencies: serde_json::from_value(
+                    row.json("revision_dependencies_json")?,
+                )?,
                 content_fingerprint: row.text("content_fingerprint")?,
                 start_line: row.int("start_line")?,
                 end_line: row.int("end_line")?,
@@ -117,16 +167,23 @@ impl DecodedArchive {
             Ok(())
         })?;
         for_each_row(tables, "artifacts.parquet", control, |row| {
+            if row.boolean("selected")? {
+                decoded
+                    .selected_records
+                    .insert(crate::SemanticRecordRef::artifact(
+                        row.required("artifact_id")?,
+                    ));
+            }
             decoded.artifacts.push(SemanticArtifact {
                 artifact_id: row.required("artifact_id")?,
                 semantic_element_id: row.required("semantic_element_id")?,
                 artifact_kind: row.required("artifact_kind")?,
                 title: row.required("title")?,
                 content_ref: row.text("content_ref")?,
-                content: None,
+                content: row.text("inline_content")?,
                 searchable_text: row.text("searchable_text")?,
                 content_size_bytes: row.int("content_size_bytes")?.map(|size| size as usize),
-                dependencies: Vec::new(),
+                dependencies: serde_json::from_str(&row.required("dependencies_json")?)?,
                 metadata: row.json("metadata_json")?,
             });
             Ok(())
@@ -139,7 +196,24 @@ impl DecodedArchive {
                 content: row.binary("content")?,
                 updated_at: row.required("updated_at")?,
             };
-            decoded.blobs.insert(blob.content_ref.clone(), blob);
+            if row.int("byte_size")? != Some(blob.content.len() as i64)
+                || row.required("sha256")? != super::sha256_hex(&blob.content)
+            {
+                return Err(DbError::invalid_value(
+                    &blob.content_ref,
+                    "archived blob bytes matching their declared length and SHA-256",
+                ));
+            }
+            if decoded
+                .blobs
+                .insert(blob.content_ref.clone(), blob)
+                .is_some()
+            {
+                return Err(DbError::invalid_value(
+                    row.required("content_ref")?,
+                    "one archived blob per exact content reference",
+                ));
+            }
             Ok(())
         })?;
         for_each_row(tables, "artifact_text_vectors.parquet", control, |row| {
@@ -160,8 +234,66 @@ impl DecodedArchive {
                 });
             Ok(())
         })?;
+        for_each_row(tables, "revision_metadata.parquet", control, |row| {
+            let value: SemanticRevisionMetadata =
+                serde_json::from_str(&row.required("record_json")?)?;
+            if value.kind() != row.required("kind")?
+                || value.identity()? != row.required("identity")?
+            {
+                return Err(DbError::invalid_value(
+                    row.required("identity")?,
+                    "the declared portable revision metadata kind and identity",
+                ));
+            }
+            decoded.revision_metadata.push(value);
+            Ok(())
+        })?;
         Ok(decoded)
     }
+}
+
+fn validate_body_blobs(state: &crate::SemanticRevisionState, blobs: &[ArtifactBlob]) -> Result<()> {
+    let available = blobs
+        .iter()
+        .map(|blob| blob.content_ref.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for stored in &state.records {
+        let crate::SemanticRevisionBody::Artifact(artifact) = &stored.body else {
+            continue;
+        };
+        if let Some(reference) = &artifact.content_ref {
+            if !available.contains(reference.as_str()) {
+                return Err(DbError::invalid_value(
+                    reference,
+                    "exact archived bytes for every retained artifact content reference",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_selected_relationships(
+    connections: &[crate::SemanticRevisionConnection],
+    relationships: &[SemanticRelationship],
+) -> Result<()> {
+    let mut expected = connections
+        .iter()
+        .map(|connection| serde_json::to_string(&connection.relationship))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut actual = relationships
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    expected.sort();
+    actual.sort();
+    if expected != actual {
+        return Err(DbError::invalid_value(
+            "relationships.parquet",
+            "the exact selected connection multiset",
+        ));
+    }
+    Ok(())
 }
 
 /// Visits every row of one validated table in archive order.
@@ -224,6 +356,12 @@ impl Row<'_> {
         Ok(self
             .column::<Int64Array>(name)?
             .map(|array| array.value(self.index)))
+    }
+
+    fn boolean(&self, name: &str) -> Result<bool> {
+        self.column::<BooleanArray>(name)?
+            .map(|array| array.value(self.index))
+            .ok_or_else(|| DbError::invalid_value(name, "a non-null PZ boolean"))
     }
 
     fn binary(&self, name: &str) -> Result<Vec<u8>> {

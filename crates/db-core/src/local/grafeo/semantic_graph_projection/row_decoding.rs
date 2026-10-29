@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 struct NodePropertyColumns {
     rows: Vec<HashMap<String, GrafeoValue>>,
 }
@@ -43,6 +44,7 @@ impl NodePropertyColumns {
         let keys = keys.iter().map(|key| (*key).into()).collect::<Vec<_>>();
         let rows = store
             .get_nodes_properties_selective_batch(ids, &keys)
+            .committed_nodes(store, ids)
             .into_iter()
             .map(|row| {
                 row.into_iter()
@@ -69,7 +71,11 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
     let semantic_ids_by_node_all = semantic_label_ids
         .iter()
         .copied()
-        .zip(store.get_node_property_batch(&semantic_label_ids, &semantic_id_key))
+        .zip(
+            store
+                .get_node_property_batch(&semantic_label_ids, &semantic_id_key)
+                .committed_nodes(&*store, &semantic_label_ids),
+        )
         .filter_map(|(node_id, value)| {
             value
                 .as_ref()
@@ -122,7 +128,9 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
         .iter()
         .map(|key| (*key).into())
         .collect::<Vec<_>>();
-    let edge_properties = store.get_edges_properties_selective_batch(&edge_ids, &edge_keys);
+    let edge_properties = store
+        .get_edges_properties_selective_batch(&edge_ids, &edge_keys)
+        .committed_edges(&*store, &edge_ids);
     let mut relationships = Vec::new();
     let mut artifact_nodes = HashMap::<NodeId, String>::new();
     for ((source_node, target_node, _), properties) in adjacency.into_iter().zip(edge_properties) {

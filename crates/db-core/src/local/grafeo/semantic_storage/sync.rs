@@ -42,6 +42,7 @@ impl<'db> SemanticStorage<'db> {
         relationships: &[SemanticRelationship],
     ) -> Result<SemanticBatchSyncReport> {
         require_non_empty(project_root, "non-empty project root")?;
+        let matched_at = self.clock.now().to_rfc3339();
         let _sync = self.graph.lock_structure_sync(&self.control)?;
         let initial = self.graph.plan(|database| {
             prepare_full_structure_sync(
@@ -49,6 +50,7 @@ impl<'db> SemanticStorage<'db> {
                 project_root,
                 elements,
                 relationships,
+                &matched_at,
                 &self.control,
             )
         })?;
@@ -64,6 +66,7 @@ impl<'db> SemanticStorage<'db> {
                     project_root,
                     elements,
                     relationships,
+                    &matched_at,
                     &self.control,
                 )
             },
@@ -111,9 +114,16 @@ impl<'db> SemanticStorage<'db> {
         relationships: &[SemanticRelationship],
     ) -> Result<SemanticBatchSyncReport> {
         validate_partition(partition)?;
+        let matched_at = self.clock.now().to_rfc3339();
         let _sync = self.graph.lock_structure_sync(&self.control)?;
         let initial = self.graph.plan(|database| {
-            prepare_partition_structure_sync(database, partition, elements, relationships)
+            prepare_partition_structure_sync(
+                database,
+                partition,
+                elements,
+                relationships,
+                &matched_at,
+            )
         })?;
         self.check_active()?;
         if initial.value().is_noop() {
@@ -122,7 +132,13 @@ impl<'db> SemanticStorage<'db> {
         let report = self.commit_prepared_graph_write(
             initial,
             |database| {
-                prepare_partition_structure_sync(database, partition, elements, relationships)
+                prepare_partition_structure_sync(
+                    database,
+                    partition,
+                    elements,
+                    relationships,
+                    &matched_at,
+                )
             },
             |graph, commit_version, collector, prepared| {
                 let report = prepared.report.clone();
@@ -252,8 +268,10 @@ pub(super) fn semantic_partition_plan(
     existing_partition: &[SemanticElement],
     elements: &[SemanticElement],
     relationships: &[SemanticRelationship],
+    matched_at: &str,
 ) -> PartitionSyncPlan {
-    let reconciled = reconcile_semantic_elements(existing_partition, elements);
+    let reconciled =
+        SemanticStructureReconciliation::between(existing_partition, elements, matched_at);
     let inactive_elements = inactive_elements(existing_partition, &reconciled.inactive_element_ids);
     let element_changes = changed_semantic_elements(
         existing_partition,
@@ -328,16 +346,18 @@ pub(super) fn prepare_full_structure_sync(
     project_root: &str,
     elements: &[SemanticElement],
     input_relationships: &[SemanticRelationship],
+    matched_at: &str,
     control: &lumvise_resource_routing::InvocationControl,
 ) -> Result<PreparedStructureSync> {
     crate::local::persistence::verify_control(control)?;
+    crate::local::grafeo::revision_rows::require_unmanaged_project(database, project_root)?;
     validate_unique_element_ids(elements)?;
     let existing = semantic_elements_for_project_including_inactive(database, project_root);
     crate::local::persistence::verify_control(control)?;
     validate_duplicate_repair_inputs(&existing, elements)?;
     let existing_relationships = semantic_relationships_for_project_edges(database, project_root);
     crate::local::persistence::verify_control(control)?;
-    let reconciled = reconcile_semantic_elements(&existing, elements);
+    let reconciled = SemanticStructureReconciliation::between(&existing, elements, matched_at);
     let relationships = normalized_relationships(
         project_root,
         &reconciled.active_elements,
@@ -418,12 +438,22 @@ pub(super) fn prepare_partition_structure_sync(
     partition: &SemanticPartition,
     elements: &[SemanticElement],
     input_relationships: &[SemanticRelationship],
+    matched_at: &str,
 ) -> Result<PreparedStructureSync> {
+    crate::local::grafeo::revision_rows::require_unmanaged_project(
+        database,
+        &partition.project_root,
+    )?;
     validate_unique_element_ids(elements)?;
     let existing_partition =
         provider_selection::select_owned_partition(database, partition, elements)?;
     validate_duplicate_repair_inputs(&existing_partition, elements)?;
-    let plan = semantic_partition_plan(&existing_partition, elements, input_relationships);
+    let plan = semantic_partition_plan(
+        &existing_partition,
+        elements,
+        input_relationships,
+        matched_at,
+    );
     let owned_sources = owned_partition_source_ids(&plan.reconciled, &plan.inactive_elements);
     let relationships = relationships_owned_by_sources(&plan.relationships, &owned_sources);
     let existing_relationships =
@@ -758,6 +788,7 @@ mod snapshot_rollback_tests {
     }
     fn snapshot_element() -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/snapshot-rollback".into(),
             semantic_element_id: "owner".into(),
             semantic_source_id: "fixture".into(),

@@ -15,6 +15,10 @@ pub(super) fn capture(
     let contents = storage.semantic_storage().pz_snapshot_data(&project_root)?;
     super::persistence::verify_control(control)?;
     Ok(SemanticArchive {
+        display_name: None,
+        source_revision: None,
+        selection_id: "working".into(),
+        revision_state: contents.revision_state,
         project_id,
         snapshot_id: uuid::Uuid::now_v7().to_string(),
         canonical_remote: None,

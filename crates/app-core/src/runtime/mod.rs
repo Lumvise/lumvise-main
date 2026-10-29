@@ -57,10 +57,11 @@ pub struct AppCore {
     pub(crate) scoped_mcp_base_url: Arc<Mutex<Option<String>>>,
     pub(crate) bridge_credentials: Arc<Mutex<Option<Arc<Mutex<HashMap<String, u64>>>>>>,
     pub(crate) frontend_actions: Arc<Mutex<Vec<serde_json::Value>>>,
-    pub(crate) project_import_sessions: Mutex<crate::app::project_import::ProjectImportSessions>,
-    // Some(root) is observed this incarnation; None fences explicit retirement until register.
-    pub(crate) mcp_session_membership: Mutex<HashMap<String, Option<String>>>,
-    pub(crate) document_converter: Mutex<Arc<lumvise_project_indexer::DocumentConverter>>,
+    pub(crate) project_import_sessions:
+        Arc<Mutex<crate::app::project_import::ProjectImportSessions>>,
+    pub(crate) index_publication_client: Arc<OnceLock<String>>,
+    pub(crate) mcp_session_membership: Arc<crate::app::mcp_session_registry::McpSessionMembership>,
+    pub(crate) document_converter: Arc<Mutex<Arc<lumvise_project_indexer::DocumentConverter>>>,
     #[cfg(feature = "assistant-e2e")]
     pub(crate) e2e_event_journal: E2eEventJournal,
     pub(crate) plugin_host_services: Arc<crate::plugin::PluginHostServices>,
@@ -80,6 +81,7 @@ fn compose_plugin_host_services(
 ) -> Arc<crate::plugin::PluginHostServices> {
     let services =
         crate::plugin::PluginHostServices::new(frontend, llm_registry, Arc::clone(semantic));
+    services.install_project_import_service(Arc::clone(semantic), Arc::clone(relational));
     services.install_link_decisions(crate::app::link_decision_credentials(Arc::clone(
         relational,
     )));
@@ -293,9 +295,10 @@ impl AppCore {
             scoped_mcp_base_url: plugin_host_services.scoped_mcp_base_url(),
             bridge_credentials: Arc::new(Mutex::new(None)),
             frontend_actions: plugin_host_services.frontend_actions(),
-            project_import_sessions: Mutex::new(Default::default()),
-            mcp_session_membership: Mutex::new(HashMap::new()),
-            document_converter: Mutex::new(Arc::default()),
+            project_import_sessions: plugin_host_services.project_import_sessions(),
+            index_publication_client: plugin_host_services.index_publication_client(),
+            mcp_session_membership: plugin_host_services.mcp_session_membership(),
+            document_converter: plugin_host_services.project_document_converter(),
             #[cfg(feature = "assistant-e2e")]
             e2e_event_journal: E2eEventJournal::default(),
             plugin_host_services,
@@ -937,75 +940,4 @@ fn normalized_base_url(base_url: Option<String>) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        path::Path,
-        sync::{Arc, LazyLock, Mutex},
-    };
-
-    static MANAGED_MODEL_STATE_ROOT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    struct StateRootGuard(Option<std::ffi::OsString>);
-
-    impl StateRootGuard {
-        fn set(path: &Path) -> Self {
-            let previous = std::env::var_os("LUMVISE_STATE_ROOT");
-            unsafe {
-                std::env::set_var("LUMVISE_STATE_ROOT", path);
-            }
-            Self(previous)
-        }
-    }
-
-    impl Drop for StateRootGuard {
-        fn drop(&mut self) {
-            unsafe {
-                match self.0.take() {
-                    Some(previous) => std::env::set_var("LUMVISE_STATE_ROOT", previous),
-                    None => std::env::remove_var("LUMVISE_STATE_ROOT"),
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn install_managed_models_keeps_app_core_alive_after_restore_failure() {
-        let _state_root_lock = MANAGED_MODEL_STATE_ROOT_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let root = tempfile::tempdir().unwrap();
-        let models_root = root.path().join("models");
-        let published = models_root.join("vector.all-minilm-l6-v2");
-        std::fs::create_dir_all(&published).unwrap();
-        for relative in [
-            "config.json",
-            "special_tokens_map.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "model.onnx",
-        ] {
-            std::fs::write(published.join(relative), b"fixture").unwrap();
-        }
-        std::fs::write(
-            models_root.join(".active-selections.json"),
-            br#"{"vector":"vector.all-minilm-l6-v2"}"#,
-        )
-        .unwrap();
-        let _state_root = StateRootGuard::set(root.path());
-
-        let app = Arc::new(AppCore::in_memory().unwrap());
-        app.install_managed_models()
-            .expect("recoverable model restore must not abort App Core startup");
-
-        let manager = app
-            .managed_models()
-            .expect("managed model manager must be owned by App Core");
-        let status = manager.status_for("vector.all-minilm-l6-v2").unwrap();
-        assert_eq!(
-            status.state,
-            lumvise_neural_core::managed_models::ManagedModelState::Failed
-        );
-        assert!(!status.active);
-    }
-}
+mod tests;

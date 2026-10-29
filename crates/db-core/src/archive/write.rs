@@ -7,14 +7,36 @@ pub(super) fn publish(
     control: &lumvise_resource_routing::InvocationControl,
 ) -> Result<PzSnapshotResult> {
     verify_control(control)?;
+    super::validation::validate_public_identity(
+        &archive.project_id,
+        &archive.snapshot_id,
+        &archive.selection_id,
+        PZ_FORMAT_VERSION,
+    )
+    .map_err(|error| DbError::pz(crate::PzFailurePhase::Validate, error.to_string()))?;
     let output_path = output_path.to_path_buf();
-    let tables = build_tables(
-        &archive.snapshot,
+    let revisions = super::revisions::archive_revision_state(archive)
+        .map_err(|error| DbError::pz(crate::PzFailurePhase::Encode, error.to_string()))?;
+    revisions
+        .validate_archive_state()
+        .map_err(|error| DbError::pz(crate::PzFailurePhase::Encode, error.to_string()))?;
+    super::revisions::validate_archive_blobs(&revisions, &archive.artifact_blobs)
+        .map_err(|error| DbError::pz(crate::PzFailurePhase::Encode, error.to_string()))?;
+    let bodies = super::revisions::archive_body_snapshot(archive, &revisions)
+        .map_err(|error| DbError::pz(crate::PzFailurePhase::Encode, error.to_string()))?;
+    let mut tables = build_tables(
+        &bodies,
         &archive.artifact_blobs,
         &archive.artifact_text_vectors,
         &archive.element_name_vectors,
+        &revisions.retained_artifact_owner_ids(),
+        revisions
+            .selection(&archive.selection_id)
+            .expect("archive body projection validated its selected head"),
+        &revisions.selected_associations(&archive.selection_id),
     )
     .map_err(|error| DbError::pz(crate::PzFailurePhase::Encode, error.to_string()))?;
+    tables.push(super::revisions::revision_metadata_table(&revisions)?);
     verify_control(control)?;
     let mut manifest = build_manifest(
         &archive.snapshot,
@@ -24,6 +46,9 @@ pub(super) fn publish(
     )
     .map_err(|error| DbError::pz(crate::PzFailurePhase::Validate, error.to_string()))?;
     manifest.project.canonical_remote = archive.canonical_remote.clone();
+    manifest.project.display_name = archive.display_name.clone();
+    manifest.project.source_revision = archive.source_revision.clone();
+    manifest.selection_id = archive.selection_id.clone();
     super::validation::validate_manifest(&manifest)
         .map_err(|error| DbError::pz(crate::PzFailurePhase::Validate, error.to_string()))?;
     let manifest_bytes = canonical_json(&manifest)
@@ -99,6 +124,7 @@ pub(super) fn build_manifest(
         });
     }
     Ok(PzManifest {
+        selection_id: "working".into(),
         format_version: PZ_FORMAT_VERSION,
         project_id: project_id.to_owned(),
         snapshot_id: snapshot_id.to_owned(),
@@ -111,7 +137,7 @@ pub(super) fn build_manifest(
 pub(super) fn write_zip(path: &Path, entries: &[(&str, Vec<u8>)]) -> Result<()> {
     let file = File::create(path)?;
     let mut writer = ZipWriter::new(file);
-    writer.set_zip64_comment(Some("PZ1"));
+    writer.set_zip64_comment(Some("PZ2"));
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Stored)
         .large_file(true)

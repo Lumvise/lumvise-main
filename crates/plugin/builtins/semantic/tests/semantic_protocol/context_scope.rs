@@ -30,7 +30,7 @@ fn semantic_context_returns_complete_snapshot_with_metadata() {
     }]);
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest context fixture"),
     );
 
@@ -219,7 +219,7 @@ fn unscoped_artifact_context_uses_one_owner_and_preserves_all_records() {
     }]);
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, inner.observe_fixture(batch))
             .expect("ingest"),
     );
     broker.reset();
@@ -286,7 +286,11 @@ fn unscoped_artifact_context_preserves_empty_and_unknown_roots() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, index_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                inner.observe_fixture(index_batch()),
+            )
             .expect("ingest"),
     );
     broker.reset();
@@ -381,7 +385,11 @@ fn unscoped_artifact_context_rejects_project_mismatch() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, artifact_context_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                inner.observe_fixture(artifact_context_batch()),
+            )
             .expect("ingest"),
     );
     broker.reset();
@@ -423,7 +431,11 @@ fn unscoped_artifact_context_rejects_revision_change_before_owner_structure() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, artifact_context_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                inner.observe_fixture(artifact_context_batch()),
+            )
             .expect("ingest"),
     );
     broker.reset();
@@ -475,7 +487,11 @@ fn unscoped_artifact_context_rejects_final_revision_change() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, artifact_context_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                inner.observe_fixture(artifact_context_batch()),
+            )
             .expect("ingest"),
     );
     broker.reset();
@@ -545,7 +561,7 @@ fn context_scope_honors_root_descendants_and_record_kind() {
     }]);
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest"),
     );
     for (kind, descendants, expected) in [
@@ -611,17 +627,19 @@ fn context_scope_honors_root_descendants_and_record_kind() {
             "source_element_id": "fn:parse", "target_element_id": "file:parser",
             "relationship_kind": "contains", "relationship_label": "contains"
         }));
-    success(
+    let published = success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, cycle)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(cycle))
             .expect("cyclic containment"),
     );
+    let parser_revision = accepted_element_id(&published, "file:parser");
+    let parse_revision = accepted_element_id(&published, "fn:parse");
     let cyclic = success(
         runtime
             .invoke(
                 PLUGIN_ID,
                 SEMANTIC_CONTEXT_EXPORT_ID,
-                serde_json::json!({"project_root": "/work/demo", "root_element_id": "file:parser",
+                serde_json::json!({"project_root": "/work/demo", "root_element_id": parser_revision,
             "record_kind": "elements"}),
             )
             .expect("default descendant scope terminates"),
@@ -632,7 +650,7 @@ fn context_scope_honors_root_descendants_and_record_kind() {
         .iter()
         .map(|element| element["semantic_element_id"].as_str().unwrap())
         .collect();
-    assert!(ids.contains("fn:parse"));
+    assert!(ids.contains(parse_revision.as_str()));
     assert!(!ids.contains("fn:outside"));
     runtime.stop(PLUGIN_ID).expect("stop");
 }
@@ -654,7 +672,7 @@ fn deep_element_context_preserves_all_descendants_and_project_isolation() {
     batch["semantic_relationships"] = serde_json::json!([]);
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest deep tree"),
     );
     broker.reset_project_snapshot_calls();

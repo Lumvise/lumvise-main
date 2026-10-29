@@ -1,53 +1,44 @@
+mod base;
+mod sources;
+pub(crate) use base::observe_index_base;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Utc;
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
         IndexBatchRequest, IndexLogRequest, LatestIndexLogRequest, SemanticArtifact,
-        SemanticElement, SemanticRelationship, SemanticRelationshipInput, SemanticSource,
+        SemanticElement, SemanticRelationship, SemanticRelationshipInput,
     },
     parse, require_non_empty,
-    storage::{self, INDEX_LOGS, INDEX_LOGS_BY_PROVIDER, SOURCES},
+    storage::{self, INDEX_LOGS, INDEX_LOGS_BY_PROVIDER},
 };
 
 pub(crate) fn ingest(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
-    let batch: IndexBatchRequest = parse(input, "semantic index batch")?;
+    let mut batch: IndexBatchRequest = parse(input, "semantic index batch")?;
     validate_batch(&batch)?;
-    if batch.ingestion_job_id.is_some() {
-        return ingest_snapshot_page(&batch, context);
+    if batch.ingestion_job_id.is_none() {
+        prepare_single_snapshot(&mut batch)?;
     }
-    let referenced_ids = referenced_existing_element_ids(&batch);
-    let existing_elements = if referenced_ids.is_empty() {
-        Vec::new()
-    } else {
-        storage::graph_elements_by_ids(context, &batch.project_root, &referenced_ids)?
-    };
-    let incoming_elements = incoming_elements(&batch, &existing_elements);
-    let incoming_relationships =
-        incoming_relationships(&batch, &incoming_elements, &existing_elements);
-    let mut source_mutations = Vec::new();
-    store_sources(&mut source_mutations, &batch)?;
-    storage::apply_mutations(context, &source_mutations)?;
-    sync_graph(context, &batch, &incoming_elements, &incoming_relationships)?;
-    let removed_artifacts = remove_graph_artifacts(context, &batch)?;
-    let indexed_artifacts = store_graph_artifacts(context, &batch, &incoming_elements)?;
-    Ok(json!({
-        "accepted": true,
-        "semantic_sources_upserted": batch.semantic_sources.len(),
-        "semantic_elements_upserted": incoming_elements.len(),
-        "semantic_relationships_upserted": incoming_relationships.len(),
-        "semantic_artifacts_upserted": indexed_artifacts.len(),
-        "semantic_artifacts_removed": removed_artifacts,
-        "ingestion_job_id": null,
-        "ingestion_status": "completed",
-        "snapshot_freshness": {
-            "status": "fresh", "latest_completed_snapshot": null,
-            "active_ingestion_job_id": null
-        }
-    }))
+    ingest_snapshot_page(&batch, context)
+}
+
+fn prepare_single_snapshot(batch: &mut IndexBatchRequest) -> Result<(), PluginError> {
+    let encoded = serde_json::to_vec(batch).map_err(|error| {
+        PluginError::new(
+            "invalid_semantic_index_batch",
+            format!("index batch `{error}`; expected a serializable frozen request"),
+            false,
+        )
+    })?;
+    batch.ingestion_job_id = Some(format!("semantic-batch:{:x}", Sha256::digest(encoded)));
+    batch.ingestion_page_index = Some(0);
+    batch.ingestion_page_count = Some(1);
+    Ok(())
 }
 
 fn ingest_snapshot_page(
@@ -64,16 +55,12 @@ fn ingest_snapshot_page(
     let page_count = batch
         .ingestion_page_count
         .ok_or_else(|| invalid_snapshot_page(batch))?;
-    if !batch.semantic_artifacts.is_empty() || !batch.removed_artifact_ids.is_empty() {
-        return Err(PluginError::new(
-            "invalid_semantic_snapshot_page",
-            format!(
-                "semantic snapshot `{job_id}` page `{page_index}` contains provider artifact mutations; expected graph-only index pages and Knowledge-owned artifacts through the Knowledge interface"
-            ),
-            false,
-        ));
-    }
     if page_index == 0 {
+        let observation = batch.revision_observation.as_ref().ok_or_else(|| {
+            PluginError::new("missing_revision_observation", format!(
+                "snapshot `{job_id}` has no revision observation; expected the producer's frozen base before indexing"
+            ), false)
+        })?;
         storage::begin_project_snapshot(
             context,
             job_id,
@@ -81,31 +68,47 @@ fn ingest_snapshot_page(
             &batch.provider_instance_id,
             &partition_paths(batch),
             page_count,
+            observation,
         )?;
     }
-    let elements = incoming_elements(batch, &[]);
+    let elements = incoming_elements(batch);
     let relationships = incoming_relationships_unchecked(batch, &elements);
     let elements = elements.into_values().collect::<Vec<_>>();
-    let relationships = relationships.into_values().collect::<Vec<_>>();
-    let mut source_mutations = Vec::new();
-    store_sources(&mut source_mutations, batch)?;
-    storage::apply_mutations(context, &source_mutations)?;
-    storage::stage_project_snapshot(context, job_id, page_index, &elements, &relationships)?;
+    storage::stage_project_snapshot(
+        context,
+        job_id,
+        page_index,
+        &elements,
+        &relationships,
+        &batch.semantic_sources,
+        &staged_artifacts(batch),
+        &batch.removed_artifact_ids,
+    )?;
     let completed = page_index + 1 == page_count;
-    if completed {
-        storage::commit_project_snapshot(context, job_id)?;
+    let publication = if completed {
+        Some(storage::commit_project_snapshot(context, job_id)?)
+    } else {
+        None
+    };
+    let accepted = publication
+        .as_ref()
+        .is_none_or(|result| result["accepted"] == true);
+    let mut source_count = 0;
+    if let Some(result) = publication.as_ref().filter(|_| accepted) {
+        source_count = sources::publish(context, &batch.project_root, result)?;
     }
     Ok(json!({
-        "accepted": true,
-        "semantic_sources_upserted": batch.semantic_sources.len(),
-        "semantic_elements_upserted": elements.len(),
-        "semantic_relationships_upserted": relationships.len(),
-        "semantic_artifacts_upserted": 0,
-        "semantic_artifacts_removed": 0,
+        "accepted": accepted,
+        "publication": publication.and_then(|mut result| result.as_object_mut()?.remove("publication")),
+        "semantic_sources_upserted": source_count,
+        "semantic_elements_upserted": if accepted { elements.len() } else { 0 },
+        "semantic_relationships_upserted": if accepted { relationships.len() } else { 0 },
+        "semantic_artifacts_upserted": if accepted { batch.semantic_artifacts.len() } else { 0 },
+        "semantic_artifacts_removed": if accepted { batch.removed_artifact_ids.len() } else { 0 },
         "ingestion_job_id": job_id,
-        "ingestion_status": if completed { "completed" } else { "running" },
+        "ingestion_status": if !accepted { "failed" } else if completed { "completed" } else { "running" },
         "snapshot_freshness": {
-            "status": if completed { "fresh" } else { "running" },
+            "status": if !accepted { "failed" } else if completed { "fresh" } else { "running" },
             "latest_completed_snapshot": null,
             "active_ingestion_job_id": if completed { None } else { Some(job_id) }
         }
@@ -123,24 +126,6 @@ fn invalid_snapshot_page(batch: &IndexBatchRequest) -> PluginError {
     )
 }
 
-fn sync_graph(
-    context: &mut PluginContext<'_>,
-    batch: &IndexBatchRequest,
-    elements: &BTreeMap<String, SemanticElement>,
-    relationships: &BTreeMap<String, SemanticRelationship>,
-) -> Result<(), PluginError> {
-    let paths = partition_paths(batch);
-    storage::sync_partition(
-        context,
-        &batch.project_root,
-        &batch.provider_instance_id,
-        &paths,
-        &elements.values().collect::<Vec<_>>(),
-        &relationships.values().collect::<Vec<_>>(),
-    )?;
-    Ok(())
-}
-
 fn partition_paths(batch: &IndexBatchRequest) -> Vec<String> {
     batch
         .replace_paths
@@ -152,32 +137,15 @@ fn partition_paths(batch: &IndexBatchRequest) -> Vec<String> {
         .collect()
 }
 
-fn store_graph_artifacts(
-    context: &mut PluginContext<'_>,
-    batch: &IndexBatchRequest,
-    elements: &BTreeMap<String, SemanticElement>,
-) -> Result<Vec<SemanticArtifact>, PluginError> {
-    let mut stored = Vec::new();
-    for item in &batch.semantic_artifacts {
-        let Some(target) = active_element(context, &item.semantic_element_id, elements)? else {
-            continue;
-        };
-        let artifact = artifact_from_input(item, &target.project_root);
-        storage::upsert_graph_artifact(context, &artifact)?;
-        stored.push(artifact);
-    }
-    Ok(stored)
-}
-
-fn remove_graph_artifacts(
-    context: &mut PluginContext<'_>,
-    batch: &IndexBatchRequest,
-) -> Result<usize, PluginError> {
-    let mut removed = 0;
-    for artifact_id in &batch.removed_artifact_ids {
-        removed += usize::from(storage::remove_graph_artifact(context, artifact_id)?);
-    }
-    Ok(removed)
+fn staged_artifacts(batch: &IndexBatchRequest) -> Vec<crate::models::SemanticArtifactWrite> {
+    batch
+        .semantic_artifacts
+        .iter()
+        .map(|item| crate::models::SemanticArtifactWrite {
+            artifact: artifact_from_input(item, &batch.project_root),
+            media_type: item.media_type.clone(),
+        })
+        .collect()
 }
 
 fn artifact_from_input(
@@ -194,6 +162,7 @@ fn artifact_from_input(
         content: item.content.clone(),
         searchable_text: item.searchable_text.clone(),
         content_size_bytes: item.content_size_bytes,
+        dependencies: item.dependencies.clone(),
         metadata: item.metadata.clone().unwrap_or_else(|| json!({})),
     }
 }
@@ -353,59 +322,38 @@ fn validate_batch(batch: &IndexBatchRequest) -> Result<(), PluginError> {
 fn incoming_relationships_unchecked(
     batch: &IndexBatchRequest,
     elements: &BTreeMap<String, SemanticElement>,
-) -> BTreeMap<String, SemanticRelationship> {
+) -> Vec<SemanticRelationship> {
     let mut relationships = batch
         .semantic_relationships
         .iter()
-        .map(|item| {
-            let relationship = relationship_from_input(batch, item);
-            (relationship_key(&relationship), relationship)
+        .map(|item| relationship_from_input(batch, item))
+        .collect::<Vec<_>>();
+    let mut parents = relationships
+        .iter()
+        .filter(|edge| edge.relationship_kind == "contains")
+        .map(|edge| {
+            (
+                edge.source_element_id.clone(),
+                edge.target_element_id.clone(),
+            )
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect::<BTreeSet<_>>();
     for element in elements.values() {
         let Some(parent_id) = element.parent_element_id.as_deref() else {
             continue;
         };
-        let relationship = parent_relationship(batch, parent_id, &element.semantic_element_id);
-        relationships.insert(relationship_key(&relationship), relationship);
+        if parents.insert((parent_id.to_owned(), element.semantic_element_id.clone())) {
+            relationships.push(parent_relationship(
+                batch,
+                parent_id,
+                &element.semantic_element_id,
+            ));
+        }
     }
     relationships
 }
 
-fn referenced_existing_element_ids(batch: &IndexBatchRequest) -> Vec<String> {
-    let incoming = batch
-        .semantic_elements
-        .iter()
-        .map(|element| element.semantic_element_id.as_str())
-        .collect::<BTreeSet<_>>();
-    batch
-        .semantic_relationships
-        .iter()
-        .flat_map(|relationship| {
-            [
-                Some(relationship.source_element_id.as_str()),
-                relationship.target_element_id.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-        })
-        .chain(
-            batch
-                .semantic_elements
-                .iter()
-                .filter_map(|element| element.parent_element_id.as_deref()),
-        )
-        .filter(|id| !incoming.contains(id))
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn incoming_elements(
-    batch: &IndexBatchRequest,
-    existing: &[SemanticElement],
-) -> BTreeMap<String, SemanticElement> {
+fn incoming_elements(batch: &IndexBatchRequest) -> BTreeMap<String, SemanticElement> {
     let mut elements = batch
         .semantic_elements
         .iter()
@@ -418,12 +366,14 @@ fn incoming_elements(
                 element_kind: item.semantic_element_type.clone(),
                 name: item.semantic_element_name.clone(),
                 parent_element_id: item.parent_element_id.clone(),
+                revision_dependencies: item.revision_dependencies.clone(),
                 content_fingerprint: item.content_fingerprint.clone(),
                 start_line: item.start_line,
                 end_line: item.end_line,
                 lifecycle: "active".into(),
                 metadata: json!({
                     "provider_instance_id": batch.provider_instance_id,
+                    "producer_element_id": item.semantic_element_id,
                     "indexer_metadata": item.metadata.clone().unwrap_or_else(|| json!({}))
                 }),
             };
@@ -431,7 +381,7 @@ fn incoming_elements(
         })
         .collect::<BTreeMap<_, _>>();
     for relationship in &batch.semantic_relationships {
-        let Some(external) = external_element(batch, relationship, &elements, existing) else {
+        let Some(external) = external_element(batch, relationship, &elements) else {
             continue;
         };
         elements
@@ -446,16 +396,11 @@ fn external_element(
     batch: &IndexBatchRequest,
     relationship: &SemanticRelationshipInput,
     elements: &BTreeMap<String, SemanticElement>,
-    existing: &[SemanticElement],
 ) -> Option<SemanticElement> {
     if relationship.target_element_id.is_some() {
         return None;
     }
-    let source = elements.get(&relationship.source_element_id).or_else(|| {
-        existing
-            .iter()
-            .find(|element| element.semantic_element_id == relationship.source_element_id)
-    })?;
+    let source = elements.get(&relationship.source_element_id)?;
     let target = relationship
         .target_locator
         .as_deref()
@@ -474,6 +419,7 @@ fn external_element(
             .or_else(|| relationship.target_locator.clone())
             .unwrap_or_else(|| "external".into()),
         parent_element_id: None,
+        revision_dependencies: Vec::new(),
         content_fingerprint: Some(format!(
             "fp1:{hash}:external:{hash}",
             hash = stable_external_hash(target),
@@ -499,36 +445,6 @@ fn apply_denormalized_parents(
             element.parent_element_id = Some(relationship.source_element_id.clone());
         }
     }
-}
-
-fn incoming_relationships(
-    batch: &IndexBatchRequest,
-    elements: &BTreeMap<String, SemanticElement>,
-    existing: &[SemanticElement],
-) -> BTreeMap<String, SemanticRelationship> {
-    let known_ids = elements
-        .keys()
-        .map(String::as_str)
-        .chain(
-            existing
-                .iter()
-                .filter(|element| element.lifecycle == "active")
-                .map(|element| element.semantic_element_id.as_str()),
-        )
-        .collect::<BTreeSet<_>>();
-    let mut relationships = BTreeMap::new();
-    for item in &batch.semantic_relationships {
-        let relationship = relationship_from_input(batch, item);
-        insert_known_relationship(&mut relationships, relationship, &known_ids);
-    }
-    for element in elements.values() {
-        let Some(parent_id) = element.parent_element_id.as_deref() else {
-            continue;
-        };
-        let relationship = parent_relationship(batch, parent_id, &element.semantic_element_id);
-        insert_known_relationship(&mut relationships, relationship, &known_ids);
-    }
-    relationships
 }
 
 fn relationship_from_input(
@@ -570,66 +486,6 @@ fn parent_relationship(
         lifecycle: "active".into(),
         metadata: json!({"derived_from": "parent_element_id"}),
     }
-}
-
-fn insert_known_relationship(
-    relationships: &mut BTreeMap<String, SemanticRelationship>,
-    relationship: SemanticRelationship,
-    known_ids: &BTreeSet<&str>,
-) {
-    if !known_ids.contains(relationship.source_element_id.as_str())
-        || !known_ids.contains(relationship.target_element_id.as_str())
-    {
-        return;
-    }
-    relationships.insert(relationship_key(&relationship), relationship);
-}
-
-fn store_sources(
-    mutations: &mut Vec<storage::Mutation>,
-    batch: &IndexBatchRequest,
-) -> Result<(), PluginError> {
-    for item in &batch.semantic_sources {
-        let source = SemanticSource {
-            semantic_source_id: item.semantic_source_id.clone(),
-            kind: item.kind.clone(),
-            name: item.name.clone(),
-            root_path: item.root_path.clone(),
-            root_uri: item.root_uri.clone(),
-            project_root: batch.project_root.clone(),
-        };
-        let key = storage::project_key(&source.project_root, "s", &[&source.semantic_source_id]);
-        mutations.push(storage::put_mutation(SOURCES, &key, &source)?);
-    }
-    Ok(())
-}
-
-fn active_element(
-    context: &mut PluginContext<'_>,
-    element_id: &str,
-    incoming: &BTreeMap<String, SemanticElement>,
-) -> Result<Option<SemanticElement>, PluginError> {
-    if let Some(element) = incoming
-        .get(element_id)
-        .filter(|element| element.lifecycle == "active")
-    {
-        return Ok(Some(element.clone()));
-    }
-    let element = storage::graph_element(context, element_id)?;
-    Ok(element.filter(|element: &SemanticElement| element.lifecycle == "active"))
-}
-
-fn relationship_key(relationship: &SemanticRelationship) -> String {
-    storage::project_key(
-        &relationship.project_root,
-        "r",
-        &[
-            &relationship.source_element_id,
-            &relationship.target_element_id,
-            &relationship.relationship_kind,
-            &relationship.label,
-        ],
-    )
 }
 
 fn stable_external_hash(value: &str) -> String {

@@ -3,11 +3,14 @@ use super::*;
 const PATH: &str = "knowledge/decisions/auth.md";
 
 fn source(host: &DocumentBoundaryHost, root: &str, id: &str) {
-    host.semantic("ingest_index_batch",json!({"provider_instance_id":"filesystem","project_root":root,"replace_paths":[],"removed_paths":[],
+    source_publication::publish(
+        host,
+        json!({"provider_instance_id":"filesystem","project_root":root,"replace_paths":[],"removed_paths":[],
         "semantic_sources":[{"semantic_source_id":format!("source:{id}"),"kind":"repository","name":"Sources","root_path":root,"root_uri":format!("file://{root}")}],
         "semantic_elements":[{"semantic_element_id":id,"semantic_source_id":format!("source:{id}"),"path":PATH,
             "semantic_element_type":"file","semantic_element_name":"auth.md","parent_element_id":null,"start_line":1,"end_line":1,"content_fingerprint":null,"metadata":{}}],
-        "semantic_relationships":[],"semantic_artifacts":[]})).unwrap();
+        "semantic_relationships":[],"semantic_artifacts":[]}),
+    );
 }
 
 fn notify(host: &mut DocumentBoundaryHost, root: &str, id: &str) -> Result<Value, PluginError> {
@@ -58,11 +61,15 @@ fn source_refresh_and_removal_cannot_delete_or_replace_authored_database_markdow
     notify(&mut host, "/project", "file:auth").unwrap();
     let document = list(&mut host, "/project")[0].clone();
     let authored = host.knowledge("update_document",json!({"project_root":"/project","document_id":document["document_id"],
-        "expected_revision":document["revision"],"content":"Database-authored decisions", "title":"My decisions","path":"My group"})).unwrap()["document"].clone();
+        "expected_revision":document["revision"],"expected_semantic_element_id":document["semantic_element_id"],
+        "content":"Database-authored decisions", "title":"My decisions","path":"My group"})).unwrap()["document"].clone();
     notify(&mut host, "/project", "file:auth").unwrap();
     assert_eq!(list(&mut host, "/project")[0], authored);
-    host.semantic("ingest_index_batch",json!({"provider_instance_id":"filesystem","project_root":"/project","replace_paths":[],"removed_paths":[PATH],
-        "semantic_sources":[],"semantic_elements":[],"semantic_relationships":[],"semantic_artifacts":[]})).unwrap();
+    source_publication::publish(
+        &host,
+        json!({"provider_instance_id":"filesystem","project_root":"/project","replace_paths":[],"removed_paths":[PATH],
+        "semantic_sources":[],"semantic_elements":[],"semantic_relationships":[],"semantic_artifacts":[]}),
+    );
     notify(&mut host, "/project", "file:auth").unwrap();
     assert_eq!(list(&mut host, "/project")[0], authored);
 }
@@ -82,36 +89,18 @@ fn identical_markdown_paths_in_two_projects_keep_distinct_context_identities() {
 }
 
 #[test]
-fn an_explicitly_converted_identity_stays_canonical_and_deletion_is_not_undone_by_source_events() {
+fn deleted_markdown_seeds_are_not_recreated_by_source_events_after_reopen() {
     let mut host = DocumentBoundaryHost::new();
     source(&host, "/project", "file:auth");
-    host.execute(SemanticOperation::UpsertArtifact { artifact: serde_json::from_value(json!({
-        "artifact_id":"original-md-identity","semantic_element_id":"file:auth","artifact_kind":"definition",
-        "title":"Original authored note","content":"Keep the original body","dependencies":[],
-        "metadata":{"knowledge":{"project_root":"/project","tags":["nucleus","md-nucleus"],
-        "metadata":{"nucleus":{"target_path":PATH,"target_element_id":"file:auth"}}}}})).unwrap(),media_type:"text/markdown".into() });
-    assert_eq!(
-        notify(&mut host, "/project", "file:auth").unwrap_err().code,
-        "knowledge_conversion_required"
-    );
-    assert_eq!(list(&mut host, "/project"), json!([]));
-    host.knowledge(
-        "convert_legacy_documents",
-        json!({"project_root":"/project","preview":false}),
-    )
-    .unwrap();
     notify(&mut host, "/project", "file:auth").unwrap();
-    assert_eq!(list(&mut host, "/project").as_array().unwrap().len(), 1);
-    let converted = list(&mut host, "/project")[0].clone();
-    assert_eq!(converted["document_id"], "original-md-identity");
-    assert_eq!(converted["content"], "Keep the original body");
-    host.knowledge(
-        "delete_document",
-        json!({"project_root":"/project","document_id":"original-md-identity"}),
-    )
-    .unwrap();
+    let document = list(&mut host, "/project")[0].clone();
+    host.knowledge("delete_document", revisions::deletion(&document))
+        .unwrap();
     notify(&mut host, "/project", "file:auth").unwrap();
     assert_eq!(list(&mut host, "/project"), json!([]));
+    let mut reopened = DocumentBoundaryHost::with_persistence(host.persistence.clone());
+    notify(&mut reopened, "/project", "file:auth").unwrap();
+    assert_eq!(list(&mut reopened, "/project"), json!([]));
 }
 
 #[test]
@@ -121,7 +110,7 @@ fn only_markdown_file_elements_below_the_knowledge_root_seed_documents() {
         ("folder","knowledge/folder.md","folder",None),("outside","docs/readme.md","file",None),("code","knowledge/code.rs","file",None)]
         .into_iter().map(|(id,path,kind,parent)|json!({"semantic_element_id":id,"semantic_source_id":"source:mixed","path":path,
             "semantic_element_type":kind,"semantic_element_name":id,"parent_element_id":parent,"start_line":null,"end_line":null,"content_fingerprint":null,"metadata":{}})).collect::<Vec<_>>();
-    host.semantic("ingest_index_batch",json!({"provider_instance_id":"filesystem","project_root":"/project","replace_paths":[],"removed_paths":[],
+    host.seed_sources(json!({"provider_instance_id":"filesystem","project_root":"/project","replace_paths":[],"removed_paths":[],
         "semantic_sources":[{"semantic_source_id":"source:mixed","kind":"repository","name":"Sources","root_path":"/project","root_uri":"file:///project"}],
         "semantic_elements":elements,"semantic_relationships":[],"semantic_artifacts":[]})).unwrap();
     let changed = elements.iter().map(|element|json!({"entity_id":element["semantic_element_id"],"entity_kind":element["semantic_element_type"],"disposition":"upserted"})).collect::<Vec<_>>();

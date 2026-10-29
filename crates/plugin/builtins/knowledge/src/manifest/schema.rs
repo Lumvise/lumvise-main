@@ -8,7 +8,7 @@ pub(super) fn closed_object(required: &[&str], properties: Value) -> Value {
 }
 
 pub(super) fn knowledge_kind() -> Value {
-    json!({"type": "string", "enum": ["requirements", "specification"]})
+    json!({"type": "string", "enum": ["requirements", "specification", "media"]})
 }
 
 pub(super) fn knowledge_status() -> Value {
@@ -39,11 +39,5 @@ pub(super) fn array(items: Value) -> Value {
     json!({"type": "array", "items": items})
 }
 pub(super) fn artifact_dependency() -> Value {
-    json!({"type": "object", "required": ["target"], "additionalProperties": false,
-    "properties": {"target": {"oneOf": [
-        closed_object(&["target_kind", "semantic_element_id"],
-            json!({"target_kind": {"const": "semantic_element"}, "semantic_element_id": string()})),
-        closed_object(&["target_kind", "artifact_id"],
-            json!({"target_kind": {"const": "artifact"}, "artifact_id": string()}))
-    ]}}})
+    lumvise_contracts::ArtifactDependency::input_schema()
 }

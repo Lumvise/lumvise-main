@@ -194,6 +194,7 @@ fn assert_parent(storage: &lumvise_db_core::SemanticStorage<'_>, child_id: &str,
 
 fn folder_element(id: &str, path: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),
@@ -228,6 +229,7 @@ fn media_file_with_fingerprint(
     fingerprint: &str,
 ) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),
@@ -249,6 +251,7 @@ fn media_file_with_fingerprint(
 
 fn media_segment(id: &str, kind: &str, parent_id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

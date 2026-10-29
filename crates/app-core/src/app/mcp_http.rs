@@ -300,14 +300,14 @@ async fn serve_connection(
 
     let method = request.method.clone();
     let route = crate::observability::route_metric_label(&request.path);
-    if request.method == "POST" && request.path == "/api/mcp/plugins/invoke-v1" {
+    if request.method == "POST" && request.path == "/api/mcp/plugins/invoke-v2" {
         serve_controlled_invocation(app, stream, request, permit, method, route).await;
         return;
     }
 
     let started = Instant::now();
     #[cfg(test)]
-    if request.path == "/api/mcp/plugins/invoke-v1" {
+    if request.path == "/api/mcp/plugins/invoke-v2" {
         GENERIC_HTTP_ROUTER_INVOKE_V1_SPAWNS.fetch_add(1, Ordering::AcqRel);
     }
     let response = match tokio::task::spawn_blocking({
@@ -876,7 +876,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invoke_v1_bypasses_generic_blocking_router() {
+    async fn invoke_v2_bypasses_generic_blocking_router() {
         let baseline = GENERIC_HTTP_ROUTER_INVOKE_V1_SPAWNS.load(Ordering::Acquire);
         let listener = AsyncTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -896,7 +896,7 @@ mod tests {
         ));
         client
             .write_all(
-                b"POST /api/mcp/plugins/invoke-v1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+                b"POST /api/mcp/plugins/invoke-v2 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
             )
             .await
             .unwrap();
@@ -908,12 +908,12 @@ mod tests {
         server.await.unwrap();
         assert!(
             String::from_utf8_lossy(&response).contains("400 Bad Request"),
-            "invoke-v1 validation must run on the dedicated path"
+            "invoke-v2 validation must run on the dedicated path"
         );
         assert_eq!(
             GENERIC_HTTP_ROUTER_INVOKE_V1_SPAWNS.load(Ordering::Acquire),
             baseline,
-            "invoke-v1 must not enter the generic spawn_blocking router"
+            "invoke-v2 must not enter the generic spawn_blocking router"
         );
     }
     #[test]

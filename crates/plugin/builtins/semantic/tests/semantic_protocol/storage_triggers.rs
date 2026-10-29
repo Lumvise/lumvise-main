@@ -16,7 +16,7 @@ fn storage_trigger_lazily_indexes_changed_element_and_artifact() {
     }]);
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest"),
     );
 
@@ -133,7 +133,7 @@ fn storage_trigger_batches_duplicate_mixed_changes_with_bounded_calls() {
     }]);
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest"),
     );
     *broker.embed_available.lock().expect("embed switch") = true;
@@ -184,7 +184,11 @@ fn storage_trigger_batch_failure_is_not_acknowledged() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, index_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                broker.observe_fixture(index_batch()),
+            )
             .expect("ingest"),
     );
     *broker.embed_available.lock().expect("embed switch") = true;

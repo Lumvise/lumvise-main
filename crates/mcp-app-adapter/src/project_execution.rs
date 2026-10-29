@@ -10,12 +10,12 @@ use lumvise_mcp_core::app_bridge_transport::{AppBridgeHttpMethod, AppBridgeHttpT
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::watch;
+
+mod native_command;
 
 const CAPABILITY: &str = "semantic.generate_functional_artifacts.v1";
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -428,47 +428,19 @@ async fn run_native_llm(
     let prompt = request.prompt();
     let (command, args) = engine.command_and_args(project_root, &output_path, prompt);
     let mut native_llm = Command::new(&command);
-    native_llm
-        .args(args)
-        .current_dir(project_root)
-        .kill_on_drop(true)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    native_llm.args(args).current_dir(project_root);
     // CREATE_NO_WINDOW: no console window for the LLM CLI.
     #[cfg(windows)]
     native_llm.creation_flags(0x0800_0000);
-    let mut child = native_llm.spawn().map_err(|error| {
-        format!(
-            "failed to start native {} LLM `{command}`: {error}",
-            engine.name()
-        )
-    })?;
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let status = match tokio::time::timeout(EXECUTION_DEADLINE, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => {
-            return Err(format!(
-                "failed to wait for native {} LLM: {error}",
-                engine.name()
-            ));
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            return Err(format!(
-                "native {} LLM timed out after 60000ms",
-                engine.name()
-            ));
-        }
-    };
-    let stdout = read_output(&mut stdout).await;
-    let stderr = read_output(&mut stderr).await;
-    if !status.success() {
+    let output = native_command::capture_native_command(native_llm, EXECUTION_DEADLINE)
+        .await
+        .map_err(|error| format!("native {} LLM: {error}", engine.name()))?;
+    if !output.status.success() {
         return Err(format!(
             "native {} LLM exited with status {:?}: {}",
             engine.name(),
-            status.code(),
-            stderr.trim()
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
     let file_output = tokio::fs::read_to_string(&output_path)
@@ -476,21 +448,12 @@ async fn run_native_llm(
         .unwrap_or_default();
     let _ = tokio::fs::remove_file(output_path).await;
     let output = if file_output.trim().is_empty() {
-        stdout
+        String::from_utf8_lossy(&output.stdout).into_owned()
     } else {
         file_output
     };
     extract_response(&output)
         .ok_or_else(|| format!("native {} LLM returned no response", engine.name()))
-}
-
-async fn read_output(stream: &mut Option<impl tokio::io::AsyncRead + Unpin>) -> String {
-    let Some(stream) = stream.as_mut() else {
-        return String::new();
-    };
-    let mut output = String::new();
-    let _ = stream.read_to_string(&mut output).await;
-    output
 }
 
 #[derive(Clone, Copy)]

@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) const ROWS_PER_ROW_GROUP: usize = 1024;
-pub const PZ_FORMAT_VERSION: u32 = 1;
-pub const PZ_REQUIRED_ENTRIES: [&str; 10] = [
+pub const PZ_FORMAT_VERSION: u32 = 2;
+pub const PZ_REQUIRED_ENTRIES: [&str; 12] = [
     "manifest.json",
     "elements.parquet",
     "relationships.parquet",
@@ -13,12 +13,14 @@ pub const PZ_REQUIRED_ENTRIES: [&str; 10] = [
     "element_name_vectors.parquet",
     "path_index.parquet",
     "adjacency_index.parquet",
+    "artifact_index.parquet",
+    "revision_metadata.parquet",
 ];
 
-pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
+pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 11] = [
     (
         "elements.parquet",
-        "lumvise.pz.elements.v1",
+        "lumvise.pz.elements.v2",
         &[
             "semantic_element_id",
             "semantic_source_id",
@@ -31,12 +33,14 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
             "end_line",
             "lifecycle",
             "match_evidence_json",
+            "revision_dependencies_json",
             "metadata_json",
+            "selected",
         ],
     ),
     (
         "relationships.parquet",
-        "lumvise.pz.relationships.v1",
+        "lumvise.pz.relationships.v2",
         &[
             "source_element_id",
             "target_element_id",
@@ -47,7 +51,7 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
     ),
     (
         "external_references.parquet",
-        "lumvise.pz.external_references.v1",
+        "lumvise.pz.external_references.v2",
         &[
             "source_element_id",
             "foreign_project_id",
@@ -58,7 +62,7 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
     ),
     (
         "artifacts.parquet",
-        "lumvise.pz.artifacts.v1",
+        "lumvise.pz.artifacts.v2",
         &[
             "artifact_id",
             "semantic_element_id",
@@ -67,12 +71,15 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
             "content_ref",
             "searchable_text",
             "content_size_bytes",
+            "inline_content",
+            "dependencies_json",
             "metadata_json",
+            "selected",
         ],
     ),
     (
         "artifact_blobs.parquet",
-        "lumvise.pz.artifact_blobs.v1",
+        "lumvise.pz.artifact_blobs.v2",
         &[
             "content_ref",
             "artifact_id",
@@ -85,7 +92,7 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
     ),
     (
         "artifact_text_vectors.parquet",
-        "lumvise.pz.artifact_text_vectors.v1",
+        "lumvise.pz.artifact_text_vectors.v2",
         &[
             "artifact_id",
             "semantic_element_id",
@@ -100,7 +107,7 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
     ),
     (
         "element_name_vectors.parquet",
-        "lumvise.pz.element_name_vectors.v1",
+        "lumvise.pz.element_name_vectors.v2",
         &[
             "semantic_element_id",
             "source_text",
@@ -114,12 +121,12 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
     ),
     (
         "path_index.parquet",
-        "lumvise.pz.path_index.v1",
+        "lumvise.pz.path_index.v2",
         &["path", "semantic_element_id", "target_entry", "row_group"],
     ),
     (
         "adjacency_index.parquet",
-        "lumvise.pz.adjacency_index.v1",
+        "lumvise.pz.adjacency_index.v2",
         &[
             "endpoint_id",
             "direction",
@@ -129,11 +136,28 @@ pub(super) const TABLE_SCHEMAS: [(&str, &str, &[&str]); 9] = [
             "row_group",
         ],
     ),
+    (
+        "artifact_index.parquet",
+        "lumvise.pz.artifact_index.v2",
+        &[
+            "semantic_element_id",
+            "artifact_id",
+            "target_entry",
+            "row_group",
+        ],
+    ),
+    (
+        "revision_metadata.parquet",
+        "lumvise.pz.revision_metadata.v2",
+        &["kind", "identity", "record_json"],
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PzManifest {
+    #[serde(rename = "selectionId")]
+    pub selection_id: String,
     #[serde(rename = "formatVersion")]
     pub format_version: u32,
     #[serde(rename = "projectId")]
@@ -196,6 +220,7 @@ pub struct PzGraphLookup {
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PzElementRecord {
+    pub selected: bool,
     pub semantic_element_id: String,
     pub path: String,
     pub name: String,

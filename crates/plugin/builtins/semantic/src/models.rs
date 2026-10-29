@@ -40,6 +40,9 @@ pub struct SemanticElement {
     pub name: String,
     /// Optional denormalized parent identity.
     pub parent_element_id: Option<String>,
+    /// Exact payload/evidence revisions; normalization must preserve these references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revision_dependencies: Vec<lumvise_contracts::SemanticRecordRef>,
     /// Optional source fingerprint.
     pub content_fingerprint: Option<String>,
     /// Inclusive start line.
@@ -98,8 +101,17 @@ pub struct SemanticArtifact {
     pub searchable_text: Option<String>,
     /// Declared content size.
     pub content_size_bytes: Option<usize>,
+    /// Exact artifact or element evidence carried without interpreting provider metadata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<lumvise_contracts::ArtifactDependency>,
     /// Provider-owned metadata.
     pub metadata: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SemanticArtifactWrite {
+    pub artifact: SemanticArtifact,
+    pub media_type: String,
 }
 
 impl SemanticElement {
@@ -142,10 +154,11 @@ pub(crate) struct ElementAtLocationRequest {
 pub(crate) struct RebuildSearchIndexRequest {
     pub project_root: String,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct IndexBatchRequest {
     pub provider_instance_id: String,
     pub project_root: String,
+    pub revision_observation: Option<lumvise_contracts::SemanticIndexObservation>,
     #[serde(default)]
     pub ingestion_job_id: Option<String>,
     #[serde(default)]
@@ -165,7 +178,7 @@ pub(crate) struct IndexBatchRequest {
     pub semantic_artifacts: Vec<SemanticArtifactInput>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SemanticSourceInput {
     pub semantic_source_id: String,
     pub kind: String,
@@ -174,7 +187,7 @@ pub(crate) struct SemanticSourceInput {
     pub root_uri: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SemanticElementInput {
     pub semantic_source_id: String,
     pub semantic_element_id: String,
@@ -182,13 +195,15 @@ pub(crate) struct SemanticElementInput {
     pub semantic_element_type: String,
     pub semantic_element_name: String,
     pub parent_element_id: Option<String>,
+    #[serde(default)]
+    pub revision_dependencies: Vec<lumvise_contracts::SemanticRecordRef>,
     pub content_fingerprint: Option<String>,
     pub start_line: Option<i64>,
     pub end_line: Option<i64>,
     pub metadata: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SemanticRelationshipInput {
     pub source_element_id: String,
     pub target_element_id: Option<String>,
@@ -198,7 +213,7 @@ pub(crate) struct SemanticRelationshipInput {
     pub target_locator: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SemanticArtifactInput {
     pub artifact_id: String,
     pub semantic_element_id: String,
@@ -208,7 +223,15 @@ pub(crate) struct SemanticArtifactInput {
     pub content: Option<String>,
     pub searchable_text: Option<String>,
     pub content_size_bytes: Option<usize>,
+    #[serde(default)]
+    pub dependencies: Vec<lumvise_contracts::ArtifactDependency>,
+    #[serde(default = "default_artifact_media_type")]
+    pub media_type: String,
     pub metadata: Option<Value>,
+}
+
+fn default_artifact_media_type() -> String {
+    "text/plain".into()
 }
 
 #[derive(Debug, Deserialize)]

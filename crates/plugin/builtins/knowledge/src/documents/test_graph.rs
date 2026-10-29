@@ -1,21 +1,23 @@
 //! Named fake I/O for the real document owner used by Knowledge's close tests.
 //!
-//! Semantic operations apply atomically per call, like the real owner: a publication
-//! (`ingest_index_batch`) replaces its declared partitions and resolves citations, and an
-//! artifact upsert requires an active anchor. Writes are counted and ordered so tests can
-//! prove staging order, and `fail_after` interrupts exactly one write of a chosen kind.
+//! Writes use the real App Core, Semantic plugin and LocalPersistence. Cached read records
+//! permit explicit malformed-I/O fixtures; no conflict, revision or retention policy lives here.
 
 use crate::KnowledgePlugin;
 use lumvise_plugin_sdk::{HostCallTransport, PluginApplication, PluginContext, PluginError};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::test_persistence::DocumentTestPersistence;
+
 pub(crate) const INJECTED: &str = "injected_write_failure";
 
 #[derive(Default)]
 pub(crate) struct FakeDocumentGraph {
+    pub(crate) memory_scope: Option<lumvise_contracts::KnowledgeAccessContext>,
     pub(crate) elements: BTreeMap<String, Value>,
     pub(crate) artifacts: BTreeMap<String, Value>,
+    pub(crate) revision_artifact_overrides: BTreeMap<String, Option<Value>>,
     /// Stored relationships keyed by their canonical JSON identity.
     pub(crate) relationships: BTreeMap<String, Value>,
     /// Successful index publications (`ingest_index_batch`), each one atomic.
@@ -32,6 +34,9 @@ pub(crate) struct FakeDocumentGraph {
     pub(crate) targeted_reads: Vec<Value>,
     /// Kinds of every `scoped_read` request, in order (`Structure`, `Location`, `PathPrefix`).
     pub(crate) scoped_read_kinds: Vec<String>,
+    persistence: DocumentTestPersistence,
+    fixture_seeded: bool,
+    commit_version: i64,
     fault: Option<(&'static str, usize)>,
 }
 
@@ -64,7 +69,23 @@ impl FakeDocumentEmbeddings {
 
 impl HostCallTransport for FakeDocumentGraph {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
+        if matches!(
+            capability,
+            "storage.semantic" | "storage.plugin" | "runtime.project_execution"
+        ) {
+            self.seed_fixture()?;
+        }
         match (capability, input["operation"].as_str()) {
+            ("runtime.knowledge_scope", Some("current")) => self
+                .memory_scope
+                .as_ref()
+                .map(|scope| json!(scope))
+                .ok_or_else(|| {
+                    PluginError::new("knowledge_scope_denied", "no fixture memory scope", false)
+                }),
+            ("runtime.project_execution", Some("scope")) => {
+                Ok(json!({"client_instance_id":"document-close-test"}))
+            }
             ("neural.embed", _) => self.embeddings.embed(&input),
             ("storage.semantic", Some("element")) if self.reject_unscoped_reads => {
                 Err(PluginError::new(
@@ -80,7 +101,17 @@ impl HostCallTransport for FakeDocumentGraph {
                 self.artifact_reads += 1;
                 Ok(json!({"artifact": self.artifacts.get(input["artifact_id"].as_str().unwrap())}))
             }
-            // `artifacts_by_ids` is not offered: the host authorizes it for Semantic only.
+            ("storage.semantic", Some("artifacts_by_ids")) => {
+                self.artifact_reads += 1;
+                self.targeted_reads.push(input.clone());
+                let artifacts = input["artifact_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|id| self.artifacts.get(id.as_str().unwrap()).cloned())
+                    .collect::<Vec<_>>();
+                Ok(json!({"artifacts":artifacts}))
+            }
             ("storage.semantic", Some("upsert_artifact")) => {
                 self.upsert_artifact(&input["artifact"])
             }
@@ -115,15 +146,120 @@ impl HostCallTransport for FakeDocumentGraph {
                 self.targeted_reads.push(input.clone());
                 Ok(self.targeted(&input))
             }
+            ("storage.semantic", Some("resolve_revision")) => self.exact_revision(&input),
             ("plugin.invoke", _) if input["export_id"] == "ingest_index_batch" => {
                 self.ingest(&input["input"])
             }
-            _ => Err(PluginError::unknown_capability(capability)),
+            _ => {
+                let output =
+                    self.persistence
+                        .invoke("builtin.knowledge", capability, input.clone())?;
+                if input["operation"] == "publish_revisions" {
+                    self.reload_fixture()?;
+                }
+                Ok(output)
+            }
         }
     }
 }
 
 impl FakeDocumentGraph {
+    fn exact_revision(&mut self, input: &Value) -> Result<Value, PluginError> {
+        self.targeted_reads.push(input.clone());
+        let mut response =
+            self.persistence
+                .invoke("builtin.knowledge", "storage.semantic", input.clone())?;
+        if input["record"]["kind"] == "artifact" {
+            if let Some(body) = input["record"]["record_id"]
+                .as_str()
+                .and_then(|id| self.revision_artifact_overrides.get(id))
+            {
+                match body {
+                    Some(body) => {
+                        response["revision"]["body"] = json!({"state":"artifact", "record":body})
+                    }
+                    None => response["revision"] = Value::Null,
+                }
+            }
+        }
+        Ok(response)
+    }
+
+    pub(crate) fn targeted_documents(&mut self, input: Value) -> Result<Value, PluginError> {
+        let mut response = self.host_call("storage.semantic", input)?;
+        response["elements"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|element| super::record_format::is_owned(&element["metadata"]));
+        Ok(response)
+    }
+
+    pub(crate) fn seed_sources(
+        &mut self,
+        elements: &[crate::semantic_context::SemanticElement],
+    ) -> Result<(), PluginError> {
+        if self.fixture_seeded {
+            return Ok(());
+        }
+        for element in elements {
+            self.elements
+                .insert(element.semantic_element_id.clone(), json!(element));
+        }
+        self.seed_fixture()
+    }
+
+    fn seed_fixture(&mut self) -> Result<(), PluginError> {
+        if self.fixture_seeded {
+            return Ok(());
+        }
+        for root in self.roots() {
+            self.persistence.seed_project(
+                &root,
+                fixture_rows(&self.elements, &root),
+                fixture_rows(&self.relationships, &root),
+            );
+        }
+        for artifact in self.artifacts.values() {
+            self.persistence.seed_artifact(artifact);
+        }
+        self.fixture_seeded = true;
+        Ok(())
+    }
+
+    fn reload_fixture(&mut self) -> Result<(), PluginError> {
+        let roots = self.persistence.invoke(
+            "builtin.knowledge",
+            "storage.semantic",
+            json!({"operation":"project_roots"}),
+        )?;
+        self.elements.clear();
+        self.relationships.clear();
+        for root in roots["project_roots"].as_array().unwrap() {
+            let snapshot = self.persistence.invoke(
+                "builtin.knowledge",
+                "storage.semantic",
+                json!({"operation":"project_snapshot", "scope":{"project_root":root}}),
+            )?;
+            self.commit_version = snapshot["commit_version"].as_i64().unwrap();
+            for element in snapshot["elements"].as_array().unwrap() {
+                self.elements.insert(
+                    element["semantic_element_id"].as_str().unwrap().into(),
+                    element.clone(),
+                );
+            }
+            for artifact in snapshot["artifacts"].as_array().unwrap() {
+                self.artifacts.insert(
+                    artifact["artifact_id"].as_str().unwrap().into(),
+                    artifact.clone(),
+                );
+            }
+            for relationship in snapshot["relationships"].as_array().unwrap() {
+                self.relationships
+                    .insert(relationship.to_string(), relationship.clone());
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn targeted(&self, input: &Value) -> Value {
         let ids = input["semantic_element_ids"].as_array().unwrap();
         let elements: Vec<&Value> = self
@@ -145,6 +281,12 @@ impl FakeDocumentGraph {
     pub(crate) fn call(&mut self, export: &str, input: Value) -> Result<Value, PluginError> {
         let mut context = PluginContext::for_test(self);
         KnowledgePlugin::default().dispatch(export, input, &mut context)
+    }
+
+    /// Projection/document fixtures seed artifacts; write races use the real persistence tests.
+    pub(crate) fn seed_knowledge(&mut self, input: Value) -> Result<(), PluginError> {
+        self.call("create_knowledge", input)?;
+        Ok(())
     }
 
     pub(crate) fn roots(&self) -> Vec<String> {
@@ -241,30 +383,18 @@ impl FakeDocumentGraph {
 
     /// Stores one artifact after its active anchor check; body writes stage before pointers.
     fn upsert_artifact(&mut self, artifact: &Value) -> Result<Value, PluginError> {
+        self.seed_fixture()?;
         self.take_fault("artifact")?;
         let id = artifact["artifact_id"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let anchor = artifact["semantic_element_id"].as_str().unwrap_or_default();
-        if self.active_root(anchor).is_none() {
-            return Err(PluginError::new(
-                "missing_semantic_element",
-                format!("anchor `{anchor}` is not an active semantic element"),
-                false,
-            ));
-        }
+        let output = self.persistence.invoke("builtin.knowledge", "storage.semantic",
+            json!({"operation":"upsert_artifact", "artifact":artifact, "media_type":"text/markdown"}))?;
         self.artifacts.insert(id.clone(), artifact.clone());
         self.artifact_writes += 1;
         self.operations.push(format!("artifact:{id}"));
-        Ok(json!({"artifact_id": id}))
-    }
-
-    fn active_root(&self, element_id: &str) -> Option<String> {
-        self.elements
-            .get(element_id)
-            .filter(|element| element["lifecycle"] != "inactive")
-            .and_then(|element| element["project_root"].as_str().map(str::to_owned))
+        Ok(output)
     }
 
     /// The project owning an artifact: its own scope, its knowledge scope, or its anchor's root.
@@ -356,7 +486,7 @@ impl FakeDocumentGraph {
             .values()
             .filter(|relationship| relationship["project_root"] == root)
             .collect();
-        json!({"commit_version": self.writes, "published_at": "2026-10-20T00:00:00Z",
+        json!({"commit_version": self.commit_version, "published_at": "2026-10-20T00:00:00Z",
             "project_root": root, "elements": elements, "relationships": relationships,
             "artifacts": self.scoped_artifacts(root, input["artifact_namespace"].as_str())})
     }
@@ -435,7 +565,7 @@ impl FakeDocumentGraph {
             .into_iter()
             .filter(|artifact| inside(&artifact["semantic_element_id"]))
             .collect();
-        json!({"subgraph": {"commit_version": self.writes, "published_at": "2026-10-20T00:00:00Z",
+        json!({"subgraph": {"commit_version": self.commit_version, "published_at": "2026-10-20T00:00:00Z",
             "project_root": root, "root_element_id": anchor, "elements": elements,
             "relationships": relationships, "artifacts": artifacts,
             "external_elements": external_elements}})
@@ -460,129 +590,49 @@ impl FakeDocumentGraph {
         snapshot
     }
 
-    /// Applies one publication: the declared partitions are replaced, then citations resolve
-    /// only to active same-project elements, and artifacts only to active anchors.
+    /// Delegates one publication to the real Semantic plugin and captures its accepted view.
     pub(crate) fn ingest(&mut self, batch: &Value) -> Result<Value, PluginError> {
+        self.seed_fixture()?;
         self.take_fault("publication")?;
-        let root = batch["project_root"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        let partition: BTreeSet<String> = ["replace_paths", "removed_paths"]
-            .iter()
-            .flat_map(|key| batch[*key].as_array().into_iter().flatten())
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect();
-        let incoming: BTreeSet<String> = batch["semantic_elements"]
+        if batch["semantic_artifacts"]
             .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|element| element["semantic_element_id"].as_str().map(str::to_owned))
-            .collect();
-        let owned: BTreeSet<String> = self
-            .elements
-            .values()
-            .filter(|element| {
-                element["project_root"] == root.as_str()
-                    && partition.contains(element["path"].as_str().unwrap_or_default())
-            })
-            .filter_map(|element| element["semantic_element_id"].as_str().map(str::to_owned))
-            .collect();
-        for id in owned.difference(&incoming) {
-            if let Some(element) = self.elements.get_mut(id) {
-                element["lifecycle"] = json!("inactive");
-            }
-        }
-        let replaced: BTreeSet<String> = owned.union(&incoming).cloned().collect();
-        self.relationships.retain(|_, relationship| {
-            !(relationship["project_root"] == root.as_str()
-                && replaced.contains(
-                    relationship["source_element_id"]
-                        .as_str()
-                        .unwrap_or_default(),
-                ))
-        });
-        for element in batch["semantic_elements"].as_array().into_iter().flatten() {
-            if let Some(id) = element["metadata"]["knowledge_document"]["document_id"].as_str() {
-                self.published_document_ids.push(id.into());
-            }
-            let stored = self.stored_element(batch, element);
-            self.elements.insert(
-                element["semantic_element_id"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .into(),
-                stored,
-            );
-        }
-        let known: BTreeSet<String> = self
-            .elements
-            .values()
-            .filter(|element| {
-                element["project_root"] == root.as_str() && element["lifecycle"] != "inactive"
-            })
-            .filter_map(|element| element["semantic_element_id"].as_str().map(str::to_owned))
-            .collect();
-        for relationship in batch["semantic_relationships"]
-            .as_array()
-            .into_iter()
-            .flatten()
+            .is_some_and(|rows| !rows.is_empty())
         {
-            let (Some(source), Some(target)) = (
-                relationship["source_element_id"].as_str(),
-                relationship["target_element_id"].as_str(),
-            ) else {
-                continue;
-            };
-            if !known.contains(source) || !known.contains(target) {
-                continue;
-            }
-            let kind = relationship["relationship_kind"]
-                .as_str()
-                .unwrap_or_default();
-            let label = relationship["relationship_label"]
-                .as_str()
-                .unwrap_or_default();
-            let key = serde_json::to_string(&json!([root, source, target, kind, label])).unwrap();
-            self.relationships.insert(
-                key,
-                json!({"project_root": root, "source_element_id": source,
-                    "target_element_id": target, "relationship_kind": kind,
-                    "label": label, "lifecycle": "active", "metadata": {}}),
+            self.take_fault("artifact")?;
+        }
+        let output = self.persistence.ingest(batch.clone())?;
+        if output["accepted"] == true {
+            self.writes += 1;
+            self.artifact_writes += batch["semantic_artifacts"].as_array().map_or(0, Vec::len);
+            self.published_document_ids.extend(
+                batch["semantic_elements"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|element| {
+                        element["metadata"]["knowledge_document"]["document_id"].as_str()
+                    })
+                    .map(str::to_owned),
             );
+            self.operations.push(format!(
+                "publish:{}",
+                batch["replace_paths"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+            self.reload_fixture()?;
         }
-        for artifact in batch["semantic_artifacts"].as_array().into_iter().flatten() {
-            let anchor = artifact["semantic_element_id"].as_str().unwrap_or_default();
-            if !known.contains(anchor) {
-                continue;
-            }
-            let id = artifact["artifact_id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let mut stored = artifact.clone();
-            stored["project_root"] = json!(root);
-            self.artifacts.insert(id.clone(), stored);
-            self.artifact_writes += 1;
-            self.operations.push(format!("artifact:{id}"));
-        }
-        self.writes += 1;
-        self.operations.push(format!(
-            "publish:{}",
-            partition.iter().cloned().collect::<Vec<_>>().join(",")
-        ));
-        Ok(json!({"output": {"accepted": true}}))
+        Ok(json!({"output":output}))
     }
+}
 
-    pub(crate) fn stored_element(&self, batch: &Value, element: &Value) -> Value {
-        let mut stored = element.clone();
-        stored["project_root"] = batch["project_root"].clone();
-        stored["element_kind"] = element["semantic_element_type"].clone();
-        stored["name"] = element["semantic_element_name"].clone();
-        stored["lifecycle"] = json!("active");
-        stored["metadata"] = json!({"provider_instance_id": batch["provider_instance_id"],
-            "indexer_metadata": element["metadata"]});
-        stored
-    }
+fn fixture_rows(rows: &BTreeMap<String, Value>, root: &str) -> Vec<Value> {
+    rows.values()
+        .filter(|row| row["project_root"] == root)
+        .cloned()
+        .collect()
 }

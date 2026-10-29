@@ -255,6 +255,19 @@ fn activate_speech_to_text(
         WhisperRsVoice2TextConfig, whisper_rs_engine::WhisperRsDecodeSettings,
     };
 
+    // An API-served capability keeps its adapter and never loads the local model; the manager
+    // still records this selection for a later switch back to local.
+    // shortcut: the persisted cloud flag alone decides, so a host without the hosted account gets
+    // no local speech recognition while it is set; also check the account if headless hosts need it.
+    if app
+        .frontend()
+        .app_settings()
+        .map_err(|error| error.to_string())?
+        .speech_recognition_cloud
+    {
+        return Ok(());
+    }
+
     let model_path = published_path
         .join("model.asset")
         .to_string_lossy()
@@ -294,6 +307,19 @@ fn activate_text_to_speech(
 ) -> Result<(), String> {
     use lumvise_neural_core::Text2VoiceService;
     use lumvise_neural_core::text2voice::KokorosText2VoiceConfig;
+
+    // An API-served capability keeps its adapter and never loads the local model; the manager
+    // still records this selection for a later switch back to local.
+    // shortcut: the persisted cloud flag alone decides, so a host without the hosted account gets
+    // no local speech synthesis while it is set; also check the account if headless hosts need it.
+    if app
+        .frontend()
+        .app_settings()
+        .map_err(|error| error.to_string())?
+        .speech_synthesis_cloud
+    {
+        return Ok(());
+    }
 
     let model_path = published_path
         .join("kokoro-en-v0_19")

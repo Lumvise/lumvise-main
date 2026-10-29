@@ -216,6 +216,7 @@ fn media_file_with_fingerprint(id: &str, path: &str, fingerprint: &str) -> Seman
 
 fn folder_element(id: &str, path: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),
@@ -250,6 +251,7 @@ fn media_element_with_fingerprint(
     fingerprint: &str,
 ) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),
@@ -268,6 +270,7 @@ fn media_element_with_fingerprint(
 
 fn image_region(id: &str, parent_id: &str, algorithm: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

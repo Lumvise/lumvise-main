@@ -30,7 +30,9 @@ fn node_locator(captured: &SemanticProjectSnapshot, document_id: &str) -> Value 
     let element = captured
         .elements
         .iter()
-        .find(|element| element.semantic_element_id == format!("knowledge-document:{document_id}"))
+        .find(|element| {
+            element.metadata["indexer_metadata"]["knowledge_document"]["document_id"] == document_id
+        })
         .expect("document node");
     element.metadata["indexer_metadata"]["knowledge_document"].clone()
 }
@@ -91,25 +93,26 @@ fn a_body_survives_reopen_and_the_node_keeps_only_a_locator() {
 }
 
 #[test]
-fn the_body_is_staged_between_the_root_and_the_pointer_on_the_real_boundary() {
+fn the_body_and_pointer_are_published_together_after_the_root_on_the_real_boundary() {
     let mut host = DocumentBoundaryHost::new();
-    host.knowledge("create_document", request("report:architecture", BODY))
+    let created = host
+        .knowledge("create_document", request("report:architecture", BODY))
         .unwrap();
-    assert_eq!(host.writes, ["publish", "artifact", "publish"]);
+    assert_eq!(host.writes, ["publish", "publish"]);
     host.writes.clear();
     host.knowledge(
         "update_document",
         json!({"document_id": "report:architecture", "project_root": "/project",
-            "expected_revision": 1, "content": "# Revised"}),
+            "expected_revision": 1, "expected_semantic_element_id":created["document"]["semantic_element_id"], "content": "# Revised"}),
     )
     .unwrap();
-    assert_eq!(host.writes, ["artifact", "publish"]);
+    assert_eq!(host.writes, ["publish"]);
 }
 
 #[test]
 fn a_failed_body_stage_publishes_no_pointer_and_a_retry_succeeds() {
     let mut host = DocumentBoundaryHost::new();
-    host.fail_resource_write = Some(0);
+    host.fail_document_write = Some(1);
     let failure = host
         .knowledge("create_document", request("report:architecture", BODY))
         .unwrap_err();
@@ -118,7 +121,8 @@ fn a_failed_body_stage_publishes_no_pointer_and_a_retry_succeeds() {
         read(&mut host, "report:architecture").unwrap_err().code,
         "document_not_found"
     );
-    host.fail_resource_write = None;
+    assert!(snapshot(&host, "/project").artifacts.is_empty());
+    host.fail_document_write = None;
     let created = host
         .knowledge("create_document", request("report:architecture", BODY))
         .unwrap();
@@ -136,7 +140,7 @@ fn a_failed_pointer_publication_keeps_the_previous_body_and_a_retry_succeeds() {
         .knowledge(
             "update_document",
             json!({"document_id": "report:architecture", "project_root": "/project",
-                "expected_revision": 1, "content": "# Revised"}),
+                "expected_revision": 1, "expected_semantic_element_id":created["document"]["semantic_element_id"], "content": "# Revised"}),
         )
         .unwrap_err();
     assert_eq!(failure.code, "injected_write_failure");
@@ -146,7 +150,7 @@ fn a_failed_pointer_publication_keeps_the_previous_body_and_a_retry_succeeds() {
         .knowledge(
             "update_document",
             json!({"document_id": "report:architecture", "project_root": "/project",
-                "expected_revision": 1, "content": "# Revised"}),
+                "expected_revision": 1, "expected_semantic_element_id":created["document"]["semantic_element_id"], "content": "# Revised"}),
         )
         .unwrap();
     assert_eq!(retried["document"]["revision"], 2);
@@ -166,10 +170,11 @@ fn a_missing_stored_body_fails_the_read_on_the_real_boundary() {
         .as_str()
         .unwrap()
         .to_owned();
-    host.execute(SemanticOperation::RemoveArtifact {
-        artifact_id: body_id,
-    });
-    assert!(read(&mut host, "report:architecture").is_err());
+    host.missing_body = Some(body_id);
+    assert_eq!(
+        read(&mut host, "report:architecture").unwrap_err().code,
+        "document_revision_unavailable"
+    );
 }
 
 #[test]

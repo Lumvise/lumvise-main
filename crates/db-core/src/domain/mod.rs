@@ -2,14 +2,11 @@
 //! Public callers use methods on the exported portable records; engines and
 //! query/transport handles never enter this module.
 
-pub(crate) mod artifact_content;
 pub(crate) mod element_search;
 pub(crate) mod fingerprint;
 pub(crate) mod graph_views;
 pub(crate) mod matching;
-pub(crate) mod provider_partition;
 pub(crate) mod relationships;
-pub(crate) mod validation;
 pub(crate) mod vector_search;
 
 pub use fingerprint::ContentFingerprintParts;

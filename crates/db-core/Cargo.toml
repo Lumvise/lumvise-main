@@ -17,6 +17,7 @@ metrics.workspace = true
 lumvise-resource-routing.workspace = true
 rusqlite.workspace = true
 lumvise-contracts.workspace = true
+lumvise-semantic-revisions.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -47,6 +47,10 @@ pub enum DbError {
     },
     #[error("unresolved semantic commit {commit_version} with state {state}")]
     UnresolvedCommit { commit_version: i64, state: String },
+    #[error(
+        "database format release {stored}; expected {required}. Use a compatible build, or back up and explicitly rebuild the database; automatic conversion is unavailable"
+    )]
+    UnsupportedDatabaseRelease { stored: i64, required: i64 },
 }
 
 impl DbError {
@@ -98,6 +102,17 @@ impl DbError {
         Self::UnresolvedCommit {
             commit_version,
             state: state.into(),
+        }
+    }
+}
+
+impl From<lumvise_semantic_revisions::SemanticRevisionError> for DbError {
+    fn from(error: lumvise_semantic_revisions::SemanticRevisionError) -> Self {
+        match error {
+            lumvise_semantic_revisions::SemanticRevisionError::InvalidValue { value, expected } => {
+                Self::InvalidValue { value, expected }
+            }
+            lumvise_semantic_revisions::SemanticRevisionError::Encoding(error) => Self::Json(error),
         }
     }
 }

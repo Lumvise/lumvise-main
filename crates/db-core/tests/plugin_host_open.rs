@@ -66,6 +66,7 @@ fn plugin_host_open_persists_sql_and_semantic_graph() {
 
 fn element() -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: "element-1".into(),
         semantic_source_id: "source-1".into(),

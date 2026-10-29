@@ -40,6 +40,7 @@ fn publication() -> (LocalPersistence, SemanticProjectSnapshot) {
 }
 fn element(id: &str, kind: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/project".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "test".into(),

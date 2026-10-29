@@ -50,6 +50,33 @@ impl<'db> ProjectLineageRepository<'db> {
     }
 }
 
+pub(crate) fn restore_project_identity(
+    conn: &rusqlite::Connection,
+    root: &str,
+    project_id: &str,
+    empty_project: bool,
+) -> Result<()> {
+    let existing = conn
+        .query_row(
+            "SELECT project_id FROM semantic_project_lineages WHERE project_root = ?1",
+            [root],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if existing.as_deref().is_some_and(|id| id != project_id) && !empty_project {
+        return Err(DbError::invalid_value(
+            project_id,
+            format!(
+                "the existing project lineage {} for {root}",
+                existing.as_deref().unwrap_or_default()
+            ),
+        ));
+    }
+    let now = Utc::now().to_rfc3339();
+    conn.execute("INSERT INTO semantic_project_lineages(project_root, project_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?3) ON CONFLICT(project_root) DO UPDATE SET project_id = excluded.project_id, updated_at = excluded.updated_at", params![root, project_id, now])?;
+    Ok(())
+}
+
 fn normalized_project_root(project_root: &str) -> Result<String> {
     let normalized = project_root.trim().replace('\\', "/");
     require_non_empty(&normalized, "non-empty project root")?;

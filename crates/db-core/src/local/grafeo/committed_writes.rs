@@ -31,51 +31,73 @@ fn graph_publication_sql_commits() -> usize {
     GRAPH_PUBLICATION_SQL_COMMITS.with(Cell::get)
 }
 
+type PublishedGraphValue<R> = (R, i64, Vec<DirtyElement>);
+
+#[derive(Default)]
+struct SemanticSqlPublication<'sql> {
+    pending: RefCell<Option<(Transaction<'sql>, i64)>>,
+}
+
+impl<'sql> SemanticSqlPublication<'sql> {
+    fn begin<P>(
+        &self,
+        transaction: Transaction<'sql>,
+        plan: &P,
+        sql_start: impl FnOnce(&Transaction<'_>, &P) -> Result<i64>,
+    ) -> Result<i64> {
+        let commit_version = sql_start(&transaction, plan)?;
+        self.pending.replace(Some((transaction, commit_version)));
+        Ok(commit_version)
+    }
+
+    fn finish<R>(
+        &self,
+        value: &R,
+        sql_finish: impl FnOnce(&Transaction<'_>, &R) -> Result<()>,
+    ) -> Result<()> {
+        let (transaction, commit_version) = self
+            .pending
+            .borrow_mut()
+            .take()
+            .expect("publication transaction remains open until Grafeo commits");
+        sql_finish(&transaction, value)?;
+        publish_graph_commit_sql(transaction, commit_version)
+    }
+
+    fn complete<R>(self, outcome: Result<R>) -> Result<R> {
+        let Err(error) = outcome else {
+            return outcome;
+        };
+        if let Some((transaction, commit_version)) = self.pending.into_inner() {
+            fail_semantic_commit(&transaction, commit_version, &error.to_string())?;
+            transaction.commit()?;
+        }
+        Err(error)
+    }
+}
+
 impl<'db> SemanticStorage<'db> {
     #[cfg(test)]
     pub(crate) fn commit_graph_write<R>(
         &self,
         write: impl FnOnce(&GraphTransaction<'_>, i64, &mut ChangeCollector) -> Result<R>,
     ) -> Result<R> {
-        let mut conn = self.conn.write_conn();
-        let transaction = conn.transaction()?;
-        let commit_version = begin_semantic_commit(&transaction)?;
-        let mut transaction = Some(transaction);
-        let mut collector = ChangeCollector::new(commit_version);
-        let result = self.graph.write_semantic_through_post_commit(
-            |graph| {
-                let value = write(graph, commit_version, &mut collector)?;
-                let dirty_elements = collector.into_parts();
-                Ok((value, dirty_elements))
-            },
-            |(value, dirty_elements)| {
-                let transaction = transaction
+        let write = RefCell::new(Some(write));
+        self.commit_preplanned_graph_write(
+            |_| Ok(()),
+            |graph, version, collector, ()| {
+                let write = write
+                    .borrow_mut()
                     .take()
-                    .expect("publication transaction remains open until Grafeo commits");
-                publish_graph_commit_sql(transaction, commit_version)?;
-                Ok((value, dirty_elements))
+                    .expect("a current publication applies its write once");
+                write(graph, version, collector)
             },
-            |(_, dirty_elements)| dirty_elements.len(),
-        );
-        match result {
-            Ok(GraphPostCommit::Completed((value, dirty_elements))) => {
-                self.notify_graph_commit(commit_version, dirty_elements);
-                Ok(value)
-            }
-            Ok(GraphPostCommit::Failed(error)) => Err(error),
-            Err(error) => {
-                if let Some(transaction) = transaction {
-                    fail_semantic_commit(&transaction, commit_version, &error.to_string())?;
-                    transaction.commit()?;
-                }
-                Err(error)
-            }
-        }
+        )
     }
 
     /// Runs graph-dependent preparation outside the Grafeo writer gate, then
     /// applies only the prepared IDs while holding it. A conflicting graph
-    /// write rolls back its uncommitted SQLite begin row.
+    /// write retries preparation before opening SQL.
     pub(crate) fn commit_preplanned_graph_write<P, R>(
         &self,
         prepare: impl Fn(&GrafeoDB) -> Result<P>,
@@ -94,68 +116,114 @@ impl<'db> SemanticStorage<'db> {
         prepare: impl Fn(&GrafeoDB) -> Result<P>,
         apply: impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
     ) -> Result<R> {
-        const MAX_STALE_PLAN_RETRIES: usize = 8;
-        let mut initial = Some(initial);
+        self.commit_prepared_graph_write_with_sql(initial, prepare, apply, |_, _| Ok(()))
+    }
 
+    /// Includes blob cleanup in the same publication fence; readers cannot race a new reference.
+    pub(crate) fn commit_prepared_graph_write_with_sql<P, R>(
+        &self,
+        initial: VersionedGraphPlan<P>,
+        prepare: impl Fn(&GrafeoDB) -> Result<P>,
+        apply: impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
+        sql_finish: impl Fn(&Transaction<'_>, &R) -> Result<()>,
+    ) -> Result<R> {
+        self.commit_prepared_graph_write_with_sql_start(
+            initial,
+            prepare,
+            |transaction, _| begin_semantic_commit(transaction),
+            apply,
+            sql_finish,
+        )
+    }
+
+    /// Validates and stages SQL records before the graph mutates, inside the same publication fence.
+    pub(crate) fn commit_prepared_graph_write_with_sql_start<P, R>(
+        &self,
+        initial: VersionedGraphPlan<P>,
+        prepare: impl Fn(&GrafeoDB) -> Result<P>,
+        sql_start: impl Fn(&Transaction<'_>, &P) -> Result<i64>,
+        apply: impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
+        sql_finish: impl Fn(&Transaction<'_>, &R) -> Result<()>,
+    ) -> Result<R> {
+        const MAX_STALE_PLAN_RETRIES: usize = 8;
+        let mut pending_plan = Some(initial);
         for _ in 0..MAX_STALE_PLAN_RETRIES {
             self.check_active()?;
-            let plan = match initial.take() {
-                Some(plan) => plan,
-                None => self.graph.plan(&prepare)?,
-            };
-            self.check_active()?;
-            let (revision, plan) = plan.into_parts();
-            let mut conn = self.conn.write_conn();
-            let publication = RefCell::new(None);
-            let outcome = self.graph.write_if_revision_semantic_through_post_commit(
-                revision,
-                |graph| {
-                    self.check_active()?;
-                    let transaction = conn.transaction()?;
-                    let commit_version = begin_semantic_commit(&transaction)?;
-                    publication.replace(Some((transaction, commit_version)));
-                    let mut collector = ChangeCollector::new(commit_version);
-                    let value = apply(graph, commit_version, &mut collector, plan)?;
-                    self.check_active()?;
-                    let dirty_elements = collector.into_parts();
-                    Ok((value, commit_version, dirty_elements))
-                },
-                |(value, commit_version, dirty_elements)| {
-                    let (transaction, _) = publication
-                        .borrow_mut()
-                        .take()
-                        .expect("publication transaction remains open until Grafeo commits");
-                    publish_graph_commit_sql(transaction, commit_version)?;
-                    Ok((value, commit_version, dirty_elements))
-                },
-                |(_, _, dirty_elements)| dirty_elements.len(),
-            );
-
-            match outcome {
-                Ok(ConditionalGraphWrite::Stale) => continue,
-                Ok(ConditionalGraphWrite::Applied(GraphPostCommit::Completed((
-                    value,
-                    commit_version,
-                    dirty_elements,
-                )))) => {
-                    self.notify_graph_commit(commit_version, dirty_elements);
-                    return Ok(value);
-                }
-                Ok(ConditionalGraphWrite::Applied(GraphPostCommit::Failed(error))) => {
-                    return Err(error);
-                }
-                Err(error) => {
-                    if let Some((transaction, commit_version)) = publication.into_inner() {
-                        fail_semantic_commit(&transaction, commit_version, &error.to_string())?;
-                        transaction.commit()?;
-                    }
-                    return Err(error);
-                }
+            let plan = pending_plan
+                .take()
+                .map_or_else(|| self.graph.plan(&prepare), Ok)?;
+            let outcome =
+                self.commit_prepared_graph_attempt(plan, &sql_start, &apply, &sql_finish)?;
+            if let ConditionalGraphWrite::Applied(publication) = outcome {
+                return self.complete_graph_publication(publication);
             }
         }
         Err(DbError::Grafeo(
             "semantic graph write remained stale after bounded retries".to_string(),
         ))
+    }
+
+    fn commit_prepared_graph_attempt<P, R>(
+        &self,
+        plan: VersionedGraphPlan<P>,
+        sql_start: &impl Fn(&Transaction<'_>, &P) -> Result<i64>,
+        apply: &impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
+        sql_finish: &impl Fn(&Transaction<'_>, &R) -> Result<()>,
+    ) -> Result<ConditionalGraphWrite<GraphPostCommit<PublishedGraphValue<R>>>> {
+        let (revision, plan) = plan.into_parts();
+        self.graph.publish_exclusively(|lease| {
+            let mut conn = self.conn.write_conn();
+            let publication = SemanticSqlPublication::default();
+            let outcome = lease.commit(
+                Some(revision),
+                |graph| {
+                    self.apply_prepared_publication(
+                        graph,
+                        conn.transaction()?,
+                        &publication,
+                        plan,
+                        sql_start,
+                        apply,
+                    )
+                },
+                |value| {
+                    publication.finish(&value.0, sql_finish)?;
+                    Ok(value)
+                },
+                |(_, _, dirty_elements)| dirty_elements.len(),
+            );
+            publication.complete(outcome)
+        })
+    }
+
+    fn apply_prepared_publication<'sql, P, R>(
+        &self,
+        graph: &GraphTransaction<'_>,
+        transaction: Transaction<'sql>,
+        publication: &SemanticSqlPublication<'sql>,
+        plan: P,
+        sql_start: &impl Fn(&Transaction<'_>, &P) -> Result<i64>,
+        apply: &impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
+    ) -> Result<PublishedGraphValue<R>> {
+        self.check_active()?;
+        let commit_version = publication.begin(transaction, &plan, sql_start)?;
+        let mut collector = ChangeCollector::new(commit_version);
+        let value = apply(graph, commit_version, &mut collector, plan)?;
+        self.check_active()?;
+        Ok((value, commit_version, collector.into_parts()))
+    }
+
+    fn complete_graph_publication<R>(
+        &self,
+        publication: GraphPostCommit<PublishedGraphValue<R>>,
+    ) -> Result<R> {
+        match publication {
+            GraphPostCommit::Completed((value, commit_version, dirty_elements)) => {
+                self.notify_graph_commit(commit_version, dirty_elements);
+                Ok(value)
+            }
+            GraphPostCommit::Failed(error) => Err(error),
+        }
     }
 
     fn notify_graph_commit(&self, commit_version: i64, dirty_elements: Vec<DirtyElement>) {
@@ -189,6 +257,62 @@ mod tests {
     use crate::{SemanticElement, SemanticRelationship};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn stable_reader_and_semantic_writer_finish_without_lock_inversion() {
+        use std::sync::{Arc, mpsc};
+        use std::time::{Duration, Instant};
+        let db = Arc::new(DbCore::in_memory().unwrap());
+        let (ready, reader_ready) = mpsc::channel();
+        let (reader_done, read_result) = mpsc::channel();
+        let (writer_done, write_result) = mpsc::channel();
+        let reader_db = db.clone();
+        let attempts = db.graph.publication_attempts();
+        let reader = std::thread::Builder::new()
+            .name("revision-reader".into())
+            .spawn(move || {
+                let result = reader_db.graph.stable_read(|_| {
+                    ready.send(()).unwrap();
+                    let started = Instant::now();
+                    while reader_db.graph.publication_attempts() == attempts {
+                        assert!(
+                            started.elapsed() < Duration::from_secs(2),
+                            "expected a competing semantic publication attempt"
+                        );
+                        std::thread::yield_now();
+                    }
+                    let conn = reader_db.conn.read_conn();
+                    crate::local::sql::commits::latest_published_commit_version(&conn)
+                });
+                reader_done.send(result).unwrap();
+            })
+            .unwrap();
+        reader_ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let writer_db = db.clone();
+        let writer = std::thread::Builder::new()
+            .name("revision-writer".into())
+            .spawn(move || {
+                let result = writer_db
+                    .storage_manager()
+                    .semantic_storage()
+                    .commit_preplanned_graph_write(|_| Ok(()), |_, _, _, ()| Ok(()));
+                writer_done.send(result).unwrap();
+            })
+            .unwrap();
+        assert_eq!(
+            read_result
+                .recv_timeout(Duration::from_secs(2))
+                .expect("stable reader must finish while the writer waits for its graph lease")
+                .unwrap(),
+            0
+        );
+        write_result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("semantic writer must finish after its reader releases the graph lease")
+            .unwrap();
+        reader.join().unwrap();
+        writer.join().unwrap();
+    }
 
     #[test]
     fn migrated_element_upsert_has_constant_gate_scan_work() {
@@ -474,12 +598,70 @@ mod tests {
         }));
     }
 
+    fn insert_cancelled_projection(
+        graph: &super::GraphTransaction<'_>,
+        revision: i64,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> crate::Result<()> {
+        super::super::graph_rows::insert_element_node(
+            graph,
+            &element("cancelled", "cancelled"),
+            revision,
+        )?;
+        control.cancel();
+        Ok(())
+    }
+
+    fn assert_cancelled_projection_absent(db: &DbCore) {
+        let reader = db.storage_manager().semantic_storage();
+        reader.graph.read(|graph| {
+            let rows = super::super::graph_rows::complete_project_rows(graph, "/repo");
+            assert!(rows.elements.is_empty());
+            assert!(
+                reader
+                    .load_revisions(graph, "/repo")
+                    .unwrap()
+                    .state
+                    .records
+                    .is_empty()
+            );
+        });
+        assert!(reader.semantic_project_roots().unwrap().is_empty());
+        let counts = reader.project_element_counts("/repo").unwrap();
+        assert!(matches!(
+            counts,
+            crate::SemanticResult::ProjectElementCounts {
+                total_elements: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cancelled_element_write_is_absent_from_selective_project_reads() {
+        let db = DbCore::in_memory().unwrap();
+        let control = lumvise_resource_routing::InvocationControl::sixty_seconds();
+        let storage = db.storage_manager().semantic_storage();
+        let controlled = storage.with_control(control.clone());
+        let failure = controlled
+            .commit_preplanned_graph_write(
+                |_| Ok(()),
+                |graph, revision, _changes, ()| {
+                    insert_cancelled_projection(graph, revision, &control)
+                },
+            )
+            .unwrap_err();
+        assert!(failure.to_string().contains("cancelled invocation"));
+        assert_cancelled_projection_absent(&db);
+    }
+
     fn element(id: &str, name: &str) -> SemanticElement {
         element_in("/repo", id, name)
     }
 
     fn element_in(project_root: &str, id: &str, name: &str) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: project_root.to_string(),
             semantic_element_id: id.to_string(),
             semantic_source_id: "source".to_string(),

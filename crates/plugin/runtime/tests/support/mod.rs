@@ -135,23 +135,26 @@ fn fixture_manifest(plugin_id: &str, executable: &[u8]) -> PluginManifest {
             hex::encode(Sha256::digest(executable)),
         )]),
         exports: fixture_exports(plugin_id),
-        host_capabilities: if plugin_id.starts_with("host-call-")
-            || plugin_id.starts_with("mux-host")
-        {
-            vec![HostCapabilityRequirement {
-                id: "clock.read".to_owned(),
-                version: "^1.0".to_owned(),
-            }]
-        } else if plugin_id.starts_with("plugin-invoke-") && plugin_id != "plugin-invoke-undeclared"
-        {
-            vec![HostCapabilityRequirement {
-                id: "plugin.invoke".to_owned(),
-                version: "^1.0".to_owned(),
-            }]
-        } else {
-            Vec::new()
-        },
+        host_capabilities: fixture_host_requirements(plugin_id),
     }
+}
+
+fn fixture_host_requirements(plugin_id: &str) -> Vec<HostCapabilityRequirement> {
+    let mut ids = Vec::new();
+    if plugin_id.starts_with("host-call-") || plugin_id.starts_with("mux-host") {
+        ids.push("clock.read");
+    }
+    if (plugin_id.starts_with("plugin-invoke-") || plugin_id.starts_with("host-call-delegating"))
+        && !plugin_id.ends_with("undeclared")
+    {
+        ids.push("plugin.invoke");
+    }
+    ids.into_iter()
+        .map(|id| HostCapabilityRequirement {
+            id: id.into(),
+            version: "^1.0".into(),
+        })
+        .collect()
 }
 
 fn fixture_exports(plugin_id: &str) -> Vec<ExportDescriptor> {

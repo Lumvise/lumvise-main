@@ -139,6 +139,24 @@ fn create_rejects_a_blank_explicit_root_without_creating_a_snapshot() {
 }
 
 #[test]
+fn create_rejects_private_memory_without_creating_a_snapshot() {
+    for scheme in lumvise_contracts::KNOWLEDGE_SPACE_SCHEMES {
+        let (broker, created) = broker_and_created_snapshots();
+        let error = invoke_create(
+            &broker,
+            json!({"operation":"create", "project_root":format!("{scheme}private")}),
+        )
+        .expect_err("private memory cannot be exported as a source project");
+        assert!(
+            error
+                .to_string()
+                .contains("private memory is not exportable")
+        );
+        assert_no_snapshot_was_created(broker, &created);
+    }
+}
+
+#[test]
 fn create_rejects_a_non_string_explicit_root_without_creating_a_snapshot() {
     let (broker, created) = broker_and_created_snapshots();
     let error = invoke_create(&broker, json!({"operation":"create","project_root":42}))

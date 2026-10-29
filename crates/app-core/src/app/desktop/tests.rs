@@ -441,6 +441,18 @@ fn semantic_graph_bridge_lists_only_indexed_roots() {
     );
 }
 
+#[test]
+fn semantic_graph_bridge_rejects_private_document_roots() {
+    let bridge = AppCoreDesktopBridge::without_runtime(Arc::new(AppCore::in_memory().unwrap()));
+    for scheme in lumvise_contracts::KNOWLEDGE_SPACE_SCHEMES {
+        let root = format!("{scheme}owner");
+        let error = bridge
+            .project_indexed_semantic_graph(graph_request(Some(&root), None))
+            .unwrap_err();
+        assert!(error.contains("requires its Knowledge owner"));
+    }
+}
+
 #[derive(Debug)]
 struct FakeHostedAccount;
 

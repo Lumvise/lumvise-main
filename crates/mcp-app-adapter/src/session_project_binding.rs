@@ -151,6 +151,10 @@ pub(crate) struct SessionProjectBinding {
 }
 
 impl SessionProjectBinding {
+    pub(crate) fn connection_id(&self) -> &str {
+        &self.owner.connection_id
+    }
+
     pub(crate) fn new(
         config: AppBridgeConfig,
         initial_root: Option<String>,

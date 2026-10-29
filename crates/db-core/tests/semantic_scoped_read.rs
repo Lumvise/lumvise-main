@@ -13,6 +13,7 @@ fn execute(persistence: &LocalPersistence, operation: SemanticOperation) -> Sema
 
 fn tree_element(id: &str, parent: Option<&str>) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/scoped".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "scoped-test".into(),

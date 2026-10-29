@@ -1,3 +1,6 @@
+mod observations;
+mod source_projection;
+use source_projection::SourceDescriptorCommitGate;
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
@@ -63,10 +66,8 @@ pub struct TestSubprocessSandbox;
 pub struct MemoryCapabilityBroker {
     persistence: Arc<LocalPersistence>,
     semantic: AppCoreHostCapabilityBroker,
-    rows: Mutex<HashMap<(String, String), BTreeMap<String, serde_json::Value>>>,
-    transactions: Mutex<HashMap<(String, String), Vec<serde_json::Value>>>,
-    next_transaction: AtomicUsize,
     fail_next_commit: Mutex<bool>,
+    source_commit_gate: Mutex<Option<SourceDescriptorCommitGate>>,
     pub embed_available: Mutex<bool>,
     embed_batch_sizes: Mutex<Vec<usize>>,
     stored_element_name_vectors:
@@ -84,15 +85,19 @@ impl Default for MemoryCapabilityBroker {
     fn default() -> Self {
         let persistence =
             Arc::new(LocalPersistence::in_memory().expect("in-memory local persistence"));
+        Self::sharing(persistence)
+    }
+}
+
+impl MemoryCapabilityBroker {
+    fn sharing(persistence: Arc<LocalPersistence>) -> Self {
         let semantic: Arc<dyn SemanticPersistence> = persistence.clone();
         let relational: Arc<dyn RelationalPersistence> = persistence.clone();
         Self {
             persistence,
             semantic: AppCoreHostCapabilityBroker::new(semantic, relational),
-            rows: Mutex::default(),
-            transactions: Mutex::default(),
-            next_transaction: AtomicUsize::default(),
             fail_next_commit: Mutex::default(),
+            source_commit_gate: Mutex::default(),
             embed_available: Mutex::default(),
             embed_batch_sizes: Mutex::default(),
             stored_element_name_vectors: Mutex::default(),
@@ -112,11 +117,43 @@ impl MemoryCapabilityBroker {
         *self.fail_next_commit.lock().expect("commit failure switch") = true;
     }
     pub fn row_count(&self, plugin_id: &str, table: &str) -> usize {
-        self.rows
-            .lock()
-            .expect("memory broker rows")
-            .get(&(plugin_id.into(), table.into()))
-            .map_or(0, BTreeMap::len)
+        self.plugin_rows(plugin_id, table).len()
+    }
+
+    fn plugin_rows(&self, plugin: &str, table: &str) -> Vec<serde_json::Value> {
+        self.read_plugin_page(plugin, serde_json::json!({"operation":"ensure_table", "table_name":table, "schema":{"type":"object"}}));
+        let (mut records, mut after) = (Vec::new(), serde_json::Value::Null);
+        loop {
+            let page = self.read_plugin_page(
+                plugin,
+                serde_json::json!({"operation":"list_rows",
+                "table_name":table, "key_prefix":null, "limit":500, "after_key":after}),
+            );
+            records.extend(
+                page["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| row["value"].clone()),
+            );
+            after = page["next_after_key"].clone();
+            if after.is_null() {
+                return records;
+            }
+        }
+    }
+
+    fn read_plugin_page(&self, plugin: &str, input: serde_json::Value) -> serde_json::Value {
+        self.semantic
+            .invoke(HostCapabilityRequest {
+                plugin_id: plugin.into(),
+                invocation_id: "fixture-storage-read".into(),
+                call_id: "fixture-storage-read".into(),
+                capability_id: "storage.plugin".into(),
+                required_version: "^1.0".into(),
+                input,
+            })
+            .expect("portable relational fixture read")
     }
 
     pub fn reset_unprefixed_element_lists(&self) {
@@ -363,147 +400,35 @@ impl HostCapabilityBroker for MemoryCapabilityBroker {
 impl MemoryCapabilityBroker {
     fn invoke_storage(
         &self,
-        request: HostCapabilityRequest,
+        mut request: HostCapabilityRequest,
     ) -> Result<serde_json::Value, HostCapabilityError> {
-        let operation = request.input["operation"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        if operation == "begin_mutations" {
-            let id = self.next_transaction.fetch_add(1, Ordering::Relaxed);
-            let transaction_id = format!("test-transaction-{id}");
-            self.transactions
-                .lock()
-                .expect("transactions")
-                .insert((request.plugin_id, transaction_id.clone()), Vec::new());
-            return Ok(serde_json::json!({"transaction_id": transaction_id}));
-        }
-        if matches!(
-            operation.as_str(),
-            "stage_mutations" | "commit_mutations" | "abort_mutations"
-        ) {
-            return self.invoke_transaction(request, &operation);
-        }
-        let table = request.input["table_name"].as_str().unwrap_or_default();
-        let key = (request.plugin_id, table.to_owned());
-        let mut tables = self.rows.lock().expect("memory broker rows");
-        let rows = tables.entry(key).or_default();
-        match operation.as_str() {
-            "ensure_table" => Ok(serde_json::json!({"table_name": table})),
-            "put_row" => {
-                let row_key = request.input["row_key"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
-                let value = request.input["value"].clone();
-                rows.insert(row_key.clone(), value.clone());
-                Ok(serde_json::json!({"row_key": row_key, "value": value}))
+        if request.input["operation"] == "commit_mutations" {
+            let gate = self.source_commit_gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.pause()?;
             }
-            "get_row" => {
-                let row_key = request.input["row_key"].as_str().unwrap_or_default();
-                let row = rows
-                    .get(row_key)
-                    .map(|value| serde_json::json!({"row_key": row_key, "value": value}));
-                Ok(serde_json::json!({"row": row}))
-            }
-            "list_rows" => {
-                let prefix = request.input["key_prefix"].as_str().unwrap_or_default();
-                if table == "semantic_elements" && prefix.is_empty() {
-                    *self
-                        .unprefixed_element_lists
-                        .lock()
-                        .expect("element list counter") += 1;
-                }
-                if matches!(table, "semantic_relationships" | "semantic_artifacts")
-                    && prefix.ends_with(':')
-                {
-                    *self
-                        .full_relationship_or_artifact_scans
-                        .lock()
-                        .expect("context scan counter") += 1;
-                }
-                let after = request.input["after_key"].as_str();
-                if after.is_some() {
-                    *self.continuation_calls.lock().expect("continuation calls") += 1;
-                }
-                let requested = request.input["limit"].as_u64().unwrap_or(500) as usize;
-                let limit = requested.min(2);
-                let mut matched = rows
-                    .iter()
-                    .filter(|(row_key, _)| row_key.starts_with(prefix))
-                    .filter(|(row_key, _)| after.is_none_or(|cursor| row_key.as_str() > cursor))
-                    .take(limit + 1)
-                    .collect::<Vec<_>>();
-                let has_more = matched.len() > limit;
-                matched.truncate(limit);
-                let next = has_more.then(|| matched.last().expect("nonempty page").0.clone());
-                Ok(serde_json::json!({
-                    "rows": matched.into_iter().map(|(row_key, value)|
-                        serde_json::json!({"row_key": row_key, "value": value})).collect::<Vec<_>>(),
-                    "next_after_key": next
-                }))
-            }
-            _ => Err(host_error("storage.plugin", "invalid_operation")),
         }
+        if request.input["operation"] == "list_rows" {
+            self.observe_row_page(&request.input);
+            request.input["limit"] =
+                serde_json::json!(request.input["limit"].as_u64().unwrap_or(500).min(2));
+        }
+        self.semantic.invoke(request)
     }
 
-    fn invoke_transaction(
-        &self,
-        request: HostCapabilityRequest,
-        operation: &str,
-    ) -> Result<serde_json::Value, HostCapabilityError> {
-        let transaction_id = request.input["transaction_id"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        let key = (request.plugin_id.clone(), transaction_id);
-        if operation == "stage_mutations" {
-            let staged = request.input["mutations"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            self.transactions
-                .lock()
-                .expect("transactions")
-                .get_mut(&key)
-                .ok_or_else(|| host_error("storage.plugin", "unknown_transaction"))?
-                .extend(staged);
-            return Ok(serde_json::json!({"staged": true}));
+    fn observe_row_page(&self, input: &serde_json::Value) {
+        let table = input["table_name"].as_str().unwrap_or_default();
+        let prefix = input["key_prefix"].as_str().unwrap_or_default();
+        if table == "semantic_elements" && prefix.is_empty() {
+            *self.unprefixed_element_lists.lock().unwrap() += 1;
         }
-        let mutations = self
-            .transactions
-            .lock()
-            .expect("transactions")
-            .remove(&key)
-            .ok_or_else(|| host_error("storage.plugin", "unknown_transaction"))?;
-        if operation == "abort_mutations" {
-            return Ok(serde_json::json!({"aborted": true}));
+        if matches!(table, "semantic_relationships" | "semantic_artifacts") && prefix.ends_with(':')
+        {
+            *self.full_relationship_or_artifact_scans.lock().unwrap() += 1;
         }
-        let mut fail = self.fail_next_commit.lock().expect("commit failure switch");
-        if std::mem::take(&mut *fail) {
-            return Err(host_error("storage.plugin", "injected_commit_failure"));
+        if input["after_key"].is_string() {
+            *self.continuation_calls.lock().unwrap() += 1;
         }
-        let mut tables = self.rows.lock().expect("memory broker rows");
-        for mutation in mutations {
-            let table = mutation["table_name"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let row_key = mutation["row_key"].as_str().unwrap_or_default().to_owned();
-            let rows = tables
-                .entry((request.plugin_id.clone(), table))
-                .or_default();
-            match mutation["operation"].as_str().unwrap_or_default() {
-                "put" => {
-                    rows.insert(row_key, mutation["value"].clone());
-                }
-                "delete" => {
-                    rows.remove(&row_key);
-                }
-                _ => return Err(host_error("storage.plugin", "invalid_mutation")),
-            }
-        }
-        Ok(serde_json::json!({"committed": true}))
     }
 
     fn invoke_embed(

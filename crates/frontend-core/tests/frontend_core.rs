@@ -437,6 +437,20 @@ fn setup_defaults_preserve_saved_speech_and_accept_renderer_preferences() {
 }
 
 #[test]
+fn empty_audio_catalog_does_not_claim_active_device_loading() {
+    let core = FrontendCore::default();
+    let menu = core
+        .app_settings()
+        .menu_model(&AudioDeviceCatalog::default());
+    for section in menu.sections {
+        assert!(section.items[0].enabled);
+        assert!(section.items[0].checked);
+        assert_eq!(section.items[1].label, "System default only");
+        assert!(!section.items[1].enabled);
+    }
+}
+
+#[test]
 fn quick_menu_contains_only_audio_controls() {
     let core = FrontendCore::default();
     let devices = AudioDeviceCatalog {

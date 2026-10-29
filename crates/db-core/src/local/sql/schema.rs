@@ -1,10 +1,11 @@
+use crate::{DbError, Result};
 use chrono::Utc;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+
+// This release covers the SQLite/Grafeo pair, independently of app releases.
+const DATABASE_FORMAT_RELEASE: i64 = 1;
 
 const SCHEMA_SQL: &str = r#"
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-
 CREATE TABLE IF NOT EXISTS persistent_settings (
     scope TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -165,12 +166,84 @@ CREATE INDEX IF NOT EXISTS idx_mcp_instances_heartbeat
 ON mcp_instances(last_heartbeat_at DESC);
 "#;
 
-pub fn initialize_sql_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA_SQL)?;
-    conn.execute(
+pub(crate) fn initialize_sql_schema(conn: &Connection, graph_exists: bool) -> Result<()> {
+    let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if !requires_initialization(&transaction, graph_exists)? {
+        transaction.commit()?;
+        return Ok(());
+    }
+    transaction.execute_batch(SCHEMA_SQL)?;
+    transaction.execute(
         "INSERT OR IGNORE INTO semantic_commits(commit_version, state, created_at, published_at)
          VALUES (0, 'published', ?1, ?1)",
         params![Utc::now().to_rfc3339()],
     )?;
+    transaction.pragma_update(None, "user_version", DATABASE_FORMAT_RELEASE)?;
+    transaction.commit()?;
     Ok(())
+}
+
+fn requires_initialization(conn: &Connection, graph_exists: bool) -> Result<bool> {
+    let stored: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if stored == DATABASE_FORMAT_RELEASE {
+        return Ok(false);
+    }
+    if stored != 0 || graph_exists || has_user_schema(conn)? {
+        return Err(DbError::UnsupportedDatabaseRelease {
+            stored,
+            required: DATABASE_FORMAT_RELEASE,
+        });
+    }
+    Ok(true)
+}
+
+fn has_user_schema(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*')",
+        [],
+        |row| row.get(0),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_initialization_rolls_back_schema_and_release() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "max_page_count", 1).unwrap();
+        assert!(initialize_sql_schema(&conn, false).is_err());
+        let release: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(release, 0);
+        assert!(!has_user_schema(&conn).unwrap());
+        conn.pragma_update(None, "max_page_count", 1000).unwrap();
+        initialize_sql_schema(&conn, false).unwrap();
+        assert!(has_user_schema(&conn).unwrap());
+    }
+
+    #[test]
+    fn concurrent_initializers_share_one_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lumvise.db");
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|threads| {
+            let initialize = || {
+                let conn = Connection::open(&path).unwrap();
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                start.wait();
+                initialize_sql_schema(&conn, false).unwrap();
+            };
+            threads.spawn(initialize);
+            threads.spawn(initialize);
+        });
+        let conn = Connection::open(path).unwrap();
+        let release: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(release, DATABASE_FORMAT_RELEASE);
+    }
 }

@@ -136,41 +136,15 @@ pub(crate) fn apply_artifact_upsert(
     }
     let artifact_node_id =
         database.create_node_with_props(&["SemanticArtifact"], plan.artifact_properties)?;
-    database.create_edge_with_props(
+    create_artifact_owner_edge(
+        database,
         plan.owner_node_id,
         artifact_node_id,
-        SEMANTIC_ARTIFACT_EDGE_TYPE,
-        [
-            (
-                SEMANTIC_ELEMENT_ID_PROPERTY,
-                GrafeoValue::from(artifact.semantic_element_id.clone()),
-            ),
-            (
-                ARTIFACT_ID_PROPERTY,
-                GrafeoValue::from(artifact.artifact_id.clone()),
-            ),
-        ],
+        &artifact.artifact_id,
+        &artifact.semantic_element_id,
     )?;
     for (dependency, target_node_id) in plan.dependency_targets {
-        let target_kind = match dependency.target {
-            ArtifactDependencyTarget::SemanticElement { .. } => "semantic_element",
-            ArtifactDependencyTarget::Artifact { .. } => "artifact",
-        };
-        database.create_edge_with_props(
-            artifact_node_id,
-            target_node_id,
-            ARTIFACT_DEPENDENCY_EDGE_TYPE,
-            [
-                (
-                    ARTIFACT_DEPENDENCY_TARGET_KIND_PROPERTY,
-                    GrafeoValue::from(target_kind),
-                ),
-                (
-                    ARTIFACT_DEPENDENCY_TARGET_ID_PROPERTY,
-                    GrafeoValue::from(dependency.target_id().to_owned()),
-                ),
-            ],
-        )?;
+        create_artifact_dependency_edge(database, artifact_node_id, target_node_id, &dependency)?;
     }
     for rebind in plan.inbound_dependency_rebinds {
         database.create_edge_with_props(
@@ -394,4 +368,53 @@ pub(crate) fn delete_artifact_edges_by_id(
         database.delete_edge(edge_id);
     }
     count
+}
+
+/// Physical owner projection shared by current artifact writes and immutable revision publication.
+pub(crate) fn create_artifact_owner_edge(
+    database: &GraphTransaction<'_>,
+    owner: NodeId,
+    artifact: NodeId,
+    artifact_id: &str,
+    element_id: &str,
+) -> Result<()> {
+    database.create_edge_with_props(
+        owner,
+        artifact,
+        SEMANTIC_ARTIFACT_EDGE_TYPE,
+        [
+            (SEMANTIC_ELEMENT_ID_PROPERTY, GrafeoValue::from(element_id)),
+            (ARTIFACT_ID_PROPERTY, GrafeoValue::from(artifact_id)),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Exact dependency endpoints are never rebound to a newer record during revision publication.
+pub(crate) fn create_artifact_dependency_edge(
+    database: &GraphTransaction<'_>,
+    artifact: NodeId,
+    target: NodeId,
+    dependency: &ArtifactDependency,
+) -> Result<()> {
+    let kind = match dependency.target {
+        ArtifactDependencyTarget::SemanticElement { .. } => "semantic_element",
+        ArtifactDependencyTarget::Artifact { .. } => "artifact",
+    };
+    database.create_edge_with_props(
+        artifact,
+        target,
+        ARTIFACT_DEPENDENCY_EDGE_TYPE,
+        [
+            (
+                ARTIFACT_DEPENDENCY_TARGET_KIND_PROPERTY,
+                GrafeoValue::from(kind),
+            ),
+            (
+                ARTIFACT_DEPENDENCY_TARGET_ID_PROPERTY,
+                GrafeoValue::from(dependency.target_id()),
+            ),
+        ],
+    )?;
+    Ok(())
 }

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{AppCoreError, Result};
+use lumvise_contracts::is_knowledge_space_root as is_memory_space;
 const SNAPSHOT_BACKGROUND_DEADLINE: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 /// Lifecycle status of one semantic PZ snapshot operation.
@@ -153,21 +154,7 @@ impl SemanticSnapshotService {
                 .semantic
                 .execute(SemanticOperation::ProjectRoots, lookup_control)?
             {
-                SemanticResult::ProjectRoots(roots) if roots.len() == 1 => {
-                    normalize_project_root(&roots[0])
-                }
-                SemanticResult::ProjectRoots(roots) if roots.is_empty() => {
-                    return Err(AppCoreError::invalid_value(
-                        "",
-                        "one active semantic project root",
-                    ));
-                }
-                SemanticResult::ProjectRoots(roots) => {
-                    return Err(AppCoreError::invalid_value(
-                        roots.join(","),
-                        "one active semantic project root",
-                    ));
-                }
+                SemanticResult::ProjectRoots(roots) => selected_source_root(roots)?,
                 result => {
                     return Err(AppCoreError::invalid_value(
                         format!("{result:?}"),
@@ -189,10 +176,10 @@ impl SemanticSnapshotService {
     ) -> Result<SemanticSnapshotOperation> {
         ensure_control_active(&control)?;
         let project_root = normalize_project_root(project_root);
-        if project_root.is_empty() {
+        if project_root.is_empty() || is_memory_space(&project_root) {
             return Err(AppCoreError::invalid_value(
                 project_root,
-                "non-empty project root",
+                "non-empty source project root; private memory is not exportable",
             ));
         }
         let operation_id = format!("snapshot-operation-{}", Uuid::now_v7());
@@ -427,6 +414,20 @@ fn ensure_control_active(control: &InvocationControl) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn selected_source_root(roots: Vec<String>) -> Result<String> {
+    let sources: Vec<_> = roots
+        .into_iter()
+        .filter(|root| !is_memory_space(root))
+        .collect();
+    match sources.as_slice() {
+        [root] => Ok(normalize_project_root(root)),
+        _ => Err(AppCoreError::invalid_value(
+            sources.join(","),
+            "one active semantic project root",
+        )),
+    }
 }
 
 fn normalize_project_root(root: &str) -> String {

@@ -7,6 +7,13 @@ struct SemanticDocumentHost<'a>(&'a MemoryStorageBroker);
 
 impl HostCallTransport for SemanticDocumentHost<'_> {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
+        if capability == "storage.semantic" {
+            self.0
+                .take_operation_fault(input["operation"].as_str().unwrap_or_default())
+                .map_err(|error| {
+                    PluginError::new("document_protocol_host", error.to_string(), false)
+                })?;
+        }
         self.0
             .semantic
             .invoke(HostCapabilityRequest {
@@ -167,6 +174,74 @@ impl DocumentProcess {
 }
 
 #[test]
+fn exact_document_write_acknowledgements_cross_the_real_protobuf_boundary() {
+    let broker = Arc::new(MemoryStorageBroker::default());
+    let mut process = DocumentProcess::launch(broker);
+    let created = process.call(
+        "create_document",
+        json!({"operation_id":"protobuf-document-create",
+        "project_root":"/project","document_id":"acknowledged-report","document_kind":"report",
+        "title":"Report","content":"Body stays with the document owner"}),
+    );
+    let reply = process.call(
+        "get_document_write_receipt",
+        json!({"project_root":"/project",
+        "operation_id":"protobuf-document-create","action":"create"}),
+    );
+    let typed: lumvise_contracts::KnowledgeDocumentWriteReceipt =
+        serde_json::from_value(reply).unwrap();
+    assert_eq!(
+        typed.state,
+        lumvise_contracts::KnowledgeWriteState::Accepted
+    );
+    assert_eq!(
+        typed.document_revision.unwrap().semantic_element_id,
+        created["document"]["semantic_element_id"]
+    );
+    assert!(typed.commit_version.unwrap() > 0);
+    assert_eq!(
+        typed.lifecycle_revision,
+        created["document"]["revision"].as_u64()
+    );
+    process.stop();
+}
+
+#[test]
+fn exact_artifact_write_acknowledgements_cross_the_real_protobuf_boundary() {
+    let broker = Arc::new(MemoryStorageBroker::default());
+    let mut process = DocumentProcess::launch(broker);
+    let document = process.call(
+        "create_document",
+        json!({"project_root":"/project",
+        "document_id":"artifact-owner","document_kind":"report","title":"Owner","content":"Body"}),
+    );
+    let created = process.call("create_knowledge",json!({"operation_id":"protobuf-artifact-create",
+        "project_root":"/project","artifact_id":"protobuf-artifact","semantic_element_id":document["document"]["semantic_element_id"],
+        "knowledge_type":"specification","title":"Spec","content":"Original artifact"}));
+    let reply = process.call(
+        "get_artifact_write_receipt",
+        json!({"project_root":"/project",
+        "operation_id":"protobuf-artifact-create","action":"create"}),
+    );
+    let typed: lumvise_contracts::KnowledgeArtifactWriteReceipt =
+        serde_json::from_value(reply).unwrap();
+    assert_eq!(
+        typed.state,
+        lumvise_contracts::KnowledgeWriteState::Accepted
+    );
+    assert_eq!(
+        typed.artifact_revision.unwrap().artifact_id,
+        created["artifact"]["artifact_id"]
+    );
+    assert_eq!(
+        typed.lifecycle_revision,
+        created["artifact"]["revision"].as_u64()
+    );
+    assert!(typed.commit_version.unwrap() > 0);
+    process.stop();
+}
+
+#[test]
 fn independent_documents_round_trip_through_the_real_protobuf_process() {
     let broker = Arc::new(MemoryStorageBroker::default());
     let mut process = DocumentProcess::launch(broker.clone());
@@ -183,10 +258,15 @@ fn independent_documents_round_trip_through_the_real_protobuf_process() {
         "update_document",
         json!({
             "document_id": "report:independent", "project_root": "/project", "expected_revision": 1,
+            "expected_semantic_element_id":created["document"]["semantic_element_id"],
             "content": "# Revised architecture"
         }),
     );
     assert_eq!(updated["document"]["revision"], 2);
+    assert_ne!(
+        updated["document"]["semantic_element_id"],
+        created["document"]["semantic_element_id"]
+    );
     assert_eq!(
         process.call("list_documents", json!({"project_root": "/project"}))["total"],
         1
@@ -198,61 +278,15 @@ fn independent_documents_round_trip_through_the_real_protobuf_process() {
     assert_eq!(search["documents"][0]["document_id"], "report:independent");
     // Create publishes its project root and then its pointer; the update publishes only its pointer.
     assert_eq!(broker.plugin_invoke_count("ingest_index_batch"), 3);
-    process.call("delete_document", identity);
+    let mut removal = identity;
+    removal["expected_revision"] = updated["document"]["revision"].clone();
+    removal["expected_semantic_element_id"] = updated["document"]["semantic_element_id"].clone();
+    process.call("delete_document", removal);
     assert_eq!(
         process.call("list_documents", json!({"project_root": "/project"}))["total"],
         0
     );
     process.stop();
-}
-
-#[test]
-fn legacy_conversion_preview_and_apply_round_trip_through_the_real_protobuf_process() {
-    let broker = Arc::new(MemoryStorageBroker::default());
-    ingest(&broker, json!({"provider_instance_id": "filesystem", "project_root": "/project",
-        "semantic_sources": [{"semantic_source_id": "source:files", "kind": "repository", "name": "Sources", "root_path": "/project", "root_uri": "file:///project"}],
-        "semantic_elements": [{"semantic_element_id": "file:lib", "semantic_source_id": "source:files", "path": "src/lib.rs",
-            "semantic_element_type": "file", "semantic_element_name": "lib.rs", "parent_element_id": null,
-            "start_line": 1, "end_line": 3, "content_fingerprint": "fp1:0000000000000001:source-v1", "metadata": {}}],
-        "semantic_relationships": [], "semantic_artifacts": [], "replace_paths": [], "removed_paths": []
-    })).unwrap();
-    let mut process = DocumentProcess::launch(broker.clone());
-    let mut historical = test_artifact("report:legacy", "file:lib", "Existing report");
-    historical.artifact_kind = "report".into();
-    historical.content = Some("# Keep this text".into());
-    historical.metadata["knowledge"]["project_root"] = json!("/project");
-    broker.upsert_artifact(historical, "text/markdown");
-    let preview = process.call(
-        "convert_legacy_documents",
-        json!({"project_root": "/project"}),
-    );
-    assert_eq!(preview["preview"], true);
-    assert_eq!(preview["total"], 1);
-    assert_eq!(
-        process.call("list_documents", json!({"project_root": "/project"}))["total"],
-        0
-    );
-    let applied = process.call(
-        "convert_legacy_documents",
-        json!({"project_root": "/project", "preview": false}),
-    );
-    assert_eq!(applied["preview"], false);
-    assert_eq!(applied["conversions"][0]["document_id"], "report:legacy");
-    process.stop();
-    let mut reopened = DocumentProcess::launch(broker);
-    let document = reopened.call(
-        "get_document",
-        json!({"project_root": "/project", "document_id": "report:legacy"}),
-    );
-    assert_eq!(document["document"]["content"], "# Keep this text");
-    assert_eq!(
-        reopened.call(
-            "convert_legacy_documents",
-            json!({"project_root": "/project", "preview": false})
-        )["total"],
-        0
-    );
-    reopened.stop();
 }
 
 #[test]
@@ -269,9 +303,9 @@ fn a_failed_body_stage_through_the_real_protobuf_process_keeps_the_previous_body
     );
     let revised = json!({
         "document_id": "report:process", "project_root": "/project",
-        "expected_revision": 1, "content": "# Revised"
+        "expected_revision": 1, "expected_semantic_element_id":created["document"]["semantic_element_id"], "content": "# Revised"
     });
-    broker.fail_operation_after("upsert_artifact", 0);
+    broker.fail_operation_after("commit_project_snapshot", 0);
     assert!(
         process
             .try_call("update_document", revised.clone())
@@ -301,7 +335,7 @@ fn a_failed_pointer_publication_through_the_real_protobuf_process_keeps_the_prev
     );
     let revised = json!({
         "document_id": "report:process", "project_root": "/project",
-        "expected_revision": 1, "content": "# Revised"
+        "expected_revision": 1, "expected_semantic_element_id":created["document"]["semantic_element_id"], "content": "# Revised"
     });
     broker.fail_operation_after("ingest_index_batch", 0);
     assert!(

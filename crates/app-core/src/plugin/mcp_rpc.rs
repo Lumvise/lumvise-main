@@ -115,6 +115,7 @@ fn global_lifecycle(request_id: &Value) -> PluginInvocationLifecycle {
         owner_id: "plugin-mcp-http".into(),
         session_id: "plugin-mcp-http".into(),
         scope_id: None,
+        scope_epoch: None,
         deadline: Instant::now() + Duration::from_secs(60),
     }
 }

@@ -18,11 +18,15 @@ pub(super) fn build_app_runtime() -> Result<Arc<AppCore>, String> {
 pub(super) fn build_app_runtime_with_selection(
     selection: AppResourceSelection,
 ) -> Result<Arc<AppCore>, String> {
-    let (config, resources) = ResourceRouter::build_selection(selection)?;
+    let (config, mut resources) = ResourceRouter::build_selection(selection)?;
     let relational = Arc::clone(&resources.relational);
+    let recognizer = resources.speech_recognizer.take();
+    let synthesizer = resources.speech_synthesizer.take();
     let app = Arc::new(build_selected_app(&config, resources)?);
     app.install_managed_models()
         .map_err(|error| format!("installing managed model runtime: {error}"))?;
+    // A routed adapter replaces a restored local model, never the reverse.
+    install_selected_speech(&app, &config, recognizer, synthesizer)?;
     spawn_metrics_sampler(Arc::clone(&app));
     if config.llm_execution == ResourcePlacement::Internal {
         spawn_llm_provider_sync(Arc::clone(&app), relational);
@@ -56,15 +60,14 @@ fn build_selected_app(
         configured_plugins()?,
     )
     .map_err(|error| format!("building production app core: {error}"))?;
+    if let Some(client) = resources.index_client_instance_id {
+        app.install_index_publication_client(client)
+            .map_err(|error| error.to_string())?;
+    }
     *app.provider_catalog
         .lock()
         .map_err(|_| "provider catalog lock poisoned")? = resources.llm_catalog;
-    install_selected_speech(
-        app,
-        config,
-        resources.speech_recognizer,
-        resources.speech_synthesizer,
-    )
+    Ok(app)
 }
 
 fn configured_plugins() -> Result<PluginProductionConfig, String> {
@@ -79,28 +82,23 @@ fn configured_plugins() -> Result<PluginProductionConfig, String> {
 }
 
 fn install_selected_speech(
-    app: AppCore,
+    app: &AppCore,
     config: &ResourceRoutingConfig,
     recognizer: Option<Arc<dyn lumvise_neural_core::SpeechRecognizer>>,
     synthesizer: Option<Arc<dyn lumvise_neural_core::SpeechSynthesizer>>,
-) -> Result<AppCore, String> {
+) -> Result<(), String> {
     if config.speech_inference != ResourcePlacement::Centralized {
-        return install_optional_voice_services(app);
+        #[cfg(all(feature = "assistant-e2e", feature = "desktop-app"))]
+        super::e2e_voice_adapters::install_environment_voice_adapters(app)
+            .map_err(|error| format!("installing assistant-e2e voice adapters: {error}"))?;
+        return Ok(());
     }
-    let app = recognizer
-        .map(|service| app.with_speech_recognizer(service))
-        .ok_or("selected centralized speech route has no STT adapter")?;
-    synthesizer
-        .map(|service| app.with_speech_synthesizer(service))
-        .ok_or_else(|| "selected centralized speech route has no TTS adapter".to_string())
-}
-
-fn install_optional_voice_services(app: AppCore) -> Result<AppCore, String> {
-    #[cfg(all(feature = "assistant-e2e", feature = "desktop-app"))]
-    return super::e2e_voice_adapters::install_environment_voice_adapters(app)
-        .map_err(|error| format!("installing assistant-e2e voice adapters: {error}"));
-    #[cfg(not(all(feature = "assistant-e2e", feature = "desktop-app")))]
-    Ok(app)
+    let recognizer = recognizer.ok_or("selected centralized speech route has no STT adapter")?;
+    let synthesizer = synthesizer.ok_or("selected centralized speech route has no TTS adapter")?;
+    app.replace_voice2text_service(recognizer)
+        .map_err(|error| error.to_string())?;
+    app.replace_text2voice_service(synthesizer)
+        .map_err(|error| error.to_string())
 }
 
 /// Periodically pushes graph-derived observability gauges into the metrics

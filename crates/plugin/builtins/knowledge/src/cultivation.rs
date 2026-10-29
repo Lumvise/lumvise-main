@@ -5,8 +5,7 @@ use chrono::Utc;
 use lumvise_contracts::KnowledgeDocument;
 use materialize::materialize_functional;
 pub(crate) use reports::{
-    debug_c4, ensure_c4, forget_c4_report_intent, refresh_reports_for_change_batch,
-    refresh_reports_for_changed_elements,
+    debug_c4, ensure_c4, refresh_reports_for_change_batch, refresh_reports_for_changed_elements,
 };
 use std::collections::HashSet;
 
@@ -183,7 +182,9 @@ struct ScopedC4Context {
     elements: Vec<SemanticElement>,
     relationships: Vec<semantic_context::SemanticRelationship>,
     documents: Vec<KnowledgeDocument>,
+    source_documents: Vec<KnowledgeDocument>,
     report: Option<KnowledgeDocument>,
+    report_id: String,
     fingerprint: String,
 }
 
@@ -193,12 +194,30 @@ fn scoped_c4_context(
 ) -> Result<ScopedC4Context, PluginError> {
     let snapshot = semantic_context::load_document_snapshot(context, &request.project_root)?;
     let semantic = snapshot.semantic;
-    let requested = requested_target(&semantic.elements, request)?;
+    let mut source_ids = crate::source_revisions::document_source_ids(&snapshot.known_documents);
+    source_ids.extend(request.target_id.iter().cloned());
+    let sources = crate::source_revisions::SelectedSources::load(
+        context,
+        &request.project_root,
+        source_ids,
+        Some(snapshot.commit_version),
+    )?;
+    let requested = requested_target(&semantic.elements, request, &sources)?;
     let target = report_target(&semantic.elements, &semantic.relationships, &requested);
     let elements = scoped_elements(&semantic.elements, &semantic.relationships, &target);
     let relationships = scoped_relationships(&semantic.relationships, &elements, &target);
     let documents = scoped_documents(&snapshot.documents, &elements);
-    let report = reports::existing_report(&snapshot.documents, &target.semantic_element_id);
+    let report = reports::existing_report(
+        &snapshot.known_documents,
+        &target.semantic_element_id,
+        &sources,
+    );
+    let report_id = report
+        .as_ref()
+        .map(|document| document.document_id.clone())
+        .unwrap_or_else(|| crate::c4_report::report_id(&target.semantic_element_id));
+    let source_documents =
+        source_documents_for_scope(&snapshot.known_documents, &elements, &sources);
     let fingerprint = crate::c4_report::fingerprint(&elements, &relationships, &documents);
     Ok(ScopedC4Context {
         requested,
@@ -206,7 +225,9 @@ fn scoped_c4_context(
         elements,
         relationships,
         documents,
+        source_documents,
         report,
+        report_id,
         fingerprint,
     })
 }
@@ -214,11 +235,13 @@ fn scoped_c4_context(
 fn requested_target(
     elements: &[SemanticElement],
     request: &C4Request,
+    sources: &crate::source_revisions::SelectedSources,
 ) -> Result<SemanticElement, PluginError> {
     if let Some(id) = request.target_id.as_deref() {
+        let selected = sources.resolve(id);
         return elements
             .iter()
-            .find(|item| item.semantic_element_id == id)
+            .find(|item| Some(item.semantic_element_id.as_str()) == selected)
             .cloned()
             .ok_or_else(|| missing("semantic_element_not_found", id, "semantic target element"));
     }
@@ -457,6 +480,26 @@ fn scoped_documents(
         .collect()
 }
 
+fn source_documents_for_scope(
+    documents: &[KnowledgeDocument],
+    elements: &[SemanticElement],
+    sources: &crate::source_revisions::SelectedSources,
+) -> Vec<KnowledgeDocument> {
+    let selected = elements
+        .iter()
+        .map(|element| element.semantic_element_id.as_str())
+        .collect::<HashSet<_>>();
+    documents
+        .iter()
+        .filter(|document| {
+            functional::source_element_id(document)
+                .and_then(|source| sources.resolve(source))
+                .is_some_and(|source| selected.contains(source))
+        })
+        .cloned()
+        .collect()
+}
+
 fn element_snapshot(element: &SemanticElement) -> Value {
     json!({"semanticElementId": element.semantic_element_id, "elementKind": element.element_kind,
         "name": element.name, "path": element.path, "parentElementId": element.parent_element_id})
@@ -533,6 +576,7 @@ mod report_target_tests {
 
     fn element(id: &str, kind: &str, parent: Option<&str>) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/repo".into(),
             semantic_element_id: id.into(),
             semantic_source_id: "source".into(),
@@ -582,6 +626,7 @@ mod c4_response_tests {
 
     fn element(id: &str) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/project".into(),
             semantic_element_id: id.into(),
             semantic_source_id: "src-1".into(),
@@ -627,7 +672,9 @@ mod c4_response_tests {
             elements: elements.clone(),
             relationships: Vec::new(),
             documents: artifacts,
+            source_documents: Vec::new(),
             report: None,
+            report_id: crate::c4_report::report_id(&elements[0].semantic_element_id),
             fingerprint: "fingerprint".into(),
         };
         let artifact =

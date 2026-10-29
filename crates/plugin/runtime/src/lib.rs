@@ -18,12 +18,13 @@ mod system;
 
 pub use broker::{
     DenyAllHostCapabilityBroker, HostCapabilityBroker, HostCapabilityError, HostCapabilityRequest,
+    HostPluginInvocation, HostPluginInvoker,
 };
 pub use error::{PluginRuntimeError, SchemaDirection};
 pub use invocation::{
     PluginInvocationCancellation, PluginInvocationCancellationRequest, PluginInvocationClass,
     PluginInvocationContext, PluginInvocationError, PluginInvocationFailureKind,
-    PluginInvocationRequest,
+    PluginInvocationFrame, PluginInvocationRequest,
 };
 pub use lumvise_plugin_package::ExportDescriptor;
 pub use repository::{

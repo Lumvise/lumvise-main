@@ -65,6 +65,7 @@ fn execute(persistence: &LocalPersistence, operation: SemanticOperation) -> Sema
 
 fn fingerprinted_element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "source".into(),

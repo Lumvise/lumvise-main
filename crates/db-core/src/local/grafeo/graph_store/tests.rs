@@ -253,6 +253,62 @@ fn stale_plan_retries_without_losing_the_intervening_write() {
 }
 
 #[test]
+fn failed_optimistic_plan_retries_after_an_intervening_write() {
+    let store = GraphStore::new(GrafeoDB::new_in_memory());
+    let first = AtomicBool::new(true);
+    let planned = store
+        .plan(|graph| {
+            if first.swap(false, Ordering::AcqRel) {
+                store.write(|writer| writer.create_node_with_props(&["Intervening"], []))?;
+                return Err(DbError::invalid_value(
+                    "changed revision",
+                    "a coherent read",
+                ));
+            }
+            Ok(graph.iter_nodes().count())
+        })
+        .unwrap();
+    assert_eq!(planned.into_parts().1, 1);
+}
+
+#[test]
+fn failed_optimistic_plan_preserves_errors_from_an_unchanged_graph() {
+    let store = GraphStore::new(GrafeoDB::new_in_memory());
+    let calls = std::cell::Cell::new(0);
+    let result = store.plan::<()>(|_| {
+        calls.set(calls.get() + 1);
+        Err(DbError::invalid_value(
+            "missing body",
+            "an available revision body",
+        ))
+    });
+    assert!(result.err().unwrap().to_string().contains("missing body"));
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn failed_optimistic_plan_keeps_its_retry_bound_under_continuous_writes() {
+    let store = GraphStore::new(GrafeoDB::new_in_memory());
+    let calls = std::cell::Cell::new(0);
+    let result = store.plan::<()>(|_| {
+        calls.set(calls.get() + 1);
+        store.write(|writer| writer.create_node_with_props(&["Intervening"], []))?;
+        Err(DbError::invalid_value(
+            "continuously changed revision",
+            "a coherent read",
+        ))
+    });
+    assert_eq!(calls.get(), 2);
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("continuously changed revision")
+    );
+}
+
+#[test]
 fn planner_does_not_hold_the_writer_gate() {
     let store = Arc::new(GraphStore::new(GrafeoDB::new_in_memory()));
     let (planner_started_tx, planner_started_rx) = mpsc::channel();

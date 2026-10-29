@@ -10,6 +10,10 @@ use serde_json::json;
 
 fn pz_contents() -> SemanticArchive {
     SemanticArchive {
+        display_name: Some("Origin name".into()),
+        source_revision: Some("origin-commit".into()),
+        selection_id: "working".into(),
+        revision_state: None,
         project_id: uuid::Uuid::new_v4().to_string(),
         snapshot_id: uuid::Uuid::now_v7().to_string(),
         canonical_remote: Some("https://example.test/project.git".into()),
@@ -69,7 +73,12 @@ fn pz_element(id: &str) -> SemanticElement {
         element_kind: "file".into(),
         name: id.into(),
         parent_element_id: None,
-        content_fingerprint: Some("fp1:1234:content".into()),
+        revision_dependencies: if id == "b" {
+            vec![lumvise_db_core::SemanticRecordRef::artifact("guide")]
+        } else {
+            vec![]
+        },
+        content_fingerprint: Some("fp1:0000000000001234:content".into()),
         start_line: Some(1),
         end_line: Some(2),
         lifecycle: "active".into(),
@@ -108,6 +117,7 @@ fn seeded_archive_source() -> (LocalPersistence, SemanticArchive) {
     dependent.content_ref = None;
     dependent.dependencies = vec![ArtifactDependency {
         target: ArtifactDependencyTarget::Artifact {
+            edit_version: None,
             artifact_id: "guide".into(),
         },
     }];
@@ -275,11 +285,36 @@ fn pz_semantic_archive_round_trip_retains_owned_metadata_blobs_vectors_and_root_
     for vector in &mut expected.element_name_vectors {
         vector.project_root = "/target".into();
     }
+    let timestamp = chrono::DateTime::parse_from_rfc3339(&archive.snapshot.published_at)
+        .unwrap()
+        .timestamp_millis();
+    let source_revisions = lumvise_db_core::SemanticRevisionState::adopt(
+        "/source",
+        &archive.project_id,
+        "working",
+        "local",
+        archive.snapshot.elements.clone(),
+        archive.snapshot.artifacts.clone(),
+        archive.snapshot.relationships.clone(),
+        17,
+        timestamp,
+    )
+    .unwrap();
+    expected.revision_state = Some(
+        lumvise_db_core::SemanticRevisionState::from_metadata_rows(
+            "/target",
+            17,
+            source_revisions.metadata_rows(),
+            expected.snapshot.elements.clone(),
+            expected.snapshot.artifacts.clone(),
+        )
+        .unwrap(),
+    );
     assert_eq!(decoded, expected);
     decoded.write(&second, &control).unwrap();
-    assert_eq!(
-        std::fs::read(first).unwrap(),
-        std::fs::read(second).unwrap()
+    assert!(
+        std::fs::read(first).unwrap() == std::fs::read(second).unwrap(),
+        "root rebinding must preserve canonical archive bytes"
     );
 }
 
@@ -292,6 +327,92 @@ fn pz_semantic_archive_rejects_corrupt_archive() {
         SemanticArchive::read(path, "/target", &InvocationControl::sixty_seconds()).unwrap_err(),
         PzFailurePhase::Validate,
     );
+}
+
+#[test]
+fn pz_writer_rejects_inconsistent_revision_identity_before_replacing_a_valid_archive() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("archive.pz");
+    let control = InvocationControl::sixty_seconds();
+    pz_contents().write(&path, &control).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let mut archive = SemanticArchive::read(&path, "/source", &control).unwrap();
+    archive.revision_state.as_mut().unwrap().records[0]
+        .record
+        .record_id = "mismatched-id".into();
+    pz_phase(
+        archive.write(&path, &control).unwrap_err(),
+        PzFailurePhase::Encode,
+    );
+    assert!(std::fs::read(&path).unwrap() == before);
+}
+
+fn rewrite_manifest_identity(input: &std::path::Path, output: &std::path::Path) {
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(input).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(output).unwrap());
+    writer.set_zip64_comment(Some("PZ2"));
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let mut bytes = vec![];
+        entry.read_to_end(&mut bytes).unwrap();
+        if entry.name() == "manifest.json" {
+            let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            manifest["projectId"] = json!(uuid::Uuid::new_v4().to_string());
+            bytes = serde_json::to_vec(&manifest).unwrap();
+        }
+        writer
+            .start_file(
+                entry.name(),
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored)
+                    .large_file(true),
+            )
+            .unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+#[test]
+fn archive_project_identity_must_match_revision_metadata_on_write_and_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("original.pz");
+    let altered = directory.path().join("another-project.pz");
+    let control = InvocationControl::sixty_seconds();
+    pz_contents().write(&path, &control).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let mut archive = SemanticArchive::read(&path, "/source", &control).unwrap();
+    archive.revision_state.as_mut().unwrap().project_id = uuid::Uuid::new_v4().to_string();
+    let error = archive.write(&path, &control).unwrap_err();
+    assert!(error.to_string().contains("archive project identity"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    rewrite_manifest_identity(&path, &altered);
+    let error = SemanticArchive::read(&altered, "/source", &control).unwrap_err();
+    assert!(error.to_string().contains("archive project identity"));
+}
+
+#[test]
+fn pz_writer_requires_unique_exact_blob_references_for_retained_bodies() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("archive.pz");
+    let control = InvocationControl::sixty_seconds();
+    let mut archive = pz_contents();
+    archive.write(&path, &control).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    archive
+        .artifact_blobs
+        .push(archive.artifact_blobs[0].clone());
+    pz_phase(
+        archive.write(&path, &control).unwrap_err(),
+        PzFailurePhase::Encode,
+    );
+    archive.artifact_blobs.clear();
+    pz_phase(
+        archive.write(&path, &control).unwrap_err(),
+        PzFailurePhase::Encode,
+    );
+    assert!(std::fs::read(&path).unwrap() == before);
 }
 
 #[test]

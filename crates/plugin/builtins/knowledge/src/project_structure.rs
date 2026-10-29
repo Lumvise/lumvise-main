@@ -719,6 +719,7 @@ mod tests {
         );
         context.project_root = "/other".into();
         let specification = KnowledgeArtifact {
+            edit_version: None,
             artifact_id: "foreign-spec".into(),
             semantic_element_id: source.semantic_element_id.clone(),
             knowledge_type: crate::KnowledgeKind::Specification,
@@ -813,6 +814,7 @@ mod tests {
         parent_id: Option<&str>,
     ) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/project".into(),
             semantic_element_id: id.into(),
             semantic_source_id: "source".into(),

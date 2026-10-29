@@ -7,7 +7,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{KnowledgeArtifactLifecycleV2, KnowledgeArtifactStatusV2};
+use super::{
+    KnowledgeArtifactLifecycleV2, KnowledgeArtifactStatusV2, KnowledgeWriteAction,
+    KnowledgeWriteState,
+};
 
 /// Presentation and owning workflow of a virtual document.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -29,6 +32,8 @@ pub enum KnowledgeDocumentKind {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(tag = "target_kind", rename_all = "snake_case")]
 pub enum KnowledgeDocumentReference {
+    /// Explicit authoritative project and typed live/exact selection.
+    Qualified(super::KnowledgeQualifiedCitation),
     /// A source or other indexed semantic element.
     SemanticElement {
         /// Stable semantic identity.
@@ -38,6 +43,9 @@ pub enum KnowledgeDocumentReference {
     Artifact {
         /// Stable artifact identity.
         artifact_id: String,
+        /// Original observed working edit; frozen revisions can be cited without a counter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edit_version: Option<u64>,
     },
     /// Another independent document.
     Document {
@@ -59,6 +67,9 @@ pub struct KnowledgeDocument {
     pub attachment_owner_id: Option<String>,
     /// Project or Agent Space owning this document.
     pub project_root: String,
+    /// Knowledge-owned access restrictions; ordinary edits cannot replace these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<super::KnowledgeDocumentAccess>,
     /// Document workflow and presentation.
     pub document_kind: KnowledgeDocumentKind,
     /// Human-readable title.
@@ -85,6 +96,9 @@ pub struct KnowledgeDocument {
 /// Creates a document without selecting a source element or filesystem path.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct CreateKnowledgeDocumentRequest {
+    /// Stable retry identity; reuse only with identical input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     /// Stable document identity.
     pub document_id: String,
     /// Exact owning project root or Agent Space identity.
@@ -118,31 +132,101 @@ pub struct KnowledgeDocumentIdentity {
     pub project_root: String,
 }
 
+/// Reads one known write without requiring its historical payload to remain available.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KnowledgeDocumentWriteReceiptRequest {
+    /// A route resolving to the operation's original durable project.
+    pub project_root: String,
+    /// The explicit retry identity supplied to the original write.
+    pub operation_id: String,
+    /// The original document write operation.
+    pub action: KnowledgeWriteAction,
+}
+
+/// The exact locator accepted for a write; this reference does not pin its body.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KnowledgeDocumentRevisionReference {
+    /// Logical document identity.
+    pub document_id: String,
+    /// Original owning project route.
+    pub project_root: String,
+    /// Immutable accepted document locator, including a deletion marker when applicable.
+    pub semantic_element_id: String,
+}
+
+/// A body-independent acknowledgement suitable for cooperating producer journals.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KnowledgeDocumentWriteReceipt {
+    /// The caller's original retry identity.
+    pub operation_id: String,
+    /// Knowledge's durable publication identity.
+    pub publication_id: String,
+    /// The route supplied for this scoped acknowledgement read.
+    pub project_root: String,
+    /// Whether the original write is unknown, pending, accepted or conflicted.
+    pub state: KnowledgeWriteState,
+    /// Accepted exact identity; available even after payload collection.
+    pub document_revision: Option<KnowledgeDocumentRevisionReference>,
+    /// Lifecycle counter captured with the accepted locator before discarding its body.
+    pub lifecycle_revision: Option<u64>,
+    /// Original semantic acceptance order, never the current graph's version.
+    pub commit_version: Option<i64>,
+}
+
 /// Replaces only supplied fields after checking the caller's last-read revision.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct UpdateKnowledgeDocumentRequest {
+    /// Stable retry identity; reuse only with identical input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     /// Stable document identity.
     pub document_id: String,
     /// Project expected to own the document.
     pub project_root: String,
+    /// Exact locator revision returned by the caller's last read.
+    pub expected_semantic_element_id: String,
     /// Revision returned by the caller's last read.
     pub expected_revision: u64,
     /// Replacement title.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Replacement content.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Replacement grouping; an empty string selects the report root.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Replacement searchable labels.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
     /// Replacement citations.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub references: Option<Vec<KnowledgeDocumentReference>>,
     /// Replacement workflow metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     /// Replacement lifecycle state.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<KnowledgeArtifactStatusV2>,
     /// Document replacing this one when superseded.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+}
+
+/// Removes exactly the document revision the caller read.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+pub struct DeleteKnowledgeDocumentRequest {
+    /// Stable retry identity; reuse only with identical input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    pub document_id: String,
+    pub project_root: String,
+    /// Exact locator revision returned by the caller's last read.
+    pub expected_semantic_element_id: String,
+    pub expected_revision: u64,
 }
 
 /// Lists or searches independent documents, without requiring an anchor.
@@ -162,6 +246,15 @@ pub struct ListKnowledgeDocumentsRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_update_serialization_omits_unrequested_edits() {
+        let input = serde_json::json!({"document_id":"report","project_root":"/project",
+            "expected_semantic_element_id":"revision:original","expected_revision":3,"content":""});
+        let request: UpdateKnowledgeDocumentRequest =
+            serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), input);
+    }
     use serde_json::json;
 
     #[test]
@@ -189,6 +282,7 @@ mod tests {
             },
             KnowledgeDocumentReference::Artifact {
                 artifact_id: "requirements:search".into(),
+                edit_version: Some(3),
             },
             KnowledgeDocumentReference::Document {
                 document_id: "report:search".into(),

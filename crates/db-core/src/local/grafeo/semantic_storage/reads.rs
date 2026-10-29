@@ -1,6 +1,8 @@
 use super::*;
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 
 pub(crate) struct PzSnapshotData {
+    pub(crate) revision_state: Option<crate::SemanticRevisionState>,
     pub(crate) snapshot: SemanticProjectSnapshot,
     pub(crate) artifact_blobs: Vec<ArtifactBlob>,
     pub(crate) artifact_text_vectors: Vec<StoredArtifactTextVector>,
@@ -72,16 +74,51 @@ impl<'db> SemanticStorage<'db> {
                 commit_version,
                 published_at,
             )?;
-            let active_element_ids = snapshot
-                .elements
+            let revision_state = if crate::local::grafeo::revision_rows::revision_project_managed(
+                graph,
+                project_root,
+            )? {
+                Some(
+                    crate::local::grafeo::revision_rows::load_revision_state(
+                        graph,
+                        project_root,
+                        commit_version,
+                        self.clock.now().timestamp_millis(),
+                        None,
+                    )?
+                    .state,
+                )
+            } else {
+                None
+            };
+            let available_elements = match &revision_state {
+                Some(state) => state
+                    .records
+                    .iter()
+                    .filter_map(|record| match &record.body {
+                        crate::SemanticRevisionBody::Element(element) => Some(element),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                None => snapshot.elements.iter().collect(),
+            };
+            let available_artifacts = match &revision_state {
+                Some(state) => state
+                    .records
+                    .iter()
+                    .filter_map(|record| match &record.body {
+                        crate::SemanticRevisionBody::Artifact(artifact) => Some(artifact.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                None => snapshot.artifacts.clone(),
+            };
+            let active_element_ids = available_elements
                 .iter()
-                .filter(|element| element.lifecycle != "inactive")
                 .map(|element| element.semantic_element_id.clone())
                 .collect::<HashSet<_>>();
-            let direct_artifact_ids = snapshot
-                .artifacts
+            let direct_artifact_ids = available_artifacts
                 .iter()
-                .filter(|artifact| active_element_ids.contains(&artifact.semantic_element_id))
                 .map(|artifact| {
                     (
                         artifact.artifact_id.clone(),
@@ -119,10 +156,31 @@ impl<'db> SemanticStorage<'db> {
             .collect::<Vec<_>>();
             element_vectors
                 .sort_by(|left, right| left.semantic_element_id.cmp(&right.semantic_element_id));
-            let blobs = self.artifact_blobs_for_snapshot(&snapshot.artifacts)?;
+            let mut blobs = self
+                .artifact_blobs_for_snapshot(&available_artifacts)?
+                .into_iter()
+                .map(|blob| (blob.content_ref.clone(), blob))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let owners = revision_state
+                .as_ref()
+                .map(|state| state.retained_artifact_owner_ids())
+                .unwrap_or_else(|| {
+                    available_artifacts
+                        .iter()
+                        .map(|artifact| artifact.artifact_id.clone())
+                        .collect()
+                });
+            let ids = owners.iter().map(String::as_str).collect::<Vec<_>>();
+            for blob in ArtifactBlobRepository::with_clock(self.conn, self.clock.clone())
+                .blobs_for_artifacts(&ids)?
+                .into_iter()
+            {
+                blobs.entry(blob.content_ref.clone()).or_insert(blob);
+            }
             Ok(PzSnapshotData {
+                revision_state,
                 snapshot,
-                artifact_blobs: blobs,
+                artifact_blobs: blobs.into_values().collect(),
                 artifact_text_vectors: artifact_vectors,
                 element_name_vectors: element_vectors,
             })
@@ -329,7 +387,7 @@ impl<'db> SemanticStorage<'db> {
             .filter(|artifact| artifact.text.is_none())
             .filter_map(|artifact| artifact.content_ref.as_deref())
             .collect::<Vec<_>>();
-        let mut blobs = ArtifactBlobRepository::with_clock(self.conn, self.clock.clone())
+        let blobs = ArtifactBlobRepository::with_clock(self.conn, self.clock.clone())
             .blobs_for_content_refs(&content_refs)?;
         for artifact in projection
             .nodes
@@ -339,7 +397,7 @@ impl<'db> SemanticStorage<'db> {
             if let Some(blob) = artifact
                 .content_ref
                 .as_deref()
-                .and_then(|content_ref| blobs.remove(content_ref))
+                .and_then(|content_ref| blobs.get(content_ref).cloned())
             {
                 artifact.text = String::from_utf8(blob.content).ok();
             }
@@ -347,32 +405,32 @@ impl<'db> SemanticStorage<'db> {
         Ok(())
     }
 
-    fn hydrate_artifact_contents(&self, artifacts: &mut [SemanticArtifact]) -> Result<()> {
+    pub(crate) fn hydrate_artifact_contents<'artifact>(
+        &self,
+        artifacts: impl IntoIterator<Item = &'artifact mut SemanticArtifact>,
+    ) -> Result<()> {
+        let artifacts = artifacts.into_iter().collect::<Vec<_>>();
         let content_refs = artifacts
             .iter()
             .filter(|artifact| artifact.content.is_none())
             .filter_map(|artifact| artifact.content_ref.as_deref())
             .collect::<Vec<_>>();
-        let mut blobs = ArtifactBlobRepository::with_clock(self.conn, self.clock.clone())
+        let blobs = ArtifactBlobRepository::with_clock(self.conn, self.clock.clone())
             .blobs_for_content_refs(&content_refs)?;
         for artifact in artifacts {
+            if artifact.content.is_some() {
+                continue;
+            }
             let Some(content_ref) = artifact.content_ref.as_deref() else {
                 continue;
             };
-            if let Some(blob) = blobs.remove(content_ref) {
-                artifact.content = String::from_utf8(blob.content).ok();
-                continue;
-            }
-            // The blob row is gone (e.g. a crash between the published graph
-            // commit and the SQL replacement delete). For content within the
-            // searchable limit the node still holds the full text, so the
-            // artifact stays readable instead of poisoning every listing.
-            if artifact
-                .content_size_bytes
-                .is_some_and(|size| size <= SEARCHABLE_ARTIFACT_TEXT_LIMIT_BYTES)
-            {
-                artifact.content = artifact.searchable_text.clone();
-            }
+            let blob = blobs.get(content_ref).ok_or_else(|| {
+                DbError::invalid_value(
+                    content_ref,
+                    "available immutable artifact content bytes, or an explicit pruned revision",
+                )
+            })?;
+            artifact.content = String::from_utf8(blob.content.clone()).ok();
         }
         Ok(())
     }
@@ -395,9 +453,9 @@ impl<'db> SemanticStorage<'db> {
     /// ```
     pub fn element(&self, semantic_element_id: &str) -> Result<Option<SemanticElement>> {
         require_non_empty(semantic_element_id, "non-empty semantic element id")?;
-        Ok(self
-            .graph
-            .read(|graph| semantic_element_by_id(graph, semantic_element_id)))
+        self.graph.read(|graph| {
+            crate::local::grafeo::revision_reads::exact_element_body(graph, semantic_element_id)
+        })
     }
 
     /// Reads one semantic element and all descendants using indexed parent lookups.
@@ -449,11 +507,9 @@ impl<'db> SemanticStorage<'db> {
         semantic_element_id: &str,
     ) -> Result<Vec<SemanticArtifact>> {
         require_non_empty(semantic_element_id, "non-empty semantic element id")?;
-        let mut artifacts = self
-            .graph
-            .read(|graph| artifacts_for_element_with_inheritance(graph, semantic_element_id))?;
-        self.hydrate_artifact_contents(&mut artifacts)?;
-        Ok(artifacts)
+        self.read_artifact_projection(|graph| {
+            artifacts_for_element_with_inheritance(graph, semantic_element_id)
+        })
     }
 
     /// Reads a semantic artifact by id.
@@ -475,13 +531,33 @@ impl<'db> SemanticStorage<'db> {
     /// ```
     pub fn artifact(&self, artifact_id: &str) -> Result<Option<SemanticArtifact>> {
         require_non_empty(artifact_id, "non-empty semantic artifact id")?;
-        let mut artifact = self
-            .graph
-            .read(|graph| semantic_artifact_by_id(graph, artifact_id));
-        if let Some(artifact) = artifact.as_mut() {
-            self.hydrate_artifact_contents(std::slice::from_mut(artifact))?;
-        }
-        Ok(artifact)
+        self.graph.stable_read(|graph| {
+            let mut artifact = match crate::local::grafeo::revision_rows::stored_revision_by_id(
+                graph,
+                &crate::SemanticRecordRef::artifact(artifact_id),
+            )? {
+                Some((_, stored)) => match stored.body {
+                    crate::SemanticRevisionBody::Artifact(artifact) => Some(artifact),
+                    _ => None,
+                },
+                None => semantic_artifact_by_id(graph, artifact_id),
+            };
+            if let Some(artifact) = artifact.as_mut() {
+                self.hydrate_artifact_contents(std::slice::from_mut(artifact))?;
+            }
+            Ok(artifact)
+        })
+    }
+
+    fn read_artifact_projection(
+        &self,
+        read: impl FnOnce(&grafeo::GrafeoDB) -> Result<Vec<SemanticArtifact>>,
+    ) -> Result<Vec<SemanticArtifact>> {
+        self.graph.stable_read(|graph| {
+            let mut artifacts = read(graph)?;
+            self.hydrate_artifact_contents(&mut artifacts)?;
+            Ok(artifacts)
+        })
     }
 
     /// Lists every graph-owned semantic artifact without scanning element rows.
@@ -493,11 +569,9 @@ impl<'db> SemanticStorage<'db> {
     ) -> Result<Vec<SemanticArtifact>> {
         require_non_empty(target_kind, "non-empty artifact dependency target kind")?;
         require_non_empty(target_id, "non-empty artifact dependency target id")?;
-        let mut artifacts = self
-            .graph
-            .read(|graph| artifact_dependents(graph, target_kind, target_id));
-        self.hydrate_artifact_contents(&mut artifacts)?;
-        Ok(artifacts)
+        self.read_artifact_projection(|graph| {
+            Ok(artifact_dependents(graph, target_kind, target_id))
+        })
     }
 
     /// Lists outgoing relationships for one semantic element.
@@ -582,11 +656,9 @@ impl<'db> SemanticStorage<'db> {
         if semantic_element_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut artifacts = self
-            .graph
-            .read(|graph| semantic_artifacts_for_elements(graph, semantic_element_ids));
-        self.hydrate_artifact_contents(&mut artifacts)?;
-        Ok(artifacts)
+        self.read_artifact_projection(|graph| {
+            Ok(semantic_artifacts_for_elements(graph, semantic_element_ids))
+        })
     }
 
     /// Lists semantic elements for one project root.
@@ -625,6 +697,8 @@ impl<'db> SemanticStorage<'db> {
         Ok(elements)
     }
 
+    /// Returns exact retained IDs, including unselected history, without substituting successors.
+    /// Example: a retained artifact can resolve its older owner in the same batch as current owners.
     pub fn elements_by_ids_including_inactive(
         &self,
         project_root: &str,
@@ -632,8 +706,12 @@ impl<'db> SemanticStorage<'db> {
     ) -> Result<Vec<SemanticElement>> {
         require_non_empty(project_root, "non-empty project root")?;
         let mut elements = self.graph.read(|graph| {
-            elements_by_ids_selective(graph, project_root, semantic_element_ids, true)
-        });
+            crate::local::grafeo::revision_reads::exact_project_elements(
+                graph,
+                project_root,
+                semantic_element_ids,
+            )
+        })?;
         elements.sort_by(|left, right| left.semantic_element_id.cmp(&right.semantic_element_id));
         Ok(elements)
     }
@@ -723,8 +801,12 @@ impl<'db> SemanticStorage<'db> {
             let element_ids = store.nodes_by_label("SemanticElement");
             let project_root_key = "project_root".into();
             let active_key = "active".into();
-            let project_roots = store.get_node_property_batch(&element_ids, &project_root_key);
-            let active = store.get_node_property_batch(&element_ids, &active_key);
+            let project_roots = store
+                .get_node_property_batch(&element_ids, &project_root_key)
+                .committed_nodes(&*store, &element_ids);
+            let active = store
+                .get_node_property_batch(&element_ids, &active_key)
+                .committed_nodes(&*store, &element_ids);
             project_roots
                 .into_iter()
                 .zip(active)

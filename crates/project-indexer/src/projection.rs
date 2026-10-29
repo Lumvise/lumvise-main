@@ -84,6 +84,27 @@ impl SemanticIndexProjection {
         })
     }
 
+    /// Uses an established logical source independently of its checkout route.
+    /// Example: two roots use the same source ID when indexing one shared lineage.
+    pub fn with_source(
+        root: &Path,
+        provider_id: &str,
+        source: SemanticSourceUpsert,
+    ) -> Result<Self, ScanError> {
+        if source.semantic_source_id.trim().is_empty()
+            || source.kind.trim().is_empty()
+            || source.root_uri.trim().is_empty()
+        {
+            return Err(invalid(
+                format!("{source:?}"),
+                "expected a source ID, kind and logical URI",
+            ));
+        }
+        let mut projection = Self::new(root, provider_id)?;
+        projection.source = source;
+        Ok(projection)
+    }
+
     /// Returns cumulative work counts. Example: compare files_projected across an
     /// edit to verify unchanged callers reused their fragments.
     pub fn metrics(&self) -> &ProjectionMetrics {
@@ -132,6 +153,7 @@ impl SemanticIndexProjection {
         IndexBatchRequest {
             provider_instance_id: self.provider_id.clone(),
             project_root: self.project_root.clone(),
+            revision_observation: None,
             replace_paths: Vec::new(),
             removed_paths: if scan.is_full_snapshot() {
                 Vec::new()

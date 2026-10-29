@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -63,6 +63,17 @@ impl PluginInvocationCancellation {
     }
 }
 
+/// One trusted runtime frame used to authorize nested capability calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginInvocationFrame {
+    /// Host-only identity for this frame; nested calls retain their parent's frame.
+    pub binding_id: u64,
+    /// Installed package executing this frame.
+    pub plugin_id: String,
+    /// Signed export entered by the runtime.
+    pub export_id: String,
+}
+
 /// Caller-owned lifecycle information for one Plugin Invocation.
 #[derive(Clone, Debug)]
 pub struct PluginInvocationContext {
@@ -70,6 +81,9 @@ pub struct PluginInvocationContext {
     owner_id: String,
     session_id: Option<String>,
     scope_id: Option<String>,
+    scope_epoch: Option<u64>,
+    plugin_chain: Vec<PluginInvocationFrame>,
+    human_interaction: bool,
     class: PluginInvocationClass,
     created_at: Instant,
     deadline: Instant,
@@ -102,6 +116,9 @@ impl PluginInvocationContext {
             owner_id: owner_id.into(),
             session_id: None,
             scope_id: None,
+            scope_epoch: None,
+            plugin_chain: Vec::new(),
+            human_interaction: false,
             class,
             created_at: Instant::now(),
             deadline,
@@ -119,6 +136,19 @@ impl PluginInvocationContext {
         &self.owner_id
     }
 
+    /// Marks an invocation entered by the native human command adapter, never by wire input.
+    /// Example: `let native = context.with_human_interaction();` before dispatching a signed command.
+    pub fn with_human_interaction(mut self) -> Self {
+        self.human_interaction = true;
+        self
+    }
+
+    /// Reports the host-only origin flag; request owner/session strings cannot set it.
+    /// Example: `assert!(!context.is_human_interaction());` for a new MCP context.
+    pub fn is_human_interaction(&self) -> bool {
+        self.human_interaction
+    }
+
     /// Returns the optional caller transport session identity.
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
@@ -127,6 +157,37 @@ impl PluginInvocationContext {
     /// Returns the optional signed route scope identity.
     pub fn scope_id(&self) -> Option<&str> {
         self.scope_id.as_deref()
+    }
+
+    /// Returns the registered scope generation, fencing a replaced session.
+    /// Example: `assert_eq!(context.scope_epoch(), Some(2));` after binding epoch 2.
+    pub fn scope_epoch(&self) -> Option<u64> {
+        self.scope_epoch
+    }
+
+    /// Binds the host-validated route generation; nested invocations inherit it.
+    /// Example: `let context = context.with_scope_epoch(Some(2));`.
+    pub fn with_scope_epoch(mut self, epoch: Option<u64>) -> Self {
+        self.scope_epoch = epoch;
+        self
+    }
+
+    /// Returns the runtime-owned call path, never a plugin-supplied argument.
+    /// Example: a Knowledge publication ends with `builtin.knowledge`, `builtin.semantic`.
+    pub fn plugin_chain(&self) -> &[PluginInvocationFrame] {
+        &self.plugin_chain
+    }
+
+    /// Records a host-dispatched installed export; never copy these fields from tool input.
+    /// Example: `let nested = context.enter_plugin("builtin.agents", "get_agent");`.
+    pub fn enter_plugin(mut self, plugin_id: &str, export_id: &str) -> Self {
+        static NEXT_FRAME: AtomicU64 = AtomicU64::new(1);
+        self.plugin_chain.push(PluginInvocationFrame {
+            binding_id: NEXT_FRAME.fetch_add(1, Ordering::Relaxed),
+            plugin_id: plugin_id.into(),
+            export_id: export_id.into(),
+        });
+        self
     }
 
     /// Adds transport-neutral session and optional scope correlation.
@@ -437,6 +498,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nested_calls_preserve_scope_epoch_and_only_extend_the_runtime_call_path() {
+        let parent = PluginInvocationContext::new(
+            "request",
+            "owner",
+            PluginInvocationClass::Foreground,
+            Instant::now() + Duration::from_secs(60),
+        )
+        .with_route_identity("session", Some("assistant_session".into()))
+        .with_scope_epoch(Some(7))
+        .enter_plugin("builtin.knowledge", "document.create");
+        let nested = parent
+            .clone()
+            .enter_plugin("builtin.semantic", "ingest_index_batch");
+        assert_eq!(nested.scope_epoch(), Some(7));
+        assert_eq!(nested.session_id(), parent.session_id());
+        assert_eq!(parent.plugin_chain().len(), 1);
+        assert_eq!(nested.plugin_chain()[0], parent.plugin_chain()[0]);
+        assert_eq!(nested.plugin_chain()[1].export_id, "ingest_index_batch");
+        assert_ne!(
+            nested.plugin_chain()[0].binding_id,
+            nested.plugin_chain()[1].binding_id
+        );
+    }
+
+    #[test]
     fn context_exposes_identity_class_deadline_and_shared_cancellation() {
         let deadline = Instant::now() + Duration::from_secs(1);
         let context = PluginInvocationContext::new(
@@ -446,6 +532,13 @@ mod tests {
             deadline,
         );
         let cancellation = context.cancellation();
+        assert!(!context.is_human_interaction());
+        let native = context
+            .clone()
+            .with_human_interaction()
+            .enter_plugin("builtin.knowledge", "inspect_document_space");
+        assert!(native.is_human_interaction());
+        assert!(!context.is_human_interaction());
 
         cancellation.cancel();
 

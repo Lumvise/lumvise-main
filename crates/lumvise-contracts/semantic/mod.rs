@@ -1,11 +1,23 @@
 pub mod artifacts;
+pub mod citations;
+pub mod document_citations;
 pub mod documents;
 pub mod indexing;
 pub mod knowledge;
+pub mod knowledge_writes;
+pub mod memory;
+pub mod record_payloads;
+pub mod revisions;
 pub mod v2;
 
 pub use artifacts::*;
+pub use citations::*;
+pub use document_citations::*;
 pub use documents::*;
 pub use indexing::*;
 pub use knowledge::*;
+pub use knowledge_writes::*;
+pub use memory::*;
+pub use record_payloads::*;
+pub use revisions::*;
 pub use v2::*;

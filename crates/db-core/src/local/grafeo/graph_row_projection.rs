@@ -1,6 +1,6 @@
 use crate::{
-    ArtifactTextVector, Result, SemanticArtifact, SemanticElement, SemanticMatchEvidence,
-    SemanticRelationship, StoredArtifactTextVector, StoredSemanticElementNameVector,
+    ArtifactTextVector, Result, SemanticArtifact, SemanticElement, SemanticRelationship,
+    StoredArtifactTextVector, StoredSemanticElementNameVector,
 };
 use grafeo::Value as GrafeoValue;
 use serde_json::Value;
@@ -8,7 +8,6 @@ use serde_json::Value;
 const PROJECT_ROOT_PROPERTY: &str = "project_root";
 const SEMANTIC_ELEMENT_ID_PROPERTY: &str = "semantic_element_id";
 const ARTIFACT_ID_PROPERTY: &str = "artifact_id";
-const PATH_PROPERTY: &str = "path";
 const RELATIONSHIP_KIND_PROPERTY: &str = "relationship_kind";
 const RELATIONSHIP_LABEL_PROPERTY: &str = "label";
 const RELATIONSHIP_METADATA_PROPERTY: &str = "metadata_json";
@@ -18,21 +17,7 @@ const TARGET_ELEMENT_ID_PROPERTY: &str = "target_element_id";
 pub(crate) fn semantic_element_from_node(
     node: &grafeo_core::graph::lpg::Node,
 ) -> Option<SemanticElement> {
-    Some(SemanticElement {
-        project_root: string_property(node, PROJECT_ROOT_PROPERTY)?,
-        semantic_element_id: string_property(node, SEMANTIC_ELEMENT_ID_PROPERTY)?,
-        semantic_source_id: string_property(node, "semantic_source_id")?,
-        path: string_property(node, PATH_PROPERTY)?,
-        element_kind: string_property(node, "element_kind")?,
-        name: string_property(node, "name")?,
-        parent_element_id: non_empty_property(node, "parent_element_id"),
-        content_fingerprint: non_empty_property(node, "content_fingerprint"),
-        start_line: non_negative_i64_property(node, "start_line"),
-        end_line: non_negative_i64_property(node, "end_line"),
-        lifecycle: string_property(node, "lifecycle").unwrap_or_else(|| "active".to_string()),
-        match_evidence: match_evidence_from_node(node),
-        metadata: json_property(node, "metadata_json"),
-    })
+    super::graph_rows::element_from_properties(|key| node.get_property(key))
 }
 
 pub(crate) fn semantic_artifact_from_node(
@@ -243,17 +228,6 @@ fn vector_props(
         ),
     ]);
     Ok(properties)
-}
-
-fn match_evidence_from_node(node: &grafeo_core::graph::lpg::Node) -> Option<SemanticMatchEvidence> {
-    let confidence = non_negative_i64_property(node, "match_confidence")?;
-    Some(SemanticMatchEvidence {
-        match_confidence: u8::try_from(confidence).ok()?,
-        simhash_distance: non_negative_i64_property(node, "simhash_distance")
-            .and_then(|value| u32::try_from(value).ok()),
-        matched_at: non_empty_property(node, "matched_at")?,
-        precaution: non_empty_property(node, "precaution"),
-    })
 }
 
 pub(crate) fn storage_alias_properties(metadata: &Value) -> Vec<(&'static str, GrafeoValue)> {

@@ -1,7 +1,7 @@
 use crate::session_project_binding::SessionProjectBinding;
 use crate::{app_bridge::AppBridgeRuntime, tool_catalog::tool_catalog};
 use lumvise_mcp_core::{
-    AppBridgeInvocationResponseV1, AppBridgeInvocationStatusV1, LumviseMcpServer, McpApplication,
+    AppBridgeInvocationResponseV2, AppBridgeInvocationStatusV2, LumviseMcpServer, McpApplication,
     McpApplicationError, McpInvocationContext, McpInvocationFailureKind, McpTool,
 };
 use serde_json::Value;
@@ -135,13 +135,16 @@ fn default_native_assistant_caller() -> NativeAssistantCaller {
 /// ```
 pub fn open_server(config: McpAppConfig) -> LumviseMcpServer {
     let owner_id = config.native_assistant_caller.instance_id.clone();
+    let project_binding = SessionProjectBinding::new(
+        config.app_bridge.clone(),
+        config.initial_project_root,
+        config.default_project_root,
+    );
+    let app_bridge = AppBridgeRuntime::start(config.app_bridge)
+        .with_project_connection(project_binding.connection_id());
     let application = LumviseMcpApplication {
-        project_binding: SessionProjectBinding::new(
-            config.app_bridge.clone(),
-            config.initial_project_root,
-            config.default_project_root,
-        ),
-        app_bridge: AppBridgeRuntime::start(config.app_bridge),
+        project_binding,
+        app_bridge,
         native_assistant_caller: config.native_assistant_caller,
         bound_assistant_session: Mutex::new(None),
     };
@@ -318,6 +321,7 @@ impl LumviseMcpApplication {
                 &capability_id,
                 &bound.session_id,
                 ASSISTANT_SCOPE_ID,
+                bound.session_epoch,
                 Value::Object(input),
                 true,
                 Duration::from_secs(55),
@@ -490,11 +494,11 @@ fn remove_bound_session_fields(tool: &mut Value) {
 }
 
 fn decode_controlled_response(
-    response: AppBridgeInvocationResponseV1,
+    response: AppBridgeInvocationResponseV2,
 ) -> std::result::Result<Value, McpApplicationError> {
-    let status = AppBridgeInvocationStatusV1::try_from(response.status)
-        .unwrap_or(AppBridgeInvocationStatusV1::Internal);
-    if status == AppBridgeInvocationStatusV1::Completed {
+    let status = AppBridgeInvocationStatusV2::try_from(response.status)
+        .unwrap_or(AppBridgeInvocationStatusV2::Internal);
+    if status == AppBridgeInvocationStatusV2::Completed {
         return serde_json::from_slice(&response.output_json)
             .map_err(|error| McpApplicationError::invocation(error.to_string()));
     }
@@ -505,15 +509,15 @@ fn decode_controlled_response(
     ))
 }
 
-fn failure_kind(status: AppBridgeInvocationStatusV1) -> McpInvocationFailureKind {
+fn failure_kind(status: AppBridgeInvocationStatusV2) -> McpInvocationFailureKind {
     match status {
-        AppBridgeInvocationStatusV1::Busy => McpInvocationFailureKind::Busy,
-        AppBridgeInvocationStatusV1::DeadlineExceeded => McpInvocationFailureKind::DeadlineExceeded,
-        AppBridgeInvocationStatusV1::Cancelled => McpInvocationFailureKind::Cancelled,
-        AppBridgeInvocationStatusV1::Unavailable => McpInvocationFailureKind::Unavailable,
-        AppBridgeInvocationStatusV1::Completed
-        | AppBridgeInvocationStatusV1::Failed
-        | AppBridgeInvocationStatusV1::Internal => McpInvocationFailureKind::Failed,
+        AppBridgeInvocationStatusV2::Busy => McpInvocationFailureKind::Busy,
+        AppBridgeInvocationStatusV2::DeadlineExceeded => McpInvocationFailureKind::DeadlineExceeded,
+        AppBridgeInvocationStatusV2::Cancelled => McpInvocationFailureKind::Cancelled,
+        AppBridgeInvocationStatusV2::Unavailable => McpInvocationFailureKind::Unavailable,
+        AppBridgeInvocationStatusV2::Completed
+        | AppBridgeInvocationStatusV2::Failed
+        | AppBridgeInvocationStatusV2::Internal => McpInvocationFailureKind::Failed,
     }
 }
 

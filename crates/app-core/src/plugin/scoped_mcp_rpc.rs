@@ -244,6 +244,7 @@ fn scoped_lifecycle(
         owner_id: context.owner_id.clone(),
         session_id: context.session_id.clone(),
         scope_id: Some(context.scope_id.clone()),
+        scope_epoch: context.session_epoch,
         deadline: Instant::now() + Duration::from_secs(60),
     }
 }

@@ -53,6 +53,13 @@ impl PluginHostServices {
         }
     }
 
+    /// True when the assistant talks through OpenAI Realtime or Gemini Live, so it needs
+    /// neither local speech model; other speech callers still load them on first use.
+    pub(crate) fn realtime_audio_selected(&self) -> bool {
+        self.audio_selection()
+            .is_ok_and(|selection| selection["enabled"] == true)
+    }
+
     fn audio_selection(&self) -> Result<Value, HostCapabilityError> {
         let frontend = self
             .frontend

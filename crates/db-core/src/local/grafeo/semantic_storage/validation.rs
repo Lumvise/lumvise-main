@@ -33,17 +33,17 @@ pub(super) fn validate_duplicate_repair_inputs(
 }
 
 pub(crate) fn validate_element(element: &SemanticElement) -> Result<()> {
-    element.validate()
+    Ok(element.validate()?)
 }
 pub(crate) fn validate_artifact(artifact: &SemanticArtifact) -> Result<()> {
-    artifact.validate()
+    Ok(artifact.validate()?)
 }
 #[cfg(test)]
 pub(crate) fn validate_artifact_shell(artifact: &SemanticArtifact) -> Result<()> {
-    artifact.validate_shell()
+    Ok(artifact.validate_shell()?)
 }
 pub(super) fn validate_relationship(relationship: &SemanticRelationship) -> Result<()> {
-    relationship.validate()
+    Ok(relationship.validate()?)
 }
 pub(super) fn validate_partition_write_inputs(
     element_changes: &[SemanticElement],
@@ -73,7 +73,7 @@ pub(super) fn validate_semantic_sync_inputs(
 }
 
 pub(super) fn validate_partition(partition: &SemanticPartition) -> Result<()> {
-    partition.validate()
+    Ok(partition.validate()?)
 }
 
 pub(super) fn elements_in_partition(

@@ -5,13 +5,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
 mod audio_sessions;
+mod construction;
 mod document_conversion;
+mod project_import;
 mod speech_access;
 mod speech_playback;
 use audio_sessions::{AUDIO_SESSION, LiveAudioConnections};
@@ -20,12 +22,28 @@ use background_jobs::BackgroundJobAdapter;
 mod canvas_images;
 use canvas_images::add_image as frontend_canvas_add_image;
 mod link_decisions;
+mod llm;
+mod project_context;
+mod project_execution;
+#[cfg(test)]
+use llm::MAX_LLM_MESSAGES;
+use llm::{
+    NeutralLlmRequest, apply_configured_llm_selection, non_empty_option, resolve_llm_selection,
+    selected_llm_executor,
+};
+#[cfg(test)]
+use project_execution::project_execution_error;
 mod turn_wait;
 use super::voice_playback_transport::{VoicePlaybackTransportEvent, sample_rate_from_media_type};
 pub(crate) use link_decisions::LinkDecisionCredentials;
 use link_decisions::LinkDecisionService;
 use turn_wait::TurnWaitAdapter;
 
+use super::host_capability_catalog::{
+    ASSISTANT_ENGINE_AVAILABILITY, BACKGROUND_JOB, EXCLUSIVE_LANE, FRONTEND_ACTION,
+    FRONTEND_CANVAS, HOST_EXTENSION, NEURAL_DECISIONS, NEURAL_LLM, PROJECT_EXECUTION, SCOPED_MCP,
+    SPEECH_AVAILABILITY, SPEECH_TO_TEXT, TEXT_TO_SPEECH, TURN_WAIT,
+};
 use lumvise_db_core::SemanticPersistence;
 use lumvise_frontend_core::{
     AssistantEngine, CanvasPatch, DashboardView, FrontendCore, HostExtension, MAIN_CANVAS_ID,
@@ -47,30 +65,20 @@ use lumvise_resource_routing::InvocationControl;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::host_capability_catalog::{
-    ASSISTANT_ENGINE_AVAILABILITY, BACKGROUND_JOB, EXCLUSIVE_LANE, FRONTEND_ACTION,
-    FRONTEND_CANVAS, HOST_EXTENSION, NEURAL_DECISIONS, NEURAL_LLM, PROJECT_EXECUTION, SCOPED_MCP,
-    SPEECH_AVAILABILITY, SPEECH_TO_TEXT, TEXT_TO_SPEECH, TURN_WAIT,
-};
-
-const MAX_LLM_MESSAGES: usize = 128;
-const MAX_LLM_SERVERS: usize = 16;
-const MAX_LLM_TEXT_BYTES: usize = 256 * 1024;
 const MAX_TTS_TEXT_BYTES: usize = 64 * 1024;
 const MAX_CANVAS_INPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CANVAS_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_LLM_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 type SharedSpeechRecognizer = Arc<Mutex<Option<Arc<dyn SpeechRecognizer>>>>;
 type SharedSpeechSynthesizer = Arc<Mutex<Option<Arc<dyn SpeechSynthesizer>>>>;
 
-pub(super) struct InvocationControlBridge {
+pub(crate) struct InvocationControlBridge {
     control: InvocationControl,
     monitoring: Arc<AtomicBool>,
 }
 
 impl InvocationControlBridge {
-    pub(super) fn control(&self) -> InvocationControl {
+    pub(crate) fn control(&self) -> InvocationControl {
         self.control.clone()
     }
 }
@@ -84,6 +92,10 @@ impl Drop for InvocationControlBridge {
 /// Shared host state constructed before production plugin restore.
 pub(crate) struct PluginHostServices {
     semantic: Arc<dyn SemanticPersistence>,
+    project_import: project_import::ProjectImportHostState,
+    source_import_authorization: Arc<super::host_capability_broker::SourceImportAuthorization>,
+    index_publication_client: Arc<OnceLock<String>>,
+    mcp_session_membership: Arc<crate::app::mcp_session_registry::McpSessionMembership>,
     audio_connections: LiveAudioConnections,
     frontend: Arc<Mutex<FrontendCore>>,
     llms: Arc<Mutex<LlmProviderRegistry>>,
@@ -117,65 +129,15 @@ pub(crate) struct PluginHostServices {
 /// real playback-status report (`report_voice_playback_status`) can notify
 /// whichever plugin/session opened it — kept as opaque strings on purpose,
 /// Workspace playback stays outside the floating Assistant projection.
-struct PlaybackOwner {
-    plugin_id: String,
-    session_id: String,
-    segment_index: u64,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlaybackOwner {
+    pub(crate) plugin_id: String,
+    pub(crate) session_id: String,
+    pub(crate) segment_index: u64,
+    pub(crate) failure: Option<String>,
 }
 
 impl PluginHostServices {
-    pub(crate) fn new(
-        frontend: FrontendCore,
-        llms: LlmProviderRegistry,
-        semantic: Arc<dyn SemanticPersistence>,
-    ) -> Arc<Self> {
-        let llms = Arc::new(Mutex::new(llms));
-        let llm_executors = LlmExecutorRegistry::new(Arc::clone(&llms));
-        let assistant_llm_executors = LlmExecutorRegistry::new(Arc::clone(&llms));
-        let workspace_llm_executors = LlmExecutorRegistry::new(Arc::clone(&llms));
-        let activity = Arc::new(crate::workspace_activity::WorkspaceActivity::default());
-        let frontend = Arc::new(Mutex::new(frontend));
-        let speech_recognizer = Arc::new(Mutex::new(None));
-        let speech_synthesizer = Arc::new(Mutex::new(None));
-        Arc::new(Self {
-            semantic,
-            audio_connections: LiveAudioConnections::default(),
-            frontend: Arc::clone(&frontend),
-            llms: Arc::clone(&llms),
-            llm_executors: Arc::clone(&llm_executors),
-            assistant_llm_executors: Arc::clone(&assistant_llm_executors),
-            workspace_llm_executors: Arc::clone(&workspace_llm_executors),
-            activity: Arc::clone(&activity),
-            frontend_actions: Arc::new(Mutex::new(Vec::new())),
-            frontend_action_ids: Mutex::new(HashSet::new()),
-            scoped_mcp_base_url: Arc::new(Mutex::new(None)),
-            exclusive_lanes: Arc::new(ExclusiveInvocationLanes::new()),
-            speech_recognizer,
-            speech_synthesizer,
-            speech_to_text_executor: Mutex::new(None),
-            text_to_speech_executor: Mutex::new(None),
-            workspace_speech_executor: Mutex::new(None),
-            voice_playback_transport: Arc::new(
-                super::voice_playback_transport::VoicePlaybackTransport::new(),
-            ),
-            playback_owners: Arc::new(Mutex::new(HashMap::new())),
-            playback_controls: Arc::new(Mutex::new(HashMap::new())),
-            playback_opened: Arc::new(Mutex::new(HashSet::new())),
-            playback_sequences: Arc::new(Mutex::new(HashMap::new())),
-            background_jobs: BackgroundJobAdapter::new(
-                llm_executors,
-                assistant_llm_executors,
-                workspace_llm_executors,
-                frontend,
-                activity,
-            ),
-            turn_wait: TurnWaitAdapter::new(),
-            project_execution: Mutex::new(None),
-            host_extensions: Mutex::new(HashMap::new()),
-            link_decisions: Mutex::new(None),
-        })
-    }
-
     /// Shared handle to the bounded voice-playback event transport; the
     /// desktop bridge's `subscribe_voice_playback` command is the one
     /// consumer, `text_to_speech` below the one producer.
@@ -220,12 +182,14 @@ impl PluginHostServices {
         if let Ok(mut slot) = self.speech_recognizer.lock() {
             *slot = Some(service);
         }
+        self.release_speech_to_text_executor();
     }
 
     pub(crate) fn install_speech_synthesizer(&self, service: Arc<dyn SpeechSynthesizer>) {
         if let Ok(mut slot) = self.speech_synthesizer.lock() {
             *slot = Some(service);
         }
+        self.release_speech_synthesis_executors();
     }
 
     /// Empties the recognizer slot so speech recognition is unavailable until one is installed.
@@ -233,12 +197,33 @@ impl PluginHostServices {
         if let Ok(mut slot) = self.speech_recognizer.lock() {
             *slot = None;
         }
+        self.release_speech_to_text_executor();
     }
 
     /// Empties the synthesizer slot so speech synthesis is unavailable until one is installed.
     pub(crate) fn clear_speech_synthesizer(&self) {
         if let Ok(mut slot) = self.speech_synthesizer.lock() {
             *slot = None;
+        }
+        self.release_speech_synthesis_executors();
+    }
+
+    /// A cached executor keeps the replaced engine and its model memory alive, so every slot
+    /// change drops it. Callers release the slot guard first, so the locks never nest.
+    fn release_speech_to_text_executor(&self) {
+        if let Ok(mut cached) = self.speech_to_text_executor.lock() {
+            *cached = None;
+        }
+    }
+
+    fn release_speech_synthesis_executors(&self) {
+        for cache in [
+            &self.text_to_speech_executor,
+            &self.workspace_speech_executor,
+        ] {
+            if let Ok(mut cached) = cache.lock() {
+                *cached = None;
+            }
         }
     }
 
@@ -365,52 +350,6 @@ impl PluginHostServices {
             TEXT_TO_SPEECH => self.text_to_speech(plugin_id, input),
             _ => self.invoke(plugin_id, capability_id, input),
         }
-    }
-
-    /// Whether the app has an Assistant Engine selected and active — reuses
-    /// the exact background-job provider/model resolution so the two never
-    /// drift (issue #49).
-    fn assistant_engine_availability(&self) -> Result<Value, HostCapabilityError> {
-        let (provider, model) =
-            configured_llm_selection(&self.frontend, ASSISTANT_ENGINE_AVAILABILITY)?;
-        // Lumvise Cloud chooses its model on the website; its saved model is intentionally empty.
-        let configured = provider.as_deref() == Some(AssistantEngine::LumviseCloud.value())
-            || (provider.is_some() && model.is_some());
-        Ok(json!({"available": configured}))
-    }
-
-    fn project_execution(
-        &self,
-        plugin_id: &str,
-        input: Value,
-    ) -> Result<Value, HostCapabilityError> {
-        let request: ProjectExecutionHostRequest = decode(PROJECT_EXECUTION, input)?;
-        let service = self
-            .project_execution
-            .lock()
-            .map_err(|_| failed(PROJECT_EXECUTION, "project execution slot mutex poisoned"))?
-            .clone()
-            .ok_or_else(|| unavailable(PROJECT_EXECUTION, "project execution is not installed"))?;
-        let job = match request {
-            ProjectExecutionHostRequest::Submit {
-                project_root,
-                capability_id,
-                idempotency_key,
-                input,
-                priority,
-            } => service.submit(crate::ProjectExecutionRequest {
-                requester_id: plugin_id.to_string(),
-                project_root,
-                capability_id,
-                idempotency_key,
-                input,
-                priority: priority.unwrap_or_default(),
-            }),
-            ProjectExecutionHostRequest::Status { job_id } => service.status(plugin_id, &job_id),
-            ProjectExecutionHostRequest::Cancel { job_id } => service.cancel(plugin_id, &job_id),
-        }
-        .map_err(project_execution_error)?;
-        serde_json::to_value(job).map_err(|error| failed(PROJECT_EXECUTION, &error.to_string()))
     }
 
     fn frontend_action(&self, input: Value) -> Result<Value, HostCapabilityError> {
@@ -620,33 +559,6 @@ impl PluginHostServices {
         bounded_output(FRONTEND_CANVAS, value, MAX_CANVAS_OUTPUT_BYTES)
     }
 
-    fn neural_llm(
-        &self,
-        plugin_id: &str,
-        input: Value,
-        control: LlmExecutionControl,
-    ) -> Result<Value, HostCapabilityError> {
-        let mut request: NeutralLlmRequest = decode(NEURAL_LLM, input)?;
-        request.validate()?;
-        let provider_id = resolve_llm_selection(&self.frontend, NEURAL_LLM, &mut request)?;
-        let ticket = self.activity.track_llm(plugin_id, &provider_id);
-        let result = selected_llm_executor(
-            plugin_id,
-            request.conversation_id.as_deref(),
-            &self.llm_executors,
-            &self.assistant_llm_executors,
-            &self.workspace_llm_executors,
-        )
-        .complete(&provider_id, request.into_neural(), ticket.control(control));
-        ticket.finish(&result);
-        let response = result.map_err(llm_execution_error)?;
-        bounded_output(
-            NEURAL_LLM,
-            json!({"response": response}),
-            MAX_LLM_OUTPUT_BYTES,
-        )
-    }
-
     fn speech_to_text(
         &self,
         input: Value,
@@ -730,27 +642,11 @@ fn workspace_session(session_id: &str) -> bool {
     session_id.starts_with("workspace:")
 }
 
-fn selected_llm_executor<'a>(
-    plugin_id: &str,
-    conversation_id: Option<&str>,
-    ordinary: &'a Arc<LlmExecutorRegistry>,
-    assistant: &'a Arc<LlmExecutorRegistry>,
-    workspace: &'a Arc<LlmExecutorRegistry>,
-) -> &'a Arc<LlmExecutorRegistry> {
-    if plugin_id == "builtin.assistant" && conversation_id.is_some_and(workspace_session) {
-        workspace
-    } else if plugin_id == "builtin.assistant" {
-        assistant
-    } else {
-        ordinary
-    }
-}
-
 /// Converts the Plugin Runtime lifecycle into the Neural Core lifecycle at the
 /// App Core boundary. Explicit runtime cancellation remains cancellation; the
 /// runtime deadline becomes the shared control deadline so the executor can
 /// classify it as a recoverable provider-turn timeout.
-pub(super) fn invocation_control(context: &PluginInvocationContext) -> InvocationControlBridge {
+pub(crate) fn invocation_control(context: &PluginInvocationContext) -> InvocationControlBridge {
     let deadline = context.deadline();
     let control = InvocationControl::with_deadline(
         deadline
@@ -779,10 +675,6 @@ pub(super) fn invocation_control(context: &PluginInvocationContext) -> Invocatio
     }
 }
 
-fn llm_execution_error(error: LlmFailure) -> HostCapabilityError {
-    failed(NEURAL_LLM, &error.message)
-}
-
 fn speech_execution_error(capability: &str, error: SpeechExecutionError) -> HostCapabilityError {
     match error {
         SpeechExecutionError::Service(message) => failed(capability, &message),
@@ -804,25 +696,6 @@ fn cleanup_synthesis(
     }
     if let Ok(mut map) = sequences.lock() {
         map.remove(playback_id);
-    }
-}
-
-fn project_execution_error(error: crate::ProjectExecutionError) -> HostCapabilityError {
-    match error {
-        crate::ProjectExecutionError::CapacityExceeded { actual, maximum } => {
-            quota(PROJECT_EXECUTION, actual, maximum)
-        }
-        crate::ProjectExecutionError::ProviderQueueFull { .. } => HostCapabilityError::new(
-            PROJECT_EXECUTION,
-            "host_capability_quota_exceeded",
-            format!("{PROJECT_EXECUTION} quota exceeded: {error}"),
-            true,
-        ),
-        crate::ProjectExecutionError::ProviderUnavailable { .. }
-        | crate::ProjectExecutionError::JobNotFound { .. } => {
-            unavailable(PROJECT_EXECUTION, &error.to_string())
-        }
-        error => failed(PROJECT_EXECUTION, &error.to_string()),
     }
 }
 
@@ -882,109 +755,6 @@ struct LaneRequest {
     owner_id: String,
     #[serde(default)]
     session_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-enum ProjectExecutionHostRequest {
-    Submit {
-        project_root: String,
-        capability_id: String,
-        idempotency_key: String,
-        input: Value,
-        #[serde(default)]
-        priority: Option<crate::ProjectExecutionPriority>,
-    },
-    Status {
-        job_id: String,
-    },
-    Cancel {
-        job_id: String,
-    },
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct NeutralLlmRequest {
-    #[serde(default)]
-    pub(super) provider_id: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    conversation_id: Option<String>,
-    #[serde(default)]
-    llm_session_id: Option<String>,
-    messages: Vec<LlmMessage>,
-    mcp_servers: Vec<LlmMcpServerConfig>,
-    #[serde(default)]
-    options: LlmRequestOptions,
-}
-
-impl NeutralLlmRequest {
-    pub(super) fn validate(&self) -> Result<(), HostCapabilityError> {
-        if self.messages.len() > MAX_LLM_MESSAGES {
-            return Err(quota(NEURAL_LLM, self.messages.len(), MAX_LLM_MESSAGES));
-        }
-        if self.mcp_servers.len() > MAX_LLM_SERVERS {
-            return Err(quota(NEURAL_LLM, self.mcp_servers.len(), MAX_LLM_SERVERS));
-        }
-        let bytes = self
-            .messages
-            .iter()
-            .map(|message| message.role.len() + message.content.len())
-            .sum::<usize>();
-        if bytes > MAX_LLM_TEXT_BYTES {
-            return Err(quota(NEURAL_LLM, bytes, MAX_LLM_TEXT_BYTES));
-        }
-        for message in &self.messages {
-            require_non_empty(NEURAL_LLM, &message.role, "message role")?;
-            require_non_empty(NEURAL_LLM, &message.content, "message content")?;
-        }
-        if let Some(temperature) = self.options.temperature {
-            if !(0.0..=2.0).contains(&temperature) {
-                return Err(invalid(
-                    NEURAL_LLM,
-                    &json!(temperature),
-                    "temperature within 0.0 through 2.0",
-                ));
-            }
-        }
-        if let Some(tokens) = self.options.max_output_tokens {
-            if tokens == 0 || tokens > 32768 {
-                return Err(invalid(
-                    NEURAL_LLM,
-                    &json!(tokens),
-                    "max_output_tokens from 1 through 32768",
-                ));
-            }
-        }
-        if let Some(LlmResponseFormat::JsonSchema { name, schema, .. }) =
-            self.options.response_format.as_ref()
-        {
-            if name.trim().is_empty() || !schema.is_object() {
-                return Err(invalid(
-                    NEURAL_LLM,
-                    &json!(self.options.response_format),
-                    "json_schema format with non-empty name and object schema",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn into_neural(self) -> LlmRequest {
-        LlmRequest {
-            options: self.options,
-            messages: self.messages,
-            stream: self.provider_id.as_deref() == Some(AssistantEngine::LumviseCloud.value()),
-            provider_id: self.provider_id,
-            model: self.model,
-            conversation_id: self.conversation_id,
-            provider_session_id: self.llm_session_id,
-            mcp_servers: self.mcp_servers,
-            modality_inputs: Vec::new(),
-        }
-    }
 }
 
 fn exact_object<'a>(
@@ -1087,55 +857,6 @@ fn parse_orb_mode(payload: &Value) -> Result<OrbMode, HostCapabilityError> {
             "orb mode idle, session, activity, or error",
         )),
     }
-}
-fn resolve_llm_selection(
-    frontend: &Mutex<FrontendCore>,
-    capability: &str,
-    request: &mut NeutralLlmRequest,
-) -> Result<String, HostCapabilityError> {
-    apply_configured_llm_selection(frontend, capability, request)?
-        .ok_or_else(|| unavailable(capability, "no provider_id was selected"))
-}
-/// Fills `provider_id`/`model` from the app's configured assistant engine
-/// when the caller left them unset. Returns `None` (never errors on a
-/// missing provider) when neither an explicit nor a configured provider is
-/// available, so callers that can defer resolution to later execution
-/// (`runtime.background_job` queues a job before the provider ever runs)
-/// accept an unresolved request as-is; `resolve_llm_selection` above layers
-/// the immediate hard error synchronous callers (`neural_llm`) need.
-fn apply_configured_llm_selection(
-    frontend: &Mutex<FrontendCore>,
-    capability: &str,
-    request: &mut NeutralLlmRequest,
-) -> Result<Option<String>, HostCapabilityError> {
-    let explicit_provider = non_empty_option(request.provider_id.as_deref()).map(str::to_owned);
-    let (configured_provider, configured_model) = configured_llm_selection(frontend, capability)?;
-    let provider_id = explicit_provider.clone().or(configured_provider.clone());
-    request.provider_id = provider_id.clone();
-    if non_empty_option(request.model.as_deref()).is_none()
-        && explicit_provider
-            .as_ref()
-            .is_none_or(|selected| Some(selected) == configured_provider.as_ref())
-    {
-        request.model = configured_model;
-    }
-    Ok(provider_id)
-}
-fn configured_llm_selection(
-    frontend: &Mutex<FrontendCore>,
-    capability: &str,
-) -> Result<(Option<String>, Option<String>), HostCapabilityError> {
-    let frontend = frontend
-        .lock()
-        .map_err(|_| failed(capability, "frontend mutex poisoned"))?;
-    let settings = frontend.app_settings();
-    let provider = (settings.assistant_engine != AssistantEngine::NativeMcp)
-        .then(|| settings.assistant_engine.value().to_owned());
-    let model = non_empty_option(settings.assistant_model.as_deref()).map(str::to_owned);
-    Ok((provider, model))
-}
-fn non_empty_option(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 fn require_non_empty(
     capability: &str,

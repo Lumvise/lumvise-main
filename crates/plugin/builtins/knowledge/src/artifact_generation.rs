@@ -10,6 +10,11 @@ use crate::{
     storage,
 };
 
+mod jobs;
+#[cfg(test)]
+use jobs::GenerationDocumentBase;
+use jobs::{GenerationJobScope, PendingArtifactJob};
+
 const CAPABILITY: &str = "runtime.project_execution";
 const GENERATOR: &str = "semantic.generate_functional_artifacts.v1";
 const JOBS: &str = "knowledge_functional_artifact_jobs";
@@ -34,18 +39,6 @@ pub(crate) enum SubmitPriority {
 /// spinning through submit/lost cycles forever.
 const MAX_LOST_RESUBMITS: u32 = 3;
 
-#[derive(Clone, Deserialize, Serialize)]
-struct PendingArtifactJob {
-    job_id: String,
-    project_root: String,
-    semantic_element_id: String,
-    content_fingerprint: String,
-    #[serde(default)]
-    priority: SubmitPriority,
-    #[serde(default)]
-    lost_resubmits: u32,
-}
-
 #[derive(Deserialize)]
 struct ProjectExecutionJob {
     status: String,
@@ -60,6 +53,28 @@ pub(crate) struct ArtifactGenerationFailure {
     pub(crate) content_fingerprint: String,
     pub(crate) reason_code: String,
     pub(crate) reason: String,
+}
+
+impl ArtifactGenerationFailure {
+    fn for_pending(pending: &PendingArtifactJob, reason_code: String, reason: String) -> Self {
+        Self {
+            project_root: pending.project_root.clone(),
+            semantic_element_id: pending.semantic_element_id.clone(),
+            content_fingerprint: pending.content_fingerprint.clone(),
+            reason_code,
+            reason,
+        }
+    }
+
+    fn for_element(element: &SemanticElement, error: &PluginError) -> Self {
+        Self {
+            project_root: element.project_root.clone(),
+            semantic_element_id: element.semantic_element_id.clone(),
+            content_fingerprint: element.content_fingerprint.clone().unwrap_or_default(),
+            reason_code: error.code.clone(),
+            reason: error.message.clone(),
+        }
+    }
 }
 
 pub(crate) struct ArtifactGenerationState {
@@ -107,19 +122,26 @@ pub(crate) fn submit_missing(
             provider_unavailable: false,
         });
     }
-    let pending = storage::list::<PendingArtifactJob>(context, JOBS, None)?;
-    let failures = storage::list::<ArtifactGenerationFailure>(context, FAILURES, None)?;
+    let scope = GenerationJobScope::current(context)?;
+    let sources = crate::source_revisions::SelectedSources::for_documents(
+        context,
+        &elements[0].project_root,
+        artifacts,
+    )?;
+    let pending = scope.pending(context)?;
+    let failures = scope.failures(context)?;
     let mut submitted = 0;
     for element in elements {
         if skip_submission(element, artifacts, &pending, &failures, retry_failed) {
             continue;
         }
         if retry_failed {
-            storage::delete(context, FAILURES, &job_key(element))?;
+            storage::delete(context, FAILURES, &scope.key(element))?;
         }
-        match submit(element, priority, context) {
-            Ok(Some(job)) => {
-                storage::put(context, JOBS, &job_key(element), &job)?;
+        match submit(
+            element, artifacts, priority, &scope, &pending, &sources, context,
+        ) {
+            Ok(Some(_job)) => {
                 submitted += 1;
             }
             Ok(None) => {}
@@ -135,14 +157,10 @@ pub(crate) fn submit_missing(
                     provider_unavailable: false,
                 });
             }
-            Err(error) => {
-                // One invalid target (for example a binary source file that
-                // project execution refuses to read) must not poison the
-                // batch: record it per element so the remaining elements
-                // still submit and later polls skip this one instead of
-                // dead-lettering every delivery.
-                store_submit_failure(element, &error, context)?;
+            Err(error) if documents::is_generation_hold(&error) => {
+                scope.hold(element, &error, context)?;
             }
+            Err(error) => return Err(error),
         }
     }
     Ok(ArtifactSubmission {
@@ -159,14 +177,15 @@ pub(crate) fn poll(
 ) -> Result<Value, PluginError> {
     use std::collections::BTreeMap;
 
-    let pending = storage::list::<PendingArtifactJob>(context, JOBS, None)?;
+    let scope = GenerationJobScope::current(context)?;
+    let pending = scope.pending(context)?;
     let mut completed_by_project = BTreeMap::<String, Vec<PendingArtifactJob>>::new();
     let mut consumption_error = None;
-    for job in pending
+    for mut job in pending
         .into_iter()
         .filter(|job| project_root.is_none_or(|root| job.project_root == root))
     {
-        match consume(&job, context) {
+        match consume(&mut job, context) {
             Ok(true) => completed_by_project
                 .entry(job.project_root.clone())
                 .or_default()
@@ -186,25 +205,24 @@ pub(crate) fn poll(
             .collect::<Vec<_>>();
         cultivation::refresh_reports_for_changed_elements(&project_root, &changed_ids, context)?;
         for job in jobs {
-            storage::delete(context, JOBS, &pending_key(&job))?;
+            job.finish(None, context)?;
             completed += 1;
         }
     }
     if let Some(error) = consumption_error {
         return Err(error);
     }
-    Ok(
-        json!({"pending": storage::list::<PendingArtifactJob>(context, JOBS, None)?.len(),
-        "completed": completed}),
-    )
+    Ok(json!({"pending": scope.pending(context)?.len(),
+        "completed": completed}))
 }
 
 pub(crate) fn state_for(
     elements: &[SemanticElement],
     context: &mut PluginContext<'_>,
 ) -> Result<ArtifactGenerationState, PluginError> {
-    let pending = storage::list::<PendingArtifactJob>(context, JOBS, None)?;
-    let failures = storage::list::<ArtifactGenerationFailure>(context, FAILURES, None)?;
+    let scope = GenerationJobScope::current(context)?;
+    let pending = scope.pending(context)?;
+    let failures = scope.failures(context)?;
     let pending_element_ids = matching_element_ids(elements, &pending);
     let failures = failures
         .into_iter()
@@ -237,42 +255,44 @@ pub(crate) fn missing_element_ids(
 
 fn submit(
     element: &SemanticElement,
+    artifacts: &[KnowledgeDocument],
     priority: SubmitPriority,
+    scope: &GenerationJobScope,
+    pending: &[PendingArtifactJob],
+    sources: &crate::source_revisions::SelectedSources,
     context: &mut PluginContext<'_>,
 ) -> Result<Option<PendingArtifactJob>, PluginError> {
-    let Some(target) = target_input(element) else {
-        return Ok(None);
+    let draft = match pending.iter().find(|job| current_target(element, job)) {
+        Some(draft) => draft.clone(),
+        None => {
+            let draft =
+                PendingArtifactJob::capture(element, artifacts, priority, scope, sources, context)?;
+            draft.replace(None, context)?;
+            draft
+        }
     };
-    let output = context.host_call(
-        CAPABILITY,
-        json!({"operation": "submit", "project_root": element.project_root,
-            "capability_id": GENERATOR,
-            "idempotency_key": format!("functional:{}:{}:{}", element.project_root,
-                element.semantic_element_id,
-                element.content_fingerprint.as_deref().unwrap_or_default()),
-            "input": target, "priority": priority}),
-    )?;
-    let job_id = output["job_id"]
-        .as_str()
-        .ok_or_else(|| invalid_job(&output))?;
-    Ok(Some(PendingArtifactJob {
-        job_id: job_id.into(),
-        project_root: element.project_root.clone(),
-        semantic_element_id: element.semantic_element_id.clone(),
-        content_fingerprint: element.content_fingerprint.clone().unwrap_or_default(),
-        priority,
-        lost_resubmits: 0,
-    }))
+    match draft.start(context) {
+        Ok(started) => Ok(Some(started)),
+        Err(error) if execution_deferred(&error) => Err(error),
+        Err(error) => {
+            store_submit_failure(&draft, &error, context)?;
+            Ok(None)
+        }
+    }
 }
 
 fn consume(
-    pending: &PendingArtifactJob,
+    pending: &mut PendingArtifactJob,
     context: &mut PluginContext<'_>,
 ) -> Result<bool, PluginError> {
-    let output = match context.host_call(
-        CAPABILITY,
-        json!({"operation": "status", "job_id": pending.job_id}),
-    ) {
+    if pending.proposal.is_some() {
+        return publish_generated(pending, context);
+    }
+    let Some(job_id) = pending.job_id.as_ref() else {
+        return start_pending(pending, context);
+    };
+    let output = match context.host_call(CAPABILITY, json!({"operation":"status", "job_id":job_id}))
+    {
         Ok(output) => output,
         Err(error) if error.code == "host_capability_unavailable" => {
             return resubmit(pending, context);
@@ -282,24 +302,44 @@ fn consume(
     let job: ProjectExecutionJob =
         serde_json::from_value(output.clone()).map_err(|error| invalid_status(&output, error))?;
     match job_disposition(&job.status)? {
-        JobDisposition::Pending => return Ok(false),
+        JobDisposition::Pending => Ok(false),
         JobDisposition::TerminalFailure => {
             store_failure(pending, &job, context)?;
-            storage::delete(context, JOBS, &pending_key(pending))?;
-            return Ok(false);
-        }
-        JobDisposition::Succeeded => {}
-    }
-    let generated = decode_generated(job.output.as_ref().unwrap_or(&Value::Null), pending)?;
-    match store_generated(pending, generated, context) {
-        Ok(()) => Ok(true),
-        Err(error) if documents::is_generation_hold(&error) => {
-            store_write_hold(pending, error, context)?;
-            storage::delete(context, JOBS, &pending_key(pending))?;
             Ok(false)
         }
-        Err(error) => Err(error),
+        JobDisposition::Succeeded => complete_generation(pending, job.output, context),
     }
+}
+
+fn complete_generation(
+    pending: &mut PendingArtifactJob,
+    output: Option<Value>,
+    context: &mut PluginContext<'_>,
+) -> Result<bool, PluginError> {
+    let generated = decode_generated(output.as_ref().unwrap_or(&Value::Null), pending)?;
+    if !pending_source_selected(pending, context)? {
+        pending.finish(None, context)?;
+        return Ok(false);
+    }
+    let document = prepare_generated(pending, generated, context)?;
+    pending.freeze_proposal(document, context)?;
+    publish_generated(pending, context)
+}
+
+fn execution_deferred(error: &PluginError) -> bool {
+    error.code == "host_capability_unavailable" || error.code == QUOTA_EXCEEDED
+}
+
+fn start_pending(
+    pending: &mut PendingArtifactJob,
+    context: &mut PluginContext<'_>,
+) -> Result<bool, PluginError> {
+    match pending.start(context) {
+        Ok(started) => *pending = started,
+        Err(error) if execution_deferred(&error) => {}
+        Err(error) => store_submit_failure(pending, &error, context)?,
+    }
+    Ok(false)
 }
 
 fn job_disposition(status: &str) -> Result<JobDisposition, PluginError> {
@@ -318,65 +358,68 @@ fn job_disposition(status: &str) -> Result<JobDisposition, PluginError> {
 }
 
 fn resubmit(
+    pending: &mut PendingArtifactJob,
+    context: &mut PluginContext<'_>,
+) -> Result<bool, PluginError> {
+    if !pending_source_selected(pending, context)? {
+        pending.finish(None, context)?;
+        return Ok(false);
+    }
+    let ids = std::collections::HashSet::from([pending.semantic_element_id.clone()]);
+    let current = storage::elements_by_ids(context, &pending.project_root, &ids)?;
+    if !current
+        .iter()
+        .any(|element| element.lifecycle == "active" && current_target(element, pending))
+    {
+        pending.finish(None, context)?;
+        return Ok(false);
+    }
+    if pending.lost_resubmits >= MAX_LOST_RESUBMITS {
+        return finish_lost(pending, context);
+    }
+    let mut retry = pending.clone();
+    retry.job_id = None;
+    retry.lost_resubmits += 1;
+    retry.replace(Some(pending), context)?;
+    *pending = retry;
+    start_pending(pending, context)
+}
+
+fn pending_source_selected(
     pending: &PendingArtifactJob,
     context: &mut PluginContext<'_>,
 ) -> Result<bool, PluginError> {
-    // A point read: after a restart every stale job lands here, and a full
-    // project snapshot per job overran the invocation deadline.
-    let ids = std::collections::HashSet::from([pending.semantic_element_id.clone()]);
-    let current = storage::elements_by_ids(context, &pending.project_root, &ids)?
-        .into_iter()
-        .find(|element| {
-            element.semantic_element_id == pending.semantic_element_id
-                && element.lifecycle == "active"
-        });
-    let Some(element) = current else {
-        storage::delete(context, JOBS, &pending_key(pending))?;
-        return Ok(false);
-    };
-    let lost_resubmits = pending.lost_resubmits + 1;
-    if lost_resubmits > MAX_LOST_RESUBMITS {
-        let failure = ArtifactGenerationFailure {
-            project_root: pending.project_root.clone(),
-            semantic_element_id: pending.semantic_element_id.clone(),
-            content_fingerprint: pending.content_fingerprint.clone(),
-            reason_code: "generation_lost".into(),
-            reason: format!(
-                "artifact generation job was lost {lost_resubmits} times; retry to resubmit"
-            ),
-        };
-        storage::put(context, FAILURES, &pending_key(pending), &failure)?;
-        storage::delete(context, JOBS, &pending_key(pending))?;
-        return Ok(false);
-    }
-    match submit(&element, pending.priority, context) {
-        Ok(Some(job)) => {
-            let job = PendingArtifactJob {
-                lost_resubmits,
-                ..job
-            };
-            storage::put(context, JOBS, &pending_key(pending), &job)?
-        }
-        Ok(None) => storage::delete(context, JOBS, &pending_key(pending))?,
-        Err(error)
-            if error.code == "host_capability_unavailable" || error.code == QUOTA_EXCEEDED =>
-        {
-            return Ok(false);
-        }
-        Err(error) => {
-            // The stale job must go too, or every poll resubmits and fails again.
-            store_submit_failure(&element, &error, context)?;
-            storage::delete(context, JOBS, &pending_key(pending))?;
-        }
-    }
+    let sources = crate::source_revisions::SelectedSources::load(
+        context,
+        &pending.project_root,
+        std::collections::BTreeSet::from([pending.semantic_element_id.clone()]),
+        None,
+    )?;
+    Ok(sources.matches(&pending.semantic_element_id, &pending.semantic_element_id))
+}
+
+fn finish_lost(
+    pending: &PendingArtifactJob,
+    context: &mut PluginContext<'_>,
+) -> Result<bool, PluginError> {
+    let failure = ArtifactGenerationFailure::for_pending(
+        pending,
+        "generation_lost".into(),
+        format!(
+            "artifact generation job was lost {} times; retry to resubmit",
+            pending.lost_resubmits + 1
+        ),
+    );
+    pending.finish(Some(failure), context)?;
     Ok(false)
 }
 
-fn store_generated(
+fn prepare_generated(
     pending: &PendingArtifactJob,
     generated: GeneratedFunctionalArtifacts,
     context: &mut PluginContext<'_>,
-) -> Result<(), PluginError> {
+) -> Result<KnowledgeDocument, PluginError> {
+    pending.validate_lineage(context)?;
     let subgraph =
         storage::selective_subgraph(context, &pending.project_root, &pending.semantic_element_id)?
             .ok_or_else(|| stale_target(pending))?;
@@ -393,25 +436,33 @@ fn store_generated(
         effects: generated.effects,
     };
     let mut document = functional::generated_document(element, &subgraph.relationships, &summary);
-    let identities = documents::known_source_documents(context, &pending.project_root)?;
-    if let Some(existing) = functional::existing_for_source(&identities, element) {
-        document.document_id = existing.document_id.clone();
+    document.document_id = pending.document.document_id.clone();
+    Ok(document)
+}
+
+fn publish_generated(
+    pending: &PendingArtifactJob,
+    context: &mut PluginContext<'_>,
+) -> Result<bool, PluginError> {
+    pending.validate_lineage(context)?;
+    let document = pending
+        .proposal
+        .as_ref()
+        .ok_or_else(|| invalid_job(&json!(pending)))?;
+    let saved = documents::save_generated(
+        context,
+        &documents::DocumentGenerator::FunctionalContext.owner(&pending.semantic_element_id),
+        document.clone(),
+        pending.document.expected.clone(),
+    );
+    match saved {
+        Ok(_) => Ok(true),
+        Err(error) if documents::is_generation_hold(&error) => {
+            store_write_hold(pending, error, context)?;
+            Ok(false)
+        }
+        Err(error) => Err(error),
     }
-    let current = documents::find_documents(
-        context,
-        &pending.project_root,
-        &std::collections::HashSet::from([document.document_id.clone()]),
-    )?
-    .into_iter()
-    .next();
-    documents::save_generated(
-        context,
-        &documents::DocumentGenerator::FunctionalContext.owner(&element.semantic_element_id),
-        document,
-        current.map(|document| document.lifecycle.revision),
-    )?;
-    storage::delete(context, FAILURES, &pending_key(pending))?;
-    Ok(())
 }
 
 fn store_write_hold(
@@ -419,14 +470,8 @@ fn store_write_hold(
     error: PluginError,
     context: &mut PluginContext<'_>,
 ) -> Result<(), PluginError> {
-    let failure = ArtifactGenerationFailure {
-        project_root: pending.project_root.clone(),
-        semantic_element_id: pending.semantic_element_id.clone(),
-        content_fingerprint: pending.content_fingerprint.clone(),
-        reason_code: error.code,
-        reason: error.message,
-    };
-    storage::put(context, FAILURES, &pending_key(pending), &failure)
+    let failure = ArtifactGenerationFailure::for_pending(pending, error.code, error.message);
+    pending.finish(Some(failure), context)
 }
 
 fn decode_generated(
@@ -458,11 +503,7 @@ fn needs_generation(element: &SemanticElement, artifacts: &[KnowledgeDocument]) 
 }
 
 fn pending_matches(element: &SemanticElement, pending: &[PendingArtifactJob]) -> bool {
-    pending.iter().any(|job| {
-        job.project_root == element.project_root
-            && job.semantic_element_id == element.semantic_element_id
-            && Some(job.content_fingerprint.as_str()) == element.content_fingerprint.as_deref()
-    })
+    pending.iter().any(|job| current_target(element, job))
 }
 fn target_input(element: &SemanticElement) -> Option<Value> {
     let fingerprint = element.content_fingerprint.as_deref()?.trim();
@@ -515,7 +556,9 @@ fn skip_submission(
     retry_failed: bool,
 ) -> bool {
     !needs_generation(element, artifacts)
-        || pending_matches(element, pending)
+        || pending
+            .iter()
+            .any(|job| job.job_id.is_some() && current_target(element, job))
         || (!retry_failed
             && failures
                 .iter()
@@ -553,47 +596,43 @@ fn store_failure(
     job: &ProjectExecutionJob,
     context: &mut PluginContext<'_>,
 ) -> Result<(), PluginError> {
-    let failure = ArtifactGenerationFailure {
-        project_root: pending.project_root.clone(),
-        semantic_element_id: pending.semantic_element_id.clone(),
-        content_fingerprint: pending.content_fingerprint.clone(),
-        reason_code: format!("generation_{}", job.status),
-        reason: job.error.clone().unwrap_or_else(|| {
-            format!(
-                "artifact generation job `{}` ended as `{}`",
-                pending.job_id, job.status
-            )
-        }),
-    };
-    storage::put(context, FAILURES, &pending_key(pending), &failure)
+    let reason = job.error.clone().unwrap_or_else(|| {
+        format!(
+            "artifact generation job `{}` ended as `{}`",
+            pending.job_id.as_deref().unwrap_or("unsubmitted"),
+            job.status
+        )
+    });
+    let failure = ArtifactGenerationFailure::for_pending(
+        pending,
+        format!("generation_{}", job.status),
+        reason,
+    );
+    pending.finish(Some(failure), context)
 }
 
 fn store_submit_failure(
-    element: &SemanticElement,
+    pending: &PendingArtifactJob,
     error: &PluginError,
     context: &mut PluginContext<'_>,
 ) -> Result<(), PluginError> {
-    let failure = ArtifactGenerationFailure {
-        project_root: element.project_root.clone(),
-        semantic_element_id: element.semantic_element_id.clone(),
-        content_fingerprint: element.content_fingerprint.clone().unwrap_or_default(),
-        reason_code: format!("submit_{}", error.code),
-        reason: error.message.clone(),
-    };
-    storage::put(context, FAILURES, &job_key(element), &failure)
+    let failure = ArtifactGenerationFailure::for_pending(
+        pending,
+        format!("submit_{}", error.code),
+        error.message.clone(),
+    );
+    pending.finish(Some(failure), context)
 }
 
 fn current_target(element: &SemanticElement, pending: &PendingArtifactJob) -> bool {
-    element.semantic_element_id == pending.semantic_element_id
+    element.project_root == pending.project_root
+        && element.semantic_element_id == pending.semantic_element_id
         && element.content_fingerprint.as_deref() == Some(pending.content_fingerprint.as_str())
 }
 
-fn job_key(element: &SemanticElement) -> String {
-    format!("{}\0{}", element.project_root, element.semantic_element_id)
-}
-
+#[cfg(test)]
 fn pending_key(pending: &PendingArtifactJob) -> String {
-    format!("{}\0{}", pending.project_root, pending.semantic_element_id)
+    pending.key()
 }
 
 fn invalid_job(output: &Value) -> PluginError {

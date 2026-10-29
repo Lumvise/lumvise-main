@@ -186,9 +186,20 @@ fn setup(
     Arc<Mutex<TransferTrace>>,
     Arc<LocalPersistence>,
 ) {
-    let directory = tempfile::tempdir().unwrap();
     let persistence = Arc::new(LocalPersistence::in_memory().unwrap());
     seed_project(&persistence);
+    setup_with_persistence(response_edit, persistence)
+}
+
+fn setup_with_persistence(
+    response_edit: ResponseEdit,
+    persistence: Arc<LocalPersistence>,
+) -> (
+    CentralizedPersistence,
+    Arc<Mutex<TransferTrace>>,
+    Arc<LocalPersistence>,
+) {
+    let directory = tempfile::tempdir().unwrap();
     let local_persistence = Arc::clone(&persistence);
     let trace = Arc::new(Mutex::new(TransferTrace::default()));
     let mut resources = ServerResources::internal(
@@ -218,19 +229,15 @@ fn setup(
 
 #[test]
 fn centralized_pz_export_import_transfers_bytes_and_never_sends_desktop_paths() {
-    let (central, trace, local_persistence) = setup(ResponseEdit::Keep);
+    let (source, source_trace, source_persistence) = setup(ResponseEdit::Keep);
+    let (central, trace, local_persistence) = setup_with_persistence(
+        ResponseEdit::Keep,
+        Arc::new(LocalPersistence::in_memory().unwrap()),
+    );
     let temporary = tempfile::tempdir().unwrap();
     let export_path = temporary.path().join("desktop-source.pz");
     let import_path = temporary.path().join("desktop-input.pz");
-    let export = SemanticPersistence::execute(
-        &central,
-        SemanticOperation::CreatePzSnapshot {
-            project_root: "/source".into(),
-            output_path: export_path.to_string_lossy().into_owned(),
-        },
-        &InvocationControl::sixty_seconds(),
-    )
-    .unwrap();
+    let export = export_source_archive(&source, &export_path);
     let SemanticResult::PzSnapshot(metadata) = export else {
         panic!("expected PZ snapshot metadata");
     };
@@ -241,17 +248,10 @@ fn centralized_pz_export_import_transfers_bytes_and_never_sends_desktop_paths() 
     );
     std::fs::copy(&export_path, &import_path).unwrap();
 
-    let imported = SemanticPersistence::execute(
-        &central,
-        SemanticOperation::ImportPzSnapshot {
-            project_root: "/target".into(),
-            input_path: import_path.to_string_lossy().into_owned(),
-        },
-        &InvocationControl::sixty_seconds(),
-    )
-    .unwrap();
+    let imported = import_target_archive(&central, &import_path).unwrap();
     assert!(matches!(imported, SemanticResult::PzImport(_)));
     assert_eq!(read_elements(local_persistence.as_ref(), "/target"), 2);
+    assert_eq!(read_elements(source_persistence.as_ref(), "/source"), 2);
     assert!(matches!(
         SemanticPersistence::execute(
             local_persistence.as_ref(),
@@ -271,7 +271,8 @@ fn centralized_pz_export_import_transfers_bytes_and_never_sends_desktop_paths() 
         Ok(SemanticResult::ArtifactBlob(Some(blob))) if blob.content == b"attached image"
     ));
 
-    let requests = trace.lock().unwrap().requests.clone();
+    let mut requests = source_trace.lock().unwrap().requests.clone();
+    requests.extend(trace.lock().unwrap().requests.clone());
     assert_eq!(requests.len(), 2);
     for request in requests {
         let Some(Payload::Start(start)) = request.first().and_then(|frame| frame.payload.as_ref())
@@ -293,7 +294,14 @@ fn centralized_pz_export_import_transfers_bytes_and_never_sends_desktop_paths() 
         }
         assert!(!format!("{request:?}").contains(temporary.path().to_str().unwrap()));
     }
-    let server_paths = trace.lock().unwrap().server_paths.lock().unwrap().clone();
+    let mut server_paths = source_trace
+        .lock()
+        .unwrap()
+        .server_paths
+        .lock()
+        .unwrap()
+        .clone();
+    server_paths.extend(trace.lock().unwrap().server_paths.lock().unwrap().clone());
     assert_eq!(server_paths.len(), 2);
     let server_temp_root = std::env::temp_dir().to_string_lossy().into_owned();
     let desktop_paths = [
@@ -305,6 +313,51 @@ fn centralized_pz_export_import_transfers_bytes_and_never_sends_desktop_paths() 
             && !path.starts_with(temporary.path().to_str().unwrap())
             && !desktop_paths.contains(path)
     }));
+}
+
+#[test]
+fn an_archive_cannot_move_existing_revision_ids_to_another_project_route() {
+    let (central, _, local) = setup(ResponseEdit::Keep);
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("source.pz");
+    export_source_archive(&central, &path);
+    let failure = import_target_archive(&central, &path).unwrap_err();
+    assert!(
+        failure
+            .to_string()
+            .contains("a revision owned by project `/target`")
+    );
+    assert_eq!(read_elements(&local, "/source"), 2);
+    assert_eq!(read_elements(&local, "/target"), 0);
+}
+
+fn export_source_archive(
+    central: &CentralizedPersistence,
+    path: &std::path::Path,
+) -> SemanticResult {
+    SemanticPersistence::execute(
+        central,
+        SemanticOperation::CreatePzSnapshot {
+            project_root: "/source".into(),
+            output_path: path.to_string_lossy().into_owned(),
+        },
+        &InvocationControl::sixty_seconds(),
+    )
+    .unwrap()
+}
+
+fn import_target_archive(
+    central: &CentralizedPersistence,
+    path: &std::path::Path,
+) -> lumvise_db_core::PersistenceResult<SemanticResult> {
+    SemanticPersistence::execute(
+        central,
+        SemanticOperation::ImportPzSnapshot {
+            project_root: "/target".into(),
+            input_path: path.to_string_lossy().into_owned(),
+        },
+        &InvocationControl::sixty_seconds(),
+    )
 }
 
 #[test]
@@ -475,6 +528,7 @@ fn seed_project(persistence: &LocalPersistence) {
 
 fn element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/source".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "source".into(),

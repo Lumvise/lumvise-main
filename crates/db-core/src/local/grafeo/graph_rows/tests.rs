@@ -4,6 +4,58 @@ use crate::local::grafeo::graph_store::GraphStore;
 use serde_json::json;
 
 #[test]
+fn element_projection_preserves_exact_requirements_and_rejects_corrupt_dependencies() {
+    let store = graph_store();
+    let mut expected = element("document");
+    expected.revision_dependencies = vec![crate::SemanticRecordRef::artifact("payload")];
+    store
+        .write(|graph| insert_element_node(graph, &expected, 1))
+        .unwrap();
+    store.read(|graph| {
+        assert_eq!(
+            semantic_element_by_id_selective(graph, "document"),
+            Some(expected.clone())
+        );
+        let node = graph
+            .get_node(
+                node_ids_by_label_and_property(
+                    graph,
+                    "SemanticElement",
+                    "semantic_element_id",
+                    "document",
+                )[0],
+            )
+            .unwrap();
+        assert_eq!(semantic_element_from_node(&node), Some(expected));
+    });
+    store
+        .write(|graph| {
+            let node = graph
+                .find_nodes_by_property("semantic_element_id", &GrafeoValue::from("document"))[0];
+            graph.set_node_property(
+                node,
+                "revision_dependencies_json",
+                GrafeoValue::from("[broken]"),
+            )
+        })
+        .unwrap();
+    store.read(|graph| {
+        let node = graph
+            .get_node(
+                node_ids_by_label_and_property(
+                    graph,
+                    "SemanticElement",
+                    "semantic_element_id",
+                    "document",
+                )[0],
+            )
+            .unwrap();
+        assert!(semantic_element_from_node(&node).is_none());
+        assert!(semantic_element_by_id_selective(graph, "document").is_none());
+    });
+}
+
+#[test]
 fn semantic_relationships_are_stored_as_native_edges() {
     let store = graph_store();
     store
@@ -255,6 +307,7 @@ fn graph_store() -> GraphStore {
 
 fn element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

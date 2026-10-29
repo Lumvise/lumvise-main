@@ -137,7 +137,7 @@ mod tests {
 
     fn memory_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        crate::local::sql::schema::initialize_sql_schema(&conn).unwrap();
+        crate::local::sql::schema::initialize_sql_schema(&conn, false).unwrap();
         conn
     }
 

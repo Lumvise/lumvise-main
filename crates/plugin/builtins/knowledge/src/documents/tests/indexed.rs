@@ -44,11 +44,12 @@ fn one_captured_revision_partitions_documents_without_turning_them_into_generati
 #[test]
 fn deleted_index_records_do_not_reappear_as_source_elements_or_visible_documents() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let created = graph
         .call("create_document", draft("report", "/project"))
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     graph
-        .call("delete_document", identity("report", "/project"))
+        .call("delete_document", revision_request(&created, json!({})))
         .unwrap();
     let artifacts = captured_artifacts(&graph);
     let partition =

@@ -50,6 +50,7 @@ fn measure_sample(prefix: &str) -> Duration {
 
 fn element(prefix: &str, index: usize) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/benchmark".into(),
         semantic_element_id: format!("{prefix}:{index}"),
         semantic_source_id: "benchmark".into(),

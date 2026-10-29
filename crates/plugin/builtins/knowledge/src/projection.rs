@@ -338,6 +338,7 @@ mod tests {
         let semantic = crate::semantic_context::SemanticContext::default();
         let mut document =
             crate::documents::draft_document(lumvise_contracts::CreateKnowledgeDocumentRequest {
+                operation_id: None,
                 document_id: "briefing".into(),
                 project_root: "/project".into(),
                 document_kind: lumvise_contracts::KnowledgeDocumentKind::Report,

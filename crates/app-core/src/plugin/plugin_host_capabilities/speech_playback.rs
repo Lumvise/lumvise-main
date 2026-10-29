@@ -40,6 +40,8 @@ impl PluginHostServices {
         );
 
         let synth_control = self.playback_control(&request.playback_id);
+        let failure_control = synth_control.clone();
+        let owners_map = Arc::clone(&self.playback_owners);
 
         let transport = self.voice_playback_transport();
         let playback_id = request.playback_id.clone();
@@ -105,7 +107,20 @@ impl PluginHostServices {
                             );
                         }
                     }
-                    Text2VoiceStreamEvent::Error { .. } => {
+                    Text2VoiceStreamEvent::Error { message } => {
+                        if !record_synthesis_failure(
+                            &owners_map,
+                            &playback_id,
+                            &failure_control,
+                            &message,
+                        ) {
+                            return Ok(());
+                        }
+                        tracing::warn!(
+                            event = "speech_synthesis_stream_failed",
+                            %playback_id,
+                            error = %message,
+                        );
                         let _ = transport.publish(VoicePlaybackTransportEvent::Cancelled {
                             playback_id: playback_id.clone(),
                         });
@@ -179,8 +194,8 @@ impl PluginHostServices {
         &self,
         playback_id: &str,
     ) -> Result<u64, HostCapabilityError> {
-        if let Some((_, _, segment_index)) = self.workspace_playback_owner(playback_id) {
-            return Ok(segment_index);
+        if let Some(owner) = self.workspace_playback_owner(playback_id) {
+            return Ok(owner.segment_index);
         }
         let frontend = self
             .frontend
@@ -204,12 +219,17 @@ impl PluginHostServices {
         segment_index: u64,
     ) {
         if let Ok(mut map) = self.playback_owners.lock() {
+            let failure = map
+                .get(playback_id)
+                .filter(|owner| owner.session_id == session_id)
+                .and_then(|owner| owner.failure.clone());
             map.insert(
                 playback_id.to_string(),
                 PlaybackOwner {
                     plugin_id: plugin_id.to_string(),
                     session_id: session_id.to_string(),
                     segment_index,
+                    failure,
                 },
             );
         }
@@ -266,16 +286,29 @@ impl PluginHostServices {
         Ok(json!({"playback_id": playback_id, "accepted": true, "cancelled": true}))
     }
 
-    /// Applies a real renderer-reported playback status transition and
+    /// Applies an observed playback status and returns its owner and retained synthesis error.
     pub(crate) fn report_voice_playback_status(
         &self,
         playback_id: &str,
         status: VoicePlaybackStatus,
-    ) -> Result<Option<(String, String, u64)>, HostCapabilityError> {
+    ) -> Result<Option<PlaybackOwner>, HostCapabilityError> {
         if self.report_audio_playback(playback_id, status) {
             return Ok(None);
         }
-        if let Some(owner) = self.workspace_playback_owner(playback_id) {
+        let owner = self
+            .playback_owners
+            .lock()
+            .ok()
+            .and_then(|map| map.get(playback_id).cloned());
+        let status = if owner.as_ref().is_some_and(|owner| owner.failure.is_some()) {
+            VoicePlaybackStatus::Failed
+        } else {
+            status
+        };
+        if let Some(owner) = owner
+            .as_ref()
+            .filter(|owner| workspace_session(&owner.session_id))
+        {
             if matches!(
                 status,
                 VoicePlaybackStatus::Completed
@@ -292,12 +325,8 @@ impl PluginHostServices {
                     playback_id,
                 );
             }
-            return Ok(Some(owner));
+            return Ok(Some(owner.clone()));
         }
-        let owner = self.playback_owners.lock().ok().and_then(|map| {
-            map.get(playback_id)
-                .map(|owner| (owner.plugin_id.clone(), owner.session_id.clone()))
-        });
         let mut frontend = self
             .frontend
             .lock()
@@ -349,18 +378,33 @@ impl PluginHostServices {
                 playback_id,
             );
         }
-        Ok(owner.map(|(plugin_id, session_id)| (plugin_id, session_id, segment_index)))
+        Ok(owner.map(|mut owner| {
+            owner.segment_index = segment_index;
+            owner
+        }))
     }
 
-    fn workspace_playback_owner(&self, playback_id: &str) -> Option<(String, String, u64)> {
+    fn workspace_playback_owner(&self, playback_id: &str) -> Option<PlaybackOwner> {
         let owners = self.playback_owners.lock().ok()?;
         let owner = owners.get(playback_id)?;
-        workspace_session(&owner.session_id).then(|| {
-            (
-                owner.plugin_id.clone(),
-                owner.session_id.clone(),
-                owner.segment_index,
-            )
-        })
+        workspace_session(&owner.session_id).then(|| owner.clone())
     }
+}
+
+pub(super) fn record_synthesis_failure(
+    owners: &Mutex<HashMap<String, PlaybackOwner>>,
+    playback_id: &str,
+    control: &InvocationControl,
+    message: &str,
+) -> bool {
+    if control.is_cancelled() {
+        return false;
+    }
+    owners.lock().is_ok_and(|mut owners| {
+        owners.get_mut(playback_id).is_some_and(|owner| {
+            let failure = format!("Speech generation failed: {message}");
+            owner.failure.get_or_insert(failure);
+            true
+        })
+    })
 }

@@ -7,6 +7,7 @@ use serde_json::json;
 
 fn element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "source".into(),
@@ -168,7 +169,11 @@ fn shared_relationship_normalization_remaps_endpoints_and_keeps_parent_hint() {
     incoming.semantic_element_id = "new".into();
     let mut child = element("child");
     child.parent_element_id = Some("new".into());
-    let reconciled = SemanticStructureReconciliation::between(&[existing], &[incoming, child]);
+    let reconciled = SemanticStructureReconciliation::between(
+        &[existing],
+        &[incoming, child],
+        "2026-10-24T00:00:00Z",
+    );
     let mut explicit = edge();
     explicit.source_element_id = "new".into();
     explicit.target_element_id = "child".into();

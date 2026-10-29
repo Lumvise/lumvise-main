@@ -1,0 +1,22 @@
+//! Portable semantic records remain available through DB Core's crate root.
+pub use lumvise_semantic_revisions::{
+    SemanticArtifact, SemanticArtifactRevisionState, SemanticArtifactRevisionWrite,
+    SemanticCitationRetentionAcquire, SemanticCitationRetentionIntent,
+    SemanticCitationRetentionKeys, SemanticCitationRetentionRelease, SemanticElement,
+    SemanticMatchEvidence, SemanticPartition, SemanticProducerBase, SemanticRecordKind,
+    SemanticRecordRef, SemanticRelationship, SemanticRevisionAcceptedOperation,
+    SemanticRevisionAcceptedRetention, SemanticRevisionAssociation, SemanticRevisionBody,
+    SemanticRevisionConflict, SemanticRevisionConnection, SemanticRevisionConnectionQuery,
+    SemanticRevisionElementScope, SemanticRevisionFamilyBasis, SemanticRevisionFamilyQuery,
+    SemanticRevisionLink, SemanticRevisionMember, SemanticRevisionMembership,
+    SemanticRevisionMetadata, SemanticRevisionPublication, SemanticRevisionPublicationBasis,
+    SemanticRevisionPublicationOutcome, SemanticRevisionPublicationPlan,
+    SemanticRevisionPublicationReceipt, SemanticRevisionRecordHeader, SemanticRevisionRemap,
+    SemanticRevisionResolution, SemanticRevisionRetentionPlan, SemanticRevisionRetentionPolicy,
+    SemanticRevisionRetentionReceipt, SemanticRevisionSelection, SemanticRevisionSelectionDelta,
+    SemanticRevisionSelectionObservation, SemanticRevisionSelectionQuery,
+    SemanticRevisionSelectionSnapshot, SemanticRevisionSelectionState,
+    SemanticRevisionSelectionUpdate, SemanticRevisionState, SemanticRevisionStructure,
+    SemanticRevisionStructureCoverage, SemanticRevisionTimestamp, SemanticSelectionExpectation,
+    SemanticSelectionMode, SemanticSourceAnchor, SemanticStoredRevision, citation_retention_keys,
+};

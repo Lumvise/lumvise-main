@@ -5,6 +5,40 @@ use lumvise_db_core::{
 use lumvise_resource_routing::InvocationControl;
 use std::sync::Arc;
 
+mod revision_publication;
+mod revision_staging;
+
+fn observed_revision(db: &LocalPersistence) -> Value {
+    let SemanticResult::ProjectIdentity(identity) = semantic_result(
+        db,
+        SemanticOperation::ProjectIdentity {
+            project_root: "/repo".into(),
+        },
+    ) else {
+        panic!("expected lineage");
+    };
+    let SemanticResult::RevisionObservation(head) = semantic_result(
+        db,
+        SemanticOperation::RevisionSelectionMembers(
+            lumvise_db_core::SemanticRevisionSelectionQuery {
+                project_root: "/repo".into(),
+                selection_id: "working".into(),
+                structure_coverage: lumvise_db_core::SemanticRevisionStructureCoverage::Project,
+                artifact_ids: vec![],
+            },
+        ),
+    ) else {
+        panic!("expected observed revision members");
+    };
+    json!(lumvise_contracts::SemanticIndexObservation {
+        project_id: identity.project_id,
+        producer_base: None,
+        selection_id: "working".into(),
+        source_context: "local".into(),
+        expected: head.map_or_else(Default::default, |head| head.expected),
+    })
+}
+
 fn broker_for(db: Arc<LocalPersistence>) -> AppCoreHostCapabilityBroker {
     let semantic: Arc<dyn SemanticPersistence> = db.clone();
     let relational: Arc<dyn RelationalPersistence> = db;
@@ -103,6 +137,36 @@ fn unrelated_plugin_cannot_write_semantic_structure() {
 }
 
 #[test]
+fn controlled_attachment_copy_returns_staged_bytes_before_destination_publication() {
+    let db = persistence();
+    let broker = broker_for(db.clone());
+    broker.invoke(request(SEMANTIC_PLUGIN_ID, json!({"operation":"sync_structure", "project_root":"/repo", "elements":[element()], "relationships":[]}))).unwrap();
+    broker.invoke(request(KNOWLEDGE_PLUGIN_ID, json!({"operation":"upsert_artifact", "artifact":{
+        "artifact_id":"source", "semantic_element_id":"element-1", "artifact_kind":"media", "title":"Source",
+        "content":"source", "content_ref":null, "metadata":{}}}))).unwrap();
+    semantic_result(
+        &db,
+        SemanticOperation::ArtifactBlobPut {
+            content_ref: "canvas-file:source:image".into(),
+            artifact_id: "source".into(),
+            media_type: "image/png".into(),
+            content: vec![1, 2, 3],
+        },
+    );
+    let context = lumvise_plugin_runtime::PluginInvocationContext::new(
+        "copy",
+        "human",
+        lumvise_plugin_runtime::PluginInvocationClass::Foreground,
+        std::time::Instant::now() + std::time::Duration::from_secs(60),
+    );
+    let copied = broker.invoke_controlled(request(KNOWLEDGE_PLUGIN_ID, json!({"operation":"copy_artifact_attachment", "source_artifact_id":"source", "target_artifact_id":"destination", "content_ref":"canvas-file:source:image"})), &context).unwrap();
+    assert_eq!(
+        artifact_blob_len(&db, copied["content_ref"].as_str().unwrap()),
+        3
+    );
+}
+
+#[test]
 fn assistant_may_read_project_roots_without_semantic_write_access() {
     let broker = broker_for(persistence());
     let roots = broker
@@ -182,7 +246,8 @@ fn staged_project_snapshot_is_invisible_until_atomic_commit() {
         .invoke(request(
             SEMANTIC_PLUGIN_ID,
             json!({"operation": "begin_project_snapshot", "snapshot_id": "job-1",
-                "project_root": "/repo", "partition_paths": [], "page_count": 2}),
+                "project_root": "/repo", "partition_paths": [], "page_count": 2,
+                "observation": observed_revision(db.as_ref())}),
         ))
         .unwrap();
     broker
@@ -243,13 +308,15 @@ fn staged_project_snapshot_is_invisible_until_atomic_commit() {
 
 #[test]
 fn staged_project_snapshot_rejects_out_of_order_pages() {
-    let broker = broker_for(persistence());
+    let db = persistence();
+    let broker = broker_for(Arc::clone(&db));
     broker
         .invoke(request(
             SEMANTIC_PLUGIN_ID,
             json!({
                 "operation": "begin_project_snapshot", "snapshot_id": "job-order",
-                "project_root": "/repo", "partition_paths": [], "page_count": 2
+                "project_root": "/repo", "partition_paths": [], "page_count": 2,
+                "observation": observed_revision(db.as_ref())
             }),
         ))
         .unwrap();
@@ -497,7 +564,7 @@ fn request(plugin_id: &str, input: Value) -> HostCapabilityRequest {
 }
 
 #[test]
-fn project_artifact_reads_are_limited_to_semantic_and_knowledge() {
+fn project_and_batched_artifact_reads_are_limited_to_semantic_and_knowledge() {
     let broker = broker_for(persistence());
     for (plugin_id, allowed) in [
         (SEMANTIC_PLUGIN_ID, true),
@@ -506,11 +573,12 @@ fn project_artifact_reads_are_limited_to_semantic_and_knowledge() {
         ("builtin.assistant", false),
         ("third.party", false),
     ] {
-        let result = broker.invoke(request(
-            plugin_id,
-            json!({"operation": "project_artifacts", "project_root": "/repo",
-                "artifact_namespace": null}),
-        ));
-        assert_eq!(result.is_ok(), allowed, "{plugin_id}: {result:?}");
+        for input in [
+            json!({"operation": "project_artifacts", "project_root": "/repo", "artifact_namespace": null}),
+            json!({"operation": "artifacts_by_ids", "artifact_ids": ["missing"]}),
+        ] {
+            let result = broker.invoke(request(plugin_id, input));
+            assert_eq!(result.is_ok(), allowed, "{plugin_id}: {result:?}");
+        }
     }
 }

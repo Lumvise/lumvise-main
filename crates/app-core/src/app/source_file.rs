@@ -346,6 +346,7 @@ mod tests {
     fn index_root(app: &AppCore, root: &Path) {
         let project_root = root.to_string_lossy().into_owned();
         let element = lumvise_db_core::SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: project_root.clone(),
             semantic_element_id: "media-root".into(),
             semantic_source_id: "filesystem".into(),

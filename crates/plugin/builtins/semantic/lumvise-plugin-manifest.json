@@ -1,29 +1,17 @@
 {
-  "schema_version": 1,
-  "publisher": {
-    "publisher_id": "lumvise.builtin",
-    "key_id": "lumvise.production.1"
-  },
-  "plugin_id": "builtin.semantic",
-  "plugin_version": "0.1.39",
-  "protocol": {
-    "min": 7,
-    "max": 7
-  },
-  "targets": {},
-  "files": {},
   "exports": [
     {
-      "id": "manifest",
-      "name": "Semantic manifest",
       "description": "Inspect Semantic's packaged export IDs. Invoke only tools present in the enabled tool catalog; this manifest does not enable other plugins.",
-      "kind": "command",
+      "execution": "foreground",
+      "id": "manifest",
       "input_schema": {
         "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object"
       },
+      "kind": "command",
+      "name": "Semantic manifest",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -46,14 +34,266 @@
           "exports"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "get_semantic_tree",
-      "name": "Get semantic tree",
-      "description": "Discover project containment with explicit project_root, then retain this project's semantic_element_id values. Agent workflow: locate the owner, inspect get_dependency_tree/trace_path and get_git_impact, read current source and check_index_coverage before editing. Verify changes with focused tests and refresh through the supported compiled project indexer; never fabricate ingest batches. This tree shows indexed structure, not proof that current source is fresh.",
+      "description": "Capture current working/local revision IDs and owned connection IDs for an explicit project_root, provider_instance_id, paths and artifact_ids before preparing a verified edit. Empty paths covers that provider. This read returns an observation, not graph bodies or historical access. Callers must preserve the original editing base, freeze input durably and replay it unchanged. A current server observation does not establish the base of stale local files; filesystem indexers use the existing project.index checkpoint owner. Never refresh this observation to authorize a rejected or interrupted edit.",
+      "execution": "foreground",
+      "id": "observe_index_base",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "provider_instance_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "provider_instance_id",
+          "paths",
+          "artifact_ids"
+        ],
+        "type": "object"
+      },
       "kind": "mcp_tool",
+      "name": "Observe index editing base",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_edits": {
+                "additionalProperties": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "connection_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "generation": {
+                "type": "integer"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "element",
+                        "artifact"
+                      ],
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "record_id"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "generation",
+              "records",
+              "connection_ids"
+            ],
+            "type": "object"
+          },
+          "producer_base": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_generation": {
+                    "type": "integer"
+                  },
+                  "selection_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "selection_id",
+                  "expected_generation"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "selection_id": {
+            "type": "string"
+          },
+          "source_context": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "selection_id",
+          "source_context",
+          "expected"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Resolve explicitly requested element and artifact families in one project_root and selection_id. Returns selected IDs and the captured commit; an absent mapping means no selected family member. Supply expected_commit_version to fence multi-read observations. This read does not pin content, rewrite exact citations or refresh a producer's editing base.",
+      "execution": "foreground",
+      "id": "resolve_revision_families",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "element",
+                    "artifact"
+                  ],
+                  "type": "string"
+                },
+                "record_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "record_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "selection_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "selection_id",
+          "records"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Resolve selected revisions",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "commit_version": {
+            "type": "integer"
+          },
+          "remaps": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "accepted": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "element",
+                        "artifact"
+                      ],
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "record_id"
+                  ],
+                  "type": "object"
+                },
+                "incoming": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "element",
+                        "artifact"
+                      ],
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "record_id"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "incoming",
+                "accepted"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "commit_version",
+          "remaps"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Discover project containment with explicit project_root, then retain this project's semantic_element_id values. Agent workflow: locate the owner, inspect get_dependency_tree/trace_path and get_git_impact, read current source and check_index_coverage before editing. Verify changes with focused tests and refresh through the supported compiled project indexer; never fabricate ingest batches. This tree shows indexed structure, not proof that current source is fresh.",
+      "execution": "foreground",
+      "id": "get_semantic_tree",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -101,6 +341,8 @@
         "required": [],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Get semantic tree",
       "output_schema": {
         "$defs": {
           "element": {
@@ -225,14 +467,12 @@
           "published_at"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "get_dependency_tree",
-      "name": "Get dependency tree",
       "description": "Inspect indexed dependencies, dependents, or both for an existing semantic_element_id from the current project. This ID-only request has no project_root field: verify returned project_root. Include descendants when assessing module impact; missing or cyclic branches require investigation, not assumptions of complete call resolution.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "get_dependency_tree",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -290,6 +530,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Get dependency tree",
       "output_schema": {
         "$defs": {
           "branch": {
@@ -478,14 +720,12 @@
           "root"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "get_element_at_location",
-      "name": "Get semantic element at location",
       "description": "Resolve a 1-based source line to indexed semantic owners using explicit project_root and path. Inspect candidates before choosing the narrowest anchor; indexed line ranges may lag current source.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "get_element_at_location",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -527,6 +767,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Get semantic element at location",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -691,14 +933,12 @@
           "published_at"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "search_semantic_elements",
-      "name": "Search semantic elements",
       "description": "Find indexed owners by semantic or lexical search with explicit project_root. Inspect mode/index_state and use returned IDs for focused tree, dependency, or source reads; an empty or stale index does not prove the code is absent.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "search_semantic_elements",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -753,6 +993,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Search semantic elements",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -872,14 +1114,12 @@
           "results"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "rebuild_search_index",
-      "name": "Rebuild semantic search index",
       "description": "Rebuild search vectors for existing indexed elements in explicit project_root. Inspect the returned index_state; this does not parse changed source or rebuild static relationships. Refresh stale source through the compiled project indexer first.",
-      "kind": "mcp_tool",
+      "execution": "background",
+      "id": "rebuild_search_index",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -892,6 +1132,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Rebuild semantic search index",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -923,14 +1165,12 @@
           "published_at"
         ],
         "type": "object"
-      },
-      "execution": "background"
+      }
     },
     {
+      "description": "Persist genuine source-indexer output for explicit project_root/provider_instance_id. Use the supported compiled project indexer with compiler-derived evidence where available; never fabricate semantic IDs, ranges, fingerprints, or relationships from an agent summary. Single batches and the first of consistent snapshot pages require revision_observation captured before preparing the edit; never adopt a fresh head to authorize stale input. replace_paths/removed_paths define the owned scope. Both forms publish conditionally and return exact accepted revision remaps or a conflict. Retry the identical frozen request; an unpaged request has a stable derived job ID. Keep workflow tasks and human notes out of source-index batches.",
+      "execution": "foreground",
       "id": "ingest_index_batch",
-      "name": "Ingest semantic index batch",
-      "description": "Persist genuine source-indexer output for explicit project_root/provider_instance_id. Use the supported compiled project indexer with compiler-derived evidence where available; never fabricate semantic IDs, ranges, fingerprints, or relationships from an agent summary. replace_paths/removed_paths replace indexed partitions; snapshot pages require consistent job/page metadata. Keep workflow tasks and human notes out of source-index batches.",
-      "kind": "mcp_tool",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -988,6 +1228,107 @@
             },
             "type": "array"
           },
+          "revision_observation": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "expected": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "artifact_edits": {
+                        "additionalProperties": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "type": "object"
+                      },
+                      "connection_ids": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "generation": {
+                        "type": "integer"
+                      },
+                      "records": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "enum": [
+                                "element",
+                                "artifact"
+                              ],
+                              "type": "string"
+                            },
+                            "record_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "record_id"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "generation",
+                      "records",
+                      "connection_ids"
+                    ],
+                    "type": "object"
+                  },
+                  "producer_base": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "expected_generation": {
+                            "type": "integer"
+                          },
+                          "selection_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "selection_id",
+                          "expected_generation"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "project_id": {
+                    "type": "string"
+                  },
+                  "selection_id": {
+                    "type": "string"
+                  },
+                  "source_context": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project_id",
+                  "selection_id",
+                  "source_context",
+                  "expected"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "semantic_artifacts": {
             "items": {
               "additionalProperties": false,
@@ -1027,6 +1368,68 @@
                       "type": "null"
                     }
                   ]
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "edit_version": {
+                                "anyOf": [
+                                  {
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "media_type": {
+                  "type": "string"
                 },
                 "metadata": {
                   "anyOf": [
@@ -1107,6 +1510,29 @@
                 },
                 "path": {
                   "type": "string"
+                },
+                "revision_dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "element",
+                          "artifact"
+                        ],
+                        "type": "string"
+                      },
+                      "record_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "record_id"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
                 },
                 "semantic_element_id": {
                   "type": "string"
@@ -1242,6 +1668,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Ingest semantic index batch",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -1260,6 +1688,31 @@
           },
           "ingestion_status": {
             "type": "string"
+          },
+          "publication": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "accepted",
+                      "conflict"
+                    ],
+                    "type": "string"
+                  },
+                  "value": {}
+                },
+                "required": [
+                  "outcome",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "semantic_artifacts_removed": {
             "type": "integer"
@@ -1321,14 +1774,12 @@
           "snapshot_freshness"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "record_index_log",
-      "name": "Record semantic index log",
       "description": "Record an indexer's actual progress/error evidence with explicit project_root and provider_instance_id. A recorded status is bookkeeping, not a source refresh or proof of completed ingestion.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "record_index_log",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -1420,6 +1871,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Record semantic index log",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -1535,14 +1988,12 @@
           "index_log"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "latest_index_log",
-      "name": "Get latest semantic index log",
       "description": "Read latest indexing progress for explicit project_root and, when known, provider_instance_id. Check status, errors and completion evidence before relying on indexed results; timestamps alone do not establish source freshness.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "latest_index_log",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -1570,6 +2021,8 @@
         "required": [],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Get latest semantic index log",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -1692,20 +2145,20 @@
           "index_log"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "graph_providers",
-      "name": "List semantic graph providers",
       "description": "List indexed project roots. Choose the exact projectRoot for the current checkout before project-scoped queries; display names and content fingerprints are not project identity.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "graph_providers",
       "input_schema": {
         "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "List semantic graph providers",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -1796,14 +2249,12 @@
           "providers"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "semantic_graph",
-      "name": "Project semantic graph",
       "description": "Project indexed nodes/edges for explicit projectRoot, targetPath and granularity. Use includeFirstNeighbors/includeExternal when inspecting nearby impact; this renderer projection is not a complete source or compiler call graph.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "semantic_graph",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -1883,6 +2334,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Project semantic graph",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2226,14 +2679,12 @@
           "publishedAt"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "create_semantic_snapshot",
-      "name": "Create semantic PZ snapshot",
       "description": "Start a semantic PZ snapshot for explicit project_root. Track its operation_id with semantic_snapshot_status; acceptance alone is not successful snapshot completion. This exports existing semantic state, not a source reindex.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "create_semantic_snapshot",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2251,6 +2702,8 @@
         "required": [],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Create semantic PZ snapshot",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2306,14 +2759,12 @@
           "failure"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "semantic_snapshot_status",
-      "name": "Get semantic PZ snapshot status",
       "description": "Inspect the operation_id returned by snapshot creation for progress, completion or failure. Restore the originating project context before using the result; this ID-only request does not take project_root.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "semantic_snapshot_status",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2326,6 +2777,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Get semantic PZ snapshot status",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2381,14 +2834,12 @@
           "failure"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "cancel_semantic_snapshot",
-      "name": "Cancel semantic PZ snapshot",
       "description": "Request cancellation of a known snapshot operation_id. Check status afterward; cancellation is not evidence of a completed usable snapshot.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "cancel_semantic_snapshot",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2401,6 +2852,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Cancel semantic PZ snapshot",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2456,14 +2909,12 @@
           "failure"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "project_element_counts",
-      "name": "Count project elements",
       "description": "Count indexed elements for explicit project_root. Use counts to diagnose missing coverage, not to infer that current checkout files were fully parsed.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "project_element_counts",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2476,6 +2927,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Count project elements",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2503,14 +2956,12 @@
           "elements_by_kind"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "semantic_context",
-      "name": "Get full-fidelity semantic context",
       "description": "Read full-fidelity elements, relationships or artifacts from one indexed project snapshot with explicit project_root. Select record_kind and optionally root_element_id/include_descendants; inspect commit_version/published_at rather than treating indexed records as current source.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "semantic_context",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2552,6 +3003,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "Get full-fidelity semantic context",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2594,6 +3047,65 @@
                       "type": "null"
                     }
                   ]
+                },
+                "dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "target": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "semantic_element_id": {
+                                "type": "string"
+                              },
+                              "target_kind": {
+                                "const": "semantic_element"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "semantic_element_id"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "artifact_id": {
+                                "type": "string"
+                              },
+                              "edit_version": {
+                                "anyOf": [
+                                  {
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "target_kind": {
+                                "const": "artifact"
+                              }
+                            },
+                            "required": [
+                              "target_kind",
+                              "artifact_id"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "target"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
                 },
                 "metadata": {},
                 "project_root": {
@@ -2684,6 +3196,29 @@
                 },
                 "project_root": {
                   "type": "string"
+                },
+                "revision_dependencies": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "element",
+                          "artifact"
+                        ],
+                        "type": "string"
+                      },
+                      "record_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "record_id"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
                 },
                 "semantic_element_id": {
                   "type": "string"
@@ -2778,62 +3313,102 @@
           "published_at"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "http_semantic_context",
-      "name": "Semantic context over HTTP",
       "description": "HTTP envelope adapter for semantic_context. Put explicit project_root and record_kind in the JSON body; interpret snapshot revision and root scope as on the MCP read.",
+      "execution": "foreground",
+      "id": "http_semantic_context",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
       "kind": "http_route",
       "method": "POST",
+      "name": "Semantic context over HTTP",
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
       "path_template": "/api/context",
-      "stream_mode": "buffered",
-      "input_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "body": {},
-          "body_size_bytes": {
-            "type": "integer"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "path_parameters": {
-            "type": "object"
-          },
-          "query": {
-            "type": "object"
-          }
-        },
-        "required": [
-          "method",
-          "path",
-          "path_parameters",
-          "query",
-          "body",
-          "body_size_bytes"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object"
-      },
-      "execution": "foreground"
+      "stream_mode": "buffered"
     },
     {
-      "id": "http_search_context",
-      "name": "Search context over HTTP",
       "description": "HTTP envelope adapter for semantic element search. Put explicit project_root/query in the JSON body and inspect search mode/index_state.",
+      "execution": "foreground",
+      "id": "http_search_context",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "body_size_bytes": {
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "path_parameters": {
+            "type": "object"
+          },
+          "query": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "path_parameters",
+          "query",
+          "body",
+          "body_size_bytes"
+        ],
+        "type": "object"
+      },
       "kind": "http_route",
       "method": "POST",
+      "name": "Search context over HTTP",
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
       "path_template": "/api/search/context",
-      "stream_mode": "buffered",
+      "stream_mode": "buffered"
+    },
+    {
+      "description": "HTTP envelope adapter for dependency-tree reads. Supply a semantic_element_id discovered in the current project in the JSON body and verify returned project_root.",
+      "execution": "foreground",
+      "id": "http_semantic_relationship_tree",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -2865,76 +3440,34 @@
         ],
         "type": "object"
       },
-      "output_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object"
-      },
-      "execution": "foreground"
-    },
-    {
-      "id": "http_semantic_relationship_tree",
-      "name": "Semantic relationship tree over HTTP",
-      "description": "HTTP envelope adapter for dependency-tree reads. Supply a semantic_element_id discovered in the current project in the JSON body and verify returned project_root.",
       "kind": "http_route",
       "method": "POST",
-      "path_template": "/api/semantic-relationship-tree",
-      "stream_mode": "buffered",
-      "input_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "body": {},
-          "body_size_bytes": {
-            "type": "integer"
-          },
-          "method": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "path_parameters": {
-            "type": "object"
-          },
-          "query": {
-            "type": "object"
-          }
-        },
-        "required": [
-          "method",
-          "path",
-          "path_parameters",
-          "query",
-          "body",
-          "body_size_bytes"
-        ],
-        "type": "object"
-      },
+      "name": "Semantic relationship tree over HTTP",
       "output_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object"
       },
-      "execution": "foreground"
+      "path_template": "/api/semantic-relationship-tree",
+      "stream_mode": "buffered"
     },
     {
-      "id": "trigger.semantic_element_upserted",
-      "name": "Semantic element upserted",
+      "delivery": {
+        "dead_letter_max_entries": 1000,
+        "dead_letter_retention_seconds": 604800,
+        "initial_backoff_ms": 250,
+        "max_attempts": 5,
+        "max_backoff_ms": 30000
+      },
       "description": "Runtime-delivered element-change trigger maintains search vectors for actual indexed records. Agents should refresh via the compiled indexer, not synthesize storage-trigger deliveries.",
-      "kind": "storage_trigger",
+      "entity_kinds": [
+        "semantic_element"
+      ],
       "event_kinds": [
         "semantic.element.upserted",
         "semantic.element.deleted"
       ],
-      "entity_kinds": [
-        "semantic_element"
-      ],
-      "delivery": {
-        "max_attempts": 5,
-        "initial_backoff_ms": 250,
-        "max_backoff_ms": 30000,
-        "dead_letter_max_entries": 1000,
-        "dead_letter_retention_seconds": 604800
-      },
+      "execution": "background",
+      "id": "trigger.semantic_element_upserted",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2983,6 +3516,8 @@
         ],
         "type": "object"
       },
+      "kind": "storage_trigger",
+      "name": "Semantic element upserted",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -2998,28 +3533,26 @@
           "processed"
         ],
         "type": "object"
-      },
-      "execution": "background"
+      }
     },
     {
-      "id": "trigger.semantic_artifact_upserted",
-      "name": "Semantic artifact upserted",
+      "delivery": {
+        "dead_letter_max_entries": 1000,
+        "dead_letter_retention_seconds": 604800,
+        "initial_backoff_ms": 250,
+        "max_attempts": 5,
+        "max_backoff_ms": 30000
+      },
       "description": "Runtime-delivered artifact-change trigger maintains search vectors for existing indexed artifacts. It is not an agent task/checkpoint write interface.",
-      "kind": "storage_trigger",
+      "entity_kinds": [
+        "semantic_artifact"
+      ],
       "event_kinds": [
         "semantic.artifact.upserted",
         "semantic.artifact.deleted"
       ],
-      "entity_kinds": [
-        "semantic_artifact"
-      ],
-      "delivery": {
-        "max_attempts": 5,
-        "initial_backoff_ms": 250,
-        "max_backoff_ms": 30000,
-        "dead_letter_max_entries": 1000,
-        "dead_letter_retention_seconds": 604800
-      },
+      "execution": "background",
+      "id": "trigger.semantic_artifact_upserted",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3068,6 +3601,8 @@
         ],
         "type": "object"
       },
+      "kind": "storage_trigger",
+      "name": "Semantic artifact upserted",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3083,14 +3618,12 @@
           "processed"
         ],
         "type": "object"
-      },
-      "execution": "background"
+      }
     },
     {
-      "id": "search_graph",
-      "name": "search graph",
       "description": "Ranked symbol search with regex name/path filters and stable offset pagination. Use explicit project_root. Start with this project's indexed symbols, then inspect tree/dependencies, trace_path and get_code_snippet before editing. For pagination retain commit_version as expected_commit_version and restart if it changes.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "search_graph",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3132,16 +3665,16 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "search graph",
       "output_schema": {
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "get_code_snippet",
-      "name": "get code snippet",
       "description": "Read current source for an indexed element; reports index/source fingerprint agreement. Use explicit project_root. Inspect index_matches_source: false or unknown means indexed ranges/fingerprints do not establish current-source agreement. Refresh with the compiled project indexer before trusting stale ownership or impact.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "get_code_snippet",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3167,16 +3700,16 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "get code snippet",
       "output_schema": {
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "search_code",
-      "name": "search code",
       "description": "Ranked text or regex search of indexed files with innermost symbol context. Use explicit project_root. Reads current worktree text within indexed paths; owner ranges remain indexed. Inspect failures/failure_count and source_revision, and restart paginated reads if expected_commit_version is rejected.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "search_code",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3222,6 +3755,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "search code",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3314,14 +3849,12 @@
           "published_at"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "get_graph_schema",
-      "name": "get graph schema",
       "description": "Summarize observed element kinds, edge labels and public fields. Use explicit project_root. Choose relationship_labels from observed kinds/labels before tracing impact. Static resolution is syntax-derived; runtime-origin edges are observations, not compiler proof.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "get_graph_schema",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3339,16 +3872,16 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "get graph schema",
       "output_schema": {
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "trace_path",
-      "name": "trace path",
       "description": "Trace calls with direction, depth and edge-label filters; unknown receivers are excluded. Use explicit project_root. Use inbound for callers/impact, outbound for dependencies, or both. Empty relationship_labels includes all non-containment relationships; missing edges/unknown receivers are not proof of no callers.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "trace_path",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3399,16 +3932,16 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "trace path",
       "output_schema": {
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "get_git_impact",
-      "name": "get git impact",
       "description": "Read git changes against a base commit and find transitive callers at file granularity. Use explicit project_root. Set the intended base (default HEAD), inspect unindexed_paths and transitive inbound impact, then read current source and run affected tests. File-level impact is conservative and limited by index coverage.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "get_git_impact",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3446,16 +3979,16 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "get git impact",
       "output_schema": {
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "get_graph_metrics",
-      "name": "get graph metrics",
       "description": "Report fan-in/out hotspots, cyclic components and heuristic dead-code candidates. Use explicit project_root. Treat dead-code candidates as hypotheses: entrypoints, callbacks, macros and unresolved references may be live. Confirm with source, compiler diagnostics and tests before deletion.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "get_graph_metrics",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3501,6 +4034,8 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "get graph metrics",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3667,14 +4202,12 @@
           "published_at"
         ],
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "check_index_coverage",
-      "name": "check index coverage",
       "description": "Report per-file parser coverage, syntax recovery and resolution outcomes; old indexes require reindexing. Use explicit project_root. Inspect parser status, syntax recovery and unresolved/ambiguous references before trusting impact. Unknown metadata needs reindexing through the compiled project indexer; unresolved external/receiver references are not dead-code proof.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "check_index_coverage",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3704,16 +4237,16 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "check index coverage",
       "output_schema": {
         "type": "object"
-      },
-      "execution": "foreground"
+      }
     },
     {
-      "id": "ingest_runtime_trace",
-      "name": "ingest runtime trace",
       "description": "Replace one named runtime trace of observed calls between indexed IDs; preserve static extraction. Use explicit project_root. Submit only measured calls between active IDs in this project, with positive counts and a trace_id. Reusing trace_id replaces its observation set; it does not repair or replace the static source index.",
-      "kind": "mcp_tool",
+      "execution": "foreground",
+      "id": "ingest_runtime_trace",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3760,12 +4293,497 @@
         ],
         "type": "object"
       },
+      "kind": "mcp_tool",
+      "name": "ingest runtime trace",
       "output_schema": {
         "type": "object"
+      }
+    },
+    {
+      "description": "Read exact selected records and original artifact edit tokens in an explicit project/selection. This read does not authorize a stale write.",
+      "execution": "foreground",
+      "id": "read_revision_selection",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "selection_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "selection_id"
+        ],
+        "type": "object"
       },
-      "execution": "foreground"
+      "kind": "mcp_tool",
+      "name": "Read source selection",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "Conditionally select exact source revisions using the original generation and artifact edit tokens. Pinned selections freeze working artifacts and protect dependency closure. Retry the identical operation after a lost acknowledgement. Write access required; this is not a read/link citation-claim tool.",
+      "execution": "foreground",
+      "id": "select_revisions",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_edits": {
+            "additionalProperties": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "connection_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expected_generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "follow_accepted",
+              "pinned"
+            ],
+            "type": "string"
+          },
+          "operation_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "element",
+                    "artifact"
+                  ],
+                  "type": "string"
+                },
+                "record_id": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "record_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "selection_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_anchor": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "canonical_remote": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "dirty": {
+                    "type": "boolean"
+                  },
+                  "revision": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "revision",
+                  "canonical_remote",
+                  "dirty"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "source_context": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "project_root",
+          "project_id",
+          "selection_id",
+          "source_context",
+          "expected_generation",
+          "artifact_edits",
+          "mode",
+          "records",
+          "connection_ids",
+          "source_anchor"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Select source revisions",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read one exact record in its project, returning its body or explicit pruned state. Never substitute a selected successor for historical evidence.",
+      "execution": "foreground",
+      "id": "resolve_revision",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "record": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "element",
+                  "artifact"
+                ],
+                "type": "string"
+              },
+              "record_id": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "record_id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "project_root",
+          "record"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Read exact source revision",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "Preview unneeded historical bodies using an explicit count or age policy. Current selections, pins and required dependencies remain protected. The returned plan is fenced against concurrent source changes; nothing is collected.",
+      "execution": "foreground",
+      "id": "preview_revision_retention",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "policy": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "history_age_seconds": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "const": "age"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "history_age_seconds"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "const": "revision_count"
+                  },
+                  "revisions": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "revisions"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "operation_id",
+          "policy"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Preview history cleanup",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "Collect only the exact reviewed plan with its unchanged policy. Requires source write access. A newer publication or pin invalidates the plan; preview again rather than silently refreshing approval. Retry an uncertain acknowledgement with the identical plan.",
+      "execution": "foreground",
+      "id": "collect_revision_retention",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "plan": {
+            "additionalProperties": false,
+            "properties": {
+              "evaluated_at_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "expected_commit_version": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "expired_association_ids": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "operation_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "project_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "project_root": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "element",
+                        "artifact"
+                      ],
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "record_id"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "operation_id",
+              "project_root",
+              "project_id",
+              "expected_commit_version",
+              "evaluated_at_ms",
+              "records",
+              "expired_association_ids"
+            ],
+            "type": "object"
+          },
+          "policy": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "history_age_seconds": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "const": "age"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "history_age_seconds"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "const": "revision_count"
+                  },
+                  "revisions": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "revisions"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "plan",
+          "policy"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Collect previewed history",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read this client's saved cleanup preference for the durable project identity. Default is thirty days. Automatic collection is disabled.",
+      "execution": "foreground",
+      "id": "get_revision_retention_preference",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Read cleanup preference",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "Save this client's age or revision-count preference with its original revision. This does not collect bodies, schedule cleanup or change source selections.",
+      "execution": "foreground",
+      "id": "set_revision_retention_preference",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "history_age_seconds": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "const": "age"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "history_age_seconds"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "const": "revision_count"
+                  },
+                  "revisions": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "revisions"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root",
+          "expected_revision",
+          "policy"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Save cleanup preference",
+      "output_schema": {
+        "type": "object"
+      }
     }
   ],
+  "files": {},
   "host_capabilities": [
     {
       "id": "project.source",
@@ -3777,7 +4795,7 @@
     },
     {
       "id": "storage.semantic",
-      "version": "^1.5.0"
+      "version": "^1.8.0"
     },
     {
       "id": "semantic.snapshot",
@@ -3787,5 +4805,17 @@
       "id": "neural.embed",
       "version": "^1.0"
     }
-  ]
+  ],
+  "plugin_id": "builtin.semantic",
+  "plugin_version": "0.1.39",
+  "protocol": {
+    "max": 7,
+    "min": 7
+  },
+  "publisher": {
+    "key_id": "lumvise.production.1",
+    "publisher_id": "lumvise.builtin"
+  },
+  "schema_version": 1,
+  "targets": {}
 }

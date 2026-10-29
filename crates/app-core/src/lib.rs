@@ -4,6 +4,7 @@ mod app;
 mod async_runtime;
 mod endpoints;
 mod error;
+pub(crate) mod index_publication;
 pub mod observability;
 mod plugin;
 mod project_execution;

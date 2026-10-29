@@ -12,7 +12,8 @@ use crate::process::StreamControl;
 use std::sync::Arc;
 use std::time::Instant;
 
-const CUSTOM_OPENAI_TOOL_CALL_LIMIT: usize = 6;
+// Visual Assistant turns need room for narration, canvas edits and preview checks.
+const CUSTOM_OPENAI_TOOL_CALL_LIMIT: usize = 32;
 
 pub struct CustomOpenAiProvider {
     inner: OpenAiCompatibleChatProvider,

@@ -1,9 +1,9 @@
 //! Owns readable agent workflow guidance in Knowledge's signed descriptions.
 //! Manifest builders use this table; artifact storage/transfer remain their owners' internals.
 
-const CREATE_GUIDANCE: &str = "Create a readable project-scoped artifact after search_knowledge and get_knowledge confirm no existing record to update. Supply current project_root matching the narrowest existing semantic_element_id. Use plain titles/content. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Use only requirements for expected outcomes and acceptance criteria, or specification for the agreed design and constraints. Reports and reference notes use create_document; plans, handoffs and open questions belong in Context documents. Agents owns executable missions and their status, owner, blockers and evidence. Optional expires_at (RFC 3339) ends discovery of an active record. A new record starts active at revision 1. These are artifact conventions, not an atomic lease/claim guarantee.";
-const UPDATE_GUIDANCE: &str = "Use search_knowledge/get_knowledge to locate and re-read an existing artifact before updating; supply current project_root and preserve human text. Pass expected_revision from that read; on knowledge_revision_conflict re-read, merge, retry. Close work by setting status, not only in the text: resolved when done or answered, superseded with superseded_by when replaced, archived when withdrawn. Write human-readable Markdown for someone who did not follow the agent conversation: lead with the purpose or outcome, use plain language, complete sentences and short paragraphs, and add descriptive headings, lists or tables when useful. Separate paragraphs, headings and lists with blank lines. Explain why decisions matter; keep raw IDs in metadata or labeled links, and fence code/log excerpts. Do not use terse agent shorthand. Supplied content, tags, dependencies and metadata replace prior values: merge deliberately before writing. Mark completion only after acceptance criteria and validation are verified; record exact commands/results and remaining limitations. expected_revision detects a stale read; updates provide no atomic lease/claim guarantee; coordinate ownership outside this write.";
-const GET_GUIDANCE: &str = "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. The record carries status, revision and timestamps; a record that is not active is history, not a current instruction. Reconcile requirements and specifications with current source/tests before resuming; saved completion text alone is not verification. Read reports and plans through get_document, and mission state through Agents.";
+const CREATE_GUIDANCE: &str = "Search with search_knowledge/get_knowledge before creating; update an existing record when appropriate. Supply project_root and the narrowest existing semantic_element_id. Use plain titles/content and human-readable Markdown for someone outside this agent conversation: purpose/outcome first, plain language, complete sentences, short paragraphs. Separate headings, lists and paragraphs with blank lines. Explain decisions and why they matter; fence code/log excerpts; place raw IDs in metadata or labeled links. Avoid terse agent shorthand. Kinds: requirements for expected outcomes/acceptance criteria, specification for design/constraints, media for image/audio/video notes. Reports, reference notes, plans, handoffs and questions use create_document (Context). Agents owns executable missions, status, owner, blockers and evidence. Optional expires_at (RFC 3339) ends active discovery. New records start active at revision 1. Retain returned artifact_id as its exact accepted revision. Reuse operation_id with identical retry input; choose a new ID for a later action. No atomic lease/claim guarantee.";
+const UPDATE_GUIDANCE: &str = "Use search_knowledge/get_knowledge first; preserve human text. Pass project_root, artifact_id and expected_revision from the original read. Reuse operation_id/input after a lost reply; on conflict re-read, merge and use a new ID. Working saves keep artifact_id. Element changes, pins and citations freeze history; retain returned IDs. Cite working dependencies with edit_version from get_knowledge. If replay reports knowledge_artifact_edit_unavailable, use get_artifact_write_receipt. Set status resolved when done, superseded with superseded_by when replaced, or archived when withdrawn. Content, tags, dependencies and metadata replace prior values: merge deliberately. Write human-readable Markdown for someone outside this agent conversation: purpose first, plain language, complete sentences, short paragraphs, headings/lists when useful, blank lines between blocks and fenced code/logs. Explain decisions; keep raw IDs in metadata/labeled links. Avoid terse agent shorthand. Complete only after acceptance criteria are verified; record commands/results and remaining limits. Updates offer no atomic lease/claim guarantee.";
+const GET_GUIDANCE: &str = "Read the full artifact by artifact_id after search/list discovery. This ID-only request has no project_root field: verify the returned artifact's project_root and semantic anchor match the current checkout. The record carries status, revision and timestamps. Exact IDs may address retained history even when status is active; choose current revisions through project search/list before editing. An inactive record is not a current instruction. Reconcile requirements and specifications with current source/tests before resuming; saved completion text alone is not verification. Read reports and plans through get_document, and mission state through Agents.";
 const SEARCH_GUIDANCE: &str = "Search readable project knowledge with explicit current project_root and optional narrow semantic_element_id/type filters before creating or changing a record. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Results contain IDs/titles/scores/status, not full content: follow with get_knowledge to restore requirements or specifications. Search reports and context through search_documents. Inspect vector/lexical mode; no result is not proof that related knowledge never existed.";
 const LIST_GUIDANCE: &str = "Read artifacts attached to one existing semantic_element_id from the current project. This ID-only request has no project_root field: verify each returned artifact's project_root. Only active records are returned by default; include_inactive: true adds resolved, superseded, archived and expired ones. Inspect nearby requirements and specifications before editing. Read report/context documents separately.";
 const DEPENDENTS_GUIDANCE: &str = "List artifacts with explicit dependency edges to target_kind/target_id (semantic_element or artifact). Verify returned project scope and inspect affected records before a change; an empty list says nothing about undocumented dependencies.";
@@ -13,7 +13,7 @@ const ELEMENT_GUIDANCE: &str = "Read an existing semantic_element_id for anchor 
 const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     (
         "manifest",
-        "Inspect Knowledge's packaged export IDs; invoke only tools present in the enabled tool catalog. Agent workflow: search/read existing project knowledge, store readable anchored Requirements and Specification artifacts, use documents for reports/context, re-read on resume, then record verified evidence. Other plugins are not enabled by this manifest.",
+        "Inspect Knowledge's packaged export IDs; invoke only tools present in the enabled tool catalog. Agent workflow: search/read existing project knowledge, store readable anchored Requirements, Specification and Media artifacts, use documents for reports/context, re-read on resume, then record verified evidence. Other plugins are not enabled by this manifest.",
     ),
     ("create_knowledge", CREATE_GUIDANCE),
     ("knowledge.create", CREATE_GUIDANCE),
@@ -37,7 +37,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "delete_knowledge",
-        "Delete an artifact by artifact_id with explicit project_root matching its stored scope. Prefer a status change (resolved, superseded or archived) when the history should stay. Read it first and inspect dependents. Preserve human guidance unless removal is intended.",
+        "Remove the exact current artifact revision from its selection with explicit project_root and expected_revision from its original read matching its stored scope; retained historical bodies are not destroyed. Keep operation_id and input unchanged when retrying the same removal. Prefer a status change (resolved, superseded or archived) when the history should stay. Read it first and inspect dependents. Preserve human guidance unless removal is intended.",
     ),
     (
         "preview_knowledge_transfer",
@@ -45,7 +45,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "apply_knowledge_transfer",
-        "Apply only reviewed transfer_ids from a fresh preview for explicit destination project_root. Revalidates current eligibility/destination scope and copies artifacts with provenance, referenced attachments and eligible structured reference remapping; source artifacts remain. Completed copies are skipped; interrupted copies may need retry, so inspect copied_artifact_ids/already_copied_artifact_ids and read results. This is not an atomic batch or lease/claim operation; preview similarity is not project identity.",
+        "Apply only reviewed transfer_ids from a fresh preview for explicit destination project_root. Revalidates eligibility and destination scope before freezing one atomic selected dependency set; source artifacts remain. Copies preserve provenance, referenced attachments and eligible structured references. Keep operation_id for identical retries: replay returns the original full result before mutable eligibility checks. A fresh review uses a new operation_id; stale competing publications conflict. Completed copies are kept. copied_artifact_ids/already_copied_artifact_ids contain exact accepted artifact IDs, not review choices. Preview similarity is not project identity.",
     ),
     (
         "rebuild_knowledge_vectors",
@@ -69,7 +69,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "project_knowledge",
-        "Read the canonical project Knowledge projection using projectRoot and changesSince. Preserve revision/scope when consuming it; Requirements and Specification remain artifacts; Report and Context bodies are documents.",
+        "Read the canonical project Knowledge projection using projectRoot and changesSince. Preserve revision/scope when consuming it; Requirements, Specification and Media remain artifacts; Report and Context bodies are documents.",
     ),
     (
         "http.knowledge.manifest",
@@ -111,7 +111,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ("http.knowledge.artifacts.update", UPDATE_GUIDANCE),
     (
         "http.knowledge.artifacts.delete",
-        "HTTP delete adapter: read the artifact first, then supply artifact_id and matching project_root in the JSON body. Inspect dependents before intended removal.",
+        "HTTP delete adapter: read the artifact first, then supply artifact_id, expected_revision and matching project_root in the JSON body. Inspect dependents before intended removal.",
     ),
     (
         "http.knowledge.resolve_target",
@@ -136,6 +136,18 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
 ];
 
 pub(super) fn description(id: &str) -> &'static str {
+    if id == crate::documents::maintenance::EXPORT_ID {
+        return "Pure captured-document provenance for Agents maintenance. Inspect body-bound causal paths or prepare metadata for the proposed content. Performs no storage reads or writes and grants no permission; publication still requires the original exact editing base and authority.";
+    }
+    if id == crate::documents::delegation::EXPORT_ID {
+        return "Internal Agents maintenance command. The host binds one enabled permission revision, exact destination and named inputs to the authenticated executor. Content updates require the original editing base and unchanged generated-content ownership; no other documents, source writes or arbitrary exports are granted.";
+    }
+    if id == crate::documents::inspection::EXPORT_ID {
+        return "Native human inspection of one persistent Assistant, Agent or project-shared MCP memory space. Reuses document editing bases and receipts. HTTP/MCP callers cannot acquire this authority.";
+    }
+    if let Some(description) = crate::publication_journal::description(id) {
+        return description;
+    }
     if let Some(description) = crate::documents::description(id) {
         return description;
     }

@@ -185,6 +185,7 @@ pub(super) fn read_validated_tables(path: &Path) -> Result<(PzManifest, HashMap<
     let path_index = decode_index(table_bytes.get("path_index.parquet").unwrap())?;
     let adjacency_index = decode_adjacency(table_bytes.get("adjacency_index.parquet").unwrap())?;
     validate_indexes(&table_bytes, &row_groups, &path_index, &adjacency_index)?;
+    super::artifact_index::validate(&table_bytes, &row_groups)?;
     Ok((manifest, table_bytes))
 }
 
@@ -249,7 +250,9 @@ impl PzArchive {
         let elements = self
             .read_elements(&row_groups)?
             .into_iter()
-            .filter(|element| ids.contains(element.semantic_element_id.as_str()))
+            .filter(|element| {
+                element.selected && ids.contains(element.semantic_element_id.as_str())
+            })
             .collect();
         Ok(super::PzGraphLookup {
             elements,
@@ -360,16 +363,14 @@ fn column_type_matches(name: &str, actual: &DataType) -> bool {
 }
 
 pub(super) fn validate_manifest(manifest: &PzManifest) -> Result<()> {
-    if manifest.format_version != PZ_FORMAT_VERSION
-        || uuid::Uuid::parse_str(&manifest.project_id).map(|u| u.get_version_num()) != Ok(4)
-        || uuid::Uuid::parse_str(&manifest.snapshot_id).map(|u| u.get_version_num()) != Ok(7)
-    {
-        return Err(DbError::invalid_value(
-            "manifest",
-            "PZ v1 UUID/version fields",
-        ));
-    }
-    if manifest.entries.len() != 9
+    validate_public_identity(
+        &manifest.project_id,
+        &manifest.snapshot_id,
+        &manifest.selection_id,
+        manifest.format_version,
+    )?;
+    if manifest.selection_id.trim().is_empty()
+        || manifest.entries.len() != PZ_REQUIRED_ENTRIES.len() - 1
         || manifest
             .entries
             .iter()
@@ -406,6 +407,25 @@ pub(super) fn validate_manifest(manifest: &PzManifest) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub(super) fn validate_public_identity(
+    project: &str,
+    snapshot: &str,
+    selection: &str,
+    version: u32,
+) -> Result<()> {
+    if version == PZ_FORMAT_VERSION
+        && uuid::Uuid::parse_str(project).map(|id| id.get_version_num()) == Ok(4)
+        && uuid::Uuid::parse_str(snapshot).map(|id| id.get_version_num()) == Ok(7)
+        && !selection.trim().is_empty()
+    {
+        return Ok(());
+    }
+    Err(DbError::invalid_value(
+        format!("version={version}, project={project}, snapshot={snapshot}, selection={selection}"),
+        "PZ format 2, a UUIDv4 project, UUIDv7 snapshot and non-empty selection",
+    ))
 }
 
 fn validate_table(entry: &PzEntry, bytes: &[u8]) -> Result<usize> {
@@ -631,7 +651,10 @@ fn validate_indexes(
     Ok(())
 }
 
-fn read_batches(bytes: &[u8], row_groups: Option<&BTreeSet<usize>>) -> Result<Vec<Vec<String>>> {
+pub(super) fn read_batches(
+    bytes: &[u8],
+    row_groups: Option<&BTreeSet<usize>>,
+) -> Result<Vec<Vec<String>>> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(Bytes::copy_from_slice(bytes))
         .map_err(|e| DbError::invalid_value(e.to_string(), "readable parquet"))?;
     let builder = if let Some(groups) = row_groups {
@@ -677,9 +700,15 @@ fn decode_elements(
     bytes: &[u8],
     row_groups: &BTreeSet<usize>,
 ) -> Result<Vec<super::PzElementRecord>> {
+    let selected_column = TABLE_SCHEMAS[0]
+        .2
+        .iter()
+        .position(|column| *column == "selected")
+        .expect("the canonical elements schema includes current membership");
     Ok(read_batches(bytes, Some(row_groups))?
         .into_iter()
         .map(|r| super::PzElementRecord {
+            selected: r[selected_column] == "true",
             semantic_element_id: r[0].clone(),
             path: r[2].clone(),
             element_kind: r[3].clone(),

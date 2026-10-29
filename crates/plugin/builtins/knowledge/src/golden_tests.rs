@@ -293,6 +293,7 @@ fn artifact(
     let mut metadata = metadata;
     metadata["provenance"] = json!({"semantic_element_id": owner});
     documents::draft_document(CreateKnowledgeDocumentRequest {
+        operation_id: None,
         document_id: id.into(),
         project_root: "/repo".into(),
         document_kind: KnowledgeDocumentKind::Context,

@@ -1,4 +1,5 @@
 use super::{semantic_element_node_id, semantic_relationship_from_edge};
+use crate::SemanticRevisionConnection;
 use crate::local::grafeo::graph_store::GraphTransaction;
 use crate::{Result, SemanticRelationship};
 use grafeo::{EdgeId, GrafeoDB, NodeId, Value as GrafeoValue};
@@ -173,6 +174,104 @@ impl RelationshipWritePlan {
     pub(crate) fn changed_element_node_ids(&self) -> &BTreeMap<String, NodeId> {
         &self.changed_element_node_ids
     }
+}
+
+/// Projects exact selected connection identities, preserving distinct duplicate occurrences.
+pub(crate) fn prepare_revision_connections(
+    database: &GrafeoDB,
+    project_root: &str,
+    before: &[SemanticRevisionConnection],
+    after: &[SemanticRevisionConnection],
+    known_node_ids: &BTreeMap<String, NodeId>,
+    adopted: bool,
+) -> Result<RelationshipWritePlan> {
+    let previous = before
+        .iter()
+        .map(|edge| edge.connection_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let selected = after
+        .iter()
+        .map(|edge| edge.connection_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let inserted = after
+        .iter()
+        .filter(|edge| adopted || !previous.contains(edge.connection_id.as_str()))
+        .collect::<Vec<_>>();
+    let removed = before
+        .iter()
+        .filter(|edge| !selected.contains(edge.connection_id.as_str()))
+        .collect::<Vec<_>>();
+    let changed_element_ids = inserted
+        .iter()
+        .chain(removed.iter())
+        .flat_map(|edge| {
+            [
+                edge.relationship.source_element_id.as_str(),
+                edge.relationship.target_element_id.as_str(),
+            ]
+        })
+        .collect::<BTreeSet<_>>();
+    let node_ids = relationship_node_ids(
+        database,
+        changed_element_ids.iter().copied(),
+        known_node_ids,
+    );
+    let delete_edge_ids = if adopted {
+        super::prepare_project_relationship_reset(database, project_root).relationship_edge_ids
+    } else {
+        removed_revision_edge_ids(database, &removed, &node_ids)
+    };
+    let inserts = inserted
+        .iter()
+        .map(|edge| {
+            let mut insert = relationship_edge_insert(
+                node_ids[&edge.relationship.source_element_id],
+                node_ids[&edge.relationship.target_element_id],
+                &edge.relationship,
+            )?;
+            insert.properties.push((
+                "revision_connection_id",
+                GrafeoValue::from(edge.connection_id.clone()),
+            ));
+            Ok(insert)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RelationshipWritePlan {
+        delete_edge_ids,
+        updates: vec![],
+        inserts,
+        // The lookup cache also contains dependency bodies, which did not change.
+        changed_element_node_ids: node_ids
+            .into_iter()
+            .filter(|(id, _)| changed_element_ids.contains(id.as_str()))
+            .collect(),
+    })
+}
+
+fn removed_revision_edge_ids(
+    database: &GrafeoDB,
+    removed: &[&SemanticRevisionConnection],
+    nodes: &BTreeMap<String, NodeId>,
+) -> Vec<EdgeId> {
+    let ids = removed
+        .iter()
+        .map(|edge| edge.connection_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let sources = removed
+        .iter()
+        .map(|edge| &edge.relationship.source_element_id)
+        .collect::<BTreeSet<_>>();
+    sources
+        .into_iter()
+        .filter_map(|source| nodes.get(source))
+        .flat_map(|source| database.store().edges_from(*source, Direction::Outgoing))
+        .filter_map(|(_, id)| database.get_edge(id))
+        .filter(|edge| {
+            super::edge_string_property(edge, "revision_connection_id")
+                .is_some_and(|id| ids.contains(id.as_str()))
+        })
+        .map(|edge| edge.id)
+        .collect()
 }
 pub(crate) fn apply_relationship_write(
     database: &GraphTransaction<'_>,

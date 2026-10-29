@@ -1,5 +1,6 @@
 use crate::ChangeDisposition;
 use crate::local::grafeo::change_hooks::DirtyElement;
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 #[cfg(test)]
 use crate::local::grafeo::graph_row_projection::bool_property;
 pub(crate) use crate::local::grafeo::graph_row_projection::{
@@ -57,7 +58,7 @@ fn record_selective_edge_batch_call() {
 mod relationship_updates;
 pub(crate) use relationship_updates::{
     RelationshipWritePlan, apply_relationship_write, prepare_relationship_sync,
-    prepare_relationship_upserts,
+    prepare_relationship_upserts, prepare_revision_connections,
 };
 mod artifact_writes;
 mod duplicate_elements;
@@ -65,6 +66,8 @@ mod element_hierarchy;
 mod element_writes;
 pub(crate) use duplicate_elements::DuplicateElementRepair;
 mod records;
+mod revision_projection;
+pub(crate) use revision_projection::{RevisionProjection, prepare_revision_body_collection};
 mod relationships;
 mod subtree_selection;
 pub(super) use subtree_selection::subtree_elements;
@@ -107,9 +110,30 @@ const IDENTITY_BACKFILL_VERSION: i64 = 1;
 pub(crate) fn configure_semantic_indexes(database: &GrafeoDB) -> Result<()> {
     database.create_property_index(IDENTITY_BACKFILL_VERSION_PROPERTY);
     backfill_identity_properties(database)?;
+    database.create_property_index("revision_project_root");
+    database.create_property_index("revision_row_key");
+    database.create_property_index("revision_selection_key");
+    database.create_property_index("revision_membership_identity");
+    for property in [
+        "revision_link_older",
+        "revision_link_identity",
+        "revision_history_selection_key",
+        "revision_source_anchor",
+        "revision_record_provider",
+        "revision_follow_context",
+        "revision_association_element",
+        "revision_association_artifact",
+        "revision_connection_source",
+        "revision_containment_target",
+        "revision_membership_connection",
+    ] {
+        database.create_property_index(property);
+    }
+    database.create_property_index("revision_record_identity");
     database.create_property_index(PROJECT_ROOT_PROPERTY);
     database.create_property_index(SEMANTIC_ELEMENT_ID_PROPERTY);
     database.create_property_index(ARTIFACT_ID_PROPERTY);
+    database.create_property_index("content_ref");
     database.create_property_index(PATH_PROPERTY);
     database.create_property_index(ACTIVE_PROPERTY);
     database.create_property_index(ELEMENT_KIND_PROPERTY);
@@ -284,6 +308,7 @@ pub(super) fn project_member_ids(
     let keys = [
         "semantic_element_id",
         "lifecycle",
+        "revision_selected",
         "semantic_source_id",
         "path",
         "element_kind",
@@ -292,8 +317,10 @@ pub(super) fn project_member_ids(
     .map(Into::into);
     let rows = graph
         .graph_store()
-        .get_nodes_properties_selective_batch(&ids, &keys);
+        .get_nodes_properties_selective_batch(&ids, &keys)
+        .committed_nodes(&*graph.graph_store(), &ids);
     rows.iter()
+        .filter(|row| row.get("revision_selected") != Some(&GrafeoValue::from(false)))
         .filter(|row| {
             include_inactive
                 || row

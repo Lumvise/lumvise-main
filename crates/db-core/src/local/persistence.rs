@@ -106,6 +106,68 @@ impl SemanticPersistence for LocalPersistence {
             .semantic_storage()
             .with_control(control.clone());
         match operation {
+            SemanticOperation::RevisionFamilies(query) => Ok(SemanticResult::RevisionFamilies(
+                storage.revision_families(&query)?,
+            )),
+            SemanticOperation::RevisionConnections(query) => Ok(
+                SemanticResult::RevisionConnections(storage.revision_connections(&query)?),
+            ),
+            SemanticOperation::RevisionSelectionMembers(query) => Ok(
+                SemanticResult::RevisionObservation(storage.revision_selection_members(&query)?),
+            ),
+            SemanticOperation::RevisionSelectionAt {
+                project_root,
+                selection_id,
+                generation,
+            } => Ok(SemanticResult::RevisionMembership(
+                storage.revision_selection_at(&project_root, &selection_id, generation)?,
+            )),
+            SemanticOperation::RevisionSourceAnchor {
+                project_root,
+                selection_id,
+                anchor,
+            } => Ok(SemanticResult::RevisionMembership(
+                storage.revision_source_anchor(&project_root, &selection_id, &anchor)?,
+            )),
+            SemanticOperation::RevisionSelection {
+                project_root,
+                selection_id,
+            } => Ok(SemanticResult::RevisionSelection(
+                storage.revision_selection(&project_root, &selection_id)?,
+            )),
+            SemanticOperation::PublishRevisions(request) => Ok(
+                SemanticResult::RevisionPublication(storage.publish_revisions(&request)?),
+            ),
+            SemanticOperation::SelectRevisions(request) => Ok(SemanticResult::RevisionPublication(
+                storage.select_revisions(&request)?,
+            )),
+            SemanticOperation::AcquireCitationRetention(request) => Ok(
+                SemanticResult::RevisionPublication(storage.acquire_citation_retention(&request)?),
+            ),
+            SemanticOperation::ReleaseCitationRetention(request) => Ok(
+                SemanticResult::RevisionPublication(storage.release_citation_retention(&request)?),
+            ),
+            SemanticOperation::ResolveRevision {
+                project_root,
+                record,
+            } => Ok(SemanticResult::RevisionResolution(
+                storage.resolve_revision(&project_root, &record)?,
+            )),
+            SemanticOperation::RevisionHistory { project_root } => Ok(
+                SemanticResult::RevisionHistory(storage.revision_history(&project_root)?),
+            ),
+            SemanticOperation::PlanRevisionRetention {
+                project_root,
+                operation_id,
+                policy,
+            } => Ok(SemanticResult::RevisionRetentionPlan(
+                storage.plan_revision_retention(&project_root, &operation_id, &policy)?,
+            )),
+            SemanticOperation::CollectRevisionRetention { plan, policy } => {
+                Ok(SemanticResult::RevisionRetention(
+                    storage.collect_revision_retention(&plan, &policy)?,
+                ))
+            }
             SemanticOperation::ProjectArchive { project_root } => Ok(
                 SemanticResult::ProjectArchive(super::project_archive::capture(
                     &self.core.storage_manager(),
@@ -429,6 +491,15 @@ impl SemanticPersistence for LocalPersistence {
             SemanticOperation::ProjectIdentity { project_root } => {
                 Ok(SemanticResult::ProjectIdentity(
                     ProjectLineageRepository::new(&self.core.conn).get_or_create(&project_root)?,
+                ))
+            }
+            SemanticOperation::ProjectAccess { project_root } => {
+                let identity =
+                    ProjectLineageRepository::new(&self.core.conn).get_or_create(&project_root)?;
+                Ok(SemanticResult::ProjectAccess(
+                    crate::SemanticProjectAccess::Local {
+                        project_id: identity.project_id,
+                    },
                 ))
             }
             SemanticOperation::SemanticRevision => Ok(SemanticResult::SemanticRevision {

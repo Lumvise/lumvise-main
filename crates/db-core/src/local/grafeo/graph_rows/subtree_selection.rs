@@ -1,7 +1,8 @@
 //! Request-scoped descendant selection; only selected records are hydrated, once.
 use super::records::{active_properties, semantic_element_node_id, value_string};
-use super::{PARENT_ELEMENT_ID_PROPERTY, SEMANTIC_ELEMENT_ID_PROPERTY, selective_elements};
+use super::{PARENT_ELEMENT_ID_PROPERTY, SEMANTIC_ELEMENT_ID_PROPERTY, selective_current_elements};
 use crate::SemanticElement;
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 use grafeo::{GrafeoDB, NodeId, Value};
 use grafeo_core::graph::Direction;
 use std::collections::{BTreeMap, HashSet};
@@ -32,7 +33,7 @@ pub(crate) fn subtree_elements(
         maximum_depth,
     );
     let mut elements = vec![root];
-    elements.extend(selective_elements(
+    elements.extend(selective_current_elements(
         graph,
         &selection.descendants,
         None,
@@ -80,10 +81,12 @@ impl SubtreeSelection<'_> {
         let store = self.graph.graph_store();
         let adjacency = store.edges_from(parent, Direction::Outgoing);
         let edges = adjacency.iter().map(|(_, edge)| *edge).collect::<Vec<_>>();
-        let properties = store.get_edges_properties_selective_batch(
-            &edges,
-            &["relationship_kind".into(), "label".into()],
-        );
+        let properties = store
+            .get_edges_properties_selective_batch(
+                &edges,
+                &["relationship_kind".into(), "label".into()],
+            )
+            .committed_edges(&*self.graph.graph_store(), &edges);
         adjacency
             .into_iter()
             .zip(properties)
@@ -105,7 +108,8 @@ impl SubtreeSelection<'_> {
         let rows = self
             .graph
             .graph_store()
-            .get_nodes_properties_selective_batch(&nodes, &keys);
+            .get_nodes_properties_selective_batch(&nodes, &keys)
+            .committed_nodes(&*self.graph.graph_store(), &nodes);
         let mut identities = BTreeMap::new();
         for (node, row) in nodes.into_iter().zip(rows) {
             if let Some(id) = active_identity(|key| row.get(key)) {

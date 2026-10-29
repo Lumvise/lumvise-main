@@ -10,7 +10,7 @@ use lumvise_contracts::{
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
-use super::{publication, record_format as format};
+use super::record_format as format;
 
 pub(super) fn element_id(document_id: &str) -> String {
     format!("knowledge-document:{document_id}")
@@ -43,52 +43,27 @@ pub(super) fn validate_references(
 
 fn reference_id(reference: &KnowledgeDocumentReference) -> &str {
     match reference {
+        KnowledgeDocumentReference::Qualified(citation) => citation.target.identity().1,
         KnowledgeDocumentReference::SemanticElement {
             semantic_element_id,
         } => semantic_element_id,
-        KnowledgeDocumentReference::Artifact { artifact_id } => artifact_id,
+        KnowledgeDocumentReference::Artifact { artifact_id, .. } => artifact_id,
         KnowledgeDocumentReference::Document { document_id } => document_id,
     }
 }
 
 pub(super) fn find(
     context: &mut PluginContext<'_>,
+    root: &str,
     document_id: &str,
 ) -> Result<Option<KnowledgeDocument>, PluginError> {
-    let element = crate::storage::semantic_element(context, &element_id(document_id))?;
-    if element
-        .as_ref()
-        .is_some_and(|row| !is_document_record(&row["metadata"]))
-    {
-        return Err(super::invalid(
-            "document_identity_conflict",
-            document_id,
-            "an unused index identity or a Knowledge-owned document",
-        ));
-    }
-    match element {
-        Some(element) if element["lifecycle"] != "inactive" => {
-            find_scoped(context, &indexed_identity(&element, document_id)?)
-        }
-        _ => Ok(None),
-    }
-}
-
-fn indexed_identity(
-    element: &Value,
-    document_id: &str,
-) -> Result<KnowledgeDocumentIdentity, PluginError> {
-    let root = element["project_root"].as_str().ok_or_else(|| {
-        super::invalid(
-            "invalid_document_record",
-            &element.to_string(),
-            "project_root string",
-        )
-    })?;
-    Ok(KnowledgeDocumentIdentity {
-        project_root: root.into(),
-        document_id: document_id.into(),
-    })
+    find_scoped(
+        context,
+        &KnowledgeDocumentIdentity {
+            project_root: root.into(),
+            document_id: document_id.into(),
+        },
+    )
 }
 
 pub(super) fn required(
@@ -111,7 +86,7 @@ pub(super) fn required(
 pub(super) enum DocumentState {
     Missing,
     Stored(KnowledgeDocument),
-    Deleted,
+    Deleted(KnowledgeDocument),
 }
 
 fn find_scoped(
@@ -120,7 +95,7 @@ fn find_scoped(
 ) -> Result<Option<KnowledgeDocument>, PluginError> {
     match scoped_state(context, identity)? {
         DocumentState::Stored(document) => Ok(Some(document)),
-        DocumentState::Missing | DocumentState::Deleted => Ok(None),
+        DocumentState::Missing | DocumentState::Deleted(_) => Ok(None),
     }
 }
 
@@ -128,45 +103,106 @@ pub(super) fn scoped_state(
     context: &mut PluginContext<'_>,
     identity: &KnowledgeDocumentIdentity,
 ) -> Result<DocumentState, PluginError> {
-    let elements = crate::storage::elements_by_ids(
-        context,
-        &identity.project_root,
-        &HashSet::from([element_id(&identity.document_id)]),
-    )?;
-    let (elements, artifacts) = captured_records(context, &identity.project_root, elements)?;
-    let roots: Vec<Value> = elements.iter().map(|row| json!(row)).collect();
-    for element in roots.iter() {
-        if let Some(document) = decode(element, &artifacts, &roots)?
-            && document.document_id == identity.document_id
-        {
-            return Ok(if element["lifecycle"] == "inactive" {
-                DocumentState::Deleted
-            } else {
-                DocumentState::Stored(document)
-            });
-        }
+    super::spaces::require_root(context, &identity.project_root)?;
+    let Some(element) = selected_locator(context, &identity.project_root, &identity.document_id)?
+    else {
+        return Ok(DocumentState::Missing);
+    };
+    super::spaces::require_element(context, &element)?;
+    if let Some(document) = format::deleted(&element)? {
+        return Ok(DocumentState::Deleted(document));
     }
-    Ok(DocumentState::Missing)
+    let inactive = element["lifecycle"] == "inactive";
+    let document = exact_document(context, element)?;
+    Ok(if inactive {
+        DocumentState::Deleted(document)
+    } else {
+        DocumentState::Stored(document)
+    })
 }
 
-pub(super) fn find_for_conversion(
+pub(super) fn selected_locator(
     context: &mut PluginContext<'_>,
     root: &str,
-    document_id: &str,
-) -> Result<Option<KnowledgeDocument>, PluginError> {
-    match scoped_state(
+    id: &str,
+) -> Result<Option<Value>, PluginError> {
+    let rows = scoped_elements(
         context,
-        &KnowledgeDocumentIdentity {
-            project_root: root.into(),
-            document_id: document_id.into(),
-        },
-    )? {
-        DocumentState::Stored(document) => Ok(Some(document)),
-        DocumentState::Missing => find(context, document_id),
-        DocumentState::Deleted => Err(super::invalid(
-            "document_conversion_conflict",
-            document_id,
-            "no previously deleted document at the conversion identity",
+        root,
+        json!({"Location":{
+        "project_root":root, "path":format::storage_path(id), "line":1, "include_inactive":true}}),
+    )?;
+    match rows.as_slice() {
+        [] => Ok(None),
+        [element] if format::deleted(element)?.is_some() || format::locator(element)?.is_some() => {
+            Ok(Some(element.clone()))
+        }
+        _ => Err(super::invalid(
+            "document_identity_conflict",
+            &json!(rows).to_string(),
+            "one selected Knowledge document at its project path",
+        )),
+    }
+}
+
+pub(super) fn exact_document(
+    context: &mut PluginContext<'_>,
+    element: Value,
+) -> Result<KnowledgeDocument, PluginError> {
+    super::spaces::require_element(context, &element)?;
+    if let Some(document) = format::deleted(&element)? {
+        return Ok(document);
+    }
+    let locator = format::locator(&element)?.ok_or_else(|| {
+        super::invalid(
+            "invalid_document_record",
+            &element.to_string(),
+            "a document locator",
+        )
+    })?;
+    let root = element["project_root"].as_str().ok_or_else(|| {
+        super::invalid(
+            "invalid_document_record",
+            &element.to_string(),
+            "a project-scoped locator",
+        )
+    })?;
+    let body = exact_payload(context, root, &locator)?;
+    let owner = body["semantic_element_id"].as_str().unwrap_or_default();
+    let anchor = crate::storage::read_revision(
+        context,
+        root,
+        lumvise_contracts::SemanticRecordRef::element(owner),
+    )?;
+    let roots = anchor
+        .into_iter()
+        .filter_map(|revision| match revision.body {
+            lumvise_semantic_revisions::SemanticRevisionBody::Element(element) => {
+                Some(json!(element))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    format::decode(&element, &body, &roots)
+}
+
+fn exact_payload(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    locator: &Value,
+) -> Result<Value, PluginError> {
+    let id = locator["artifact_id"].as_str().unwrap_or_default();
+    let revision = crate::storage::read_revision(
+        context,
+        root,
+        lumvise_contracts::SemanticRecordRef::artifact(id),
+    )?;
+    match revision.map(|revision| revision.body) {
+        Some(lumvise_semantic_revisions::SemanticRevisionBody::Artifact(body)) => Ok(json!(body)),
+        _ => Err(super::invalid(
+            "document_revision_unavailable",
+            id,
+            "the exact stored document payload; retained IDs may have collected bodies",
         )),
     }
 }
@@ -180,6 +216,9 @@ pub(super) fn decode(
     artifacts: &[Value],
     roots: &[Value],
 ) -> Result<Option<KnowledgeDocument>, PluginError> {
+    if let Some(document) = format::deleted(element)? {
+        return Ok(Some(document));
+    }
     let Some(locator) = format::locator(element)? else {
         return Ok(None);
     };
@@ -188,29 +227,6 @@ pub(super) fn decode(
         .find(|row| row["artifact_id"] == locator["artifact_id"])
         .unwrap_or(&Value::Null);
     format::decode(element, artifact, roots).map(Some)
-}
-
-pub(super) fn write(
-    context: &mut PluginContext<'_>,
-    document: &KnowledgeDocument,
-) -> Result<(), PluginError> {
-    let assets = super::assets::for_update(context, document)?;
-    publication::write(context, document, assets.into_iter().collect())
-}
-
-pub(super) fn create(
-    context: &mut PluginContext<'_>,
-    document: &KnowledgeDocument,
-) -> Result<(), PluginError> {
-    let assets = super::assets::new_resource(context, document)?;
-    publication::write(context, document, assets.into_iter().collect())
-}
-
-pub(super) fn remove(
-    context: &mut PluginContext<'_>,
-    identity: &KnowledgeDocumentIdentity,
-) -> Result<(), PluginError> {
-    publication::remove(context, identity)
 }
 
 pub(super) fn list(
@@ -247,7 +263,7 @@ fn project_roots(
         crate::parse(response["project_roots"].clone(), "project roots array")?;
     Ok(roots
         .into_iter()
-        .filter(|root| !root.starts_with("agent-space://"))
+        .filter(|root| !super::spaces::is_private_root(root))
         .collect())
 }
 
@@ -263,12 +279,17 @@ pub(super) fn project_document_records(
     root: &str,
     include_deleted: bool,
 ) -> Result<Vec<KnowledgeDocument>, PluginError> {
-    let elements = project_elements(context, root, include_deleted)?;
+    let mut elements = project_elements(context, root, include_deleted)?;
+    super::spaces::filter_elements(context, root, &mut elements)?;
     let artifacts = read_indexed_bodies(context, &elements)?;
     elements
         .iter()
         .filter(|element| element["project_root"] == root)
-        .filter(|element| include_deleted || element["lifecycle"] != "inactive")
+        .filter(|element| {
+            include_deleted
+                || (element["lifecycle"] != "inactive"
+                    && format::deleted(element).is_ok_and(|deleted| deleted.is_none()))
+        })
         .filter_map(|element| decode(element, &artifacts, &elements).transpose())
         .collect()
 }
@@ -294,6 +315,7 @@ pub(super) fn scoped_elements(
     root: &str,
     request: Value,
 ) -> Result<Vec<Value>, PluginError> {
+    super::spaces::require_root(context, root)?;
     let response = context.host_call(
         "storage.semantic",
         json!({"operation":"scoped_read","request":request}),
@@ -330,18 +352,20 @@ fn read_indexed_bodies(
     context: &mut PluginContext<'_>,
     elements: &[Value],
 ) -> Result<Vec<Value>, PluginError> {
-    let mut artifacts = Vec::new();
+    let mut artifact_ids = HashSet::new();
     for element in elements {
         if let Some(locator) = format::locator(element)? {
-            let response = context.host_call(
-                "storage.semantic",
-                json!({"operation":"artifact",
-                "artifact_id":locator["artifact_id"]}),
-            )?;
-            artifacts.push(response["artifact"].clone());
+            artifact_ids.insert(crate::required_input(locator, "artifact_id")?);
         }
     }
-    Ok(artifacts)
+    if artifact_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let response = context.host_call(
+        "storage.semantic",
+        json!({"operation":"artifacts_by_ids", "artifact_ids":artifact_ids}),
+    )?;
+    response_array(&response, "artifacts")
 }
 
 pub(super) fn validate_element_scope(

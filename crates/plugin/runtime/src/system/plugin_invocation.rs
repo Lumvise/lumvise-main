@@ -1,4 +1,5 @@
 //! Plugin-to-plugin invocation policy and cycle protection.
+mod memory_commands;
 
 use std::{
     collections::HashMap,
@@ -28,7 +29,7 @@ impl PluginSystem {
             ));
         }
         let _wait = InvocationWaitGuard::enter(self, caller_plugin_id, &request.plugin_id)?;
-        self.require_public_mcp_export(&request.plugin_id, &request.export_id)?;
+        self.require_invocable_export(caller_plugin_id, &request.plugin_id, &request.export_id)?;
         let nested_context = nested_context(parent_context)?;
         let outcome = self
             .invoke_ready_export_async(
@@ -92,8 +93,9 @@ fn map_target_outcome(outcome: WireOutcome) -> Result<Value, HostCapabilityError
 }
 
 impl PluginSystem {
-    fn require_public_mcp_export(
+    fn require_invocable_export(
         &self,
+        caller: &str,
         plugin_id: &str,
         export_id: &str,
     ) -> Result<(), HostCapabilityError> {
@@ -110,10 +112,13 @@ impl PluginSystem {
             .iter()
             .find(|export| export.id == export_id)
             .ok_or_else(|| missing_export(plugin_id, export_id))?;
-        if export.surface != ExportSurface::McpTool {
+        let private_memory = memory_commands::permitted(caller, entry.plugin_id(), export);
+        if export.surface != ExportSurface::McpTool && !private_memory {
             return Err(plugin_invoke_error(
                 "plugin_invoke_export_surface_denied",
-                format!("target export `{plugin_id}:{export_id}` is not a global MCP tool"),
+                format!(
+                    "target export `{plugin_id}:{export_id}`; expected a global MCP tool or an authorized signed memory command"
+                ),
                 false,
             ));
         }

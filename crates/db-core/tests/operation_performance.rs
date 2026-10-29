@@ -191,6 +191,7 @@ fn benchmark_element(sample: usize, worker: usize) -> SemanticElement {
     let id = format!("operation-performance:{sample}:{worker}");
     let simhash = ((sample as u64) << 32) | worker as u64;
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: format!("/operation-performance/{sample}/{worker}"),
         semantic_element_id: id.clone(),
         semantic_source_id: "operation-performance".into(),

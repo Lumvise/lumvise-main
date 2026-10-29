@@ -1,10 +1,33 @@
-//! Engine-neutral exact vector ranking; public callers use SemanticArchive methods.
-use crate::{DbError, Result, VectorSearchResult};
+//! Engine-neutral exact ranking; adapters supply authorized candidates through the crate-root facade.
+use crate::{ArtifactTextVector, DbError, Result, VectorSearchResult};
 #[cfg(test)]
 use std::cell::Cell;
 use std::{collections::BinaryHeap, sync::Arc};
 #[cfg(test)]
 thread_local! { pub(crate) static SCORE_CALLS: Cell<usize> = const { Cell::new(0) }; }
+
+/// Ranks authorized vectors with the same engine/model and cosine rules as local storage.
+/// Example: `rank_vector_candidates(root, vectors, &[1.0, 0.0], 10, "engine", None)?`.
+pub fn rank_vector_candidates<'a>(
+    project_root: &str,
+    candidates: impl IntoIterator<Item = (&'a str, &'a ArtifactTextVector)>,
+    query: &[f32],
+    k: usize,
+    engine: &str,
+    model: Option<&str>,
+) -> Result<Vec<VectorSearchResult>> {
+    validate_search_input(project_root, query, k)?;
+    let candidates = candidates.into_iter().filter(|(_, vector)| {
+        vector.engine_id == engine
+            && vector.model.as_deref().unwrap_or("") == model.unwrap_or("")
+            && vector.vector.iter().all(|value| value.is_finite())
+    });
+    Ok(top_k(
+        candidates.map(|(id, vector)| (id.into(), Arc::from(vector.vector.as_slice()))),
+        query,
+        k,
+    ))
+}
 pub(crate) fn validate_search_input(project_root: &str, query: &[f32], k: usize) -> Result<()> {
     if project_root.trim().is_empty() {
         return Err(DbError::invalid_value(
@@ -119,19 +142,15 @@ impl crate::SemanticArchive {
         engine: &str,
         model: Option<&str>,
     ) -> Result<Vec<VectorSearchResult>> {
-        validate_search_input(&self.snapshot.project_root, query, k)?;
-        let candidates = self
-            .element_name_vectors
-            .iter()
-            .filter(|stored| {
-                stored.vector.engine_id == engine && stored.vector.model.as_deref() == model
-            })
-            .map(|stored| {
-                (
-                    stored.semantic_element_id.clone(),
-                    Arc::from(stored.vector.vector.as_slice()),
-                )
-            });
-        Ok(top_k(candidates, query, k))
+        rank_vector_candidates(
+            &self.snapshot.project_root,
+            self.element_name_vectors
+                .iter()
+                .map(|stored| (stored.semantic_element_id.as_str(), &stored.vector)),
+            query,
+            k,
+            engine,
+            model,
+        )
     }
 }

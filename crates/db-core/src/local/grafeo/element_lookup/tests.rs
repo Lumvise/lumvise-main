@@ -25,11 +25,11 @@ fn candidate_index_preserves_exact_substring_token_and_identifier_ranking() {
         ("/a", "c", "task"),
     ]);
     assert_eq!(
-        index.search(Some("/a"), &ElementNameQuery::new(" RUN_TASK "), 4),
+        index.search(Some("/a"), &SemanticElementNameQuery::new(" RUN_TASK "), 4),
         [0, 1, 2, 4].map(NodeId::new)
     );
     assert_eq!(
-        index.search(None, &ElementNameQuery::new("run_task"), 10),
+        index.search(None, &SemanticElementNameQuery::new("run_task"), 10),
         [0, 1, 2, 4, 3].map(NodeId::new)
     );
 }
@@ -45,18 +45,18 @@ fn candidate_index_preserves_short_unicode_punctuation_and_scope_matches() {
     ]);
     for (query, expected) in [("é", 0), ("__", 2), ("字語", 3), ("per", 4)] {
         assert_eq!(
-            index.search(Some("/a"), &ElementNameQuery::new(query), 10),
+            index.search(Some("/a"), &SemanticElementNameQuery::new(query), 10),
             [NodeId::new(expected)]
         );
     }
     assert!(
         index
-            .search(None, &ElementNameQuery::new("missing"), 10)
+            .search(None, &SemanticElementNameQuery::new("missing"), 10)
             .is_empty()
     );
     assert!(
         index
-            .search(None, &ElementNameQuery::new("é"), 0)
+            .search(None, &SemanticElementNameQuery::new("é"), 0)
             .is_empty()
     );
 }
@@ -70,11 +70,11 @@ fn substring_index_verifies_false_positive_grams_and_deduplicates_repeated_grams
         ("/a", "4", "ABCDEF"),
     ]);
     assert_eq!(
-        index.search(None, &ElementNameQuery::new("abcde"), 10),
+        index.search(None, &SemanticElementNameQuery::new("abcde"), 10),
         [1, 3].map(NodeId::new)
     );
     assert_eq!(
-        index.search(None, &ElementNameQuery::new("aaaa"), 10),
+        index.search(None, &SemanticElementNameQuery::new("aaaa"), 10),
         [NodeId::new(2)]
     );
 }
@@ -93,7 +93,7 @@ fn selective_queries_do_not_score_every_indexed_name() {
         });
     }
     assert_eq!(
-        index.candidate_indices(&ElementNameQuery::new("needlexyz")),
+        index.candidate_indices(&SemanticElementNameQuery::new("needlexyz")),
         HashSet::from([0])
     );
 }

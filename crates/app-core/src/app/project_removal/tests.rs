@@ -62,6 +62,16 @@ fn remove(app: &AppCore, root: &str) -> HttpResponse {
     route_http_request(app, request(json!({"projectRoot": root})))
 }
 
+#[test]
+fn project_cleanup_rejects_private_document_spaces() {
+    let persistence = Arc::new(LocalPersistence::in_memory().unwrap());
+    let app = credentialed_app(persistence.clone(), persistence);
+    for scheme in lumvise_contracts::KNOWLEDGE_SPACE_SCHEMES {
+        let response = remove(&app, &format!("{scheme}owner"));
+        assert_eq!(response.status, "400 Bad Request");
+    }
+}
+
 fn response_body(response: &HttpResponse) -> Value {
     serde_json::from_slice(response.buffered_bytes().unwrap()).unwrap()
 }

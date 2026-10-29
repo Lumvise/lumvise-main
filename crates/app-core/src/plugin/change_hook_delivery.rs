@@ -581,6 +581,7 @@ mod tests {
 
     fn element(name: &str) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/repo".into(),
             semantic_element_id: "element-1".into(),
             semantic_source_id: "source-1".into(),
@@ -722,6 +723,7 @@ mod tests {
 
     fn element_in(root: &str, id: &str, name: &str) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: root.into(),
             semantic_element_id: id.into(),
             semantic_source_id: "source-1".into(),

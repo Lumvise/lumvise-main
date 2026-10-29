@@ -11,9 +11,9 @@ mod tool_content;
 
 pub use application::{McpApplication, McpApplicationError, McpInvocationFailureKind, McpTool};
 pub use bridge_protocol::{
-    APP_BRIDGE_PROTOCOL_MAJOR, APP_RUNTIME_CONTROL_PROTOCOL_MAJOR, AppBridgeCancellationRequestV1,
-    AppBridgeCancellationResponseV1, AppBridgeInvocationRequestV1, AppBridgeInvocationResponseV1,
-    AppBridgeInvocationStatusV1, RuntimeControlKindV1, RuntimeControlRequestV1,
+    APP_BRIDGE_PROTOCOL_MAJOR, APP_RUNTIME_CONTROL_PROTOCOL_MAJOR, AppBridgeCancellationRequestV2,
+    AppBridgeCancellationResponseV2, AppBridgeInvocationRequestV2, AppBridgeInvocationResponseV2,
+    AppBridgeInvocationStatusV2, RuntimeControlKindV1, RuntimeControlRequestV1,
     RuntimeControlResponseV1, RuntimeControlStateV1, decode_runtime_control_frame,
     frame_runtime_control,
 };

@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-pub(crate) const ELEMENTS: &str = "semantic_elements";
 pub(crate) const SOURCES: &str = "semantic_sources";
 pub(crate) const SEARCH_INDEX_STATE: &str = "semantic_search_index_state";
 pub(crate) const INDEX_LOGS: &str = "semantic_index_logs";
@@ -219,28 +218,33 @@ pub(crate) fn begin_project_snapshot(
     provider_instance_id: &str,
     partition_paths: &[String],
     page_count: usize,
+    observation: &lumvise_contracts::SemanticIndexObservation,
 ) -> Result<(), PluginError> {
     context.host_call(
         SEMANTIC_CAPABILITY,
         json!({"operation": "begin_project_snapshot", "snapshot_id": snapshot_id,
             "provider_instance_id": provider_instance_id,
             "project_root": project_root, "partition_paths": partition_paths,
-            "page_count": page_count}),
+            "page_count": page_count, "observation": observation}),
     )?;
     Ok(())
 }
 
-pub(crate) fn stage_project_snapshot<T: Serialize, R: Serialize>(
+pub(crate) fn stage_project_snapshot<T: Serialize, R: Serialize, S: Serialize, A: Serialize>(
     context: &mut PluginContext<'_>,
     snapshot_id: &str,
     page_index: usize,
     elements: &[T],
     relationships: &[R],
+    sources: &[S],
+    artifacts: &[A],
+    removed_artifact_ids: &[String],
 ) -> Result<(), PluginError> {
     context.host_call(
         SEMANTIC_CAPABILITY,
         json!({"operation": "stage_project_snapshot", "snapshot_id": snapshot_id,
-            "page_index": page_index, "elements": elements, "relationships": relationships}),
+            "page_index": page_index, "elements": elements, "relationships": relationships, "sources": sources,
+            "artifacts":artifacts, "removed_artifact_ids":removed_artifact_ids}),
     )?;
     Ok(())
 }
@@ -255,52 +259,6 @@ pub(crate) fn commit_project_snapshot(
     )
 }
 
-pub(crate) fn sync_partition<T: Serialize, R: Serialize>(
-    context: &mut PluginContext<'_>,
-    project_root: &str,
-    provider_instance_id: &str,
-    replace_paths: &[String],
-    elements: &[T],
-    relationships: &[R],
-) -> Result<Value, PluginError> {
-    context.host_call(
-        SEMANTIC_CAPABILITY,
-        json!({"operation": "sync_partition", "partition": {
-            "provider_instance_id": provider_instance_id,
-            "project_root": project_root, "replace_paths": replace_paths},
-            "elements": elements, "relationships": relationships}),
-    )
-}
-
-pub(crate) fn upsert_graph_artifact<T: Serialize>(
-    context: &mut PluginContext<'_>,
-    artifact: &T,
-) -> Result<(), PluginError> {
-    context.host_call(
-        SEMANTIC_CAPABILITY,
-        json!({"operation": "upsert_artifact", "artifact": artifact}),
-    )?;
-    Ok(())
-}
-
-pub(crate) fn remove_graph_artifact(
-    context: &mut PluginContext<'_>,
-    artifact_id: &str,
-) -> Result<bool, PluginError> {
-    let output = context.host_call(
-        SEMANTIC_CAPABILITY,
-        json!({"operation": "remove_artifact", "artifact_id": artifact_id}),
-    )?;
-    output["removed"].as_bool().ok_or_else(|| {
-        PluginError::new(
-            "invalid_semantic_storage_response",
-            format!(
-                "invalid semantic artifact removal response `{output}`; expected removed boolean"
-            ),
-            false,
-        )
-    })
-}
 pub(crate) fn graph_elements_by_ids<T: DeserializeOwned>(
     context: &mut PluginContext<'_>,
     project_root: &str,
@@ -349,21 +307,6 @@ pub(crate) fn graph_project_roots(
     )
 }
 
-pub(crate) fn graph_element<T: DeserializeOwned>(
-    context: &mut PluginContext<'_>,
-    semantic_element_id: &str,
-) -> Result<Option<T>, PluginError> {
-    let output = context.host_call(
-        SEMANTIC_CAPABILITY,
-        json!({"operation": "element", "semantic_element_id": semantic_element_id}),
-    )?;
-    output
-        .get("element")
-        .filter(|element| !element.is_null())
-        .map(|element| decode(element, ELEMENTS))
-        .transpose()
-}
-
 pub(crate) fn store_element_name_vectors(
     context: &mut PluginContext<'_>,
     project_root: &str,
@@ -409,11 +352,27 @@ fn semantic_array<T: DeserializeOwned>(
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub(crate) enum Mutation {
+    RequireValue {
+        table_name: String,
+        row_key: String,
+        expected: Value,
+    },
     Put {
         table_name: String,
         row_key: String,
         value: Value,
     },
+}
+
+pub(crate) fn require_row_mutation(table: &str, key: &str, expected: Option<&Value>) -> Mutation {
+    Mutation::RequireValue {
+        table_name: table.into(),
+        row_key: key.into(),
+        expected: expected.map_or(
+            json!({"presence":"absent"}),
+            |value| json!({"presence":"present", "value":value}),
+        ),
+    }
 }
 
 pub(crate) fn put_mutation<T: Serialize>(
@@ -510,7 +469,7 @@ fn ensure_mutation_tables(
 
 fn mutation_table(mutation: &Mutation) -> &str {
     match mutation {
-        Mutation::Put { table_name, .. } => table_name,
+        Mutation::Put { table_name, .. } | Mutation::RequireValue { table_name, .. } => table_name,
     }
 }
 

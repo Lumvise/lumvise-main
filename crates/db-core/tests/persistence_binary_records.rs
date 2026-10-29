@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 fn element(metadata: Value) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "project-root".into(),
         semantic_element_id: "element-1".into(),
         semantic_source_id: "source-1".into(),
@@ -85,6 +86,7 @@ fn semantic_operations_roundtrip_nested_metadata_and_tagged_dependencies() {
                 },
                 ArtifactDependency {
                     target: ArtifactDependencyTarget::Artifact {
+                        edit_version: None,
                         artifact_id: "artifact-2".into(),
                     },
                 },

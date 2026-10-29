@@ -415,6 +415,16 @@ impl HostCapabilityBroker for PolicyHostCapabilityBroker {
         self.authorize(&request)?;
         self.executor.invoke_controlled(request, context)
     }
+
+    fn invoke_with_nested(
+        &self,
+        request: HostCapabilityRequest,
+        context: &PluginInvocationContext,
+        nested: &dyn lumvise_plugin_runtime::HostPluginInvoker,
+    ) -> std::result::Result<Value, HostCapabilityError> {
+        self.authorize(&request)?;
+        self.executor.invoke_with_nested(request, context, nested)
+    }
 }
 
 impl PolicyHostCapabilityBroker {

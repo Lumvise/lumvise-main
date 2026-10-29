@@ -16,6 +16,9 @@ pub enum KnowledgeArtifactKindV2 {
     Requirements,
     /// Product or technical specification.
     Specification,
+    /// Notes about an image, audio or video source. `metadata.anchor_selector`
+    /// can pin an image region or an audio/video time segment.
+    Media,
 }
 
 /// Lifecycle state of a Knowledge artifact.
@@ -98,7 +101,12 @@ pub enum ArtifactDependencyTarget {
     /// A semantic element required by the dependent artifact.
     SemanticElement { semantic_element_id: String },
     /// Another Knowledge artifact required by the dependent artifact.
-    Artifact { artifact_id: String },
+    Artifact {
+        artifact_id: String,
+        /// Required when citing an editable working state; frozen IDs already identify exact content.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edit_version: Option<u64>,
+    },
 }
 
 /// A directed `depends_on` relation owned by one Knowledge artifact.
@@ -109,13 +117,34 @@ pub struct ArtifactDependency {
 }
 
 impl ArtifactDependency {
+    /// Shares the closed passive input shape across compiled manifests without moving policy.
+    /// Example: `let items = ArtifactDependency::input_schema();` for a dependencies array.
+    pub fn input_schema() -> Value {
+        serde_json::json!({"type":"object", "required":["target"], "additionalProperties":false,
+        "properties":{"target":{"oneOf":[
+            {"type":"object", "required":["target_kind","semantic_element_id"], "additionalProperties":false,
+             "properties":{"target_kind":{"const":"semantic_element"}, "semantic_element_id":{"type":"string"}}},
+            {"type":"object", "required":["target_kind","artifact_id"], "additionalProperties":false,
+             "properties":{"target_kind":{"const":"artifact"}, "artifact_id":{"type":"string"}, "edit_version":{"anyOf":[{"type":"integer","minimum":1},{"type":"null"}]}}}
+        ]}}})
+    }
+
     /// Validates target identity shape.
     pub fn validate(&self) -> Result<(), String> {
+        if let ArtifactDependencyTarget::Artifact {
+            artifact_id,
+            edit_version: Some(0),
+        } = &self.target
+        {
+            return Err(format!(
+                "artifact dependency `{artifact_id}` has edit_version 0; expected a positive original edit version"
+            ));
+        }
         let identifier = match &self.target {
             ArtifactDependencyTarget::SemanticElement {
                 semantic_element_id,
             } => semantic_element_id,
-            ArtifactDependencyTarget::Artifact { artifact_id } => artifact_id,
+            ArtifactDependencyTarget::Artifact { artifact_id, .. } => artifact_id,
         };
         if identifier.trim().is_empty() {
             return Err("artifact dependency target identifier must be non-empty".into());
@@ -129,7 +158,7 @@ impl ArtifactDependency {
             ArtifactDependencyTarget::SemanticElement {
                 semantic_element_id,
             } => semantic_element_id,
-            ArtifactDependencyTarget::Artifact { artifact_id } => artifact_id,
+            ArtifactDependencyTarget::Artifact { artifact_id, .. } => artifact_id,
         }
     }
 }
@@ -147,11 +176,14 @@ pub fn validate_artifact_dependencies(
         dependency.validate()?;
         if matches!(
             &dependency.target,
-            ArtifactDependencyTarget::Artifact { artifact_id: target_id } if target_id == artifact_id
+            ArtifactDependencyTarget::Artifact { artifact_id: target_id, .. } if target_id == artifact_id
         ) {
             return Err("artifact dependency cannot target its own artifact".into());
         }
-        if !seen.insert(dependency) {
+        if !seen.insert((
+            std::mem::discriminant(&dependency.target),
+            dependency.target_id(),
+        )) {
             return Err("artifact dependencies must not contain duplicates".into());
         }
     }
@@ -163,6 +195,9 @@ pub fn validate_artifact_dependencies(
 pub struct KnowledgeArtifactV2 {
     /// Stable string artifact identity.
     pub artifact_id: String,
+    /// Read token for citing a working state, independent of its retained revision ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_version: Option<u64>,
     /// Narrow semantic owner identity.
     pub semantic_element_id: String,
     /// Typed Knowledge classification.
@@ -195,7 +230,11 @@ pub struct KnowledgeArtifactV2 {
 /// Request for creating one durable Knowledge artifact.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CreateKnowledgeArtifactRequestV2 {
-    /// Caller-supplied stable string artifact identity.
+    /// Retry identity for one action. Use a new identity for a later intentional action.
+    /// Omitted means identical requests replay the same accepted operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// Caller-supplied initial revision identity; retain the accepted ID returned by storage.
     pub artifact_id: String,
     /// Semantic element that owns the artifact.
     pub semantic_element_id: String,
@@ -237,7 +276,11 @@ pub struct CreateKnowledgeArtifactResponseV2 {
 /// Request for updating one durable Knowledge artifact.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct UpdateKnowledgeArtifactRequestV2 {
-    /// Stable string identity of the artifact to update.
+    /// Retry identity for one action, including edits after restoring an older revision.
+    /// Omitted means identical requests replay the same accepted operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// Exact selected artifact revision to edit; acceptance may return a new revision ID.
     pub artifact_id: String,
     /// Replacement semantic owner identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,8 +356,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn artifact_kinds_are_exactly_requirements_and_specification() {
-        for kind in ["requirements", "specification"] {
+    fn artifact_kinds_are_exactly_requirements_specification_and_media() {
+        for kind in ["requirements", "specification", "media"] {
             let decoded: KnowledgeArtifactKindV2 =
                 serde_json::from_value(serde_json::json!(kind)).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), kind);
@@ -341,6 +384,7 @@ mod tests {
     #[test]
     fn knowledge_crud_contracts_round_trip_string_artifact_ids() {
         let request = CreateKnowledgeArtifactRequestV2 {
+            operation_id: Some("create-identifiers".into()),
             artifact_id: "artifact:architecture/42".into(),
             semantic_element_id: "file:src/lib.rs".into(),
             knowledge_type: KnowledgeArtifactKindV2::Requirements,
@@ -366,6 +410,7 @@ mod tests {
     #[test]
     fn update_request_omits_unspecified_fields_and_serializes_full_updates() {
         let partial = UpdateKnowledgeArtifactRequestV2 {
+            operation_id: None,
             artifact_id: "artifact:annotation:42".into(),
             semantic_element_id: None,
             knowledge_type: None,
@@ -392,6 +437,7 @@ mod tests {
         );
 
         let full = UpdateKnowledgeArtifactRequestV2 {
+            operation_id: Some("update-annotation".into()),
             artifact_id: "artifact:annotation:42".into(),
             semantic_element_id: Some("file:src/lib.rs".into()),
             knowledge_type: Some(KnowledgeArtifactKindV2::Specification),
@@ -410,6 +456,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(full).expect("serialize full update"),
             serde_json::json!({
+                "operation_id": "update-annotation",
                 "artifact_id": "artifact:annotation:42",
                 "semantic_element_id": "file:src/lib.rs",
                 "knowledge_type": "specification",

@@ -8,6 +8,7 @@ use std::time::Instant;
 
 fn element(root: &str, id: &str, name: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: root.into(),
         semantic_element_id: id.into(),
         semantic_source_id: "search-test".into(),

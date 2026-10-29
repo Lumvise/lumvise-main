@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::host_capability_catalog::SEMANTIC_STORAGE;
-use super::semantic_snapshot_writes::SemanticSnapshotWrites;
+use super::semantic_snapshot_writes::{SemanticSnapshotPage, SemanticSnapshotWrites};
 
 const SEMANTIC_PLUGIN_ID: &str = "builtin.semantic";
 const KNOWLEDGE_PLUGIN_ID: &str = "builtin.knowledge";
@@ -30,6 +30,38 @@ const NUCLEUS_PLUGIN_ID: &str = "builtin.nucleus";
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum SemanticStorageRequest {
+    ProjectIdentity {
+        project_root: String,
+    },
+    RevisionSelection {
+        project_root: String,
+        selection_id: String,
+    },
+    SelectRevisions {
+        update: lumvise_db_core::SemanticRevisionSelectionUpdate,
+    },
+    PlanRevisionRetention {
+        project_root: String,
+        operation_id: String,
+        policy: lumvise_db_core::SemanticRevisionRetentionPolicy,
+    },
+    CollectRevisionRetention {
+        plan: lumvise_db_core::SemanticRevisionRetentionPlan,
+        policy: lumvise_db_core::SemanticRevisionRetentionPolicy,
+    },
+    RevisionSelectionMembers {
+        query: lumvise_db_core::SemanticRevisionSelectionQuery,
+    },
+    RevisionFamilies {
+        query: lumvise_db_core::SemanticRevisionFamilyQuery,
+    },
+    ResolveRevision {
+        project_root: String,
+        record: lumvise_db_core::SemanticRecordRef,
+    },
+    PublishRevisions {
+        publication: lumvise_db_core::SemanticRevisionPublication,
+    },
     CopyArtifactAttachment {
         source_artifact_id: String,
         target_artifact_id: String,
@@ -47,12 +79,19 @@ enum SemanticStorageRequest {
         provider_instance_id: Option<String>,
         partition_paths: Vec<String>,
         page_count: usize,
+        observation: lumvise_contracts::SemanticIndexObservation,
     },
     StageProjectSnapshot {
         snapshot_id: String,
         page_index: usize,
         elements: Vec<SemanticElement>,
         relationships: Vec<SemanticRelationship>,
+        #[serde(default)]
+        sources: Vec<lumvise_contracts::SemanticSourceUpsert>,
+        #[serde(default)]
+        artifacts: Vec<lumvise_db_core::SemanticArtifactRevisionWrite>,
+        #[serde(default)]
+        removed_artifact_ids: Vec<String>,
     },
     CommitProjectSnapshot {
         snapshot_id: String,
@@ -205,6 +244,7 @@ fn invoke_snapshot_write(
             provider_instance_id,
             partition_paths,
             page_count,
+            observation,
         } => Some(writes.begin(
             plugin_id,
             snapshot_id,
@@ -212,18 +252,27 @@ fn invoke_snapshot_write(
             provider_instance_id.clone(),
             partition_paths.clone(),
             *page_count,
+            observation.clone(),
         )),
         SemanticStorageRequest::StageProjectSnapshot {
             snapshot_id,
             page_index,
             elements,
             relationships,
+            sources,
+            artifacts,
+            removed_artifact_ids,
         } => Some(writes.stage(
             plugin_id,
             snapshot_id,
-            *page_index,
-            elements.clone(),
-            relationships.clone(),
+            SemanticSnapshotPage {
+                page_index: *page_index,
+                elements: elements.clone(),
+                relationships: relationships.clone(),
+                sources: sources.clone(),
+                artifacts: artifacts.clone(),
+                removed_artifact_ids: removed_artifact_ids.clone(),
+            },
         )),
         SemanticStorageRequest::CommitProjectSnapshot { snapshot_id } => {
             Some(writes.commit(semantic, plugin_id, snapshot_id))
@@ -240,6 +289,101 @@ fn dispatch(
     request: SemanticStorageRequest,
 ) -> lumvise_db_core::Result<Value> {
     match request {
+        SemanticStorageRequest::RevisionSelection {
+            project_root,
+            selection_id,
+        } => {
+            match execute(
+                semantic,
+                SemanticOperation::RevisionSelection {
+                    project_root,
+                    selection_id,
+                },
+            )? {
+                SemanticResult::RevisionSelection(selection) => Ok(json!({"selection": selection})),
+                result => unexpected_result("RevisionSelection", result),
+            }
+        }
+        SemanticStorageRequest::SelectRevisions { update } => {
+            match execute(semantic, SemanticOperation::SelectRevisions(update))? {
+                SemanticResult::RevisionPublication(publication) => {
+                    Ok(json!({"publication": publication}))
+                }
+                result => unexpected_result("RevisionPublication", result),
+            }
+        }
+        SemanticStorageRequest::PlanRevisionRetention {
+            project_root,
+            operation_id,
+            policy,
+        } => {
+            match execute(
+                semantic,
+                SemanticOperation::PlanRevisionRetention {
+                    project_root,
+                    operation_id,
+                    policy,
+                },
+            )? {
+                SemanticResult::RevisionRetentionPlan(plan) => Ok(json!({"plan": plan})),
+                result => unexpected_result("RevisionRetentionPlan", result),
+            }
+        }
+        SemanticStorageRequest::CollectRevisionRetention { plan, policy } => {
+            match execute(
+                semantic,
+                SemanticOperation::CollectRevisionRetention { plan, policy },
+            )? {
+                SemanticResult::RevisionRetention(receipt) => Ok(json!({"receipt": receipt})),
+                result => unexpected_result("RevisionRetention", result),
+            }
+        }
+        SemanticStorageRequest::ProjectIdentity { project_root } => {
+            match execute(
+                semantic,
+                SemanticOperation::ProjectIdentity { project_root },
+            )? {
+                SemanticResult::ProjectIdentity(identity) => Ok(json!({"identity": identity})),
+                result => unexpected_result("ProjectIdentity", result),
+            }
+        }
+        SemanticStorageRequest::RevisionSelectionMembers { query } => {
+            match execute(semantic, SemanticOperation::RevisionSelectionMembers(query))? {
+                SemanticResult::RevisionObservation(membership) => {
+                    Ok(json!({"membership": membership}))
+                }
+                result => unexpected_result("RevisionMembership", result),
+            }
+        }
+        SemanticStorageRequest::RevisionFamilies { query } => {
+            match execute(semantic, SemanticOperation::RevisionFamilies(query))? {
+                SemanticResult::RevisionFamilies(remaps) => Ok(json!({"remaps":remaps})),
+                result => unexpected_result("RevisionFamilies", result),
+            }
+        }
+        SemanticStorageRequest::ResolveRevision {
+            project_root,
+            record,
+        } => {
+            match execute(
+                semantic,
+                SemanticOperation::ResolveRevision {
+                    project_root,
+                    record,
+                },
+            )? {
+                SemanticResult::RevisionResolution(revision) => Ok(json!({"revision":revision})),
+                result => unexpected_result("RevisionResolution", result),
+            }
+        }
+        SemanticStorageRequest::PublishRevisions { publication } => {
+            match execute(semantic, SemanticOperation::PublishRevisions(publication))? {
+                SemanticResult::RevisionPublication(publication) => {
+                    Ok(json!({"publication": publication}))
+                }
+                result => unexpected_result("RevisionPublication", result),
+            }
+        }
         SemanticStorageRequest::CopyArtifactAttachment {
             source_artifact_id,
             target_artifact_id,
@@ -694,6 +838,22 @@ fn graph_records_value(mut value: Value, project_root: &str) -> lumvise_db_core:
 
 fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), HostCapabilityError> {
     let allowed = match request {
+        SemanticStorageRequest::RevisionSelection { .. }
+        | SemanticStorageRequest::SelectRevisions { .. }
+        | SemanticStorageRequest::PlanRevisionRetention { .. }
+        | SemanticStorageRequest::CollectRevisionRetention { .. } => {
+            plugin_id == SEMANTIC_PLUGIN_ID
+        }
+        SemanticStorageRequest::PublishRevisions { publication } => {
+            plugin_id == SEMANTIC_PLUGIN_ID
+                || (plugin_id == KNOWLEDGE_PLUGIN_ID && publication.structure.is_none())
+        }
+        SemanticStorageRequest::ProjectIdentity { .. }
+        | SemanticStorageRequest::RevisionSelectionMembers { .. }
+        | SemanticStorageRequest::RevisionFamilies { .. }
+        | SemanticStorageRequest::ResolveRevision { .. } => {
+            matches!(plugin_id, SEMANTIC_PLUGIN_ID | KNOWLEDGE_PLUGIN_ID)
+        }
         SemanticStorageRequest::SyncStructure { .. }
         | SemanticStorageRequest::SyncPartition { .. }
         | SemanticStorageRequest::BeginProjectSnapshot { .. }
@@ -713,7 +873,9 @@ fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), Ho
             plugin_id == KNOWLEDGE_PLUGIN_ID
         }
         SemanticStorageRequest::SelectiveSubgraph { .. } => plugin_id == KNOWLEDGE_PLUGIN_ID,
-        SemanticStorageRequest::ArtifactsByIds { .. } => plugin_id == SEMANTIC_PLUGIN_ID,
+        SemanticStorageRequest::ArtifactsByIds { .. } => {
+            matches!(plugin_id, SEMANTIC_PLUGIN_ID | KNOWLEDGE_PLUGIN_ID)
+        }
         SemanticStorageRequest::UpsertArtifact { .. }
         | SemanticStorageRequest::RemoveArtifact { .. } => {
             matches!(plugin_id, SEMANTIC_PLUGIN_ID | KNOWLEDGE_PLUGIN_ID)

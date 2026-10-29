@@ -13,13 +13,13 @@ struct E2eVoiceConfigError {
 }
 
 pub(crate) fn install_environment_voice_adapters(
-    app: crate::AppCore,
-) -> Result<crate::AppCore, Box<dyn std::error::Error>> {
+    app: &crate::AppCore,
+) -> Result<(), Box<dyn std::error::Error>> {
     let command = voice_command(std::env::var(E2E_VOICE_COMMAND_ENV).ok())?;
     let (stt, tts) = deterministic_voice_services(&command)?;
-    Ok(app
-        .with_voice2text_service(stt)
-        .with_text2voice_service(tts))
+    app.replace_voice2text_service(std::sync::Arc::new(stt))?;
+    app.replace_text2voice_service(std::sync::Arc::new(tts))?;
+    Ok(())
 }
 
 fn voice_command(value: Option<String>) -> Result<String, E2eVoiceConfigError> {

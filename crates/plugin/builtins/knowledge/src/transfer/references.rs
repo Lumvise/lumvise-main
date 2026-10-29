@@ -7,17 +7,21 @@ use std::collections::{HashMap, HashSet};
 pub(super) struct TransferReferences {
     artifacts: HashMap<String, String>,
     elements: HashMap<String, String>,
+    destinations: HashMap<String, String>,
 }
 
 impl TransferReferences {
-    pub(super) fn new(selected: &[&KnowledgeTransferMatch]) -> Self {
+    pub(super) fn new(
+        selected: &[&KnowledgeTransferMatch],
+        destinations: &HashMap<String, String>,
+    ) -> Self {
         let mut artifacts: HashMap<String, HashSet<String>> = HashMap::new();
         let mut elements: HashMap<String, HashSet<String>> = HashMap::new();
         for candidate in selected {
             artifacts
                 .entry(candidate.source.artifact_id.clone())
                 .or_default()
-                .insert(candidate.copy.artifact_id.clone());
+                .insert(destinations[&candidate.copy.artifact_id].clone());
             elements
                 .entry(candidate.source.semantic_element_id.clone())
                 .or_default()
@@ -26,6 +30,7 @@ impl TransferReferences {
         Self {
             artifacts: unambiguous_targets(artifacts),
             elements: unambiguous_targets(elements),
+            destinations: destinations.clone(),
         }
     }
 
@@ -34,6 +39,7 @@ impl TransferReferences {
         candidate: &KnowledgeTransferMatch,
     ) -> Result<KnowledgeArtifact, PluginError> {
         let mut copy = candidate.copy.clone();
+        copy.artifact_id = self.destinations[&candidate.copy.artifact_id].clone();
         let mut artifacts = self.artifacts.clone();
         let mut elements = self.elements.clone();
         artifacts.insert(
@@ -49,7 +55,7 @@ impl TransferReferences {
                 ArtifactDependencyTarget::SemanticElement {
                     semantic_element_id,
                 } => (semantic_element_id, &elements),
-                ArtifactDependencyTarget::Artifact { artifact_id } => (artifact_id, &artifacts),
+                ArtifactDependencyTarget::Artifact { artifact_id, .. } => (artifact_id, &artifacts),
             };
             if let Some(target) = replacements.get(id) {
                 *id = target.clone();

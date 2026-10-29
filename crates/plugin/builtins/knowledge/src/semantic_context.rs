@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 #[cfg(test)]
+pub(crate) mod test_source_reads;
+#[cfg(test)]
 mod tests;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -17,6 +19,8 @@ pub(crate) struct SemanticElement {
     pub element_kind: String,
     pub name: String,
     pub parent_element_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revision_dependencies: Vec<lumvise_contracts::SemanticRecordRef>,
     pub content_fingerprint: Option<String>,
     pub start_line: Option<i64>,
     pub end_line: Option<i64>,
@@ -171,6 +175,7 @@ pub(crate) struct ProjectProjectionSnapshot {
     pub semantic: SemanticContext,
     pub artifacts: Vec<crate::KnowledgeArtifact>,
     pub documents: Vec<lumvise_contracts::KnowledgeDocument>,
+    pub known_documents: Vec<lumvise_contracts::KnowledgeDocument>,
 }
 
 #[derive(Deserialize)]
@@ -227,7 +232,7 @@ fn project_snapshot(
         &snapshot.artifacts,
     )?;
     let artifacts = if include_artifacts {
-        crate::storage::decode_graph_knowledge_artifacts(&snapshot.artifacts)?
+        crate::storage::decode_graph_knowledge_artifacts(&snapshot.artifacts, project_root)?
     } else {
         Vec::new()
     };
@@ -241,6 +246,7 @@ fn project_snapshot(
         },
         artifacts,
         documents: partition.documents,
+        known_documents: partition.known_documents,
     })
 }
 

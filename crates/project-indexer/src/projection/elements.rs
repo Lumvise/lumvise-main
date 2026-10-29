@@ -4,6 +4,7 @@ use crate::{ScanError, ScannedFile, SourceFingerprint, SourceKind};
 use lumvise_contracts::SemanticElementUpsert;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::sync::Arc;
 
 pub(super) fn project_file(source: &str, file: &ScannedFile) -> Result<ProjectedFile, ScanError> {
@@ -40,6 +41,7 @@ fn file_element(source: &str, file: &ScannedFile) -> Result<SemanticElementUpser
     let name = path.rsplit('/').next().unwrap_or(path);
     let fingerprint = file.fingerprint.as_ref();
     Ok(SemanticElementUpsert {
+        revision_dependencies: Vec::new(),
         semantic_source_id: source.into(),
         semantic_element_id: element_id(
             source,
@@ -57,9 +59,20 @@ fn file_element(source: &str, file: &ScannedFile) -> Result<SemanticElementUpser
         start_line: (!folder).then_some(1),
         end_line: file_end_line(file)?,
         metadata: Some(
-            serde_json::json!({ "kind": if folder { "directory" } else { file_kind(path) }, "bytes": file.byte_len, "extraction": super::coverage::extraction(file), "fingerprint_algorithm": fingerprint.map(|value| value.algorithm), "markdown_alias": file.parsed.document.as_ref().map(|doc| { let mut metadata = doc.file_metadata(); metadata["content"] = serde_json::json!(file.parsed.source.as_deref()); metadata }).or_else(|| file.parsed.conversion_error.as_ref().map(|reason| serde_json::json!({"status":"unavailable", "reason":reason}))) }),
+            serde_json::json!({ "kind": if folder { "directory" } else { file_kind(path) }, "bytes": file.byte_len, "source_digest_sha256": source_digest(file), "extraction": super::coverage::extraction(file), "fingerprint_algorithm": fingerprint.map(|value| value.algorithm), "markdown_alias": file.parsed.document.as_ref().map(|doc| { let mut metadata = doc.file_metadata(); metadata["content"] = serde_json::json!(file.parsed.source.as_deref()); metadata }).or_else(|| file.parsed.conversion_error.as_ref().map(|reason| serde_json::json!({"status":"unavailable", "reason":reason}))) }),
         ),
     })
+}
+
+fn source_digest(file: &ScannedFile) -> Option<String> {
+    if file.entry.kind == SourceKind::Directory {
+        return None;
+    }
+    let mut digest = String::with_capacity(64);
+    for byte in file.digest {
+        write!(&mut digest, "{byte:02x}").expect("source checksum formats into a String");
+    }
+    Some(digest)
 }
 
 fn file_end_line(file: &ScannedFile) -> Result<Option<i64>, ScanError> {
@@ -118,6 +131,7 @@ fn definition_element(
         })?;
     let fingerprint = SourceFingerprint::text(body.trim());
     Ok(SemanticElementUpsert {
+        revision_dependencies: Vec::new(),
         semantic_source_id: source.into(),
         semantic_element_id: id.into(),
         path: file.entry.path.clone(),

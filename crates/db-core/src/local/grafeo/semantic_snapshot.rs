@@ -19,6 +19,17 @@ pub(crate) fn project_snapshot(
             .map(|element| element.project_root)
             .ok_or_else(|| DbError::invalid_value(id, "existing semantic element"))?,
     };
+    if let Some(mut snapshot) = super::revision_rows::selected_project_snapshot(
+        graph,
+        &project_root,
+        commit_version,
+        &published_at,
+    )? {
+        snapshot.artifacts.retain(|artifact| {
+            artifact_namespace.is_none_or(|namespace| artifact.metadata[namespace].is_object())
+        });
+        return Ok(snapshot);
+    }
     let mut rows = complete_project_rows(graph, &project_root);
     rows.elements
         .sort_by(|left, right| left.semantic_element_id.cmp(&right.semantic_element_id));

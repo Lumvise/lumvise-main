@@ -67,11 +67,11 @@ impl DbCore {
 
     fn open_composed(path: impl AsRef<Path>, clock: Arc<dyn Clock>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        let graph_path = graph_path_for_database(&path);
         create_database_parent(&path)?;
         let conn = Arc::new(timed_startup_phase("sqlite_open", || {
-            SqlConnections::open(&path)
+            SqlConnections::open(&path, graph_path.try_exists()?)
         })?);
-        let graph_path = graph_path_for_database(&path);
         let graph = open_graph_database(&graph_path)?;
         let graph_store = GraphStore::new(graph);
         timed_startup_phase("graph_checkpoint", || graph_store.checkpoint())?;
@@ -438,7 +438,10 @@ fn open_graph_database(path: &Path) -> Result<GrafeoDB> {
 /// commit record. Grafeo's default batch cadence (100 ms / 1000 records)
 /// instead flushed dozens of times inside one bulk snapshot commit.
 fn graph_config(path: &Path) -> grafeo::Config {
-    grafeo::Config::persistent(path).with_wal_durability(grafeo::DurabilityMode::Sync)
+    // Full-project revision receipts can exceed Grafeo's default 16 MiB property cap.
+    grafeo::Config::persistent(path)
+        .with_wal_durability(grafeo::DurabilityMode::Sync)
+        .without_max_property_size()
 }
 
 fn timed_startup_phase<T>(phase: &'static str, operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -524,6 +527,7 @@ mod tests {
         db.storage_manager()
             .semantic_storage()
             .upsert_element(&SemanticElement {
+                revision_dependencies: Vec::new(),
                 project_root: "/recovery".into(),
                 semantic_element_id: "crash-file".into(),
                 semantic_source_id: "source".into(),

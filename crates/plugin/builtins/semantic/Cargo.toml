@@ -8,6 +8,7 @@ license = "LGPL-3.0-only"
 [dependencies]
 chrono.workspace = true
 lumvise-contracts.workspace = true
+lumvise-semantic-revisions.workspace = true
 lumvise-plugin-package.workspace = true
 lumvise-plugin-protocol.workspace = true
 lumvise-plugin-sdk.workspace = true

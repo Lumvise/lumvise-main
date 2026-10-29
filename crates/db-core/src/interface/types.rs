@@ -1,4 +1,8 @@
-pub use lumvise_contracts::{ArtifactDependency, ArtifactDependencyTarget};
+pub use lumvise_contracts::{
+    ArtifactBlob, ArtifactDependency, ArtifactDependencyTarget, ArtifactTextVector,
+    StoredArtifactTextVector, StoredSemanticElementNameVector,
+};
+use lumvise_semantic_revisions::{SemanticArtifact, SemanticElement, SemanticRelationship};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -149,9 +153,9 @@ pub struct PzImportResult {
     /// Remote the archive was published from, when the manifest names one.
     pub canonical_remote: Option<String>,
     pub structure: SemanticBatchSyncReport,
-    /// Archive artifacts inserted because their IDs were absent.
+    /// Exact artifact bodies added or restored from collected history.
     pub artifacts_imported: usize,
-    /// Archive artifacts skipped because the database already holds their IDs.
+    /// Compatible artifact bodies already present under the same exact IDs.
     pub artifacts_kept: usize,
 }
 
@@ -199,10 +203,30 @@ pub struct PluginDataRowsPage {
     pub next_after_key: Option<String>,
 }
 
+/// An explicit row precondition; stored null must survive binary/JSON round trips.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "presence",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum PluginDataExpectedValue {
+    Absent,
+    Present(Value),
+}
+
 /// One namespaced row change in an atomic plugin-storage batch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PluginDataMutation {
+    /// Require the pre-batch row value, distinguishing absence from stored null.
+    /// All requirements are checked before any put/delete. A mismatch rejects the batch.
+    RequireValue {
+        table_name: String,
+        row_key: String,
+        expected: PluginDataExpectedValue,
+    },
     /// Insert or replace one row.
     Put {
         /// Existing logical table owned by the invoking plugin.
@@ -237,41 +261,6 @@ pub struct SemanticRecoveryStatus {
     pub failure_message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactBlob {
-    pub content_ref: String,
-    pub artifact_id: String,
-    pub media_type: String,
-    pub content: Vec<u8>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ArtifactTextVector {
-    pub engine_id: String,
-    pub model: Option<String>,
-    pub dimensions: usize,
-    pub vector: Vec<f32>,
-    pub normalized: bool,
-    pub metadata: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoredArtifactTextVector {
-    pub artifact_id: String,
-    pub semantic_element_id: String,
-    pub source_text: String,
-    pub vector: ArtifactTextVector,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoredSemanticElementNameVector {
-    pub semantic_element_id: String,
-    pub project_root: String,
-    pub source_text: String,
-    pub vector: ArtifactTextVector,
-}
-
 /// A nearest-neighbor result identified by the persisted semantic record ID.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VectorSearchResult {
@@ -283,56 +272,6 @@ pub trait ArtifactTextVectorizer {
     fn vectorize_artifact_text(&self, text: &str) -> crate::Result<ArtifactTextVector>;
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SemanticElement {
-    pub project_root: String,
-    pub semantic_element_id: String,
-    pub semantic_source_id: String,
-    pub path: String,
-    pub element_kind: String,
-    pub name: String,
-    pub parent_element_id: Option<String>,
-    pub content_fingerprint: Option<String>,
-    pub start_line: Option<i64>,
-    pub end_line: Option<i64>,
-    pub lifecycle: String,
-    #[serde(default)]
-    pub match_evidence: Option<SemanticMatchEvidence>,
-    pub metadata: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SemanticMatchEvidence {
-    pub match_confidence: u8,
-    pub simhash_distance: Option<u32>,
-    pub matched_at: String,
-    pub precaution: Option<String>,
-}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SemanticArtifact {
-    pub artifact_id: String,
-    pub semantic_element_id: String,
-    pub artifact_kind: String,
-    pub title: String,
-    pub content_ref: Option<String>,
-    pub content: Option<String>,
-    pub searchable_text: Option<String>,
-    pub content_size_bytes: Option<usize>,
-    #[serde(default)]
-    pub dependencies: Vec<ArtifactDependency>,
-    pub metadata: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SemanticRelationship {
-    pub project_root: String,
-    pub source_element_id: String,
-    pub target_element_id: String,
-    pub relationship_kind: String,
-    pub label: String,
-    pub metadata: Value,
-}
-
 /// Durable UUID v4 identity for one semantic project lineage.
 ///
 /// The local source root is an input to identity lookup, but is intentionally
@@ -340,6 +279,23 @@ pub struct SemanticRelationship {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectIdentity {
     pub project_id: String,
+}
+
+/// Fresh adapter-owned membership facts for host memory authorization.
+/// Local uses the host's durable profile authority; remote adapters authenticate every read.
+/// Example: a public nonmember receives `Denied`, never a read-only member grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "access", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SemanticProjectAccess {
+    Local {
+        project_id: String,
+    },
+    Member {
+        project_id: String,
+        storage_authority: String,
+        writable: bool,
+    },
+    Denied,
 }
 
 /// One owned, consistent project graph extracted through a DB Core snapshot lease.
@@ -563,15 +519,6 @@ pub struct SemanticBatchSyncReport {
     pub relationships_upserted: usize,
     pub identities_reused: usize,
     pub elements_marked_inactive: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SemanticPartition {
-    pub project_root: String,
-    pub replace_paths: Vec<String>,
-    /// Restrict publication to this producer; None retains authoritative path replacement.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_instance_id: Option<String>,
 }
 
 /// Desired durable registration for one ready compiled background export.

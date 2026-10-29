@@ -55,6 +55,12 @@ fn removal_input(body: &[u8]) -> Result<ProjectRemovalInput, String> {
             input.project_root
         ));
     }
+    if lumvise_contracts::is_knowledge_space_root(&input.project_root) {
+        return Err(format!(
+            "invalid projectRoot `{}`; expected a source project, not a private document space",
+            input.project_root
+        ));
+    }
     Ok(input)
 }
 

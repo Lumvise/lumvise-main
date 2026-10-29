@@ -17,17 +17,16 @@ pub(crate) struct SqlConnections {
 }
 
 impl SqlConnections {
-    pub(crate) fn open(path: &Path) -> Result<Self> {
-        let writer = open_writer_connection(path)?;
-        initialize_sql_schema(&writer)?;
+    pub(crate) fn open(path: &Path, graph_exists: bool) -> Result<Self> {
+        let writer = open_writer_connection(path, graph_exists)?;
         let readers = open_reader_connections(path)?;
         Ok(Self::new(writer, readers))
     }
 
     pub(crate) fn in_memory() -> Result<Self> {
         let writer = Connection::open_in_memory()?;
+        initialize_sql_schema(&writer, false)?;
         configure_writer_connection(&writer)?;
-        initialize_sql_schema(&writer)?;
         Ok(Self::new(writer, Vec::new()))
     }
 
@@ -61,8 +60,10 @@ impl SqlConnections {
     }
 }
 
-fn open_writer_connection(path: &Path) -> Result<Connection> {
+fn open_writer_connection(path: &Path, graph_exists: bool) -> Result<Connection> {
     let conn = Connection::open(path)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    initialize_sql_schema(&conn, graph_exists)?;
     configure_writer_connection(&conn)?;
     Ok(conn)
 }

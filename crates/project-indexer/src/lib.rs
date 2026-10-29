@@ -6,6 +6,7 @@
 //! Production adapters use `ProjectIndexingSession::update` to serialize publication
 //! with cache acknowledgment, including across caller cancellation.
 
+mod batch_pages;
 mod documents;
 mod filesystem;
 mod fingerprints;
@@ -17,6 +18,7 @@ mod scan;
 mod session;
 mod source;
 
+pub use batch_pages::{SemanticIndexPage, SemanticIndexPages};
 pub use documents::{
     ConvertedDocument, DocumentConversionOptions, DocumentConverter, DocumentFigure, DocumentImage,
     DocumentPage, DocumentProvenance, convert_document, is_document_path,

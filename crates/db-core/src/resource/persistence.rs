@@ -391,6 +391,20 @@ fn protocol_error(expected: &str) -> DbError {
 
 fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
     match operation {
+        SemanticOperation::RevisionFamilies(_) => "RevisionFamilies",
+        SemanticOperation::RevisionConnections(_) => "RevisionConnections",
+        SemanticOperation::RevisionSelection { .. } => "RevisionSelection",
+        SemanticOperation::RevisionSelectionMembers(_) => "RevisionSelectionMembers",
+        SemanticOperation::RevisionSelectionAt { .. } => "RevisionSelectionAt",
+        SemanticOperation::RevisionSourceAnchor { .. } => "RevisionSourceAnchor",
+        SemanticOperation::PublishRevisions(_) => "PublishRevisions",
+        SemanticOperation::SelectRevisions(_) => "SelectRevisions",
+        SemanticOperation::AcquireCitationRetention(_) => "AcquireCitationRetention",
+        SemanticOperation::ReleaseCitationRetention(_) => "ReleaseCitationRetention",
+        SemanticOperation::ResolveRevision { .. } => "ResolveRevision",
+        SemanticOperation::RevisionHistory { .. } => "RevisionHistory",
+        SemanticOperation::PlanRevisionRetention { .. } => "PlanRevisionRetention",
+        SemanticOperation::CollectRevisionRetention { .. } => "CollectRevisionRetention",
         SemanticOperation::ProjectArchive { .. } => "ProjectArchive",
         SemanticOperation::CreatePzSnapshot { .. } => "CreatePzSnapshot",
         SemanticOperation::SyncStructure { .. } => "SyncStructure",
@@ -435,6 +449,7 @@ fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
         SemanticOperation::RemoveElement { .. } => "RemoveElement",
         SemanticOperation::ProjectRoots => "ProjectRoots",
         SemanticOperation::ProjectIdentity { .. } => "ProjectIdentity",
+        SemanticOperation::ProjectAccess { .. } => "ProjectAccess",
         SemanticOperation::ProjectArtifacts { .. } => "ProjectArtifacts",
         SemanticOperation::SemanticRevision => "SemanticRevision",
         SemanticOperation::ScopedRead(_) => "ScopedRead",
@@ -457,6 +472,16 @@ fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
 
 fn semantic_result_name(result: &SemanticResult) -> &'static str {
     match result {
+        SemanticResult::RevisionFamilies(_) => "RevisionFamilies",
+        SemanticResult::RevisionConnections(_) => "RevisionConnections",
+        SemanticResult::RevisionSelection(_) => "RevisionSelection",
+        SemanticResult::RevisionMembership(_) => "RevisionMembership",
+        SemanticResult::RevisionObservation(_) => "RevisionObservation",
+        SemanticResult::RevisionPublication(_) => "RevisionPublication",
+        SemanticResult::RevisionResolution(_) => "RevisionResolution",
+        SemanticResult::RevisionHistory(_) => "RevisionHistory",
+        SemanticResult::RevisionRetentionPlan(_) => "RevisionRetentionPlan",
+        SemanticResult::RevisionRetention(_) => "RevisionRetention",
         SemanticResult::ProjectArchive(_) => "ProjectArchive",
         SemanticResult::PzSnapshot(_) => "PzSnapshot",
         SemanticResult::SyncStructure(_) => "SyncStructure",
@@ -474,6 +499,7 @@ fn semantic_result_name(result: &SemanticResult) -> &'static str {
         SemanticResult::ArtifactBlob(_) => "ArtifactBlob",
         SemanticResult::Removed { .. } => "Removed",
         SemanticResult::ProjectIdentity(_) => "ProjectIdentity",
+        SemanticResult::ProjectAccess(_) => "ProjectAccess",
         SemanticResult::ProjectRoots(_) => "ProjectRoots",
         SemanticResult::SemanticRevision { .. } => "SemanticRevision",
         SemanticResult::ScopedGraph(_) => "ScopedGraph",

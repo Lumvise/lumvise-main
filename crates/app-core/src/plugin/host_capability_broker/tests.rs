@@ -28,6 +28,70 @@ fn broker_with_local_persistence() -> AppCoreHostCapabilityBroker {
     AppCoreHostCapabilityBroker::new(semantic, relational)
 }
 
+struct UnexpectedImportPublisher;
+
+impl HostPluginInvoker for UnexpectedImportPublisher {
+    fn invoke_plugin(
+        &self,
+        _: lumvise_plugin_runtime::HostPluginInvocation,
+    ) -> Result<Value, HostCapabilityError> {
+        panic!("denied import must not reach publication")
+    }
+}
+
+#[test]
+fn source_import_arguments_cannot_create_the_required_runtime_scope() {
+    let broker = broker_with_local_persistence();
+    let input = json!({"operation":"import_folder","request":{"folderPath":"/not-authorized"}});
+    let call = || request("builtin.canvas", "project.import", input.clone());
+    assert!(
+        broker
+            .invoke(call())
+            .unwrap_err()
+            .to_string()
+            .contains("source_import_context_required")
+    );
+    let context = PluginInvocationContext::new(
+        "import",
+        "caller",
+        lumvise_plugin_runtime::PluginInvocationClass::Foreground,
+        Instant::now() + Duration::from_secs(1),
+    );
+    let denied = broker
+        .invoke_with_nested(call(), &context, &UnexpectedImportPublisher)
+        .unwrap_err();
+    assert!(denied.to_string().contains("source_import_root_denied"));
+    assert!(denied.to_string().contains("live Canvas MCP import export"));
+}
+
+#[test]
+fn source_import_cannot_invent_membership_with_scope_strings() {
+    let app = app_with_default_broker();
+    let broker = app.default_plugin_host_capability_broker().unwrap();
+    let context = PluginInvocationContext::new(
+        "import",
+        "caller",
+        lumvise_plugin_runtime::PluginInvocationClass::Foreground,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .with_route_identity(
+        "unregistered-client",
+        Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE.into()),
+    )
+    .with_scope_epoch(Some(1))
+    .enter_plugin("builtin.canvas", "import_folder");
+    let call = request(
+        "builtin.canvas",
+        "project.import",
+        json!({"operation":"import_folder",
+        "request":{"folderPath":"/not-authorized","projectRoot":"/not-authorized"}}),
+    );
+    let denied = broker
+        .invoke_with_nested(call, &context, &UnexpectedImportPublisher)
+        .unwrap_err();
+    assert!(denied.to_string().contains("MCP connection"));
+}
+
 #[test]
 fn default_broker_and_app_commands_share_one_snapshot_service() {
     let app = app_with_default_broker();

@@ -4,8 +4,14 @@ mod code_intelligence;
 mod context_scope;
 #[path = "semantic_protocol/duplicate_identities.rs"]
 mod duplicate_identities;
+#[path = "semantic_protocol/index_base.rs"]
+mod index_base;
+#[path = "semantic_protocol/partition_replacement.rs"]
+mod partition_replacement;
 #[path = "semantic_protocol/provider_refresh.rs"]
 mod provider_refresh;
+#[path = "semantic_protocol/revision_staging.rs"]
+mod revision_staging;
 #[path = "semantic_protocol/snapshot_project.rs"]
 mod snapshot_project;
 #[path = "semantic_protocol/storage_triggers.rs"]
@@ -43,6 +49,20 @@ fn failure(outcome: WireOutcome) -> lumvise_plugin_protocol::PluginWireError {
         WireOutcome::Failed { error } => error,
         other => panic!("expected failure, got {other:?}"),
     }
+}
+
+fn accepted_element_id(publication: &serde_json::Value, incoming: &str) -> String {
+    publication["publication"]["value"]["remaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|remap| {
+            remap["incoming"]["kind"] == "element" && remap["incoming"]["record_id"] == incoming
+        })
+        .expect("expected an exact accepted element remap")["accepted"]["record_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 fn index_batch() -> serde_json::Value {
@@ -90,11 +110,12 @@ fn ingest_explicitly_removes_semantic_artifacts_and_publishes_deletion() {
     }]);
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, seeded)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(seeded))
             .expect("seed artifact"),
     );
     let mut removal = index_batch();
     removal["removed_artifact_ids"] = serde_json::json!(["parse-note"]);
+    let removal = broker.observe_fixture(removal);
 
     let removed = success(
         runtime
@@ -107,7 +128,7 @@ fn ingest_explicitly_removes_semantic_artifacts_and_publishes_deletion() {
             .invoke(PLUGIN_ID, INGEST_EXPORT_ID, removal)
             .expect("repeat removal"),
     );
-    assert_eq!(repeated["semantic_artifacts_removed"], 0);
+    assert_eq!(repeated, removed);
 }
 
 #[test]
@@ -122,6 +143,7 @@ fn paged_ingest_publishes_only_after_complete_appcore_snapshot() {
     first["ingestion_job_id"] = serde_json::json!("atomic-job");
     first["ingestion_page_index"] = serde_json::json!(0);
     first["ingestion_page_count"] = serde_json::json!(2);
+    first["revision_observation"] = broker.revision_observation("/work/demo", "rust-indexer");
     first["semantic_elements"] = serde_json::json!([
         first["semantic_elements"][0].clone(),
         first["semantic_elements"][1].clone()
@@ -157,7 +179,8 @@ fn paged_ingest_publishes_only_after_complete_appcore_snapshot() {
 fn file_graph_includes_semantic_children_and_their_first_neighbors() {
     let workspace = tempfile::tempdir().expect("workspace");
     let (_, installed) = signed_install(workspace.path(), &SigningKey::from_bytes(&[63; 32]));
-    let runtime = system(Arc::new(MemoryCapabilityBroker::default()));
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = system(broker.clone());
     runtime.install(&installed).expect("install");
     runtime.start(PLUGIN_ID).expect("start");
     let mut batch = index_batch();
@@ -178,7 +201,7 @@ fn file_graph_includes_semantic_children_and_their_first_neighbors() {
         }));
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest"),
     );
 
@@ -219,7 +242,11 @@ fn signed_plugin_persists_partitioned_graph_and_restores_after_restart() {
 
     let ingested = success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, index_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                broker.observe_fixture(index_batch()),
+            )
             .expect("ingest"),
     );
     assert_eq!(ingested["semantic_elements_upserted"], 3);
@@ -313,7 +340,7 @@ fn rich_index_parent_hints_project_function_calls_to_file_edges() {
     });
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest rich batch"),
     );
 
@@ -362,7 +389,7 @@ fn relationship_labels_distinguish_edges_with_shared_kind_and_endpoints() {
     });
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("ingest labeled edges"),
     );
 
@@ -424,7 +451,11 @@ fn failed_atomic_replacement_keeps_previous_committed_graph_visible() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, index_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                broker.observe_fixture(index_batch()),
+            )
             .expect("initial ingest"),
     );
     broker.fail_next_commit();
@@ -437,7 +468,11 @@ fn failed_atomic_replacement_keeps_previous_committed_graph_visible() {
         "semantic_relationships": []
     });
     let outcome = runtime
-        .invoke(PLUGIN_ID, INGEST_EXPORT_ID, replacement)
+        .invoke(
+            PLUGIN_ID,
+            INGEST_EXPORT_ID,
+            broker.observe_fixture(replacement),
+        )
         .expect("failed outcome");
     assert!(matches!(outcome, WireOutcome::Failed { .. }));
     let tree = success(
@@ -480,7 +515,7 @@ fn staged_ingest_commits_more_than_one_mutation_page() {
     });
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("large ingest"),
     );
     assert_eq!(broker.semantic_counts("/work/large").0, 260);
@@ -514,7 +549,7 @@ fn rebuild_search_index_batches_260_embeddings_without_reordering_vectors() {
     });
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch)
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
             .expect("large ingest"),
     );
 
@@ -561,7 +596,11 @@ fn search_never_backfills_vectors_and_reports_index_readiness() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, index_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                broker.observe_fixture(index_batch()),
+            )
             .expect("ingest"),
     );
     *broker.embed_available.lock().expect("embed switch") = true;
@@ -635,7 +674,11 @@ fn graph_exports_and_invalid_input_are_public_contracts() {
     runtime.start(PLUGIN_ID).expect("start");
     success(
         runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, index_batch())
+            .invoke(
+                PLUGIN_ID,
+                INGEST_EXPORT_ID,
+                broker.observe_fixture(index_batch()),
+            )
             .expect("ingest"),
     );
 
@@ -674,156 +717,9 @@ fn graph_exports_and_invalid_input_are_public_contracts() {
 }
 
 #[test]
-fn location_logs_and_partition_replacement_preserve_public_semantics() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let (_, installed) = signed_install(workspace.path(), &SigningKey::from_bytes(&[45; 32]));
-    let broker = Arc::new(MemoryCapabilityBroker::default());
-    let runtime = system(broker.clone());
-    runtime.install(&installed).expect("install");
-    runtime.start(PLUGIN_ID).expect("start");
-    success(
-        runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, index_batch())
-            .expect("ingest"),
-    );
-
-    broker.reset_project_snapshot_calls();
-    broker.reset_semantic_operation_counts();
-    let location = success(runtime.invoke(PLUGIN_ID, ELEMENT_AT_LOCATION_EXPORT_ID,
-        serde_json::json!({"project_root": "/work/demo", "path": "./src/parser.rs", "line": 12}))
-        .expect("location"));
-    assert_eq!(location["semantic_element_id"], "fn:parse");
-    let absolute_location = success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                ELEMENT_AT_LOCATION_EXPORT_ID,
-                serde_json::json!({
-                    "project_root": "/work/demo",
-                    "path": "/work/demo/src/parser.rs",
-                    "line": 12
-                }),
-            )
-            .expect("absolute location"),
-    );
-    assert_eq!(
-        absolute_location["semantic_element_id"],
-        location["semantic_element_id"]
-    );
-    assert_eq!(absolute_location["path"], "src/parser.rs");
-
-    let outside_location = success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                ELEMENT_AT_LOCATION_EXPORT_ID,
-                serde_json::json!({
-                    "project_root": "/work/demo",
-                    "path": "/outside/src/parser.rs",
-                    "line": 12
-                }),
-            )
-            .expect("outside-root location"),
-    );
-    assert!(outside_location["semantic_element_id"].is_null());
-    assert_eq!(outside_location["candidates"], serde_json::json!([]));
-    assert_eq!(broker.project_snapshot_calls(), 0);
-    assert_eq!(broker.semantic_operation_count("scoped_read"), 3);
-
-    success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                RECORD_INDEX_LOG_EXPORT_ID,
-                serde_json::json!({
-                    "provider_instance_id": "rust-indexer", "project_root": "/work/demo",
-                    "index_log_id": "run-1", "status": "completed", "metrics": {"elements": 3}
-                }),
-            )
-            .expect("record log"),
-    );
-    let latest = success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                LATEST_INDEX_LOG_EXPORT_ID,
-                serde_json::json!({"provider_instance_id": "rust-indexer"}),
-            )
-            .expect("latest log"),
-    );
-    assert_eq!(latest["index_log"]["status"], "completed");
-
-    let replacement = serde_json::json!({
-        "provider_instance_id": "rust-indexer", "project_root": "/work/demo",
-        "replace_paths": ["src/parser.rs"],
-        "semantic_sources": [{"semantic_source_id": "source-main", "kind": "repository",
-            "name": "demo", "root_path": "/work/demo", "root_uri": "file:///work/demo"}],
-        "semantic_elements": [
-            {"semantic_source_id": "source-main", "semantic_element_id": "file:parser",
-             "path": "src/parser.rs", "semantic_element_type": "file",
-             "semantic_element_name": "parser.rs", "start_line": 1, "end_line": 40},
-            {"semantic_source_id": "source-main", "semantic_element_id": "fn:parse",
-             "parent_element_id": "file:parser", "path": "src/parser.rs",
-             "semantic_element_type": "function", "semantic_element_name": "parse",
-             "start_line": 10, "end_line": 30}
-        ],
-        "semantic_relationships": [{
-            "source_element_id": "file:parser", "target_element_id": "fn:render",
-            "relationship_kind": "calls", "relationship_label": "calls"
-        }],
-        "semantic_artifacts": [{
-            "artifact_id": "render-note", "semantic_element_id": "fn:render",
-            "artifact_kind": "annotation", "title": "Cross-partition artifact",
-            "content": "retained target"
-        }]
-    });
-    success(
-        runtime
-            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, replacement)
-            .expect("replace path"),
-    );
-    assert_eq!(broker.semantic_counts("/work/demo").0, 3);
-    let search = success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                SEARCH_EXPORT_ID,
-                serde_json::json!({"query": "parse", "project_root": "/work/demo"}),
-            )
-            .expect("search"),
-    );
-    assert_eq!(search["results"].as_array().expect("results").len(), 2);
-    assert!(
-        search["results"]
-            .as_array()
-            .expect("results")
-            .iter()
-            .any(|result| result["element"]["semantic_element_id"] == "file:parser")
-    );
-    let graph = success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                SEMANTIC_GRAPH_EXPORT_ID,
-                serde_json::json!({"projectRoot": "/work/demo", "granularity": "function"}),
-            )
-            .expect("graph after partial replacement"),
-    );
-    assert_eq!(graph["edges"].as_array().expect("edges").len(), 3);
-    let render = graph["nodes"]
-        .as_array()
-        .expect("nodes")
-        .iter()
-        .find(|node| node["id"] == "fn:render")
-        .expect("retained render node");
-    assert_eq!(render["semanticArtifactCount"], 1);
-    runtime.stop(PLUGIN_ID).expect("stop");
-}
-
-#[test]
 fn manifest_declares_all_exports_and_versioned_host_capabilities() {
     let manifest = package_manifest_source("test-target", &"a".repeat(64));
-    assert_eq!(manifest.exports.len(), 30);
+    assert_eq!(manifest.exports.len(), 39);
     for http_id in [
         "http_semantic_context",
         "http_search_context",
@@ -873,7 +769,8 @@ fn manifest_declares_all_exports_and_versioned_host_capabilities() {
 fn snapshot_status_uses_compiled_plugin_wire_round_trip() {
     let workspace = tempfile::tempdir().expect("workspace");
     let (_, installed) = signed_install(workspace.path(), &SigningKey::from_bytes(&[51; 32]));
-    let runtime = system(Arc::new(MemoryCapabilityBroker::default()));
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = system(broker.clone());
     runtime.install(&installed).expect("install");
     runtime.start(PLUGIN_ID).expect("start");
     let outcome = runtime
@@ -899,7 +796,8 @@ fn manifest_invocation_reports_every_packaged_export() {
         .into_iter()
         .map(|export| export.id)
         .collect::<Vec<_>>();
-    let runtime = system(Arc::new(MemoryCapabilityBroker::default()));
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = system(broker.clone());
     runtime.install(&installed).expect("install");
     runtime.start(PLUGIN_ID).expect("start");
 

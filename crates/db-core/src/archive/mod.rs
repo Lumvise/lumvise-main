@@ -22,8 +22,10 @@ use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
+mod artifact_index;
 mod decode;
 mod format;
+mod revisions;
 mod tables;
 mod validation;
 mod write;
@@ -38,6 +40,11 @@ pub(crate) use write::{normalized_project_root, verify_control};
 /// Complete owned project contents; PZ encoding is an explicit, separate operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticArchive {
+    /// Informational origin hints; exact revision selection is owned by `revision_state`.
+    pub display_name: Option<String>,
+    pub source_revision: Option<String>,
+    pub selection_id: String,
+    pub revision_state: Option<crate::SemanticRevisionState>,
     pub project_id: String,
     pub snapshot_id: String,
     pub canonical_remote: Option<String>,

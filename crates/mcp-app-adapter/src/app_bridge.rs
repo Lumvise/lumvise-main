@@ -4,8 +4,8 @@ use lumvise_mcp_core::app_bridge_transport::{
     AppBridgeHttpMethod, AppBridgeHttpTransport, AppBridgeRequestError,
 };
 use lumvise_mcp_core::{
-    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV1, AppBridgeCancellationResponseV1,
-    AppBridgeInvocationRequestV1, AppBridgeInvocationResponseV1, AppBridgeInvocationStatusV1,
+    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV2, AppBridgeCancellationResponseV2,
+    AppBridgeInvocationRequestV2, AppBridgeInvocationResponseV2, AppBridgeInvocationStatusV2,
     McpInvocationContext,
 };
 use prost::Message;
@@ -66,13 +66,16 @@ fn current_freshness() -> String {
 struct ActiveTarget {
     plugin_id: String,
     connection: RuntimeConnection,
+    owner_id: String,
     session_id: String,
     scope_id: Option<String>,
+    scope_epoch: Option<u64>,
     interrupt_on_cancel: bool,
 }
 
 pub(crate) struct AppBridgeRuntime {
     config: AppBridgeConfig,
+    project_connection_id: Option<String>,
     startup: StartupConnection,
     transport: AppBridgeHttpTransport,
     active_targets: Mutex<HashMap<(String, String), ActiveTarget>>,
@@ -159,8 +162,14 @@ impl AppBridgeConfig {
 }
 
 impl AppBridgeRuntime {
+    pub(crate) fn with_project_connection(mut self, connection: &str) -> Self {
+        self.project_connection_id = Some(connection.to_owned());
+        self
+    }
+
     pub(crate) fn start(config: AppBridgeConfig) -> Self {
         Self {
+            project_connection_id: None,
             startup: StartupConnection::new(config.clone()),
             config,
             transport: AppBridgeHttpTransport::new(),
@@ -195,7 +204,7 @@ impl AppBridgeRuntime {
         context: &McpInvocationContext,
         tool_name: &str,
         arguments: Value,
-    ) -> std::result::Result<AppBridgeInvocationResponseV1, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
         let capability = self.capability_for_tool(tool_name)?;
         self.invoke_controlled(context, &capability, invocation_input(arguments))
     }
@@ -204,7 +213,7 @@ impl AppBridgeRuntime {
         &self,
         context: &McpInvocationContext,
         arguments: Value,
-    ) -> std::result::Result<AppBridgeInvocationResponseV1, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
         let (capability, input) = direct_capability(arguments)?;
         self.invoke_controlled(context, &capability, input)
     }
@@ -216,10 +225,11 @@ impl AppBridgeRuntime {
         capability_id: &str,
         session_id: &str,
         scope_id: &str,
+        scope_epoch: u64,
         input: Value,
         interrupt_on_cancel: bool,
         timeout: std::time::Duration,
-    ) -> std::result::Result<AppBridgeInvocationResponseV1, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
         let deadline = std::time::SystemTime::now()
             .checked_add(timeout.min(context.remaining()))
             .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
@@ -227,7 +237,7 @@ impl AppBridgeRuntime {
             .unwrap_or_else(|| context.deadline_unix_ms());
         let wire_context = McpInvocationContext::new(
             context.request_id(),
-            context.owner_id(),
+            "builtin.assistant",
             session_id,
             Some(scope_id.to_owned()),
             deadline,
@@ -244,6 +254,7 @@ impl AppBridgeRuntime {
                 description: None,
             },
             input,
+            Some(scope_epoch),
             interrupt_on_cancel,
         )
     }
@@ -255,10 +266,10 @@ impl AppBridgeRuntime {
         let Some(target) = self.active_target(context)? else {
             return Ok(false);
         };
-        let request = AppBridgeCancellationRequestV1 {
+        let request = AppBridgeCancellationRequestV2 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
             request_id: context.request_id().to_owned(),
-            owner_id: context.owner_id().to_owned(),
+            owner_id: target.owner_id.clone(),
             session_id: target.session_id.clone(),
             scope_id: target.scope_id.clone(),
             plugin_id: target.plugin_id.clone(),
@@ -266,11 +277,11 @@ impl AppBridgeRuntime {
         let cancelled = self
             .post_protobuf(
                 &target.connection,
-                "/api/mcp/plugins/cancel-v1",
+                "/api/mcp/plugins/cancel-v2",
                 request.encode_to_vec(),
             )
             .and_then(|response| {
-                let response = AppBridgeCancellationResponseV1::decode(response.as_slice())
+                let response = AppBridgeCancellationResponseV2::decode(response.as_slice())
                     .map_err(|error| {
                         format!("invalid app bridge cancellation response: {error}")
                     })?;
@@ -298,17 +309,19 @@ impl AppBridgeRuntime {
         target: &ActiveTarget,
     ) -> std::result::Result<(), String> {
         let sequence = self.next_interrupt_request.fetch_add(1, Ordering::Relaxed);
-        let request = AppBridgeInvocationRequestV1 {
+        let request = AppBridgeInvocationRequestV2 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
             request_id: format!("{}:interrupted:{sequence}", context.request_id()),
             owner_id: context.owner_id().to_owned(),
             session_id: target.session_id.clone(),
             scope_id: None,
+            scope_epoch: None,
             deadline_unix_ms: context.deadline_unix_ms(),
-            plugin_id: target.plugin_id.clone(),
+            plugin_id: "builtin.assistant".into(),
             capability_id: "advance_assistant_state".into(),
             input_json: serde_json::to_vec(&json!({
                 "session_id": target.session_id.clone(),
+                "session_epoch": target.scope_epoch,
                 "event": "interrupted",
                 "error": "MCP caller cancelled the active Assistant turn"
             }))
@@ -316,16 +329,16 @@ impl AppBridgeRuntime {
         };
         let response = self.post_protobuf_with_timeout(
             &target.connection,
-            "/api/mcp/plugins/invoke-v1",
+            "/api/mcp/plugins/invoke-v2",
             request.encode_to_vec(),
             context.remaining(),
         )?;
-        let response = AppBridgeInvocationResponseV1::decode(response.as_slice())
+        let response = AppBridgeInvocationResponseV2::decode(response.as_slice())
             .map_err(|error| format!("invalid app bridge interruption response: {error}"))?;
         require_protocol(response.protocol_major)?;
-        if AppBridgeInvocationStatusV1::try_from(response.status)
-            .unwrap_or(AppBridgeInvocationStatusV1::Internal)
-            != AppBridgeInvocationStatusV1::Completed
+        if AppBridgeInvocationStatusV2::try_from(response.status)
+            .unwrap_or(AppBridgeInvocationStatusV2::Internal)
+            != AppBridgeInvocationStatusV2::Completed
         {
             return Err(format!(
                 "terminal Assistant interruption failed: {}",
@@ -455,8 +468,19 @@ impl AppBridgeRuntime {
         context: &McpInvocationContext,
         capability: &PluginCapability,
         input: Value,
-    ) -> std::result::Result<AppBridgeInvocationResponseV1, String> {
-        self.invoke_controlled_with_identity(context, context, capability, input, false)
+    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
+        let Some(connection) = &self.project_connection_id else {
+            return self
+                .invoke_controlled_with_identity(context, context, capability, input, None, false);
+        };
+        let wire_context = McpInvocationContext::new(
+            context.request_id(),
+            context.owner_id(),
+            connection,
+            Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE.into()),
+            context.deadline_unix_ms(),
+        );
+        self.invoke_controlled_with_identity(context, &wire_context, capability, input, None, false)
     }
 
     fn invoke_controlled_with_identity(
@@ -465,19 +489,21 @@ impl AppBridgeRuntime {
         wire_context: &McpInvocationContext,
         capability: &PluginCapability,
         input: Value,
+        scope_epoch: Option<u64>,
         interrupt_on_cancel: bool,
-    ) -> std::result::Result<AppBridgeInvocationResponseV1, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
         let cancellation = active_context.cancellation();
         let connection = self.config.current_connection_until(
             std::time::Instant::now() + wire_context.remaining(),
             cancellation.as_atomic(),
         )?;
-        let request = AppBridgeInvocationRequestV1 {
+        let request = AppBridgeInvocationRequestV2 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
             request_id: wire_context.request_id().to_owned(),
             owner_id: wire_context.owner_id().to_owned(),
             session_id: wire_context.session_id().to_owned(),
             scope_id: wire_context.scope_id().map(str::to_owned),
+            scope_epoch,
             deadline_unix_ms: wire_context.deadline_unix_ms(),
             plugin_id: capability.plugin_id.clone(),
             capability_id: capability.capability_id.clone(),
@@ -488,17 +514,18 @@ impl AppBridgeRuntime {
             capability,
             wire_context,
             connection.clone(),
+            scope_epoch,
             interrupt_on_cancel,
         )?;
         let result = self.post_protobuf_with_timeout(
             &connection,
-            "/api/mcp/plugins/invoke-v1",
+            "/api/mcp/plugins/invoke-v2",
             request.encode_to_vec(),
             active_context.remaining(),
         );
         self.remove_target(active_context);
         let response = result?;
-        let response = AppBridgeInvocationResponseV1::decode(response.as_slice())
+        let response = AppBridgeInvocationResponseV2::decode(response.as_slice())
             .map_err(|error| format!("invalid app bridge invocation response: {error}"))?;
         require_protocol(response.protocol_major)?;
         Ok(response)
@@ -510,6 +537,7 @@ impl AppBridgeRuntime {
         capability: &PluginCapability,
         wire_context: &McpInvocationContext,
         connection: RuntimeConnection,
+        scope_epoch: Option<u64>,
         interrupt_on_cancel: bool,
     ) -> std::result::Result<(), String> {
         self.active_targets
@@ -520,8 +548,10 @@ impl AppBridgeRuntime {
                 ActiveTarget {
                     plugin_id: capability.plugin_id.clone(),
                     connection,
+                    owner_id: wire_context.owner_id().to_owned(),
                     session_id: wire_context.session_id().to_owned(),
                     scope_id: wire_context.scope_id().map(str::to_owned),
+                    scope_epoch,
                     interrupt_on_cancel,
                 },
             );
@@ -726,240 +756,4 @@ fn coordinator_for(root: PathBuf) -> AppRuntimeCoordinator {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::Value;
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc::channel;
-    use std::thread;
-    #[test]
-    fn capability_tool_name_uses_canonical_name_when_surface_omits_dynamic_name() {
-        let capability = PluginCapability {
-            plugin_id: "plugin.example".to_string(),
-            capability_id: "run".to_string(),
-            dynamic_tool_name: None,
-            description: None,
-            input_schema: None,
-            availability: None,
-        };
-        assert_eq!(
-            capability_tool_name(&capability),
-            "app_plugin.plugin.example.run"
-        );
-    }
-
-    #[test]
-    fn cloned_config_observes_terminal_owner_shutdown_without_relaunch() {
-        let workspace = tempfile::tempdir().expect("runtime workspace");
-        let launcher_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let launcher_calls_for_coordinator = Arc::clone(&launcher_calls);
-        let coordinator = Arc::new(AppRuntimeCoordinator::new(workspace.path(), move |_| {
-            launcher_calls_for_coordinator.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }));
-        let config = AppBridgeConfig {
-            discovery_path: workspace.path().join(RUNTIME_DISCOVERY_FILE),
-            coordinator,
-            terminal: Arc::new(AtomicBool::new(false)),
-        };
-        let clone = config.clone();
-        let mut owner = match config
-            .coordinator()
-            .acquire_or_forward(lumvise_app_core::ActivationRequest::default())
-            .expect("owner lease")
-        {
-            lumvise_app_core::AcquireResult::Owner(owner) => owner,
-            lumvise_app_core::AcquireResult::Forwarded(_) => panic!("expected owner"),
-        };
-        let generation = owner
-            .mark_ready("http://127.0.0.1:61238")
-            .expect("ready generation");
-        let observed = clone
-            .current_connection_until(
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-                &AtomicBool::new(false),
-            )
-            .expect("clone observes generation");
-        assert_eq!(observed.generation_nonce, generation.generation_nonce);
-        owner
-            .begin_quit(lumvise_app_core::QuitRequest::default())
-            .expect("owner quit");
-
-        let terminal = clone.current_connection_until(
-            std::time::Instant::now() + std::time::Duration::from_secs(1),
-            &AtomicBool::new(false),
-        );
-        assert!(
-            terminal
-                .expect_err("terminal coordinator must not relaunch")
-                .contains("runtime is quitting")
-        );
-        assert!(clone.is_terminal());
-        assert!(config.is_terminal());
-        assert_eq!(launcher_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn discovery_uses_coordinator_canonical_root() {
-        let config = AppBridgeConfig::discovery();
-        let production_root = AppRuntimeCoordinator::production()
-            .runtime_root()
-            .to_path_buf();
-        assert_eq!(config.runtime_root(), production_root);
-        assert_eq!(
-            config.runtime_root(),
-            config.coordinator().runtime_root().to_path_buf()
-        );
-    }
-
-    #[test]
-    fn custom_root_rebinds_discovery_and_coordinator_together() {
-        let config = AppBridgeConfig::discovery().with_runtime_root("/tmp/lumvise-adapter-test");
-        assert_eq!(
-            config.runtime_root(),
-            PathBuf::from("/tmp/lumvise-adapter-test")
-        );
-        assert_eq!(
-            config.coordinator().runtime_root(),
-            Path::new("/tmp/lumvise-adapter-test")
-        );
-    }
-    #[test]
-    fn cancellation_uses_logical_scoped_target_then_interrupts_and_cleans_up() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake bridge");
-        let base_url = format!("http://{}", listener.local_addr().expect("fake address"));
-        let (requests_sender, requests_receiver) = channel();
-        let server = thread::spawn(move || {
-            for response in [
-                AppBridgeCancellationResponseV1 {
-                    protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
-                    cancelled: true,
-                }
-                .encode_to_vec(),
-                AppBridgeInvocationResponseV1 {
-                    protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
-                    request_id: "interrupted".into(),
-                    status: AppBridgeInvocationStatusV1::Completed as i32,
-                    output_json: br#"{}"#.to_vec(),
-                    message: String::new(),
-                    retryable: false,
-                }
-                .encode_to_vec(),
-            ] {
-                let (mut stream, _) = listener.accept().expect("fake bridge request");
-                requests_sender
-                    .send(read_test_request(&stream))
-                    .expect("record fake request");
-                write_test_protobuf_response(&mut stream, response);
-            }
-        });
-        let workspace = tempfile::tempdir().expect("workspace");
-        let runtime = AppBridgeRuntime::start(
-            AppBridgeConfig::discovery().with_runtime_root(workspace.path()),
-        );
-        let context = McpInvocationContext::with_timeout(
-            "parent-request",
-            "parent-owner",
-            "transport-session",
-            None,
-            std::time::Duration::from_secs(10),
-        );
-        runtime
-            .active_targets
-            .lock()
-            .expect("active target lock")
-            .insert(
-                context_key(&context),
-                ActiveTarget {
-                    plugin_id: "builtin.assistant".into(),
-                    connection: RuntimeConnection {
-                        generation_nonce: "generation".into(),
-                        app_bridge_credential: "credential".into(),
-                        app_bridge_credential_expires_unix_ms: u64::MAX,
-                        app_bridge_base_url: base_url,
-                    },
-                    session_id: "logical-session".into(),
-                    scope_id: Some("assistant_session".into()),
-                    interrupt_on_cancel: true,
-                },
-            );
-
-        assert!(runtime.cancel_controlled(&context).expect("cancelled"));
-        let requests = [
-            requests_receiver.recv().unwrap(),
-            requests_receiver.recv().unwrap(),
-        ];
-        server.join().expect("fake bridge exits");
-        let cancellation = AppBridgeCancellationRequestV1::decode(requests[0].1.as_slice())
-            .expect("decode cancellation");
-        let interrupted = AppBridgeInvocationRequestV1::decode(requests[1].1.as_slice())
-            .expect("decode terminal transition");
-
-        assert!(
-            requests[0]
-                .0
-                .starts_with("POST /api/mcp/plugins/cancel-v1?credential=")
-        );
-        assert_eq!(cancellation.request_id, "parent-request");
-        assert_eq!(cancellation.owner_id, "parent-owner");
-        assert_eq!(cancellation.session_id, "logical-session");
-        assert_eq!(cancellation.scope_id.as_deref(), Some("assistant_session"));
-        assert_eq!(cancellation.plugin_id, "builtin.assistant");
-        assert!(
-            requests[1]
-                .0
-                .starts_with("POST /api/mcp/plugins/invoke-v1?credential=")
-        );
-        assert!(
-            interrupted
-                .request_id
-                .starts_with("parent-request:interrupted:")
-        );
-        assert_eq!(interrupted.owner_id, "parent-owner");
-        assert_eq!(interrupted.session_id, "logical-session");
-        assert_eq!(interrupted.scope_id, None);
-        assert_eq!(interrupted.plugin_id, "builtin.assistant");
-        assert_eq!(interrupted.capability_id, "advance_assistant_state");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&interrupted.input_json).unwrap()["event"],
-            "interrupted"
-        );
-        assert!(runtime.active_target(&context).unwrap().is_none());
-    }
-
-    fn read_test_request(stream: &TcpStream) -> (String, Vec<u8>) {
-        let mut reader = BufReader::new(stream.try_clone().expect("clone request stream"));
-        let mut request_line = String::new();
-        reader
-            .read_line(&mut request_line)
-            .expect("read request line");
-        let mut content_length = 0;
-        loop {
-            let mut line = String::new();
-            reader.read_line(&mut line).expect("read request header");
-            if line == "\r\n" {
-                break;
-            }
-            if let Some((name, value)) = line.split_once(':') {
-                if name.eq_ignore_ascii_case("content-length") {
-                    content_length = value.trim().parse().expect("content length");
-                }
-            }
-        }
-        let mut body = vec![0; content_length];
-        reader.read_exact(&mut body).expect("read request body");
-        (request_line.trim_end().into(), body)
-    }
-
-    fn write_test_protobuf_response(stream: &mut TcpStream, body: Vec<u8>) {
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/protobuf\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        )
-        .expect("write response headers");
-        stream.write_all(&body).expect("write response body");
-    }
-}
+mod tests;

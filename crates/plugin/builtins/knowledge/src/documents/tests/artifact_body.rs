@@ -30,7 +30,17 @@ fn seed_source(graph: &mut FakeDocumentGraph, id: &str, root: &str, path: &str) 
 }
 
 fn node(graph: &FakeDocumentGraph, document_id: &str) -> Value {
-    graph.elements[&node_id(document_id)].clone()
+    graph.elements.values().find(|row| {
+        row["metadata"]["indexer_metadata"]["knowledge_document"]["document_id"] == document_id
+            || row["metadata"]["indexer_metadata"]["knowledge_document_deleted"]["document"]["document_id"] == document_id
+    }).unwrap().clone()
+}
+
+fn selected_id(graph: &FakeDocumentGraph, document_id: &str) -> String {
+    node(graph, document_id)["semantic_element_id"]
+        .as_str()
+        .unwrap()
+        .into()
 }
 
 fn locator(graph: &FakeDocumentGraph, document_id: &str) -> Value {
@@ -73,30 +83,12 @@ fn citation_targets(graph: &FakeDocumentGraph, source: &str) -> Vec<String> {
     targets
 }
 
-fn active_citation_targets(graph: &FakeDocumentGraph, source: &str) -> Vec<String> {
-    citation_targets(graph, source)
-        .into_iter()
-        .filter(|target| {
-            graph
-                .elements
-                .get(target)
-                .is_some_and(|element| element["lifecycle"] != "inactive")
-        })
-        .collect()
-}
-
 fn read(graph: &mut FakeDocumentGraph, document_id: &str) -> Result<Value, PluginError> {
     graph.call("get_document", identity(document_id, "/project"))
 }
 
-fn update(document_id: &str, expected: u64, patch: Value) -> Value {
-    let mut request = json!({"document_id": document_id, "project_root": "/project",
-        "expected_revision": expected});
-    request
-        .as_object_mut()
-        .unwrap()
-        .extend(patch.as_object().unwrap().clone());
-    request
+fn update(document: &Value, patch: Value) -> Value {
+    revision_request(document, patch)
 }
 
 #[test]
@@ -146,20 +138,20 @@ fn the_body_is_staged_under_the_root_and_the_node_holds_only_a_locator() {
 }
 
 #[test]
-fn publication_counts_follow_root_then_body_then_pointer_for_each_write() {
+fn publication_accepts_the_body_and_locator_together_after_the_shared_root() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let original = graph
         .call(
             "create_document",
             document_request("overview", "/project", BODY),
         )
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     assert_eq!(graph.writes, 2);
     assert_eq!(graph.artifact_writes, 1);
     assert_eq!(graph.operations[0], "publish:@documents/root");
-    assert!(graph.operations[1].starts_with("artifact:"));
     assert_eq!(
-        graph.operations[2],
+        graph.operations[1],
         format!("publish:@documents/{}", hex::encode("overview"))
     );
     graph
@@ -169,37 +161,41 @@ fn publication_counts_follow_root_then_body_then_pointer_for_each_write() {
         )
         .unwrap();
     assert_eq!((graph.writes, graph.artifact_writes), (3, 2));
-    graph
+    let revised = graph
         .call(
             "update_document",
-            update("overview", 1, json!({"content": "# Revised"})),
+            update(&original, json!({"content": "# Revised"})),
         )
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     assert_eq!((graph.writes, graph.artifact_writes), (4, 3));
     let retained = locator_id(&graph, "overview");
     graph
-        .call("delete_document", identity("overview", "/project"))
+        .call("delete_document", revision_request(&revised, json!({})))
         .unwrap();
     assert_eq!((graph.writes, graph.artifact_writes), (5, 3));
-    assert_eq!(node(&graph, "overview")["lifecycle"], "inactive");
+    assert!(
+        node(&graph, "overview")["metadata"]["indexer_metadata"]["knowledge_document_deleted"]
+            .is_object()
+    );
     assert_eq!(body(&graph, &retained)["content"], "# Revised");
 }
 
 #[test]
 fn full_body_path_human_metadata_and_revision_checks_round_trip() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let original = graph
         .call(
             "create_document",
             document_request("overview", "/project", BODY),
         )
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     let updated = graph
         .call(
             "update_document",
             update(
-                "overview",
-                1,
+                &original,
                 json!({"path": "Decisions", "content": "# Revised body"}),
             ),
         )
@@ -220,7 +216,7 @@ fn full_body_path_human_metadata_and_revision_checks_round_trip() {
     let stale = graph
         .call(
             "update_document",
-            update("overview", 1, json!({"content": "stale"})),
+            update(&original, json!({"content": "stale"})),
         )
         .unwrap_err();
     assert_eq!(stale.code, "document_revision_conflict");
@@ -231,17 +227,18 @@ fn full_body_path_human_metadata_and_revision_checks_round_trip() {
 #[test]
 fn previous_bodies_stay_immutable_and_unlisted_across_revisions() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let original = graph
         .call(
             "create_document",
             document_request("overview", "/project", BODY),
         )
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     let first = locator_id(&graph, "overview");
     graph
         .call(
             "update_document",
-            update("overview", 1, json!({"content": "# Revised"})),
+            update(&original, json!({"content": "# Revised"})),
         )
         .unwrap();
     let second = locator_id(&graph, "overview");
@@ -261,19 +258,20 @@ fn previous_bodies_stay_immutable_and_unlisted_across_revisions() {
 #[test]
 fn a_failed_body_stage_keeps_the_previous_revision_and_a_retry_succeeds() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let original = graph
         .call(
             "create_document",
             document_request("overview", "/project", BODY),
         )
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     let previous = locator_id(&graph, "overview");
     let publications = graph.writes;
     graph.fail_after("artifact", 0);
     let failure = graph
         .call(
             "update_document",
-            update("overview", 1, json!({"content": "# Revised"})),
+            update(&original, json!({"content": "# Revised"})),
         )
         .unwrap_err();
     assert_eq!(failure.code, INJECTED);
@@ -287,7 +285,7 @@ fn a_failed_body_stage_keeps_the_previous_revision_and_a_retry_succeeds() {
     let retried = graph
         .call(
             "update_document",
-            update("overview", 1, json!({"content": "# Revised"})),
+            update(&original, json!({"content": "# Revised"})),
         )
         .unwrap()["document"]
         .clone();
@@ -299,99 +297,84 @@ fn a_failed_body_stage_keeps_the_previous_revision_and_a_retry_succeeds() {
 }
 
 #[test]
-fn a_failed_pointer_publication_after_staging_leaves_the_old_pointer_and_an_unreferenced_body() {
+fn a_failed_publication_keeps_its_body_private_until_the_frozen_retry_accepts() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let original = graph
         .call(
             "create_document",
             document_request("overview", "/project", BODY),
         )
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     let previous = locator_id(&graph, "overview");
+    let request = update(&original, json!({"content":"# Revised"}));
     graph.fail_after("publication", 0);
-    let failure = graph
-        .call(
-            "update_document",
-            update("overview", 1, json!({"content": "# Revised"})),
-        )
-        .unwrap_err();
-    assert_eq!(failure.code, INJECTED);
+    assert_eq!(
+        graph
+            .call("update_document", request.clone())
+            .unwrap_err()
+            .code,
+        INJECTED
+    );
     assert_eq!(locator_id(&graph, "overview"), previous);
-    let staged: Vec<Value> = graph
-        .artifacts
-        .values()
-        .filter(|artifact| artifact["metadata"]["knowledge_document"]["revision"] == 2)
-        .cloned()
-        .collect();
-    assert_eq!(
-        staged.len(),
-        1,
-        "the staged body must survive the failed pointer write"
+    assert_eq!(read(&mut graph, "overview").unwrap()["document"], original);
+    assert!(
+        graph
+            .artifacts
+            .values()
+            .all(|body| body["content"] != "# Revised")
     );
-    assert_ne!(staged[0]["artifact_id"], previous.as_str());
-    let document = read(&mut graph, "overview").unwrap()["document"].clone();
+    let retried = graph.call("update_document", request).unwrap()["document"].clone();
+    assert_eq!(retried["revision"], 2);
+    assert_eq!(body(&graph, &previous)["content"], BODY);
     assert_eq!(
-        (document["revision"].clone(), document["content"].clone()),
-        (json!(1), json!(BODY))
+        graph
+            .artifacts
+            .values()
+            .filter(|body| body["content"] == "# Revised")
+            .count(),
+        1
     );
-    let listed = graph
-        .call("list_documents", json!({"project_root": "/project"}))
-        .unwrap();
-    assert_eq!(listed["documents"][0]["revision"], 1);
-    graph
-        .call(
-            "update_document",
-            update("overview", 1, json!({"content": "# Revised"})),
-        )
-        .unwrap();
-    // The payload carries lifecycle timestamps, so the retry is a new immutable body. The first
-    // attempt stays stored, unreferenced, and never listed.
-    let current = locator_id(&graph, "overview");
-    assert_ne!(current, staged[0]["artifact_id"].as_str().unwrap());
-    assert_eq!(body(&graph, &current)["content"], "# Revised");
-    let revision_two = graph
-        .artifacts
-        .values()
-        .filter(|artifact| artifact["metadata"]["knowledge_document"]["revision"] == 2)
-        .count();
-    assert_eq!(revision_two, 2);
-    let listed = graph
-        .call("list_documents", json!({"project_root": "/project"}))
-        .unwrap();
-    assert_eq!(listed["documents"][0]["content"], "# Revised");
+    assert_eq!(read(&mut graph, "overview").unwrap()["document"], retried);
 }
 
 #[test]
-fn a_retry_with_a_different_payload_stages_a_new_body_and_leaves_the_first_unreferenced() {
+fn a_different_payload_can_accept_without_publishing_the_first_failed_proposal() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let original = graph
         .call(
             "create_document",
             document_request("overview", "/project", BODY),
         )
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
+    let first = update(&original, json!({"content":"# First attempt"}));
     graph.fail_after("publication", 0);
-    graph
+    assert_eq!(
+        graph
+            .call("update_document", first.clone())
+            .unwrap_err()
+            .code,
+        INJECTED
+    );
+    let accepted = graph
         .call(
             "update_document",
-            update("overview", 1, json!({"content": "# First attempt"})),
+            update(&original, json!({"content":"# Second attempt"})),
         )
-        .unwrap_err();
-    graph
-        .call(
-            "update_document",
-            update("overview", 1, json!({"content": "# Second attempt"})),
-        )
-        .unwrap();
-    let current = locator_id(&graph, "overview");
-    assert_eq!(body(&graph, &current)["content"], "# Second attempt");
-    let first_attempt: Vec<&Value> = graph
-        .artifacts
-        .values()
-        .filter(|artifact| artifact["content"] == "# First attempt")
-        .collect();
-    assert_eq!(first_attempt.len(), 1);
-    assert_ne!(first_attempt[0]["artifact_id"], current.as_str());
+        .unwrap()["document"]
+        .clone();
+    assert!(
+        graph
+            .artifacts
+            .values()
+            .all(|body| body["content"] != "# First attempt")
+    );
+    assert_eq!(
+        graph.call("update_document", first).unwrap_err().code,
+        "knowledge_revision_conflict"
+    );
+    assert_eq!(read(&mut graph, "overview").unwrap()["document"], accepted);
 }
 
 #[test]
@@ -405,6 +388,7 @@ fn a_missing_body_fails_loudly_instead_of_returning_an_empty_document() {
         .unwrap();
     let body_id = locator_id(&graph, "overview");
     graph.artifacts.remove(&body_id);
+    graph.revision_artifact_overrides.insert(body_id, None);
     assert!(read(&mut graph, "overview").is_err());
     assert!(
         graph
@@ -414,7 +398,7 @@ fn a_missing_body_fails_loudly_instead_of_returning_an_empty_document() {
 }
 
 #[test]
-fn equal_public_ids_stay_isolated_and_a_body_identity_refuses_knowledge_overwrite() {
+fn equal_public_document_and_artifact_ids_stay_isolated() {
     let mut graph = FakeDocumentGraph::default();
     seed_source(&mut graph, "file:src", "/project", "src/lib.rs");
     graph
@@ -442,17 +426,6 @@ fn equal_public_ids_stay_isolated_and_a_body_identity_refuses_knowledge_overwrit
         )
         .unwrap();
     assert_eq!(knowledge["artifact"]["content"], "Requirement text");
-    let body_id = locator_id(&graph, "overview");
-    let conflict = graph
-        .call(
-            "create_knowledge",
-            json!({"project_root": "/project", "artifact_id": body_id,
-                "semantic_element_id": "file:src", "knowledge_type": "specification",
-                "title": "Overwrite", "content": "Overwritten"}),
-        )
-        .unwrap_err();
-    assert_eq!(conflict.code, "knowledge_id_conflict");
-    assert_eq!(body(&graph, &body_id)["content"], BODY);
 }
 
 #[test]
@@ -476,9 +449,12 @@ fn resolved_citations_publish_edges_only_to_active_same_project_targets() {
         {"target_kind": "artifact", "artifact_id": "overview"}
     ]);
     let created = graph.call("create_document", citing.clone()).unwrap()["document"].clone();
-    let mut expected = vec![node_id("target"), "file:src".to_owned()];
+    let mut expected = vec![selected_id(&graph, "target"), "file:src".to_owned()];
     expected.sort();
-    assert_eq!(citation_targets(&graph, &node_id("citing")), expected);
+    assert_eq!(
+        citation_targets(&graph, &selected_id(&graph, "citing")),
+        expected
+    );
     assert_eq!(created["references"], citing["references"]);
     assert_eq!(
         read(&mut graph, "citing").unwrap()["document"]["references"],
@@ -501,26 +477,31 @@ fn citation_replacement_and_deletion_keep_the_payload_and_guard_against_seed_rev
         {"target_kind": "semantic_element", "semantic_element_id": "file:src"},
         {"target_kind": "document", "document_id": "target"}
     ]);
-    graph.call("create_document", citing).unwrap();
+    let original = graph.call("create_document", citing).unwrap()["document"].clone();
     let replaced = graph
         .call(
             "update_document",
             update(
-                "citing",
-                1,
+                &original,
                 json!({"references": [{"target_kind": "semantic_element", "semantic_element_id": "file:src"}]}),
             ),
         )
         .unwrap()["document"]
         .clone();
-    assert_eq!(citation_targets(&graph, &node_id("citing")), ["file:src"]);
+    assert_eq!(
+        citation_targets(&graph, &selected_id(&graph, "citing")),
+        ["file:src"]
+    );
     assert_eq!(replaced["references"].as_array().unwrap().len(), 1);
     let retained = locator_id(&graph, "citing");
     graph
-        .call("delete_document", identity("citing", "/project"))
+        .call("delete_document", revision_request(&replaced, json!({})))
         .unwrap();
-    assert!(citation_targets(&graph, &node_id("citing")).is_empty());
-    assert_eq!(node(&graph, "citing")["lifecycle"], "inactive");
+    assert!(citation_targets(&graph, &selected_id(&graph, "citing")).is_empty());
+    assert!(
+        node(&graph, "citing")["metadata"]["indexer_metadata"]["knowledge_document_deleted"]
+            .is_object()
+    );
     assert_eq!(body(&graph, &retained)["content"], BODY);
     assert!(read(&mut graph, "citing").is_err());
     let known =
@@ -543,35 +524,47 @@ fn source_reindex_and_removal_preserve_document_owned_citations_and_the_root() {
     graph.call("create_document", citing).unwrap();
     let root = root_element(&graph)["semantic_element_id"].clone();
     let body_before = locator_id(&graph, "citing");
-    graph
-        .ingest(&json!({"provider_instance_id": "filesystem", "project_root": "/project",
-            "replace_paths": ["src/lib.rs"], "removed_paths": [], "semantic_sources": [],
-            "semantic_elements": [{"semantic_source_id": "source:files", "semantic_element_id": "file:src",
-                "path": "src/lib.rs", "semantic_element_type": "file", "semantic_element_name": "lib.rs",
-                "parent_element_id": null, "start_line": 1, "end_line": 4,
-                "content_fingerprint": "fp1:0000000000000002:v2", "metadata": {}}],
-            "semantic_relationships": [], "semantic_artifacts": []}))
-        .unwrap();
-    assert_eq!(citation_targets(&graph, &node_id("citing")), ["file:src"]);
+    let first_base = source_base(&mut graph);
+    let mut updated = json!({"provider_instance_id": "filesystem", "project_root": "/project",
+        "replace_paths": ["src/lib.rs"], "removed_paths": [], "semantic_sources": [],
+        "semantic_elements": [{"semantic_source_id": "source:files", "semantic_element_id": "file:src",
+            "path": "src/lib.rs", "semantic_element_type": "file", "semantic_element_name": "lib.rs",
+            "parent_element_id": null, "start_line": 1, "end_line": 4,
+            "content_fingerprint": "fp1:0000000000000002:v2", "metadata": {}}],
+        "semantic_relationships": [], "semantic_artifacts": []});
+    updated["revision_observation"] = json!(first_base);
+    updated["ingestion_job_id"] = json!("source-edit");
+    updated["ingestion_page_index"] = json!(0);
+    updated["ingestion_page_count"] = json!(1);
+    graph.ingest(&updated).unwrap();
+    assert_eq!(
+        citation_targets(&graph, &selected_id(&graph, "citing")),
+        ["file:src"]
+    );
     assert_eq!(locator_id(&graph, "citing"), body_before);
     assert_eq!(root_element(&graph)["semantic_element_id"], root);
     assert_eq!(
         read(&mut graph, "citing").unwrap()["document"]["content"],
         BODY
     );
-    graph
-        .ingest(
-            &json!({"provider_instance_id": "filesystem", "project_root": "/project",
+    let removal_base = source_base(&mut graph);
+    graph.ingest(&json!({"provider_instance_id": "filesystem", "project_root": "/project",
+            "revision_observation":removal_base, "ingestion_job_id":"source-removal", "ingestion_page_index":0,"ingestion_page_count":1,
             "replace_paths": [], "removed_paths": ["src/lib.rs"], "semantic_sources": [],
-            "semantic_elements": [], "semantic_relationships": [], "semantic_artifacts": []}),
-        )
+            "semantic_elements": [], "semantic_relationships": [], "semantic_artifacts": []}))
         .unwrap();
-    // The stored edge outlives its target's tombstone until the document is republished; it is
-    // not an active citation, because reads resolve active targets only.
-    assert_eq!(graph.elements["file:src"]["lifecycle"], "inactive");
-    assert!(active_citation_targets(&graph, &node_id("citing")).is_empty());
+    // Withdrawing the current source does not retarget the document's exact historical citation.
+    let selected = graph.host_call("storage.semantic", json!({"operation":"revision_families", "query":{
+        "project_root":"/project", "selection_id":"working", "records":[{"kind":"element","record_id":"file:src"}]}})).unwrap();
+    assert_eq!(selected["remaps"], json!([]));
     let document = read(&mut graph, "citing").unwrap()["document"].clone();
     assert_eq!(document["references"][0]["semantic_element_id"], "file:src");
+}
+
+fn source_base(graph: &mut FakeDocumentGraph) -> lumvise_contracts::SemanticIndexObservation {
+    crate::publication_observation::read(&mut PluginContext::for_test(graph), "/project",
+        json!({"kind":"partition", "partition":{"project_root":"/project", "provider_instance_id":"filesystem",
+            "replace_paths":["src/lib.rs"]}}), &[]).unwrap()
 }
 
 #[test]
@@ -608,7 +601,7 @@ fn the_root_marker_is_not_a_parent_or_an_artifact_inheritance_path() {
         .host_call(
             "storage.semantic",
             json!({"operation": "artifacts_for_elements",
-                "semantic_element_ids": [node_id("citing"), node_id("other"), "file:src"]}),
+                "semantic_element_ids": [selected_id(&graph, "citing"), selected_id(&graph, "other"), "file:src"]}),
         )
         .unwrap()["artifacts"]
         .clone();
@@ -684,14 +677,23 @@ fn old_shape_document_nodes_fail_explicitly_instead_of_being_decoded() {
 }
 
 #[test]
-fn a_non_document_at_the_index_identity_refuses_creation_without_being_touched() {
+fn a_non_document_at_the_document_path_refuses_creation_without_being_touched() {
     let mut graph = FakeDocumentGraph::default();
+    let observation = crate::publication_observation::read(
+        &mut PluginContext::for_test(&mut graph),
+        "/project",
+        json!({"kind":"partition", "partition":{"project_root":"/project",
+        "provider_instance_id":"filesystem", "replace_paths":[]}}),
+        &[],
+    )
+    .unwrap();
     graph
         .ingest(
             &json!({"provider_instance_id": "filesystem", "project_root": "/project",
+            "revision_observation":observation,
             "replace_paths": [], "removed_paths": [], "semantic_sources": [],
             "semantic_elements": [{"semantic_source_id": "source:files",
-                "semantic_element_id": node_id("clash"), "path": "src/clash.rs",
+                "semantic_element_id": node_id("clash"), "path": format!("@documents/{}", hex::encode("clash")),
                 "semantic_element_type": "file", "semantic_element_name": "clash.rs",
                 "parent_element_id": null, "start_line": 1, "end_line": 2,
                 "content_fingerprint": "fp1:0000000000000003:clash", "metadata": {}}],

@@ -2,7 +2,8 @@
 //! cache lifetime; callers hydrate only selected semantic records.
 
 use super::graph_rows::value_string;
-use crate::domain::element_search::ElementNameQuery;
+use crate::SemanticElementNameQuery;
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 use grafeo::{GrafeoDB, NodeId, Value};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -28,7 +29,7 @@ impl SemanticElementLookup {
         }
         self.ensure_current(graph, revision);
         self.index
-            .search(project_root, &ElementNameQuery::new(query), limit)
+            .search(project_root, &SemanticElementNameQuery::new(query), limit)
     }
 }
 
@@ -103,7 +104,9 @@ impl SemanticElementIndex {
             "element_kind",
         ]
         .map(Into::into);
-        let rows = store.get_nodes_properties_selective_batch(&ids, &keys);
+        let rows = store
+            .get_nodes_properties_selective_batch(&ids, &keys)
+            .committed_nodes(&*store, &ids);
         ids.into_iter()
             .zip(rows)
             .filter_map(|(node_id, row)| {
@@ -125,7 +128,7 @@ impl SemanticElementIndex {
     fn search(
         &self,
         project_root: Option<&str>,
-        query: &ElementNameQuery,
+        query: &SemanticElementNameQuery,
         limit: usize,
     ) -> Vec<NodeId> {
         let candidates = self.candidate_indices(query);
@@ -148,14 +151,16 @@ impl SemanticElementIndex {
         ranked.into_iter().map(|(_, _, node_id)| node_id).collect()
     }
 
-    fn candidate_indices(&self, query: &ElementNameQuery) -> HashSet<usize> {
+    fn candidate_indices(&self, query: &SemanticElementNameQuery) -> HashSet<usize> {
         let mut candidates = self
             .identifiers
-            .candidates(&query.normalized, &self.all_indices)
+            .candidates(query.normalized(), &self.all_indices)
             .iter()
             .copied()
             .collect::<HashSet<_>>();
-        for term in std::iter::once(&query.normalized).chain(query.tokens.iter()) {
+        for term in
+            std::iter::once(query.normalized()).chain(query.tokens().iter().map(String::as_str))
+        {
             candidates.extend(self.names.candidates(term, &self.all_indices));
         }
         candidates

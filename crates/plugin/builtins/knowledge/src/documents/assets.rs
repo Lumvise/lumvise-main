@@ -22,8 +22,29 @@ pub(super) fn resource(document: &KnowledgeDocument) -> Option<Value> {
 
 pub(super) fn new_resource(
     context: &mut PluginContext<'_>,
-    document: &KnowledgeDocument,
+    document: &mut KnowledgeDocument,
 ) -> Result<Option<Value>, PluginError> {
+    if document.attachment_owner_id.as_deref() == Some(new_owner_id(&document.document_id).as_str())
+    {
+        let identity = context.host_call(
+            "storage.semantic",
+            json!({"operation":"project_identity", "project_root":document.project_root}),
+        )?;
+        let lineage = identity["identity"]["project_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                super::invalid(
+                    "invalid_document_assets",
+                    &identity.to_string(),
+                    "a non-empty project lineage",
+                )
+            })?;
+        document.attachment_owner_id = Some(format!(
+            "document-assets:{lineage}:{}",
+            hex::encode(&document.document_id)
+        ));
+    }
     let Some(resource) = resource(document) else {
         return Ok(None);
     };
@@ -42,32 +63,6 @@ pub(super) fn new_resource(
     Ok(Some(resource))
 }
 
-pub(super) fn retire_legacy(
-    context: &mut PluginContext<'_>,
-    document: &KnowledgeDocument,
-) -> Result<(), PluginError> {
-    let artifact = resource(document).ok_or_else(|| {
-        super::invalid(
-            "invalid_document_assets",
-            &document.document_id,
-            "converted document attachment owner",
-        )
-    })?;
-    let response = context.host_call(
-        "storage.semantic",
-        json!({"operation": "upsert_artifact",
-        "artifact": artifact, "media_type": "application/octet-stream"}),
-    )?;
-    if response["artifact_id"].as_str() != document.attachment_owner_id.as_deref() {
-        return Err(super::invalid(
-            "invalid_document_assets",
-            &response.to_string(),
-            "stored attachment owner identity",
-        ));
-    }
-    Ok(())
-}
-
 pub(super) fn for_update(
     context: &mut PluginContext<'_>,
     document: &KnowledgeDocument,
@@ -83,18 +78,48 @@ pub(super) fn for_update(
     if stored.is_null()
         || (stored["metadata"]["knowledge_document_assets"]["document_id"] == document.document_id
             && stored["artifact_kind"] == "document_assets"
-            && stored["semantic_element_id"] == document.semantic_element_id)
+            && associated_resource(context, document, stored)?)
     {
+        let mut resource = if stored.is_null() {
+            resource
+        } else {
+            stored.clone()
+        };
+        resource
+            .as_object_mut()
+            .expect("stored resource object")
+            .remove("project_root");
+        resource["semantic_element_id"] = json!(document.semantic_element_id);
         return Ok(Some(resource));
-    }
-    if stored["metadata"]["knowledge"].is_object()
-        && super::conversion::is_staged_owner(document, stored)
-    {
-        return Ok(None); // An explicit conversion still owns retirement of this staged legacy record.
     }
     Err(super::invalid(
         "document_assets_conflict",
         &stored.to_string(),
         "attachment resource owned by this document",
     ))
+}
+
+fn associated_resource(
+    context: &mut PluginContext<'_>,
+    document: &KnowledgeDocument,
+    stored: &Value,
+) -> Result<bool, PluginError> {
+    let Some(owner) = crate::storage::semantic_element(context, &document.semantic_element_id)?
+    else {
+        return Ok(false);
+    };
+    if owner["project_root"] != document.project_root {
+        return Ok(false);
+    }
+    let output = context.host_call("storage.semantic", json!({"operation":"artifacts_for_elements", "semantic_element_ids":[document.semantic_element_id]}))?;
+    let artifacts = output["artifacts"].as_array().ok_or_else(|| {
+        super::invalid(
+            "invalid_document_assets",
+            &output.to_string(),
+            "current contextual artifact associations",
+        )
+    })?;
+    Ok(artifacts
+        .iter()
+        .any(|artifact| artifact["artifact_id"] == stored["artifact_id"]))
 }

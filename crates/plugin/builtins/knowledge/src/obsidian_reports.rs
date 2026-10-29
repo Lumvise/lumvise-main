@@ -17,7 +17,18 @@ pub(crate) fn is_report(document: &KnowledgeDocument) -> bool {
 }
 
 pub(crate) fn project(document: &KnowledgeDocument) -> Value {
-    let properties = c4_report_properties(document);
+    let mut properties = c4_report_properties(document);
+    let citations = document
+        .references
+        .iter()
+        .filter_map(|reference| match reference {
+            KnowledgeDocumentReference::Qualified(citation) => Some(citation),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !citations.is_empty() {
+        properties["lumvise_citations"] = json!(citations);
+    }
     let content_hash = report_content_hash(document, &properties);
     let path_hint = report_path(document);
     let title = format!("{} (Report)", document.title);
@@ -53,11 +64,13 @@ fn report_path(document: &KnowledgeDocument) -> String {
 
 fn report_references(document: &KnowledgeDocument) -> Vec<Value> {
     std::iter::once(json!({"entityKind":"document","entityId":document.document_id,"path":document.path.as_deref().unwrap_or_default()}))
-        .chain(document.references.iter().map(|reference| match reference {
+        .chain(document.references.iter().filter_map(|reference| Some(match reference {
+            // Vault source references have no project/selection namespace; preserve these in properties.
+            KnowledgeDocumentReference::Qualified(_) => return None,
             KnowledgeDocumentReference::SemanticElement {semantic_element_id} => json!({"entityKind":"semantic_element","entityId":semantic_element_id,"path":""}),
-            KnowledgeDocumentReference::Artifact {artifact_id} => json!({"entityKind":"artifact","entityId":artifact_id,"path":""}),
+            KnowledgeDocumentReference::Artifact {artifact_id, ..} => json!({"entityKind":"artifact","entityId":artifact_id,"path":""}),
             KnowledgeDocumentReference::Document {document_id} => json!({"entityKind":"document","entityId":document_id,"path":""}),
-        })).collect()
+        }))).collect()
 }
 
 fn report_content_hash(document: &KnowledgeDocument, properties: &Value) -> String {

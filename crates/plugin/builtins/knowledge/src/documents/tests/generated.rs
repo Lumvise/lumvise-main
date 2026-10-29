@@ -14,11 +14,17 @@ fn save(
     proposal: KnowledgeDocument,
     revision: Option<u64>,
 ) -> Result<KnowledgeDocument, PluginError> {
+    let observed = revision.map(|revision| {
+        let current: KnowledgeDocument = serde_json::from_value(read(graph)).unwrap();
+        let mut observed = documents::ObservedDocumentRevision::from(&current);
+        observed.revision = revision;
+        observed
+    });
     documents::save_generated(
         &mut PluginContext::for_test(graph),
         &DocumentGenerator::FunctionalContext.owner("file:a"),
         proposal,
-        revision,
+        observed,
     )
 }
 
@@ -35,9 +41,9 @@ fn generated_content_uses_the_existing_document_owner_and_revision_without_an_ar
     let created = save(&mut graph, proposal(), None).unwrap();
     assert_eq!(created.lifecycle.revision, 1);
     assert_eq!(read(&mut graph)["content"], "Generated purpose");
-    let writes = graph.writes;
+    let bodies = graph.artifacts.len();
     assert_eq!(save(&mut graph, proposal(), Some(1)).unwrap(), created);
-    assert_eq!(graph.writes, writes);
+    assert_eq!(graph.artifacts.len(), bodies);
     // The project root and the single generated document node.
     assert_eq!(graph.elements.len(), 2);
     graph.reject_unscoped_reads = true;
@@ -59,8 +65,15 @@ fn automatic_updates_preserve_authored_grouping_tags_and_unrelated_metadata() {
     let created = save(&mut graph, proposal(), None).unwrap();
     let mut metadata = created.metadata.clone();
     metadata["human"] = json!({"color":"blue"});
-    graph.call("update_document",json!({"project_root":"/project","document_id":"generated:context","expected_revision":1,
-        "path":"My group","tags":["human-tag"],"metadata":metadata})).unwrap();
+    graph
+        .call(
+            "update_document",
+            revision_request(
+                &json!(created),
+                json!({"path":"My group","tags":["human-tag"],"metadata":metadata}),
+            ),
+        )
+        .unwrap();
     let mut changed = proposal();
     changed.content = "New generated purpose".into();
     let updated = save(&mut graph, changed, Some(2)).unwrap();
@@ -80,11 +93,7 @@ fn authored_content_references_titles_and_owned_metadata_hold_automatic_replacem
     ] {
         let mut graph = FakeDocumentGraph::default();
         let created = save(&mut graph, proposal(), None).unwrap();
-        let mut request = json!({"project_root":"/project","document_id":"generated:context","expected_revision":1});
-        request
-            .as_object_mut()
-            .unwrap()
-            .extend(patch.as_object().unwrap().clone());
+        let mut request = revision_request(&json!(created), patch.clone());
         if let Some(metadata) = patch.get("metadata") {
             let mut preserved = created.metadata.clone();
             preserved
@@ -105,20 +114,30 @@ fn authored_content_references_titles_and_owned_metadata_hold_automatic_replacem
 #[test]
 fn automatic_writes_require_the_current_revision_and_cannot_recreate_deleted_documents() {
     let mut graph = FakeDocumentGraph::default();
-    save(&mut graph, proposal(), None).unwrap();
+    let original = save(&mut graph, proposal(), None).unwrap();
     assert_eq!(
-        save(&mut graph, proposal(), None).unwrap_err().code,
+        save(&mut graph, proposal(), None).unwrap(),
+        original,
+        "an identical accepted operation replays before mutable-state validation"
+    );
+    let mut changed = proposal();
+    changed.content = "A distinct automatic proposal".into();
+    assert_eq!(
+        save(&mut graph, changed.clone(), None).unwrap_err().code,
         "document_revision_conflict"
     );
     assert_eq!(
-        save(&mut graph, proposal(), Some(0)).unwrap_err().code,
+        save(&mut graph, changed.clone(), Some(0)).unwrap_err().code,
         "document_revision_conflict"
     );
     graph
-        .call("delete_document", identity("generated:context", "/project"))
+        .call(
+            "delete_document",
+            revision_request(&json!(original), json!({})),
+        )
         .unwrap();
     assert_eq!(
-        save(&mut graph, proposal(), None).unwrap_err().code,
+        save(&mut graph, changed, None).unwrap_err().code,
         "generated_document_deleted"
     );
     assert!(
@@ -136,7 +155,7 @@ fn another_source_or_workflow_cannot_take_over_the_same_generated_identity() {
         &mut PluginContext::for_test(&mut graph),
         &DocumentGenerator::FunctionalContext.owner("file:b"),
         proposal(),
-        Some(1),
+        Some(documents::ObservedDocumentRevision::from(&original)),
     )
     .unwrap_err();
     assert_eq!(failure.code, "generated_document_authored");
@@ -160,8 +179,13 @@ fn unowned_documents_and_archived_generated_bodies_remain_preserved() {
     );
     assert_eq!(read(&mut graph)["content"], "Keep this body");
     let mut fresh = FakeDocumentGraph::default();
-    save(&mut fresh, proposal(), None).unwrap();
-    fresh.call("update_document",json!({"project_root":"/project","document_id":"generated:context","expected_revision":1,"status":"archived"})).unwrap();
+    let created = save(&mut fresh, proposal(), None).unwrap();
+    fresh
+        .call(
+            "update_document",
+            revision_request(&json!(created), json!({"status":"archived"})),
+        )
+        .unwrap();
     assert_eq!(
         save(&mut fresh, proposal(), Some(2)).unwrap_err().code,
         "generated_document_inactive"
@@ -170,13 +194,19 @@ fn unowned_documents_and_archived_generated_bodies_remain_preserved() {
     let mut expired = FakeDocumentGraph::default();
     save(&mut expired, proposal(), None).unwrap();
     // The lifecycle lives in the staged body; the node carries only its pointer.
-    let body = expired.elements.values().next().unwrap()["metadata"]["indexer_metadata"]
-        ["knowledge_document"]["artifact_id"]
+    let body = expired
+        .elements
+        .values()
+        .find(|row| row["element_kind"] == "virtual_document")
+        .unwrap()["metadata"]["indexer_metadata"]["knowledge_document"]["artifact_id"]
         .as_str()
         .unwrap()
         .to_owned();
     expired.artifacts.get_mut(&body).unwrap()["metadata"]["knowledge_document"]["expires_at"] =
         json!("2000-01-01T00:00:00Z");
+    expired
+        .revision_artifact_overrides
+        .insert(body.clone(), Some(expired.artifacts[&body].clone()));
     assert_eq!(
         save(&mut expired, proposal(), Some(1)).unwrap_err().code,
         "generated_document_inactive"
@@ -185,16 +215,16 @@ fn unowned_documents_and_archived_generated_bodies_remain_preserved() {
 }
 
 #[test]
-fn generation_cannot_create_a_parallel_body_before_explicit_legacy_conversion() {
+fn generation_cannot_overwrite_a_knowledge_artifact_with_the_same_identity() {
     let mut graph = FakeDocumentGraph::default();
-    let original = json!({"artifact_id":"generated:context","artifact_kind":"report","content":"Original legacy purpose",
+    let original = json!({"artifact_id":"generated:context","artifact_kind":"specification","content":"Original authored constraints",
         "metadata":{"knowledge":{"project_root":"/project"}}});
     graph
         .artifacts
         .insert("generated:context".into(), original.clone());
     assert_eq!(
         save(&mut graph, proposal(), None).unwrap_err().code,
-        "knowledge_conversion_required"
+        "document_id_conflict"
     );
     assert_eq!(graph.writes, 0);
     assert_eq!(graph.artifacts["generated:context"], original);

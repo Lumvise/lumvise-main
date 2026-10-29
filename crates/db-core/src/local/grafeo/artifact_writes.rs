@@ -88,17 +88,6 @@ impl<'db> SemanticStorage<'db> {
         self.commit_staged_artifact_update(&artifact, None)
     }
 
-    /// Stores one raw blob an artifact owns, such as a canvas image, under its
-    /// original content ref without touching the artifact record.
-    pub(crate) fn put_owned_blob(&self, blob: &crate::ArtifactBlob) -> Result<()> {
-        ArtifactBlobRepository::with_clock(self.conn, self.clock.clone()).put_blob(
-            &blob.content_ref,
-            &blob.artifact_id,
-            &blob.media_type,
-            &blob.content,
-        )
-    }
-
     pub(crate) fn artifact_with_content_policy(
         &self,
         artifact: &SemanticArtifact,
@@ -149,7 +138,14 @@ impl<'db> SemanticStorage<'db> {
         vector_write: ArtifactVectorWrite<'_>,
     ) -> Result<()> {
         self.commit_preplanned_graph_write(
-            |database| prepare_artifact_upsert(database, artifact, vector_write),
+            |database| {
+                super::revision_rows::require_unmanaged_element(
+                    database,
+                    &artifact.semantic_element_id,
+                )?;
+                super::revision_rows::require_unmanaged_artifact(database, &artifact.artifact_id)?;
+                prepare_artifact_upsert(database, artifact, vector_write)
+            },
             |graph, commit_version, collector, plan| {
                 let owner = apply_artifact_upsert(graph, artifact, commit_version, plan)?;
                 collector.record_element(&owner, ChangeDisposition::Upserted);

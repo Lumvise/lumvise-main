@@ -19,6 +19,10 @@ pub const PLUGIN_ID: &str = "builtin.semantic";
 pub const PACKAGE_PROTOCOL_VERSION: u32 = CURRENT_PROTOCOL_VERSION.major as u32;
 /// Command returning packaged Semantic metadata.
 pub const MANIFEST_EXPORT_ID: &str = "manifest";
+/// MCP read capturing current scoped revision facts before a producer prepares input.
+pub const OBSERVE_INDEX_BASE_EXPORT_ID: &str = "observe_index_base";
+/// Command resolving selected revision families for read-only plugin observations.
+pub const RESOLVE_REVISION_FAMILIES_EXPORT_ID: &str = "resolve_revision_families";
 /// MCP export returning containment hierarchy.
 pub const TREE_EXPORT_ID: &str = "get_semantic_tree";
 /// MCP export returning dependency hierarchy.
@@ -61,6 +65,8 @@ pub const ARTIFACT_TRIGGER_EXPORT_ID: &str = "trigger.semantic_artifact_upserted
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Invocation {
     Manifest,
+    ObserveIndexBase,
+    ResolveRevisionFamilies,
     Tree,
     DependencyTree,
     ElementAtLocation,
@@ -94,7 +100,17 @@ const EXPORTS: &[ExportDefinition] = &[
         "Semantic manifest",
         Invocation::Manifest,
     ),
+    export(
+        OBSERVE_INDEX_BASE_EXPORT_ID,
+        "Observe index editing base",
+        Invocation::ObserveIndexBase,
+    ),
     export(TREE_EXPORT_ID, "Get semantic tree", Invocation::Tree),
+    export(
+        RESOLVE_REVISION_FAMILIES_EXPORT_ID,
+        "Resolve selected revisions",
+        Invocation::ResolveRevisionFamilies,
+    ),
     export(
         DEPENDENCY_TREE_EXPORT_ID,
         "Get dependency tree",
@@ -234,7 +250,7 @@ pub(crate) fn source(target: &str, executable_sha256: &str) -> PluginManifest {
             },
             HostCapabilityRequirement {
                 id: "storage.semantic".into(),
-                version: "^1.5.0".into(),
+                version: "^1.8.0".into(),
             },
             HostCapabilityRequirement {
                 id: "semantic.snapshot".into(),
@@ -260,6 +276,28 @@ fn exports() -> Vec<ExportDescriptor> {
                     "plugin_id": string(), "protocol": integer(), "exports": array(string())
                 }),
             ),
+        ),
+        descriptor(
+            Invocation::ObserveIndexBase,
+            ExportSurface::McpTool,
+            object(
+                &[
+                    "project_root",
+                    "provider_instance_id",
+                    "paths",
+                    "artifact_ids",
+                ],
+                json!({
+                "project_root":string(), "provider_instance_id":string(),
+                "paths":array(string()), "artifact_ids":array(string())}),
+            ),
+            observation_schema(),
+        ),
+        descriptor(
+            Invocation::ResolveRevisionFamilies,
+            ExportSurface::McpTool,
+            family_query_schema(),
+            family_read_schema(),
         ),
         descriptor(
             Invocation::Tree,
@@ -486,6 +524,7 @@ fn exports() -> Vec<ExportDescriptor> {
     ];
     exports.extend(trigger_exports());
     exports.extend(crate::analysis::manifest::exports());
+    exports.extend(crate::revision_control::exports());
     exports
 }
 
@@ -629,6 +668,9 @@ pub(crate) fn invoke(
     input: Value,
     context: &mut PluginContext<'_>,
 ) -> Result<Value, PluginError> {
+    if crate::revision_control::supports(capability_id) {
+        return crate::revision_control::invoke(capability_id, input, context);
+    }
     if crate::analysis::manifest::supports(capability_id) {
         return crate::analysis::invoke(capability_id, input, context);
     }
@@ -646,6 +688,8 @@ fn invoke_export(
 ) -> Result<Value, PluginError> {
     match invocation {
         Invocation::Manifest => Ok(metadata()),
+        Invocation::ObserveIndexBase => crate::ingest::observe_index_base(input, context),
+        Invocation::ResolveRevisionFamilies => crate::revision_reads::resolve(input, context),
         Invocation::Tree => crate::query::semantic_tree(input, context),
         Invocation::DependencyTree => crate::query::dependency_tree(input, context),
         Invocation::ElementAtLocation => crate::query::element_at_location(input, context),

@@ -26,10 +26,7 @@ impl AppCoreDesktopBridge {
         capability_id: String,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let context = crate::plugin::surface_invocation_context(
-            "desktop-renderer-command",
-            Instant::now() + Duration::from_secs(60),
-        );
+        let context = renderer_command_context(&plugin_id, &capability_id);
         let request =
             RuntimePluginInvocationRequest::new(&plugin_id, &capability_id, input, context);
         match self
@@ -43,6 +40,54 @@ impl AppCoreDesktopBridge {
                 "Renderer command {plugin_id}/{capability_id} failed ({}): {}",
                 error.code, error.message,
             )),
+        }
+    }
+}
+
+fn renderer_command_context(
+    plugin: &str,
+    export: &str,
+) -> lumvise_plugin_runtime::PluginInvocationContext {
+    let context = crate::plugin::surface_invocation_context(
+        "desktop-renderer-command",
+        Instant::now() + Duration::from_secs(60),
+    );
+    if (plugin == "builtin.knowledge" && export == "inspect_document_space")
+        || (plugin == "builtin.assistant"
+            && matches!(
+                export,
+                "send_assistant_message" | "list_assistant_inbox" | "mark_assistant_message_read"
+            ))
+    {
+        return context.with_human_interaction();
+    }
+    context
+}
+
+#[cfg(test)]
+mod inspection_origin_tests {
+    use super::renderer_command_context;
+
+    #[test]
+    fn only_native_inspection_and_passive_inbox_commands_receive_human_authority() {
+        assert!(
+            renderer_command_context("builtin.knowledge", "inspect_document_space")
+                .is_human_interaction()
+        );
+        for export in [
+            "send_assistant_message",
+            "list_assistant_inbox",
+            "mark_assistant_message_read",
+        ] {
+            assert!(renderer_command_context("builtin.assistant", export).is_human_interaction());
+        }
+        for (plugin, export) in [
+            ("builtin.assistant", "start_assistant_session"),
+            ("builtin.assistant", "receive_inbox_message"),
+            ("builtin.agents", "inspect_document_space"),
+            ("builtin.knowledge", "get_document"),
+        ] {
+            assert!(!renderer_command_context(plugin, export).is_human_interaction());
         }
     }
 }
@@ -260,23 +305,16 @@ impl DesktopVoiceBridge for AppCoreDesktopBridge {
             .plugin_host_services
             .report_voice_playback_status(&playback_id, parsed)
             .map_err(|error| error.to_string())?;
-        if let (Some((plugin_id, session_id, segment_index)), Some(event)) =
-            (owner, advance_event_for_status(parsed))
+        if let Some((plugin_id, arguments)) =
+            owner.and_then(|owner| playback_status_notification(&playback_id, parsed, owner))
         {
-            // Best-effort: a session that has already ended or a plugin
-            // that is momentarily busy must not fail the status report the
-            // renderer is relying on to keep its own state correct.
+            // Best-effort notification must not fail the renderer's own status acknowledgement.
             let _ = self
                 .app
                 .plugin_endpoints()
                 .invoke_plugin_mcp_tool(PluginInvocationRequest {
                     tool_name: format!("app_plugin.{plugin_id}.advance_assistant_state"),
-                    arguments: json!({
-                        "session_id": session_id,
-                        "playback_id": playback_id,
-                        "event": event,
-                        "interrupted_at_segment": segment_index,
-                    }),
+                    arguments,
                 });
         }
         Ok(())
@@ -438,15 +476,44 @@ fn parse_voice_playback_status(status: &str) -> Result<VoicePlaybackStatus, Stri
 
 /// Maps a real renderer-reported playback status into the generic advance
 /// event App Core notifies the owning plugin/session with (W2). `Queued`
-/// and `Failed` are not part of the `Speaking`/`AwaitingUser`/`Listening`
-/// state machine and are intentionally not forwarded.
+/// is not a session transition; `Failed` reports unavailable audio without
+/// discarding the generated answer or ending the conversation.
 fn advance_event_for_status(status: VoicePlaybackStatus) -> Option<&'static str> {
     match status {
         VoicePlaybackStatus::Playing => Some("playback_started"),
         VoicePlaybackStatus::Completed => Some("playback_completed"),
         VoicePlaybackStatus::Cancelled => Some("playback_interrupted"),
-        VoicePlaybackStatus::Queued | VoicePlaybackStatus::Failed => None,
+        VoicePlaybackStatus::Failed => Some("playback_unavailable"),
+        VoicePlaybackStatus::Queued => None,
     }
+}
+
+fn playback_status_notification(
+    playback_id: &str,
+    status: VoicePlaybackStatus,
+    owner: crate::plugin::PlaybackOwner,
+) -> Option<(String, serde_json::Value)> {
+    let event = if owner.failure.is_some() {
+        "playback_unavailable"
+    } else {
+        advance_event_for_status(status)?
+    };
+    let mut arguments = json!({"session_id":owner.session_id,"playback_id":playback_id,
+        "event":event,"interrupted_at_segment":owner.segment_index});
+    if let Some(error) = playback_status_error(status, owner.failure) {
+        arguments["error"] = json!(error);
+    }
+    Some((owner.plugin_id, arguments))
+}
+
+fn playback_status_error(
+    status: VoicePlaybackStatus,
+    synthesis_failure: Option<String>,
+) -> Option<String> {
+    synthesis_failure.or_else(|| {
+        (status == VoicePlaybackStatus::Failed)
+            .then(|| "Audio playback failed; the response remains available as text.".into())
+    })
 }
 
 #[cfg(test)]
@@ -454,6 +521,37 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::thread;
+
+    #[test]
+    fn synthesis_error_notifies_unavailable_audio_instead_of_interruption() {
+        let owner = crate::plugin::PlaybackOwner {
+            plugin_id: "builtin.assistant".into(),
+            session_id: "workspace:test".into(),
+            segment_index: 2,
+            failure: Some("Speech generation failed: HTTP 502".into()),
+        };
+        let (plugin, arguments) =
+            playback_status_notification("turn-2", VoicePlaybackStatus::Cancelled, owner).unwrap();
+        assert_eq!(plugin, "builtin.assistant");
+        assert_eq!(
+            arguments,
+            json!({"session_id":"workspace:test","playback_id":"turn-2","event":"playback_unavailable","interrupted_at_segment":2,"error":"Speech generation failed: HTTP 502"})
+        );
+    }
+
+    #[test]
+    fn ordinary_interruption_has_no_error_or_speech_failure_notification() {
+        let owner = crate::plugin::PlaybackOwner {
+            plugin_id: "builtin.assistant".into(),
+            session_id: "floating".into(),
+            segment_index: 0,
+            failure: None,
+        };
+        let (_, arguments) =
+            playback_status_notification("turn-1", VoicePlaybackStatus::Cancelled, owner).unwrap();
+        assert_eq!(arguments["event"], "playback_interrupted");
+        assert!(arguments.get("error").is_none());
+    }
 
     #[test]
     fn desktop_speech_event_preserves_audio_chunk_contract() {

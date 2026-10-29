@@ -116,7 +116,7 @@ impl<'a> FunctionalContextCultivation<'a> {
         let expected = self
             .existing
             .get(&proposal.document_id)
-            .map(|document| document.lifecycle.revision);
+            .map(documents::ObservedDocumentRevision::from);
         documents::save_generated(
             context,
             &documents::DocumentGenerator::FunctionalContext.owner(&element.semantic_element_id),
@@ -144,10 +144,11 @@ fn target_document_ids(
     context: &mut PluginContext<'_>,
 ) -> Result<std::collections::HashMap<String, String>, PluginError> {
     let history = documents::known_source_documents(context, root)?;
+    let sources = crate::source_revisions::SelectedSources::for_documents(context, root, &history)?;
     Ok(elements
         .iter()
         .map(|element| {
-            let id = functional::existing_for_source(&history, element)
+            let id = functional::existing_for_source(&history, element, &sources)
                 .map(|document| document.document_id.clone())
                 .unwrap_or_else(|| functional::document_id_for(element));
             (element.semantic_element_id.clone(), id)

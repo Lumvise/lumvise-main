@@ -1,4 +1,5 @@
 //! Project-root selection reads adjacency columns, never relationship metadata.
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 use std::collections::HashSet;
 
 use grafeo::{EdgeId, GrafeoDB, Value};
@@ -33,7 +34,8 @@ fn parented_members(
     .map(Into::into);
     let properties = graph
         .graph_store()
-        .get_edges_properties_selective_batch(&edges, &keys);
+        .get_edges_properties_selective_batch(&edges, &keys)
+        .committed_edges(&*graph.graph_store(), &edges);
     incoming
         .into_iter()
         .zip(properties)
@@ -51,7 +53,9 @@ fn incoming_member_edges(
     let store = graph.graph_store();
     let nodes =
         node_ids_by_label_and_property(graph, "SemanticElement", "project_root", project_root);
-    let identities = store.get_node_property_batch(&nodes, &"semantic_element_id".into());
+    let identities = store
+        .get_node_property_batch(&nodes, &"semantic_element_id".into())
+        .committed_nodes(&*graph.graph_store(), &nodes);
     let mut incoming = Vec::new();
     for (node, identity) in nodes.into_iter().zip(identities) {
         let Some(id) = identity

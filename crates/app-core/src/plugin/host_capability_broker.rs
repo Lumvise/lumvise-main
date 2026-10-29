@@ -4,7 +4,7 @@
 //! App Core ownership, and plugin namespace enforcement remain internal.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use lumvise_db_core::{
@@ -12,10 +12,20 @@ use lumvise_db_core::{
     RelationalResult, SemanticPersistence,
 };
 use lumvise_plugin_runtime::{
-    HostCapabilityBroker, HostCapabilityError, HostCapabilityRequest, PluginInvocationContext,
+    HostCapabilityBroker, HostCapabilityError, HostCapabilityRequest, HostPluginInvoker,
+    PluginInvocationContext,
 };
 use lumvise_resource_routing::InvocationControl;
 use serde_json::{Map, Value, json};
+
+mod embedding;
+mod snapshot;
+mod source_import;
+mod source_index;
+#[cfg(test)]
+use embedding::MAX_EMBED_TEXTS;
+use embedding::invoke_neural_embed;
+pub(crate) use source_import::SourceImportAuthorization;
 
 use super::PluginHostServices;
 use super::host_capability_catalog::{
@@ -26,10 +36,6 @@ use super::plugin_invoke_authorization::authorize_plugin_invoke;
 use super::semantic_snapshot_writes::SemanticSnapshotWrites;
 use super::semantic_storage_capability;
 
-const MAX_EMBED_TEXTS: usize = 128;
-const MAX_EMBED_TEXT_BYTES: usize = 32 * 1024;
-const MAX_EMBED_TOTAL_BYTES: usize = 256 * 1024;
-const MAX_EMBED_DIMENSIONS: usize = 4_096;
 const MAX_STAGED_CHANGES: usize = 500;
 const MAX_STAGED_BYTES: usize = 1024 * 1024;
 const MAX_ACTIVE_STORAGE_TRANSACTIONS: usize = 8;
@@ -57,6 +63,7 @@ pub(crate) struct VectorEngineIdentity {
 /// The adapter receives only the storage dependency it needs. It cannot call
 /// persistence outside the capability routes authorized by App Core.
 pub struct AppCoreHostCapabilityBroker {
+    knowledge_authority: super::knowledge_authority::KnowledgeAuthority,
     semantic: Arc<dyn SemanticPersistence>,
     relational: Arc<dyn RelationalPersistence>,
     vectorizer: SharedPluginVectorizer,
@@ -64,6 +71,7 @@ pub struct AppCoreHostCapabilityBroker {
     semantic_snapshot_writes: SemanticSnapshotWrites,
     semantic_snapshots: Arc<crate::SemanticSnapshotService>,
     services: Option<Arc<PluginHostServices>>,
+    index_publication_client: Arc<OnceLock<String>>,
 }
 
 struct StagedStorageTransaction {
@@ -97,7 +105,18 @@ impl AppCoreHostCapabilityBroker {
         services: Option<Arc<PluginHostServices>>,
         semantic_snapshots: Arc<crate::SemanticSnapshotService>,
     ) -> Self {
+        let index_publication_client = services.as_ref().map_or_else(
+            || Arc::new(OnceLock::new()),
+            |services| services.index_publication_client(),
+        );
         Self {
+            knowledge_authority: super::knowledge_authority::KnowledgeAuthority::new(
+                Arc::clone(&relational),
+                services
+                    .as_ref()
+                    .map(|services| services.mcp_session_membership())
+                    .unwrap_or_default(),
+            ),
             semantic,
             relational,
             vectorizer,
@@ -105,8 +124,10 @@ impl AppCoreHostCapabilityBroker {
             semantic_snapshots,
             semantic_snapshot_writes: SemanticSnapshotWrites::new(),
             services,
+            index_publication_client,
         }
     }
+
     pub(crate) fn semantic_snapshot_service(&self) -> Arc<crate::SemanticSnapshotService> {
         Arc::clone(&self.semantic_snapshots)
     }
@@ -120,65 +141,22 @@ impl AppCoreHostCapabilityBroker {
     }
 }
 
-impl AppCoreHostCapabilityBroker {
-    fn invoke_semantic_snapshot(&self, input: Value) -> Result<Value, HostCapabilityError> {
-        let operation = input
-            .get("operation")
-            .and_then(Value::as_str)
-            .unwrap_or("create");
-        let snapshot_operation = match operation {
-            "create" => self.create_semantic_snapshot_for_input(&input)?,
-            "status" => {
-                let operation_id = required_snapshot_operation_id(&input)?;
-                self.semantic_snapshots
-                    .status(operation_id)
-                    .map_err(|error| snapshot_error(error.to_string()))?
-            }
-            "cancel" => {
-                let operation_id = required_snapshot_operation_id(&input)?;
-                self.semantic_snapshots
-                    .cancel(operation_id)
-                    .map_err(|error| snapshot_error(error.to_string()))?
-            }
-            other => {
-                return Err(snapshot_error(format!(
-                    "unknown semantic snapshot operation `{other}`"
-                )));
-            }
-        };
-        serde_json::to_value(snapshot_operation).map_err(|error| snapshot_error(error.to_string()))
-    }
-
-    fn create_semantic_snapshot_for_input(
-        &self,
-        input: &Value,
-    ) -> Result<crate::SemanticSnapshotOperation, HostCapabilityError> {
-        let fields = input
-            .as_object()
-            .ok_or_else(|| invalid_input(input, "semantic snapshot object"))?;
-        let operation = match optional_string(fields, "project_root")? {
-            Some(root) => self.semantic_snapshots.create_for_project(root),
-            None => self.semantic_snapshots.create(),
-        };
-        operation.map_err(|error| snapshot_error(error.to_string()))
-    }
-
-    fn invoke_semantic_snapshot_controlled(
-        &self,
-        input: Value,
-        context: &PluginInvocationContext,
-    ) -> Result<Value, HostCapabilityError> {
-        require_active_host_call(SEMANTIC_SNAPSHOT_CAPABILITY, context)?;
-        self.invoke_semantic_snapshot(input)
-    }
-}
-
 impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
     fn invoke(&self, request: HostCapabilityRequest) -> Result<Value, HostCapabilityError> {
         let capability_id = request.capability_id.as_str();
         let definition = host_capability_definition(capability_id)
             .ok_or_else(|| unknown_capability(capability_id))?;
         match definition.route {
+            HostCapabilityRoute::ProjectImport => Err(source_import::requires_nested_context()),
+            HostCapabilityRoute::KnowledgeAuthority => Err(HostCapabilityError::new(
+                capability_id,
+                "knowledge_scope_denied",
+                "memory authority requires a controlled invocation",
+                false,
+            )),
+            HostCapabilityRoute::IndexPublication => {
+                self.invoke_index_publication(request.input, &InvocationControl::sixty_seconds())
+            }
             HostCapabilityRoute::ProjectSource => crate::app::invoke_project_source(
                 self.semantic.as_ref(),
                 self.relational.as_ref(),
@@ -221,8 +199,40 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
         let definition = host_capability_definition(&capability_id)
             .ok_or_else(|| unknown_capability(&capability_id))?;
         let output = match definition.route {
+            HostCapabilityRoute::ProjectImport => {
+                return Err(source_import::requires_nested_context());
+            }
+            HostCapabilityRoute::KnowledgeAuthority => self.knowledge_authority.invoke(
+                &request.plugin_id,
+                request.input,
+                self.semantic.as_ref(),
+                context,
+            )?,
+            HostCapabilityRoute::IndexPublication => {
+                let bridge = super::plugin_host_capabilities::invocation_control(context);
+                let root = request.input["project_root"]
+                    .as_str()
+                    .or_else(|| request.input["batch"]["project_root"].as_str())
+                    .unwrap_or_default();
+                self.knowledge_authority.authorize_source(
+                    context,
+                    self.semantic.as_ref(),
+                    root,
+                    true,
+                    &bridge.control(),
+                )?;
+                self.invoke_index_publication(request.input, &bridge.control())?
+            }
             HostCapabilityRoute::ProjectSource => {
                 let bridge = super::plugin_host_capabilities::invocation_control(context);
+                let root = request.input["project_root"].as_str().unwrap_or_default();
+                self.knowledge_authority.authorize_source(
+                    context,
+                    self.semantic.as_ref(),
+                    root,
+                    false,
+                    &bridge.control(),
+                )?;
                 crate::app::invoke_project_source(
                     self.semantic.as_ref(),
                     self.relational.as_ref(),
@@ -244,6 +254,7 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
                 &request.plugin_id,
                 request.input,
                 context,
+                &self.knowledge_authority,
             )?,
             HostCapabilityRoute::SemanticSnapshot => {
                 self.invoke_semantic_snapshot_controlled(request.input, context)?
@@ -263,6 +274,19 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
         };
         require_active_host_call(&capability_id, context)?;
         Ok(output)
+    }
+
+    fn invoke_with_nested(
+        &self,
+        request: HostCapabilityRequest,
+        context: &PluginInvocationContext,
+        nested: &dyn HostPluginInvoker,
+    ) -> Result<Value, HostCapabilityError> {
+        if request.capability_id != super::host_capability_catalog::PROJECT_IMPORT {
+            return self.invoke_controlled(request, context);
+        }
+        require_active_host_call(&request.capability_id, context)?;
+        source_import::invoke(self, request, context, nested)
     }
 }
 
@@ -475,160 +499,6 @@ fn unknown_capability(capability_id: &str) -> HostCapabilityError {
         "unknown_host_capability",
         format!("unknown Host Capability `{capability_id}`; expected a host-catalog capability"),
         false,
-    )
-}
-
-fn snapshot_error(message: impl Into<String>) -> HostCapabilityError {
-    HostCapabilityError::new(
-        SEMANTIC_SNAPSHOT_CAPABILITY,
-        "host_capability_execution_failed",
-        message,
-        false,
-    )
-}
-
-fn required_snapshot_operation_id(input: &Value) -> Result<&str, HostCapabilityError> {
-    input
-        .get("operation_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| snapshot_error("operation_id is required"))
-}
-
-fn invoke_neural_embed(
-    vectorizer: &SharedPluginVectorizer,
-    input: Value,
-) -> Result<Value, HostCapabilityError> {
-    let texts = embed_texts(&input)?;
-    let vectorizer = vectorizer
-        .lock()
-        .map_err(|_| embed_failure("plugin vectorizer mutex poisoned"))?
-        .clone()
-        .ok_or_else(|| embed_unavailable("no text vectorizer is configured"))?;
-    let embedded = texts
-        .iter()
-        .map(|text| embed_one(vectorizer.as_ref(), text))
-        .collect::<Result<Vec<_>, _>>()?;
-    let vectors = embedded
-        .iter()
-        .map(|result| result.vector.clone())
-        .collect::<Vec<_>>();
-    validate_vectors(&vectors, texts.len())?;
-    let (engine_id, model) = embedded
-        .first()
-        .map(|result| (result.engine_id.clone(), result.model.clone()))
-        .unwrap_or_default();
-    Ok(json!({"vectors": vectors, "engine_id": engine_id, "model": model}))
-}
-
-fn embed_texts(input: &Value) -> Result<Vec<&str>, HostCapabilityError> {
-    let fields = input
-        .as_object()
-        .ok_or_else(|| invalid_embed_input(input, "object with exactly field `texts`"))?;
-    require_embed_fields(fields)?;
-    let values = fields["texts"]
-        .as_array()
-        .ok_or_else(|| invalid_embed_input(&fields["texts"], "non-empty array field `texts`"))?;
-    validate_embed_count(values.len(), &fields["texts"])?;
-    let texts = values
-        .iter()
-        .map(embed_text)
-        .collect::<Result<Vec<_>, _>>()?;
-    validate_total_text_bytes(&texts, &fields["texts"])?;
-    Ok(texts)
-}
-
-fn require_embed_fields(fields: &Map<String, Value>) -> Result<(), HostCapabilityError> {
-    if fields.len() == 1 && fields.contains_key("texts") {
-        return Ok(());
-    }
-    Err(invalid_embed_input(
-        &Value::Object(fields.clone()),
-        "object with exactly field `texts`",
-    ))
-}
-
-fn validate_embed_count(count: usize, value: &Value) -> Result<(), HostCapabilityError> {
-    if (1..=MAX_EMBED_TEXTS).contains(&count) {
-        return Ok(());
-    }
-    Err(invalid_embed_input(
-        value,
-        &format!("array containing 1 through {MAX_EMBED_TEXTS} texts"),
-    ))
-}
-
-fn embed_text(value: &Value) -> Result<&str, HostCapabilityError> {
-    value
-        .as_str()
-        .filter(|text| !text.is_empty() && text.len() <= MAX_EMBED_TEXT_BYTES)
-        .ok_or_else(|| {
-            invalid_embed_input(
-                value,
-                &format!("non-empty UTF-8 string no larger than {MAX_EMBED_TEXT_BYTES} bytes"),
-            )
-        })
-}
-
-fn validate_total_text_bytes(texts: &[&str], value: &Value) -> Result<(), HostCapabilityError> {
-    let total = texts.iter().map(|text| text.len()).sum::<usize>();
-    if total <= MAX_EMBED_TOTAL_BYTES {
-        return Ok(());
-    }
-    Err(invalid_embed_input(
-        value,
-        &format!("texts totaling no more than {MAX_EMBED_TOTAL_BYTES} UTF-8 bytes"),
-    ))
-}
-
-fn embed_one(
-    vectorizer: &dyn ArtifactTextVectorizer,
-    text: &str,
-) -> Result<lumvise_db_core::ArtifactTextVector, HostCapabilityError> {
-    vectorizer
-        .vectorize_artifact_text(text)
-        .map_err(|error| embed_failure(format!("text vectorization failed: {error}")))
-}
-
-fn validate_vectors(vectors: &[Vec<f32>], expected: usize) -> Result<(), HostCapabilityError> {
-    let dimensions = vectors.first().map(Vec::len).unwrap_or_default();
-    let valid = vectors.len() == expected
-        && (1..=MAX_EMBED_DIMENSIONS).contains(&dimensions)
-        && vectors.iter().all(|vector| {
-            vector.len() == dimensions && vector.iter().all(|value| value.is_finite())
-        });
-    if valid {
-        return Ok(());
-    }
-    Err(embed_failure(format!(
-        "invalid vectorizer output: received {} vectors with first dimension {dimensions}; expected {expected} finite vectors with equal dimensions from 1 through {MAX_EMBED_DIMENSIONS}",
-        vectors.len()
-    )))
-}
-
-fn invalid_embed_input(value: &Value, expected: &str) -> HostCapabilityError {
-    HostCapabilityError::new(
-        NEURAL_EMBED_CAPABILITY,
-        "invalid_host_capability_input",
-        format!("invalid neural.embed input `{value}`; expected {expected}"),
-        false,
-    )
-}
-
-fn embed_unavailable(message: impl Into<String>) -> HostCapabilityError {
-    HostCapabilityError::new(
-        NEURAL_EMBED_CAPABILITY,
-        "host_capability_unavailable",
-        message,
-        true,
-    )
-}
-
-fn embed_failure(message: impl Into<String>) -> HostCapabilityError {
-    HostCapabilityError::new(
-        NEURAL_EMBED_CAPABILITY,
-        "host_capability_execution_failed",
-        message,
-        true,
     )
 }
 
@@ -1064,110 +934,5 @@ mod tests;
 mod snapshot_project_tests;
 
 #[cfg(test)]
-mod semantic_snapshot_controlled_tests {
-    use super::*;
-    use lumvise_db_core::{
-        DbError, LocalPersistence, PzSnapshotResult, SemanticOperation, SemanticReadiness,
-        SemanticResult,
-    };
-    use lumvise_plugin_runtime::PluginInvocationClass;
-    use std::sync::mpsc;
-
-    struct DropProbePersistence {
-        completed: mpsc::Sender<String>,
-        dropped: mpsc::Sender<()>,
-    }
-
-    impl Drop for DropProbePersistence {
-        fn drop(&mut self) {
-            let _ = self.dropped.send(());
-        }
-    }
-
-    impl SemanticPersistence for DropProbePersistence {
-        fn execute(
-            &self,
-            operation: SemanticOperation,
-            _control: &InvocationControl,
-        ) -> std::result::Result<SemanticResult, DbError> {
-            match operation {
-                SemanticOperation::ProjectRoots => {
-                    Ok(SemanticResult::ProjectRoots(vec!["/project".into()]))
-                }
-                SemanticOperation::CreatePzSnapshot {
-                    project_root,
-                    output_path,
-                } => {
-                    let _ = self.completed.send(project_root);
-                    Ok(SemanticResult::PzSnapshot(PzSnapshotResult {
-                        project_id: "project-id".into(),
-                        snapshot_id: "snapshot-id".into(),
-                        commit_version: 1,
-                        published_at: "2026-01-01T00:00:00Z".into(),
-                        output_path: output_path.into(),
-                        output_bytes: 1,
-                        row_counts: Default::default(),
-                    }))
-                }
-                _ => Err(DbError::invalid_value(
-                    "operation",
-                    "drop probe snapshot operation",
-                )),
-            }
-        }
-
-        fn readiness(&self) -> std::result::Result<SemanticReadiness, DbError> {
-            Ok(SemanticReadiness { ready: true })
-        }
-    }
-
-    #[test]
-    fn controlled_snapshot_uses_current_project_and_watcher_does_not_retain_service() {
-        let (completed_tx, completed_rx) = mpsc::channel();
-        let (dropped_tx, dropped_rx) = mpsc::channel();
-        let semantic = Arc::new(DropProbePersistence {
-            completed: completed_tx,
-            dropped: dropped_tx,
-        });
-        let persistence = Arc::new(LocalPersistence::in_memory().expect("local persistence"));
-        let relational: Arc<dyn RelationalPersistence> = persistence;
-        let broker = AppCoreHostCapabilityBroker::new(
-            Arc::clone(&semantic) as Arc<dyn SemanticPersistence>,
-            relational,
-        );
-        drop(semantic);
-
-        let context = PluginInvocationContext::new(
-            "request-1",
-            "owner-1",
-            PluginInvocationClass::Foreground,
-            Instant::now() + Duration::from_secs(60),
-        )
-        .with_route_identity("session-1", Some("signed-scope-id".into()));
-        let output = broker
-            .invoke_controlled(
-                HostCapabilityRequest {
-                    plugin_id: "plugin.a".into(),
-                    invocation_id: "invocation-1".into(),
-                    call_id: "call-1".into(),
-                    capability_id: SEMANTIC_SNAPSHOT_CAPABILITY.into(),
-                    required_version: "1".into(),
-                    input: json!({"operation": "create"}),
-                },
-                &context,
-            )
-            .expect("controlled snapshot create");
-        assert!(output.get("operation_id").and_then(Value::as_str).is_some());
-        assert_eq!(
-            completed_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("snapshot worker reached persistence"),
-            "/project"
-        );
-
-        drop(broker);
-        dropped_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("broker drop releases semantic persistence");
-    }
-}
+#[path = "host_capability_broker/snapshot_controlled_tests.rs"]
+mod semantic_snapshot_controlled_tests;

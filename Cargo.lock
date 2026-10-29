@@ -3475,7 +3475,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lumvise-app-core"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3492,6 +3492,8 @@ dependencies = [
  "lumvise-plugin-package",
  "lumvise-plugin-protocol",
  "lumvise-plugin-runtime",
+ "lumvise-plugin-sdk",
+ "lumvise-plugin-semantic",
  "lumvise-project-indexer",
  "lumvise-resource-routing",
  "metrics",
@@ -3516,7 +3518,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-builtin-plugin-release"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3532,7 +3534,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-contracts"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "schemars 0.8.22",
  "serde",
@@ -3541,7 +3543,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-db-core"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3551,6 +3553,7 @@ dependencies = [
  "grafeo-core",
  "lumvise-contracts",
  "lumvise-resource-routing",
+ "lumvise-semantic-revisions",
  "metrics",
  "parquet",
  "rmp-serde",
@@ -3569,7 +3572,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-frontend-core"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "json-patch",
@@ -3583,7 +3586,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-mcp-app-adapter"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "lumvise-app-core",
  "lumvise-contracts",
@@ -3599,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-mcp-core"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "prost",
  "serde",
@@ -3609,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-neural-core"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bzip2 0.5.2",
@@ -3645,7 +3648,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-admin"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3659,7 +3662,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-knowledge"
-version = "0.1.52"
+version = "0.1.54"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -3673,6 +3676,7 @@ dependencies = [
  "lumvise-plugin-sdk",
  "lumvise-plugin-semantic",
  "lumvise-resource-routing",
+ "lumvise-semantic-revisions",
  "md5",
  "serde",
  "serde_json",
@@ -3682,7 +3686,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-package"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3697,7 +3701,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-protocol"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "prost",
  "serde",
@@ -3707,7 +3711,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-runtime"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3729,7 +3733,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-plugin-sdk"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "lumvise-plugin-protocol",
  "serde_json",
@@ -3751,6 +3755,7 @@ dependencies = [
  "lumvise-plugin-runtime",
  "lumvise-plugin-sdk",
  "lumvise-resource-routing",
+ "lumvise-semantic-revisions",
  "regex",
  "serde",
  "serde_json",
@@ -3761,7 +3766,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-project-indexer"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "anytomd",
  "docling",
@@ -3772,6 +3777,7 @@ dependencies = [
  "lopdf 0.42.0",
  "lumvise-contracts",
  "rayon",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -3792,7 +3798,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-resource-routing"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "h2",
@@ -3820,7 +3826,7 @@ dependencies = [
 
 [[package]]
 name = "lumvise-resource-server"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bincode 1.3.3",
@@ -3848,6 +3854,17 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "lumvise-semantic-revisions"
+version = "0.2.0"
+dependencies = [
+ "lumvise-contracts",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

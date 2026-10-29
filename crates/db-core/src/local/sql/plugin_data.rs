@@ -8,11 +8,6 @@ use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-/// Maximum row operations accepted by one atomic plugin-storage call.
-pub const MAX_PLUGIN_DATA_MUTATIONS: usize = 250_000;
-/// Maximum serialized mutation payload accepted by one atomic call.
-pub const MAX_PLUGIN_DATA_MUTATION_BYTES: usize = 128 * 1024 * 1024;
-
 pub struct PluginDataRepository<'db> {
     conn: &'db SqlConnections,
 }
@@ -238,12 +233,13 @@ impl<'db> PluginDataRepository<'db> {
         let fetch_limit = i64::try_from(limit + 1)
             .map_err(|_| DbError::invalid_value(limit.to_string(), "SQLite page limit"))?;
         let conn = self.conn.read_conn();
+        // SQLite TEXT length stops at NUL; opaque row keys require the same byte prefixes as Hub.
         let mut stmt = conn.prepare_cached(
             "SELECT plugin_id, table_name, row_key, value_json, created_at, updated_at
              FROM plugin_data_rows
              WHERE plugin_id = ?1 AND table_name = ?2
                AND row_key > ?3
-               AND substr(row_key, 1, length(?4)) = ?4
+               AND substr(CAST(row_key AS BLOB), 1, length(CAST(?4 AS BLOB))) = CAST(?4 AS BLOB)
              ORDER BY row_key LIMIT ?5",
         )?;
         let mapped = stmt.query_map(
@@ -336,6 +332,7 @@ impl<'db> PluginDataRepository<'db> {
         let mut conn = self.conn.write_conn();
         let transaction = conn.transaction()?;
         require_mutation_tables(&transaction, plugin_id, mutations)?;
+        require_mutation_values(&transaction, plugin_id, mutations)?;
         let result = execute_mutations(&transaction, plugin_id, mutations, &now)?;
         transaction.commit()?;
         Ok(result)
@@ -344,19 +341,10 @@ impl<'db> PluginDataRepository<'db> {
 
 fn validate_mutation_batch(plugin_id: &str, mutations: &[PluginDataMutation]) -> Result<()> {
     require_non_empty(plugin_id, "non-empty plugin id")?;
-    if !(1..=MAX_PLUGIN_DATA_MUTATIONS).contains(&mutations.len()) {
+    if mutations.is_empty() {
         return Err(DbError::invalid_value(
             mutations.len().to_string(),
-            format!("plugin data mutation count from 1 through {MAX_PLUGIN_DATA_MUTATIONS}"),
-        ));
-    }
-    let bytes = serde_json::to_vec(mutations)?.len();
-    if bytes > MAX_PLUGIN_DATA_MUTATION_BYTES {
-        return Err(DbError::invalid_value(
-            bytes.to_string(),
-            format!(
-                "plugin data mutation payload no larger than {MAX_PLUGIN_DATA_MUTATION_BYTES} bytes"
-            ),
+            "at least one plugin data mutation",
         ));
     }
     mutations.iter().try_for_each(validate_mutation)
@@ -372,6 +360,11 @@ fn validate_mutation(mutation: &PluginDataMutation) -> Result<()> {
         | PluginDataMutation::Delete {
             table_name,
             row_key,
+        }
+        | PluginDataMutation::RequireValue {
+            table_name,
+            row_key,
+            ..
         } => (table_name, row_key),
     };
     validate_row_ref("batch-owner", table_name, row_key)
@@ -397,8 +390,38 @@ fn require_mutation_tables(
 fn mutation_table(mutation: &PluginDataMutation) -> &str {
     match mutation {
         PluginDataMutation::Put { table_name, .. }
-        | PluginDataMutation::Delete { table_name, .. } => table_name,
+        | PluginDataMutation::Delete { table_name, .. }
+        | PluginDataMutation::RequireValue { table_name, .. } => table_name,
     }
+}
+
+fn require_mutation_values(
+    conn: &Connection,
+    plugin_id: &str,
+    mutations: &[PluginDataMutation],
+) -> Result<()> {
+    for mutation in mutations {
+        let PluginDataMutation::RequireValue {
+            table_name,
+            row_key,
+            expected,
+        } = mutation
+        else {
+            continue;
+        };
+        let actual = row_by_key(conn, plugin_id, table_name, row_key)?.map(|row| row.value);
+        if actual.map_or(
+            crate::PluginDataExpectedValue::Absent,
+            crate::PluginDataExpectedValue::Present,
+        ) != *expected
+        {
+            return Err(DbError::invalid_value(
+                format!("{plugin_id}/{table_name}/{row_key}"),
+                "the required pre-batch row value; re-read before retrying",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn execute_mutations(
@@ -425,6 +448,7 @@ fn execute_mutation(
     result: &mut PluginDataMutationResult,
 ) -> Result<()> {
     match mutation {
+        PluginDataMutation::RequireValue { .. } => {}
         PluginDataMutation::Put {
             table_name,
             row_key,
@@ -545,7 +569,6 @@ fn row_record_from_parts(parts: PluginDataRowParts) -> Result<PluginDataRowRecor
 
 #[cfg(test)]
 mod tests {
-    use super::MAX_PLUGIN_DATA_MUTATIONS;
     use crate::PluginDataMutation;
     use crate::local::runtime::DbCore;
     use serde_json::json;
@@ -667,27 +690,23 @@ mod tests {
     }
 
     #[test]
-    fn apply_mutations_rejects_total_count_over_quota_without_writes() {
+    fn apply_mutations_accepts_a_valid_initial_checkpoint_above_the_former_row_quota() {
         let db = DbCore::in_memory().expect("database");
         let repository = db.plugin_data();
         repository
             .ensure_table("plugin.alpha", "records", &json!({}))
             .expect("table");
-        let mutations = (0..=MAX_PLUGIN_DATA_MUTATIONS)
+        let mutations = (0..250_001)
             .map(|index| PluginDataMutation::Delete {
                 table_name: "records".into(),
                 row_key: format!("row-{index}"),
             })
             .collect::<Vec<_>>();
 
-        let error = repository
+        let result = repository
             .apply_mutations("plugin.alpha", &mutations)
-            .expect_err("over-quota batch must fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains(&MAX_PLUGIN_DATA_MUTATIONS.to_string())
-        );
+            .expect("valid checkpoint row count is not a transport quota");
+        assert_eq!(result.rows_put, 0);
+        assert_eq!(result.rows_deleted, 0);
     }
 }

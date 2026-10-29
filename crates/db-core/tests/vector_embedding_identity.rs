@@ -83,6 +83,7 @@ impl VectorIdentityFixture {
 
 fn semantic_owner() -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: ROOT.into(),
         semantic_element_id: "owner".into(),
         semantic_source_id: "fixture".into(),
@@ -181,4 +182,47 @@ fn portable_archive_name_vectors_match_local_ranking_and_model_filtering() {
             .search_element_name_vectors(&[1.0, 0.0], 0, CORRECTED, None)
             .is_err()
     );
+}
+
+#[test]
+fn archive_and_native_search_agree_on_absent_and_empty_model_keys() {
+    let fixture = VectorIdentityFixture::new();
+    let mut vector = embedding(CORRECTED);
+    vector.model = None;
+    fixture.execute(SemanticOperation::StoreElementNameVectors {
+        project_root: ROOT.into(),
+        vectors: vec![StoredSemanticElementNameVector {
+            semantic_element_id: "owner".into(),
+            project_root: ROOT.into(),
+            source_text: "example".into(),
+            vector,
+        }],
+    });
+    let SemanticResult::ProjectArchive(archive) =
+        fixture.execute(SemanticOperation::ProjectArchive {
+            project_root: ROOT.into(),
+        })
+    else {
+        panic!("expected archive")
+    };
+    for model in [None, Some("")] {
+        let SemanticResult::ElementVectorSearch(native) =
+            fixture.execute(SemanticOperation::SearchElementNameVectors {
+                project_root: ROOT.into(),
+                query: vec![1.0, 0.0],
+                k: 2,
+                engine_id: CORRECTED.into(),
+                model: model.map(str::to_owned),
+            })
+        else {
+            panic!("expected vectors")
+        };
+        assert_eq!(native.len(), 1);
+        assert_eq!(
+            archive
+                .search_element_name_vectors(&[1.0, 0.0], 2, CORRECTED, model)
+                .unwrap(),
+            native
+        );
+    }
 }

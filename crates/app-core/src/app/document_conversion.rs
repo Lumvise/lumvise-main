@@ -4,14 +4,25 @@ use lumvise_project_indexer::{DocumentConversionOptions, DocumentConverter};
 use std::sync::Arc;
 
 pub(super) fn converter(app: &AppCore) -> Result<Arc<DocumentConverter>, String> {
-    let settings = app
-        .frontend()
-        .app_settings()
-        .map_err(|error| error.to_string())?;
+    shared_converter(
+        &app.plugin_host_services.frontend(),
+        &app.document_converter,
+    )
+}
+
+pub(crate) fn shared_converter(
+    frontend: &std::sync::Mutex<lumvise_frontend_core::FrontendCore>,
+    cache: &std::sync::Mutex<Arc<DocumentConverter>>,
+) -> Result<Arc<DocumentConverter>, String> {
+    let frontend = frontend.lock().map_err(|_| {
+        "document frontend preferences poisoned; expected available settings".to_string()
+    })?;
+    let settings = frontend.app_settings();
     let options = DocumentConversionOptions {
         enhancement_enabled: settings.document_enhancement_enabled,
     };
-    let mut shared = app.document_converter.lock().map_err(|_| {
+    drop(frontend);
+    let mut shared = cache.lock().map_err(|_| {
         "document converter poisoned; expected available conversion state".to_string()
     })?;
     if shared.options() != options {

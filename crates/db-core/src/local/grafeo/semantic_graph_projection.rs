@@ -281,6 +281,7 @@ mod tests {
         end_line: i64,
     ) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/repo".into(),
             semantic_element_id: id.into(),
             semantic_source_id: "source".into(),

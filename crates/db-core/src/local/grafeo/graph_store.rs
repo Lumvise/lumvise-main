@@ -37,6 +37,7 @@ pub(crate) struct GraphState {
     projection_cache: Mutex<VecDeque<CachedProjection>>,
     element_lookup: Mutex<SemanticElementLookup>,
     path_index: Mutex<ElementPathIndex>,
+    revision_path_index: Mutex<ElementPathIndex>,
     /// A Grafeo commit whose SQL publication failed leaves graph bytes ahead
     /// of the SQL revision; stable reads stay closed until a later publication
     /// succeeds over the current graph.
@@ -88,6 +89,8 @@ struct GraphWork {
     #[cfg(test)]
     stable_read_attempts: AtomicUsize,
     #[cfg(test)]
+    publication_attempts: AtomicUsize,
+    #[cfg(test)]
     checkpoint_probe: Mutex<Option<CheckpointProbe>>,
     #[cfg(test)]
     checkpoints_started: AtomicUsize,
@@ -122,9 +125,9 @@ pub(crate) struct GraphTransaction<'graph> {
     semantic_node_ids: RefCell<BTreeMap<String, NodeId>>,
     semantic_labels: RefCell<HashMap<NodeId, bool>>,
     elements_changed: Cell<bool>,
-    /// Element nodes this transaction created or changed, and those it deleted.
-    touched_elements: RefCell<HashSet<u64>>,
-    deleted_elements: RefCell<HashSet<u64>>,
+    /// Mutated node IDs feed the existing path indexes only after a successful commit.
+    path_mutations: RefCell<HashSet<u64>>,
+    path_deletions: RefCell<HashSet<u64>>,
     #[cfg(test)]
     work: &'graph GraphWork,
 }
@@ -146,6 +149,7 @@ impl GraphStore {
             projection_cache: Mutex::new(VecDeque::with_capacity(PROJECTION_CACHE_CAPACITY)),
             element_lookup: Mutex::new(SemanticElementLookup::default()),
             path_index: Mutex::new(ElementPathIndex::default()),
+            revision_path_index: Mutex::new(ElementPathIndex::revision_headers()),
             semantic_publication_failure: Mutex::new(None),
             work: GraphWork::default(),
         }))
@@ -167,6 +171,10 @@ impl Drop for GraphStore {
 }
 
 impl GraphState {
+    #[cfg(test)]
+    pub(crate) fn publication_attempts(&self) -> usize {
+        self.work.publication_attempts.load(Ordering::Acquire)
+    }
     // One full diff at a time: concurrent planners otherwise repeatedly invalidate
     // each other. Readers still use the independent graph gate.
     pub(crate) fn lock_structure_sync(
@@ -207,7 +215,7 @@ impl GraphState {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .select(graph, revision, project_root, query, limit);
-            Ok(super::graph_rows::selective_elements(
+            Ok(super::graph_rows::selective_current_elements(
                 graph,
                 &ids,
                 project_root,
@@ -232,37 +240,6 @@ impl GraphState {
                 project_root,
                 include_inactive,
             )
-    }
-
-    /// Requires the caller's stable graph lease; selected IDs and hydration
-    /// must observe the same revision as the surrounding scoped result.
-    pub(super) fn location_elements(
-        &self,
-        graph: &GrafeoDB,
-        project_root: &str,
-        path: Option<&str>,
-        line: i64,
-        include_inactive: bool,
-    ) -> Vec<SemanticElement> {
-        let Some(path) = path else {
-            return Vec::new();
-        };
-        let mut index = self
-            .path_index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !index.is_built() {
-            index.rebuild(graph);
-        }
-        let ids = index.select_location(project_root, path);
-        drop(index);
-        super::graph_rows::selective_elements(graph, &ids, Some(project_root), true)
-            .into_iter()
-            .filter(|element| {
-                (include_inactive || element.lifecycle == "active")
-                    && crate::domain::graph_views::element_contains_line(element, line)
-            })
-            .collect()
     }
 
     /// Materializes a complete read while graph writers are excluded.
@@ -374,12 +351,12 @@ impl GraphState {
                 std::hint::spin_loop();
                 continue;
             }
-            let value = plan(self.database.as_ref())?;
+            let value = plan(self.database.as_ref());
             attempts += 1;
             if self.revision.load(Ordering::Acquire) == revision
                 || attempts == MAX_PLANNING_ATTEMPTS
             {
-                return Ok(VersionedGraphPlan { revision, value });
+                return value.map(|value| VersionedGraphPlan { revision, value });
             }
         }
     }
@@ -571,26 +548,6 @@ impl GraphState {
         self.write_inner(Some(expected_revision), write)
     }
 
-    /// Commits the Grafeo transaction and runs `after_commit` before making the
-    /// graph revision visible to versioned readers. Errors from
-    /// `after_commit` mean the graph is already durable; the projection cache
-    /// is invalidated and stable readers remain closed until a later successful
-    /// publication catches SQL up to the current graph.
-    pub(crate) fn write_if_revision_semantic_through_post_commit<R, T>(
-        &self,
-        expected_revision: u64,
-        write: impl FnOnce(&GraphTransaction<'_>) -> Result<R>,
-        after_commit: impl FnOnce(R) -> Result<T>,
-        mutation_count: impl FnOnce(&T) -> usize,
-    ) -> Result<ConditionalGraphWrite<GraphPostCommit<T>>> {
-        self.write_inner_through_post_commit(
-            Some(expected_revision),
-            write,
-            after_commit,
-            mutation_count,
-        )
-    }
-
     /// Runs the same publication path without a plan revision check.
     #[cfg(test)]
     pub(crate) fn write_semantic_through_post_commit<R, T>(
@@ -599,7 +556,9 @@ impl GraphState {
         after_commit: impl FnOnce(R) -> Result<T>,
         mutation_count: impl FnOnce(&T) -> usize,
     ) -> Result<GraphPostCommit<T>> {
-        match self.write_inner_through_post_commit(None, write, after_commit, mutation_count)? {
+        match self.publish_exclusively(|publication| {
+            publication.commit(None, write, after_commit, mutation_count)
+        })? {
             ConditionalGraphWrite::Applied(result) => Ok(result),
             ConditionalGraphWrite::Stale => {
                 unreachable!("unconditional graph write cannot be stale")
@@ -646,113 +605,6 @@ impl GraphState {
         let result = self.finish_indexed(transaction, write_result);
         self.revision.fetch_add(1, Ordering::Release);
         result.map(ConditionalGraphWrite::Applied)
-    }
-
-    fn write_inner_through_post_commit<R, T>(
-        &self,
-        expected_revision: Option<u64>,
-        write: impl FnOnce(&GraphTransaction<'_>) -> Result<R>,
-        after_commit: impl FnOnce(R) -> Result<T>,
-        mutation_count: impl FnOnce(&T) -> usize,
-    ) -> Result<ConditionalGraphWrite<GraphPostCommit<T>>> {
-        let wait_started = Instant::now();
-        let _admission = self
-            .write_admission
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _writer = self
-            .graph_gate
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        metrics::histogram!("lumvise_db_writer_gate_wait_seconds", "gate" => "graph")
-            .record(wait_started.elapsed().as_secs_f64());
-        let revision = self.revision.load(Ordering::Acquire);
-        if expected_revision.is_some_and(|expected| expected != revision)
-            || !revision.is_multiple_of(2)
-        {
-            return Ok(ConditionalGraphWrite::Stale);
-        }
-        self.revision.fetch_add(1, Ordering::AcqRel);
-        let graph = self.snapshot();
-        let transaction = match GraphTransaction::begin(graph.as_ref(), &self.work) {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                self.revision.fetch_add(1, Ordering::Release);
-                return Err(error);
-            }
-        };
-        let write_result = write(&transaction);
-        if transaction.elements_changed.get() {
-            self.element_revision.fetch_add(1, Ordering::Release);
-        }
-        let write_result = self.finish_indexed(transaction, write_result);
-        let mut checkpoint_due = false;
-        let result = match write_result {
-            Ok(value) => match after_commit(value) {
-                Ok(value) => {
-                    self.clear_semantic_publication_failure_while_writer_gate_held();
-                    checkpoint_due = self
-                        .record_semantic_publication_while_writer_gate_held(mutation_count(&value));
-                    Ok(ConditionalGraphWrite::Applied(GraphPostCommit::Completed(
-                        value,
-                    )))
-                }
-                Err(error) => {
-                    self.invalidate_projection_cache_after_publication_failure(&error);
-                    Ok(ConditionalGraphWrite::Applied(GraphPostCommit::Failed(
-                        error,
-                    )))
-                }
-            },
-            Err(error) => Err(error),
-        };
-        self.revision.fetch_add(1, Ordering::Release);
-        drop(_writer);
-        drop(_admission);
-        if checkpoint_due {
-            self.schedule_automatic_checkpoint();
-        }
-        result
-    }
-
-    /// Commits, then folds the committed element changes into the path index before the
-    /// writer gate is released; a rolled-back transaction leaves the index untouched.
-    fn finish_indexed<R>(
-        &self,
-        transaction: GraphTransaction<'_>,
-        write_result: Result<R>,
-    ) -> Result<R> {
-        let touched = transaction.touched_elements.take();
-        let deleted = transaction.deleted_elements.take();
-        let result = transaction.finish(write_result);
-        if result.is_ok() {
-            self.path_index
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .apply(&self.database, &touched, &deleted);
-        }
-        result
-    }
-
-    /// Requires the caller's stable graph lease: writers cannot change the graph or the
-    /// index while this selects, so the ids and their hydration share one revision.
-    pub(super) fn path_prefix_elements(
-        &self,
-        graph: &GrafeoDB,
-        project_root: &str,
-        prefix: &str,
-        include_inactive: bool,
-    ) -> Vec<SemanticElement> {
-        let mut index = self
-            .path_index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !index.is_built() {
-            index.rebuild(graph);
-        }
-        let ids = index.select(project_root, prefix);
-        drop(index);
-        super::graph_rows::selective_elements(graph, &ids, Some(project_root), include_inactive)
     }
 
     fn invalidate_projection_cache_after_publication_failure(&self, error: &DbError) {
@@ -818,8 +670,8 @@ impl<'graph> GraphTransaction<'graph> {
             semantic_node_ids: RefCell::new(BTreeMap::new()),
             semantic_labels: RefCell::new(HashMap::new()),
             elements_changed: Cell::new(false),
-            touched_elements: RefCell::new(HashSet::new()),
-            deleted_elements: RefCell::new(HashSet::new()),
+            path_mutations: RefCell::new(HashSet::new()),
+            path_deletions: RefCell::new(HashSet::new()),
             #[cfg(test)]
             work: _work,
         })
@@ -855,9 +707,9 @@ impl<'graph> GraphTransaction<'graph> {
             .map_err(|error| DbError::Grafeo(error.to_string()))?;
         let semantic = labels.contains(&"SemanticElement");
         self.semantic_labels.borrow_mut().insert(node, semantic);
+        self.path_mutations.borrow_mut().insert(node.0);
         if semantic {
             self.elements_changed.set(true);
-            self.touched_elements.borrow_mut().insert(node.0);
         }
         Ok(node)
     }
@@ -875,6 +727,7 @@ impl<'graph> GraphTransaction<'graph> {
     }
 
     fn note_element_mutation(&self, node_id: NodeId) {
+        self.path_mutations.borrow_mut().insert(node_id.0);
         let semantic = *self
             .semantic_labels
             .borrow_mut()
@@ -886,7 +739,6 @@ impl<'graph> GraphTransaction<'graph> {
             });
         if semantic {
             self.elements_changed.set(true);
-            self.touched_elements.borrow_mut().insert(node_id.0);
         }
     }
 
@@ -904,8 +756,8 @@ impl<'graph> GraphTransaction<'graph> {
 
     pub(crate) fn delete_node(&self, node_id: NodeId) -> bool {
         self.note_element_mutation(node_id);
-        if self.touched_elements.borrow().contains(&node_id.0) {
-            self.deleted_elements.borrow_mut().insert(node_id.0);
+        if self.path_mutations.borrow().contains(&node_id.0) {
+            self.path_deletions.borrow_mut().insert(node_id.0);
         }
         self.session.delete_node(node_id)
     }
@@ -974,6 +826,9 @@ impl<'graph> GraphTransaction<'graph> {
             .copied()
     }
 }
+
+mod path_reads;
+mod publication;
 
 #[cfg(test)]
 mod tests;

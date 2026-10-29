@@ -2,6 +2,22 @@
 use lumvise_plugin_knowledge::package_manifest_source;
 use lumvise_plugin_package::{ExportDescriptor, ExportSurface, PluginManifest};
 
+#[test]
+fn current_packages_do_not_advertise_the_retired_database_converter() {
+    for manifest in [
+        packaged_manifest(),
+        serde_json::from_str::<PluginManifest>(include_str!("../lumvise-plugin-manifest.json"))
+            .unwrap(),
+    ] {
+        assert!(
+            manifest
+                .exports
+                .iter()
+                .all(|export| export.id != "convert_legacy_documents")
+        );
+    }
+}
+
 fn packaged_manifest() -> PluginManifest {
     package_manifest_source("test-target", &"a".repeat(64))
 }
@@ -81,7 +97,7 @@ fn assistant_aliases_reuse_public_guidance_without_changing_scope() {
 }
 
 #[test]
-fn artifact_writes_explain_the_two_kinds_and_real_update_semantics() {
+fn artifact_writes_explain_the_three_kinds_and_real_update_semantics() {
     let manifest = packaged_manifest();
     let create = &export(&manifest, "create_knowledge").description;
     for concept in [
@@ -92,6 +108,7 @@ fn artifact_writes_explain_the_two_kinds_and_real_update_semantics() {
         "plain titles/content",
         "requirements",
         "specification",
+        "media",
         "create_document",
         "agents",
         "status",
@@ -161,7 +178,7 @@ fn checkpoint_reads_require_scope_and_current_evidence_before_resume() {
 }
 
 #[test]
-fn transfer_guidance_requires_review_and_describes_nonatomic_copy_results() {
+fn transfer_guidance_requires_review_and_describes_atomic_copy_replay() {
     let manifest = packaged_manifest();
     let preview = &export(&manifest, "preview_knowledge_transfer").description;
     for concept in [
@@ -183,9 +200,12 @@ fn transfer_guidance_requires_review_and_describes_nonatomic_copy_results() {
         "fresh preview",
         "Revalidates",
         "source artifacts remain",
-        "interrupted copies",
+        "atomic selected dependency set",
+        "original full result before mutable eligibility checks",
+        "new operation_id",
+        "competing publications conflict",
         "copied_artifact_ids",
-        "not an atomic batch or lease/claim",
+        "exact accepted artifact IDs",
     ] {
         assert!(
             apply.contains(concept),
@@ -237,5 +257,15 @@ fn release_template_descriptions_match_public_manifest() {
             "stale signed guidance for {}",
             signed.id
         );
+    }
+}
+
+#[test]
+fn memory_space_guidance_matches_each_caller_purpose() {
+    let manifest = packaged_manifest();
+    for id in ["resolve_document_space", "document.space"] {
+        let guidance = &export(&manifest, id).description;
+        assert!(guidance.contains("MCP callers use purpose current_project"));
+        assert!(guidance.contains("Assistant and agent callers use purpose self"));
     }
 }

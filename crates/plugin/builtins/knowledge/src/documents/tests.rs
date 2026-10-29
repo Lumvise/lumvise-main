@@ -9,6 +9,10 @@ mod artifact_body;
 mod generated;
 #[path = "tests/indexed.rs"]
 mod indexed;
+#[path = "tests/maintenance.rs"]
+mod maintenance;
+#[path = "tests/spaces.rs"]
+mod spaces;
 
 use super::test_graph::*;
 
@@ -22,15 +26,25 @@ fn identity(id: &str, root: &str) -> Value {
     json!({"document_id": id, "project_root": root})
 }
 
+fn revision_request(document: &Value, patch: Value) -> Value {
+    let mut request = json!({"document_id":document["document_id"], "project_root":document["project_root"],
+        "expected_revision":document["revision"], "expected_semantic_element_id":document["semantic_element_id"]});
+    request
+        .as_object_mut()
+        .unwrap()
+        .extend(patch.as_object().unwrap().clone());
+    request
+}
+
 #[test]
 fn document_reads_use_project_scoped_queries_and_keep_adapter_qualified_identities() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let created = graph
         .call("create_document", draft("remote-doc", "/remote"))
         .unwrap();
     let mut element = graph
         .elements
-        .remove("knowledge-document:remote-doc")
+        .remove(created["document"]["semantic_element_id"].as_str().unwrap())
         .unwrap();
     element["semantic_element_id"] = json!("adapter-owned-qualified-id");
     graph
@@ -81,21 +95,23 @@ fn creates_and_reopens_a_report_without_any_source_element() {
 #[test]
 fn grouping_and_content_updates_preserve_unspecified_metadata_and_reject_stale_writes() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let created = graph
         .call("create_document", draft("overview", "/project"))
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     let updated = graph
         .call(
             "update_document",
-            json!({"document_id": "overview", "project_root": "/project",
-        "expected_revision": 1, "path": "Architecture/Platform", "content": "Revised content"}),
+            revision_request(
+                &created,
+                json!({"path": "Architecture/Platform", "content": "Revised content"}),
+            ),
         )
         .unwrap();
     let stale = graph
         .call(
             "update_document",
-            json!({"document_id": "overview", "project_root": "/project",
-        "expected_revision": 1, "content": "An obsolete draft"}),
+            revision_request(&created, json!({"content": "An obsolete draft"})),
         )
         .unwrap_err();
     assert_eq!(stale.code, "document_revision_conflict");
@@ -114,25 +130,52 @@ fn grouping_and_content_updates_preserve_unspecified_metadata_and_reject_stale_w
 }
 
 #[test]
-fn project_mismatch_does_not_expose_or_overwrite_another_document() {
+fn matching_document_names_remain_isolated_between_project_lineages() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let first = graph
         .call("create_document", draft("overview", "/project-a"))
         .unwrap();
     let missing = graph
         .call("get_document", identity("overview", "/project-b"))
         .unwrap_err();
-    let duplicate = graph
+    let second = graph
         .call("create_document", draft("overview", "/project-b"))
-        .unwrap_err();
+        .unwrap();
     assert_eq!(missing.code, "document_not_found");
-    assert_eq!(duplicate.code, "document_exists");
-    assert_eq!(graph.writes, 2);
+    assert_ne!(
+        first["document"]["semantic_element_id"],
+        second["document"]["semantic_element_id"]
+    );
+    let mut stale = revision_request(
+        &first["document"],
+        json!({"content":"Wrong project's edit"}),
+    );
+    stale["project_root"] = json!("/project-b");
+    assert_eq!(
+        graph.call("update_document", stale).unwrap_err().code,
+        "document_revision_conflict"
+    );
+    assert_eq!(
+        graph
+            .call("get_document", identity("overview", "/project-a"))
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        graph
+            .call("get_document", identity("overview", "/project-b"))
+            .unwrap(),
+        second
+    );
 }
 
 #[test]
 fn document_search_reaches_content_and_respects_project_kind_and_agent_space_scope() {
     let mut graph = FakeDocumentGraph::default();
+    graph.memory_scope = Some(spaces::fixture_scope(
+        "agent-space://research",
+        lumvise_contracts::KnowledgeSpaceKind::Agent,
+    ));
     graph
         .call("create_document", draft("overview", "/project"))
         .unwrap();
@@ -165,6 +208,7 @@ fn document_search_reaches_content_and_respects_project_kind_and_agent_space_sco
 #[test]
 fn listing_returns_each_project_its_live_documents_by_kind_and_status() {
     let mut graph = FakeDocumentGraph::default();
+    let mut created = std::collections::BTreeMap::new();
     for (id, kind, root) in [
         ("report", "report", "/project"),
         ("context", "context", "/project"),
@@ -175,16 +219,21 @@ fn listing_returns_each_project_its_live_documents_by_kind_and_status() {
     ] {
         let mut request = draft(id, root);
         request["document_kind"] = json!(kind);
-        graph.call("create_document", request).unwrap();
+        created.insert(
+            id,
+            graph.call("create_document", request).unwrap()["document"].clone(),
+        );
     }
     graph
-        .call("delete_document", identity("gone", "/project"))
+        .call(
+            "delete_document",
+            revision_request(&created["gone"], json!({})),
+        )
         .unwrap();
     graph
         .call(
             "document.update",
-            json!({"document_id": "old", "project_root": "/project",
-        "expected_revision": 1, "status": "archived"}),
+            revision_request(&created["old"], json!({"status": "archived"})),
         )
         .unwrap();
     let ids = |graph: &mut FakeDocumentGraph, filter: Value| -> Vec<String> {
@@ -240,14 +289,15 @@ fn listing_selects_documents_by_path_prefix_and_never_scans_the_project_structur
 #[test]
 fn removing_a_citation_target_preserves_the_citing_document_and_broken_reference() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let target = graph
         .call("create_document", draft("target", "/project"))
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     let mut citing = draft("citing", "/project");
     citing["references"] = json!([{"target_kind": "document", "document_id": "target"}]);
     graph.call("create_document", citing).unwrap();
     graph
-        .call("delete_document", identity("target", "/project"))
+        .call("delete_document", revision_request(&target, json!({})))
         .unwrap();
     let remaining = graph
         .call("get_document", identity("citing", "/project"))
@@ -292,14 +342,14 @@ fn invalid_and_duplicate_references_fail_before_any_write() {
 #[test]
 fn archived_documents_remain_addressable_but_require_explicit_history_discovery() {
     let mut graph = FakeDocumentGraph::default();
-    graph
+    let created = graph
         .call("create_document", draft("overview", "/project"))
-        .unwrap();
+        .unwrap()["document"]
+        .clone();
     graph
         .call(
             "document.update",
-            json!({"document_id": "overview", "project_root": "/project",
-        "expected_revision": 1, "status": "archived"}),
+            revision_request(&created, json!({"status": "archived"})),
         )
         .unwrap();
     assert_eq!(
@@ -344,7 +394,32 @@ fn semantic_document_search_finds_related_content_without_a_literal_query_match(
     assert_eq!(found["mode"], "vector");
     assert_eq!(found["documents"][0]["document_id"], "overview");
     assert_eq!(found["scores"]["overview"], 1.0);
-    assert_eq!(found["scores"]["weather"], 0.0);
+    assert_eq!(found["documents"].as_array().unwrap().len(), 1);
+    assert!(found["scores"].get("weather").is_none());
+}
+
+#[test]
+fn document_search_bounds_memory_results_and_batches_their_payload_reads() {
+    let mut graph = FakeDocumentGraph::default();
+    for index in 0..24 {
+        graph
+            .call(
+                "create_document",
+                draft(&format!("memory-{index:02}"), "/project"),
+            )
+            .unwrap();
+    }
+    let before = graph.artifact_reads;
+    let result = graph
+        .call(
+            "search_documents",
+            json!({"project_root":"/project", "query":"pipeline"}),
+        )
+        .unwrap();
+    assert_eq!(result["documents"].as_array().unwrap().len(), 10);
+    assert_eq!(graph.artifact_reads - before, 1);
+    assert_eq!(result["documents"][0]["document_id"], "memory-00");
+    assert_eq!(result["documents"][9]["document_id"], "memory-09");
 }
 
 #[test]

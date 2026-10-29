@@ -30,6 +30,8 @@ pub(super) const ASSISTANT_ENGINE_AVAILABILITY: &str = "runtime.assistant_engine
 /// mid-turn (issue #92).
 pub(super) const SPEECH_AVAILABILITY: &str = "runtime.speech_availability";
 pub(super) const DOCUMENT_CONVERSION_OPTIONS: &str = "runtime.document_conversion_options";
+pub(super) const INDEX_PUBLICATION: &str = "project.index";
+pub(super) const PROJECT_IMPORT: &str = "project.import";
 /// Routes a call to a service the embedding product installed by name; a
 /// product that installs none leaves every extension unavailable.
 pub(super) const HOST_EXTENSION: &str = "host.extension";
@@ -40,8 +42,11 @@ pub(super) enum HostCapabilityRoute {
     SemanticStorage,
     SemanticSnapshot,
     ProjectSource,
+    IndexPublication,
+    ProjectImport,
     NeuralEmbed,
     PluginInvokeAuthorization,
+    KnowledgeAuthority,
     Services,
 }
 
@@ -60,13 +65,22 @@ impl HostCapabilityDefinition {
     }
 }
 
-const HOST_CAPABILITIES: [HostCapabilityDefinition; 22] = [
+const HOST_CAPABILITIES: [HostCapabilityDefinition; 25] = [
+    HostCapabilityDefinition {
+        minor: 4,
+        ..capability(
+            super::knowledge_authority::CAPABILITY,
+            HostCapabilityRoute::KnowledgeAuthority,
+        )
+    },
     capability(
         PLUGIN_STORAGE_CAPABILITY,
         HostCapabilityRoute::PluginStorage,
     ),
     semantic_capability(),
     capability("project.source", HostCapabilityRoute::ProjectSource),
+    capability(INDEX_PUBLICATION, HostCapabilityRoute::IndexPublication),
+    capability(PROJECT_IMPORT, HostCapabilityRoute::ProjectImport),
     capability(
         SEMANTIC_SNAPSHOT_CAPABILITY,
         HostCapabilityRoute::SemanticSnapshot,
@@ -84,7 +98,10 @@ const HOST_CAPABILITIES: [HostCapabilityDefinition; 22] = [
     capability(TEXT_TO_SPEECH, HostCapabilityRoute::Services),
     capability(BACKGROUND_JOB, HostCapabilityRoute::Services),
     capability(TURN_WAIT, HostCapabilityRoute::Services),
-    capability(PROJECT_EXECUTION, HostCapabilityRoute::Services),
+    HostCapabilityDefinition {
+        minor: 1,
+        ..capability(PROJECT_EXECUTION, HostCapabilityRoute::Services)
+    },
     capability(SCOPED_MCP, HostCapabilityRoute::Services),
     capability(EXCLUSIVE_LANE, HostCapabilityRoute::Services),
     capability(ASSISTANT_ENGINE_AVAILABILITY, HostCapabilityRoute::Services),
@@ -109,7 +126,7 @@ const fn semantic_capability() -> HostCapabilityDefinition {
         id: SEMANTIC_STORAGE,
         route: HostCapabilityRoute::SemanticStorage,
         major: 1,
-        minor: 5,
+        minor: 8,
         patch: 0,
     }
 }
@@ -152,7 +169,7 @@ mod tests {
             .map(|definition| definition.id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(identities.len(), 22);
+        assert_eq!(identities.len(), 25);
         assert_eq!(identities, expected_identities());
     }
 
@@ -160,12 +177,22 @@ mod tests {
     fn catalog_publishes_actual_versions() {
         let versions = compiled_host_capability_versions();
 
-        assert_eq!(versions.len(), 22);
-        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 5, 0));
+        assert_eq!(versions.len(), 25);
+        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 8, 0));
+        assert_eq!(versions[PROJECT_EXECUTION], Version::new(1, 1, 0));
+        assert_eq!(
+            versions[super::super::knowledge_authority::CAPABILITY],
+            Version::new(1, 4, 0)
+        );
         assert!(
             versions
                 .iter()
-                .filter(|(id, _)| **id != SEMANTIC_STORAGE)
+                .filter(|(id, _)| ![
+                    SEMANTIC_STORAGE,
+                    PROJECT_EXECUTION,
+                    super::super::knowledge_authority::CAPABILITY
+                ]
+                .contains(id))
                 .all(|(_, version)| version == &Version::new(1, 0, 0))
         );
     }
@@ -183,7 +210,11 @@ mod tests {
 
         assert_eq!(definition.route, expected);
         let expected_version = if id == SEMANTIC_STORAGE {
-            Version::new(1, 5, 0)
+            Version::new(1, 8, 0)
+        } else if id == super::super::knowledge_authority::CAPABILITY {
+            Version::new(1, 4, 0)
+        } else if id == PROJECT_EXECUTION {
+            Version::new(1, 1, 0)
         } else {
             Version::new(1, 0, 0)
         };
@@ -194,14 +225,20 @@ mod tests {
         expected_routes().into_iter().map(|(id, _)| id).collect()
     }
 
-    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 22] {
+    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 25] {
         [
+            (
+                super::super::knowledge_authority::CAPABILITY,
+                HostCapabilityRoute::KnowledgeAuthority,
+            ),
             (
                 PLUGIN_STORAGE_CAPABILITY,
                 HostCapabilityRoute::PluginStorage,
             ),
             (SEMANTIC_STORAGE, HostCapabilityRoute::SemanticStorage),
             ("project.source", HostCapabilityRoute::ProjectSource),
+            (INDEX_PUBLICATION, HostCapabilityRoute::IndexPublication),
+            (PROJECT_IMPORT, HostCapabilityRoute::ProjectImport),
             (
                 SEMANTIC_SNAPSHOT_CAPABILITY,
                 HostCapabilityRoute::SemanticSnapshot,

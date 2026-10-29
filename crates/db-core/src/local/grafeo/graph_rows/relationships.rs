@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 
 #[cfg(test)]
 pub(crate) fn insert_relationship_node(
@@ -169,7 +170,8 @@ fn selected_relationship_nodes(database: &GrafeoDB, ids: &HashSet<String>) -> Ve
     let nodes = active_element_nodes(database, ids);
     let identities = database
         .graph_store()
-        .get_node_property_batch(&nodes, &SEMANTIC_ELEMENT_ID_PROPERTY.into());
+        .get_node_property_batch(&nodes, &SEMANTIC_ELEMENT_ID_PROPERTY.into())
+        .committed_nodes(&*database.graph_store(), &nodes);
     let mut selected = BTreeMap::new();
     for (node, identity) in nodes.into_iter().zip(identities) {
         let Some(id) = identity.as_ref().and_then(value_string) else {

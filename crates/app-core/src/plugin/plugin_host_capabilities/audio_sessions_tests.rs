@@ -102,6 +102,22 @@ fn audio_services() -> Arc<PluginHostServices> {
         Arc::new(lumvise_db_core::LocalPersistence::in_memory().expect("test persistence")),
     )
 }
+#[test]
+fn only_a_valid_realtime_selection_skips_local_speech_warmup() {
+    assert!(audio_services().realtime_audio_selected());
+    let mut frontend = FrontendCore::default();
+    frontend
+        .spawn_app(WorkArea::new(0, 0, 1440, 900, 1.0))
+        .unwrap();
+    frontend.apply_app_settings_patch(&AppSettingsPatch::AssistantDirectAudio(true));
+    let local = PluginHostServices::new(
+        frontend,
+        LlmProviderRegistry::empty(),
+        Arc::new(lumvise_db_core::LocalPersistence::in_memory().expect("test persistence")),
+    );
+    assert!(!local.realtime_audio_selected());
+}
+
 fn call_audio(host: &PluginHostServices, input: Value) -> Value {
     host.invoke("builtin.assistant", AUDIO_SESSION, input)
         .unwrap()

@@ -1,8 +1,8 @@
 use lumvise_app_core::{AcquireResult, ActivationRequest, AppRuntimeCoordinator, OwnerLease};
 use lumvise_mcp_app_adapter::{AppBridgeConfig, McpAppConfig, open_server};
 use lumvise_mcp_core::{
-    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeInvocationRequestV1, AppBridgeInvocationResponseV1,
-    AppBridgeInvocationStatusV1,
+    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeInvocationRequestV2, AppBridgeInvocationResponseV2,
+    AppBridgeInvocationStatusV2,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -154,10 +154,10 @@ fn default_workspace_registers_on_connect_without_any_tool_call() {
 
 #[test]
 fn project_scoped_tool_call_binds_presence_without_an_explicit_selection() {
-    let invoked = AppBridgeInvocationResponseV1 {
+    let invoked = AppBridgeInvocationResponseV2 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         request_id: "1".into(),
-        status: AppBridgeInvocationStatusV1::Completed as i32,
+        status: AppBridgeInvocationStatusV2::Completed as i32,
         output_json: br#"{"ok":true}"#.to_vec(),
         message: String::new(),
         retryable: false,
@@ -193,7 +193,7 @@ fn project_scoped_tool_call_binds_presence_without_an_explicit_selection() {
     assert!(
         requests[3]
             .request_line
-            .starts_with("POST /api/mcp/plugins/invoke-v1?")
+            .starts_with("POST /api/mcp/plugins/invoke-v2?")
     );
     assert_eq!(presence(4)["status"], "unavailable");
 }
@@ -353,10 +353,10 @@ fn assistant_plugin_surface() -> Value {
 #[test]
 fn native_mcp_start_selects_the_requested_session_driver() {
     for in_session in [true, false] {
-        let started = AppBridgeInvocationResponseV1 {
+        let started = AppBridgeInvocationResponseV2 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
             request_id: "1".into(),
-            status: AppBridgeInvocationStatusV1::Completed as i32,
+            status: AppBridgeInvocationStatusV2::Completed as i32,
             output_json: serde_json::to_vec(
                 &json!({"state":{"session_id":"selected","session_epoch":1},"active_tools":[]}),
             )
@@ -378,7 +378,7 @@ fn native_mcp_start_selects_the_requested_session_driver() {
         );
         assert!(result.get("error").is_none(), "{result}");
         let requests = bridge.finish();
-        let request = AppBridgeInvocationRequestV1::decode(requests[1].body.as_slice()).unwrap();
+        let request = AppBridgeInvocationRequestV2::decode(requests[1].body.as_slice()).unwrap();
         let input: Value = serde_json::from_slice(&request.input_json).unwrap();
         assert_eq!(input.get("native_llm_caller").is_some(), in_session);
         assert!(input.get("in_session").is_none());
@@ -613,10 +613,10 @@ fn assert_catalog_guidance(server: &lumvise_mcp_core::LumviseMcpServer, expected
 
 #[test]
 fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_binding() {
-    let completed = |output_json: &[u8]| AppBridgeInvocationResponseV1 {
+    let completed = |output_json: &[u8]| AppBridgeInvocationResponseV2 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         request_id: "fixture".into(),
-        status: AppBridgeInvocationStatusV1::Completed as i32,
+        status: AppBridgeInvocationStatusV2::Completed as i32,
         output_json: output_json.to_vec(),
         message: String::new(),
         retryable: false,
@@ -704,10 +704,12 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
         catalog["result"]["tools"]
     );
     let requests = fake_bridge.finish();
-    let start = AppBridgeInvocationRequestV1::decode(requests[2].body.as_slice()).unwrap();
-    let respond = AppBridgeInvocationRequestV1::decode(requests[5].body.as_slice()).unwrap();
-    let generic = AppBridgeInvocationRequestV1::decode(requests[6].body.as_slice()).unwrap();
+    let start = AppBridgeInvocationRequestV2::decode(requests[2].body.as_slice()).unwrap();
+    let respond = AppBridgeInvocationRequestV2::decode(requests[5].body.as_slice()).unwrap();
+    let generic = AppBridgeInvocationRequestV2::decode(requests[6].body.as_slice()).unwrap();
     assert_eq!(generic.scope_id.as_deref(), Some("assistant_session"));
+    assert_eq!(generic.scope_epoch, Some(27));
+    assert_eq!(generic.owner_id, "builtin.assistant");
     assert_eq!(generic.session_id, "logical-session");
     assert_eq!(generic.capability_id, "assistant.respond");
     assert_eq!(
@@ -769,6 +771,8 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
             .is_none()
     );
     assert_eq!(respond.scope_id.as_deref(), Some("assistant_session"));
+    assert_eq!(respond.scope_epoch, Some(27));
+    assert_eq!(respond.owner_id, "builtin.assistant");
     assert!(
         respond_schema["inputSchema"]["properties"]
             .get("session_epoch")
@@ -791,10 +795,10 @@ fn stable_assistant_catalog_routes_named_and_generic_calls_through_the_session_b
 
 #[test]
 fn dynamic_plugin_invocation_uses_only_the_desktop_bridge_route() {
-    let bridge_response = AppBridgeInvocationResponseV1 {
+    let bridge_response = AppBridgeInvocationResponseV2 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         request_id: "1".into(),
-        status: AppBridgeInvocationStatusV1::Completed as i32,
+        status: AppBridgeInvocationStatusV2::Completed as i32,
         output_json: br#"{"ok":true}"#.to_vec(),
         message: String::new(),
         retryable: false,
@@ -820,7 +824,7 @@ fn dynamic_plugin_invocation_uses_only_the_desktop_bridge_route() {
         }),
     );
     let requests = fake_bridge.finish();
-    let invocation = AppBridgeInvocationRequestV1::decode(requests[1].body.as_slice()).unwrap();
+    let invocation = AppBridgeInvocationRequestV2::decode(requests[1].body.as_slice()).unwrap();
     let request_lines = requests
         .into_iter()
         .map(|request| request.request_line)
@@ -829,11 +833,17 @@ fn dynamic_plugin_invocation_uses_only_the_desktop_bridge_route() {
     assert_eq!(request_lines.len(), 2);
     assert!(request_lines[0].starts_with("GET /api/mcp/plugins/surface?credential="));
     assert!(request_lines[0].ends_with(" HTTP/1.1"));
-    assert!(request_lines[1].starts_with("POST /api/mcp/plugins/invoke-v1?credential="));
+    assert!(request_lines[1].starts_with("POST /api/mcp/plugins/invoke-v2?credential="));
     assert!(request_lines[1].ends_with(" HTTP/1.1"));
     assert_eq!(invocation.request_id, "1");
     assert_eq!(invocation.plugin_id, "plugin.example");
     assert_eq!(invocation.capability_id, "run");
+    assert_eq!(
+        invocation.scope_id.as_deref(),
+        Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE)
+    );
+    assert_eq!(invocation.scope_epoch, None);
+    assert!(!invocation.session_id.is_empty());
     assert!(invocation.deadline_unix_ms > 0);
 }
 
@@ -841,10 +851,10 @@ fn dynamic_plugin_invocation_uses_only_the_desktop_bridge_route() {
 fn bound_workspace_and_knowledge_tools_keep_their_plugin_ownership() {
     let completed = |output: Value| {
         BridgeResponse::Protobuf(
-            AppBridgeInvocationResponseV1 {
+            AppBridgeInvocationResponseV2 {
                 protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
                 request_id: "fixture".into(),
-                status: AppBridgeInvocationStatusV1::Completed as i32,
+                status: AppBridgeInvocationStatusV2::Completed as i32,
                 output_json: serde_json::to_vec(&output).unwrap(),
                 message: String::new(),
                 retryable: false,
@@ -898,11 +908,13 @@ fn bound_workspace_and_knowledge_tools_keep_their_plugin_ownership() {
         (5, "builtin.knowledge", "knowledge.search"),
     ] {
         let request =
-            AppBridgeInvocationRequestV1::decode(observed[index].body.as_slice()).unwrap();
+            AppBridgeInvocationRequestV2::decode(observed[index].body.as_slice()).unwrap();
         assert_eq!(request.plugin_id, plugin_id);
         assert_eq!(request.capability_id, capability_id);
         assert_eq!(request.session_id, "workspace-session");
         assert_eq!(request.scope_id.as_deref(), Some("assistant_session"));
+        assert_eq!(request.scope_epoch, Some(1));
+        assert_eq!(request.owner_id, "builtin.assistant");
         assert_eq!(
             serde_json::from_slice::<Value>(&request.input_json).unwrap()["plugin_id"],
             plugin_id

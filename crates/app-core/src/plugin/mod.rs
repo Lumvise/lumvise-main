@@ -9,6 +9,7 @@ mod host_capability_broker;
 mod host_capability_catalog;
 pub(crate) mod http_dispatch;
 mod invocation;
+mod knowledge_authority;
 mod mcp_catalog;
 pub(crate) mod mcp_http_bridge;
 pub(crate) mod mcp_rpc;
@@ -44,6 +45,8 @@ pub use invocation::{PluginInvocationRequest, PluginInvocationResponse, PluginIn
 pub use lumvise_frontend_core::HostExtension;
 pub use mcp_rpc::{PLUGIN_MCP_MESSAGE_ENDPOINT, PLUGIN_MCP_SSE_ENDPOINT};
 pub use mcp_types::PluginMcpTool;
+#[cfg(feature = "desktop-app")]
+pub(crate) use plugin_host_capabilities::PlaybackOwner;
 pub(crate) use plugin_host_capabilities::{LinkDecisionCredentials, PluginHostServices};
 pub use production::{LUMVISE_PLUGIN_ROOT_ENV, PluginProductionConfig};
 pub use scoped_mcp_channel::{

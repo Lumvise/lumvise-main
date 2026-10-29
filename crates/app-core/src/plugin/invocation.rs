@@ -26,6 +26,7 @@ pub(crate) struct PluginInvocationLifecycle {
     pub(crate) owner_id: String,
     pub(crate) session_id: String,
     pub(crate) scope_id: Option<String>,
+    pub(crate) scope_epoch: Option<u64>,
     pub(crate) deadline: Instant,
 }
 
@@ -39,6 +40,7 @@ pub(crate) fn local_invocation_lifecycle(
         owner_id: owner_id.to_owned(),
         session_id: format!("local-session-{}", std::process::id()),
         scope_id: scope_id.map(str::to_owned),
+        scope_epoch: None,
         deadline: Instant::now() + Duration::from_secs(60),
     }
 }

@@ -4,6 +4,7 @@
 use chrono::Utc;
 use lumvise_contracts::{KnowledgeDocument, KnowledgeDocumentIdentity, KnowledgeDocumentKind};
 use lumvise_plugin_sdk::{PluginContext, PluginError};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -14,6 +15,7 @@ pub(crate) enum DocumentGenerator {
     FunctionalContext,
     C4Report,
     MarkdownSeed,
+    MemoryHook,
 }
 
 impl DocumentGenerator {
@@ -29,6 +31,7 @@ impl DocumentGenerator {
             Self::FunctionalContext => "knowledge.functional",
             Self::C4Report => "knowledge.c4",
             Self::MarkdownSeed => "knowledge.markdown_seed",
+            Self::MemoryHook => "knowledge.memory_hook",
         }
     }
 
@@ -38,11 +41,39 @@ impl DocumentGenerator {
             _ => KnowledgeDocumentKind::Context,
         }
     }
+
+    fn accepts_kind(self, kind: KnowledgeDocumentKind) -> bool {
+        match self {
+            Self::MemoryHook => matches!(
+                kind,
+                KnowledgeDocumentKind::Context | KnowledgeDocumentKind::Report
+            ),
+            _ => kind == self.kind(),
+        }
+    }
 }
 
 pub(crate) struct DocumentGenerationOwner {
     generator: DocumentGenerator,
     source_element_id: String,
+}
+
+/// Exact document base captured with a generation input, independent of later selection changes.
+/// Example: `current.as_ref().map(ObservedDocumentRevision::from)` before preparing a proposal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ObservedDocumentRevision {
+    pub(crate) semantic_element_id: String,
+    pub(crate) revision: u64,
+}
+
+impl From<&KnowledgeDocument> for ObservedDocumentRevision {
+    fn from(document: &KnowledgeDocument) -> Self {
+        Self {
+            semantic_element_id: document.semantic_element_id.clone(),
+            revision: document.lifecycle.revision,
+        }
+    }
 }
 
 /// These conflicts require review rather than another automatic overwrite attempt.
@@ -53,8 +84,10 @@ pub(crate) fn is_generation_hold(error: &PluginError) -> bool {
         "generated_document_authored"
             | "generated_document_deleted"
             | "generated_document_inactive"
-            | "knowledge_conversion_required"
             | "document_exists"
+            | "document_revision_conflict"
+            | "knowledge_revision_conflict"
+            | "knowledge_project_mismatch"
     )
 }
 
@@ -64,64 +97,91 @@ pub(crate) fn save(
     context: &mut PluginContext<'_>,
     owner: &DocumentGenerationOwner,
     proposal: KnowledgeDocument,
-    expected_revision: Option<u64>,
+    expected_revision: Option<ObservedDocumentRevision>,
 ) -> Result<KnowledgeDocument, PluginError> {
     validate(owner, &proposal)?;
-    let identity = KnowledgeDocumentIdentity {
-        project_root: proposal.project_root.clone(),
-        document_id: proposal.document_id.clone(),
-    };
-    let current = current(context, &identity)?;
-    let mut proposal = prepare(owner, proposal, current.as_ref(), expected_revision)?;
-    if current.as_ref() == Some(&proposal) {
-        return Ok(proposal);
-    }
-    publish(context, owner, &mut proposal, current.as_ref())?;
-    Ok(proposal)
+    let request = json!({"owner":owner.generator.name(), "source_element_id":owner.source_element_id,
+        "proposal":proposal, "expected_revision":expected_revision});
+    let receipt = crate::publication_journal::execute(
+        context,
+        "document.generate",
+        &request,
+        None,
+        |context, operation_id| {
+            let identity = KnowledgeDocumentIdentity {
+                project_root: proposal.project_root.clone(),
+                document_id: proposal.document_id.clone(),
+            };
+            let current = observe_generation_document(context, &identity)?;
+            let mut prepared = prepare(
+                owner,
+                proposal.clone(),
+                current.as_ref(),
+                expected_revision.as_ref(),
+                context,
+            )?;
+            if current.as_ref() != Some(&prepared) {
+                crate::lifecycle::stamp(
+                    &mut prepared.lifecycle,
+                    current.as_ref().map(|document| &document.lifecycle),
+                    Utc::now(),
+                );
+            }
+            let expected_locator = current
+                .as_ref()
+                .map(|document| document.semantic_element_id.clone());
+            let resources = match current {
+                Some(_) => super::assets::for_update(context, &prepared)?,
+                None => {
+                    refuse_global_collision(context, &prepared)?;
+                    super::assets::new_resource(context, &mut prepared)?
+                }
+            };
+            super::publication::prepare(
+                context,
+                &prepared,
+                resources.into_iter().collect(),
+                expected_locator.as_deref(),
+                operation_id,
+            )
+            .map(Some)
+        },
+    )?;
+    super::publication::accepted(
+        context,
+        &proposal.project_root,
+        &proposal.document_id,
+        receipt.as_ref(),
+    )
 }
 
 fn prepare(
     owner: &DocumentGenerationOwner,
     mut proposal: KnowledgeDocument,
     current: Option<&KnowledgeDocument>,
-    expected: Option<u64>,
+    expected: Option<&ObservedDocumentRevision>,
+    context: &mut PluginContext<'_>,
 ) -> Result<KnowledgeDocument, PluginError> {
     let metadata_fields = managed_fields(&proposal);
     validate_expected(&proposal, current, expected)?;
     if let Some(current) = current {
-        validate_ownership(owner, current)?;
+        validate_ownership(owner, current, context)?;
         preserve_authored_context(&mut proposal, current)?;
     }
     proposal.metadata["generation"] = marker(owner, &proposal, &metadata_fields);
     Ok(proposal)
 }
 
-fn publish(
-    context: &mut PluginContext<'_>,
-    owner: &DocumentGenerationOwner,
-    proposal: &mut KnowledgeDocument,
-    current: Option<&KnowledgeDocument>,
-) -> Result<(), PluginError> {
-    crate::lifecycle::stamp(
-        &mut proposal.lifecycle,
-        current.map(|document| &document.lifecycle),
-        Utc::now(),
-    );
-    if current.is_some() {
-        return records::write(context, proposal);
-    }
-    refuse_global_collision(context, owner, proposal)?;
-    records::create(context, proposal)
-}
-
-fn current(
+/// Captures the selected generated-document base before external work, refusing deleted intent.
+/// Example: `observe_generation_document(context, &identity)` before submitting a job.
+pub(crate) fn observe_generation_document(
     context: &mut PluginContext<'_>,
     identity: &KnowledgeDocumentIdentity,
 ) -> Result<Option<KnowledgeDocument>, PluginError> {
     match records::scoped_state(context, identity)? {
         DocumentState::Stored(document) => Ok(Some(document)),
         DocumentState::Missing => Ok(None),
-        DocumentState::Deleted => Err(super::invalid(
+        DocumentState::Deleted(_) => Err(super::invalid(
             "generated_document_deleted",
             &identity.document_id,
             "a retained document; automatic work cannot recreate a deleted body",
@@ -142,7 +202,7 @@ fn validate(
         crate::artifact::require(value, field)?;
     }
     records::validate_references(&proposal.references)?;
-    if proposal.document_kind != owner.generator.kind() || !proposal.metadata.is_object() {
+    if !owner.generator.accepts_kind(proposal.document_kind) || !proposal.metadata.is_object() {
         return Err(super::invalid(
             "invalid_generated_document",
             &format!(
@@ -161,9 +221,9 @@ fn validate(
 fn validate_expected(
     proposal: &KnowledgeDocument,
     current: Option<&KnowledgeDocument>,
-    expected: Option<u64>,
+    expected: Option<&ObservedDocumentRevision>,
 ) -> Result<(), PluginError> {
-    if current.map(|document| document.lifecycle.revision) == expected {
+    if current.map(ObservedDocumentRevision::from).as_ref() == expected {
         return Ok(());
     }
     Err(super::invalid(
@@ -171,7 +231,7 @@ fn validate_expected(
         &format!("{} at expected revision {expected:?}", proposal.document_id),
         &format!(
             "the read revision {:?}",
-            current.map(|document| document.lifecycle.revision)
+            current.map(ObservedDocumentRevision::from)
         ),
     ))
 }
@@ -179,9 +239,10 @@ fn validate_expected(
 fn validate_ownership(
     owner: &DocumentGenerationOwner,
     current: &KnowledgeDocument,
+    context: &mut PluginContext<'_>,
 ) -> Result<(), PluginError> {
     let stored = &current.metadata["generation"];
-    if current.document_kind != owner.generator.kind()
+    if !owner.generator.accepts_kind(current.document_kind)
         || !crate::lifecycle::is_active(&current.lifecycle, Utc::now())
     {
         return Err(super::invalid(
@@ -203,7 +264,7 @@ fn validate_ownership(
             .collect()
     });
     if stored["owner"] != owner.generator.name()
-        || stored["source_element_id"] != owner.source_element_id
+        || !same_selected_source(owner, current, context)?
         || fields
             .as_ref()
             .is_none_or(|fields| stored["content_sha256"] != signature(current, fields))
@@ -219,6 +280,26 @@ fn validate_ownership(
         ));
     }
     Ok(())
+}
+
+fn same_selected_source(
+    owner: &DocumentGenerationOwner,
+    current: &KnowledgeDocument,
+    context: &mut PluginContext<'_>,
+) -> Result<bool, PluginError> {
+    let Some(previous) = current.metadata["generation"]["source_element_id"].as_str() else {
+        return Ok(false);
+    };
+    if previous == owner.source_element_id {
+        return Ok(true);
+    }
+    let sources = crate::source_revisions::SelectedSources::load(
+        context,
+        &current.project_root,
+        std::collections::BTreeSet::from([previous.to_owned()]),
+        None,
+    )?;
+    Ok(sources.matches(previous, &owner.source_element_id))
 }
 
 fn preserve_authored_context(
@@ -256,20 +337,71 @@ fn marker(
     json!({"owner":owner.generator.name(),"source_element_id":owner.source_element_id,"metadata_fields":fields,"content_sha256":signature(proposal,fields)})
 }
 
-fn managed_fields(document: &KnowledgeDocument) -> Vec<String> {
+/// Uses the same generated-content fence for delegated memory maintenance.
+/// Example: validate before applying the original, revision-checked content proposal.
+pub(super) fn require_memory_hook(
+    context: &mut PluginContext<'_>,
+    document: &KnowledgeDocument,
+    delegation: &str,
+) -> Result<(), PluginError> {
+    validate_ownership(
+        &DocumentGenerator::MemoryHook.owner(delegation),
+        document,
+        context,
+    )
+}
+
+/// Refreshes only the existing workflow marker after an authorized conditional update.
+/// Example: stamp the proposed content after `require_memory_hook` accepted its original body.
+pub(super) fn stamp_memory_hook(document: &mut KnowledgeDocument, delegation: &str) {
+    let fields = managed_fields(document);
+    document.metadata["generation"] = marker(
+        &DocumentGenerator::MemoryHook.owner(delegation),
+        document,
+        &fields,
+    );
+}
+
+/// Arms an explicitly configured hook without changing authored content or taking another workflow.
+/// Example: the document owner calls this only after checking the original locator and revision.
+pub(super) fn arm_memory_hook(
+    document: &mut KnowledgeDocument,
+    delegation: &str,
+) -> Result<(), PluginError> {
+    if document.metadata.is_null() {
+        document.metadata = json!({});
+    }
+    validate(&DocumentGenerator::MemoryHook.owner(delegation), document)?;
+    let generation = &document.metadata["generation"];
+    if !crate::lifecycle::is_active(&document.lifecycle, Utc::now())
+        || (!generation.is_null()
+            && (generation["owner"] != DocumentGenerator::MemoryHook.name()
+                || generation["source_element_id"] != delegation))
+    {
+        return Err(super::invalid(
+            "memory_hook_workflow_conflict",
+            &document.document_id,
+            "an active authored document or this hook's existing document",
+        ));
+    }
+    stamp_memory_hook(document, delegation);
+    Ok(())
+}
+
+pub(super) fn managed_fields(document: &KnowledgeDocument) -> Vec<String> {
     let mut fields = document
         .metadata
         .as_object()
         .expect("validated metadata")
         .keys()
-        .filter(|key| key.as_str() != "generation")
+        .filter(|key| key.as_str() != "generation" && key.as_str() != super::maintenance::MARKER)
         .cloned()
         .collect::<Vec<_>>();
     fields.sort();
     fields
 }
 
-fn signature(document: &KnowledgeDocument, fields: &[String]) -> String {
+pub(super) fn signature(document: &KnowledgeDocument, fields: &[String]) -> String {
     let metadata = fields
         .iter()
         .map(|field| (field.clone(), document.metadata[field].clone()))
@@ -285,36 +417,16 @@ fn signature(document: &KnowledgeDocument, fields: &[String]) -> String {
 
 fn refuse_global_collision(
     context: &mut PluginContext<'_>,
-    owner: &DocumentGenerationOwner,
     proposal: &KnowledgeDocument,
 ) -> Result<(), PluginError> {
     if crate::storage::has_knowledge_record(context, &proposal.document_id)? {
         return Err(super::invalid(
-            "knowledge_conversion_required",
+            "document_id_conflict",
             &proposal.document_id,
-            "no Knowledge artifact at this generated document identity; preview legacy conversion or review the collision before generating",
+            "an unused document identity; review the existing Knowledge artifact before generating",
         ));
     }
-    let tag = match owner.generator {
-        DocumentGenerator::FunctionalContext => Some("cultivation-functional"),
-        DocumentGenerator::C4Report => Some("scoped-c4"),
-        DocumentGenerator::MarkdownSeed => None,
-    };
-    if let Some(tag) = tag
-        && super::conversion::required_for_source(
-            context,
-            &proposal.project_root,
-            &owner.source_element_id,
-            tag,
-        )?
-    {
-        return Err(super::invalid(
-            "knowledge_conversion_required",
-            &owner.source_element_id,
-            "explicit document conversion of the retained source workflow before creating another body",
-        ));
-    }
-    if records::find(context, &proposal.document_id)?.is_none() {
+    if records::find(context, &proposal.project_root, &proposal.document_id)?.is_none() {
         return Ok(());
     }
     Err(super::invalid(

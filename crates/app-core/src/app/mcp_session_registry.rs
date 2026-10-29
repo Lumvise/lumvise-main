@@ -15,6 +15,9 @@ use lumvise_db_core::{McpInstance, RelationalOperation, RelationalResult};
 use lumvise_resource_routing::InvocationControl;
 use serde_json::Value;
 
+mod membership;
+pub(crate) use membership::McpSessionMembership;
+
 /// Routes MCP session registry HTTP requests.
 pub(super) fn mcp_session_registry_response(
     app: &AppCore,
@@ -115,50 +118,24 @@ fn heartbeat(app: &AppCore, request: &HttpRequest) -> HttpResponse {
 }
 
 fn remember_registration(app: &AppCore, instance: McpInstance) -> HttpResponse {
-    let Ok(mut membership) = app.mcp_session_membership.lock() else {
-        return error_response(
-            "500 Internal Server Error",
-            "MCP membership lock unavailable",
-        );
-    };
-    membership.insert(
-        instance.instance_id.clone(),
-        Some(instance.project_root.clone()),
-    );
+    if let Err(error) = app
+        .mcp_session_membership
+        .register(&instance.instance_id, &instance.project_root)
+    {
+        return error_response("500 Internal Server Error", error);
+    }
     accepted_response(instance)
 }
 
 fn remember_heartbeat(app: &AppCore, instance: McpInstance) -> HttpResponse {
-    let Ok(mut membership) = app.mcp_session_membership.lock() else {
-        return error_response(
-            "500 Internal Server Error",
-            "MCP membership lock unavailable",
-        );
-    };
-    observe_heartbeat(&mut membership, &instance);
+    if let Err(error) = app.mcp_session_membership.heartbeat(
+        &instance.instance_id,
+        &instance.project_root,
+        &instance.status,
+    ) {
+        return error_response("500 Internal Server Error", error);
+    }
     accepted_response(instance)
-}
-
-fn observe_heartbeat(
-    membership: &mut std::collections::HashMap<String, Option<String>>,
-    instance: &McpInstance,
-) {
-    let observed = membership.get(&instance.instance_id);
-    if observed.is_some_and(|root| {
-        root.as_ref()
-            .is_some_and(|root| root != &instance.project_root)
-    }) {
-        return;
-    }
-    if instance.status == "unavailable" {
-        // Retired connections stay fenced against delayed traffic until explicit registration.
-        membership.insert(instance.instance_id.clone(), None);
-    } else if matches!(instance.status.as_str(), "ready" | "busy") && observed.is_none() {
-        membership.insert(
-            instance.instance_id.clone(),
-            Some(instance.project_root.clone()),
-        );
-    }
 }
 
 fn list_requested_instances(app: &AppCore, request: &HttpRequest) -> HttpResponse {
@@ -224,7 +201,7 @@ fn filter_active_instances(
     if !active {
         return Ok(instances);
     }
-    let membership = app.mcp_session_membership.lock().map_err(|_| {
+    let membership = app.mcp_session_membership.roots().map_err(|_| {
         error_response(
             "500 Internal Server Error",
             "MCP membership lock unavailable",

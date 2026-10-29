@@ -1,7 +1,7 @@
 use crate::local::clock::Clock;
 use crate::local::sql::connections::SqlConnections;
 use crate::local::sql::validation::require_non_empty;
-use crate::{ArtifactBlob, Result};
+use crate::{ArtifactBlob, DbError, Result};
 use rusqlite::{OptionalExtension, params};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,7 +49,14 @@ impl<'db> ArtifactBlobRepository<'db> {
         require_non_empty(artifact_id, "non-empty artifact id")?;
         require_non_empty(media_type, "non-empty media type")?;
         let now = self.clock.now().to_rfc3339();
-        self.put_valid_blob(content_ref, artifact_id, media_type, content, &now)
+        put_valid_blob(
+            &self.conn.write_conn(),
+            content_ref,
+            artifact_id,
+            media_type,
+            content,
+            &now,
+        )
     }
 
     /// Reads artifact blob bytes by content reference.
@@ -140,28 +147,68 @@ impl<'db> ArtifactBlobRepository<'db> {
         )?;
         Ok(deleted > 0)
     }
-
-    fn put_valid_blob(
-        &self,
-        content_ref: &str,
-        artifact_id: &str,
-        media_type: &str,
-        content: &[u8],
-        now: &str,
-    ) -> Result<()> {
-        let conn = self.conn.write_conn();
-        conn.execute(
-            "INSERT INTO artifact_blobs(content_ref, artifact_id, media_type, content, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-             ON CONFLICT(content_ref) DO UPDATE SET artifact_id = excluded.artifact_id,
-             media_type = excluded.media_type, content = excluded.content,
-             updated_at = excluded.updated_at",
-            params![content_ref, artifact_id, media_type, content, now],
-        )?;
-        Ok(())
-    }
 }
 
+pub(crate) fn require_stored_blob_references<'a>(
+    conn: &rusqlite::Connection,
+    references: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut statement =
+        conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM artifact_blobs WHERE content_ref = ?1)")?;
+    for content_ref in references {
+        if !statement.query_row([content_ref], |row| row.get::<_, bool>(0))? {
+            return Err(DbError::invalid_value(
+                content_ref,
+                "stored exact artifact bytes inside the revision publication transaction",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn put_archived_blob(conn: &rusqlite::Connection, blob: &ArtifactBlob) -> Result<()> {
+    require_non_empty(&blob.content_ref, "non-empty archived blob reference")?;
+    require_non_empty(&blob.artifact_id, "non-empty archived blob owner")?;
+    require_non_empty(&blob.media_type, "non-empty archived blob media type")?;
+    put_valid_blob(
+        conn,
+        &blob.content_ref,
+        &blob.artifact_id,
+        &blob.media_type,
+        &blob.content,
+        &blob.updated_at,
+    )
+}
+
+fn put_valid_blob(
+    conn: &rusqlite::Connection,
+    content_ref: &str,
+    artifact_id: &str,
+    media_type: &str,
+    content: &[u8],
+    now: &str,
+) -> Result<()> {
+    let inserted = conn.execute(
+            "INSERT INTO artifact_blobs(content_ref, artifact_id, media_type, content, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5) ON CONFLICT(content_ref) DO NOTHING",
+            params![content_ref, artifact_id, media_type, content, now],
+        )?;
+    if inserted == 1 {
+        return Ok(());
+    }
+    let stored: (String, Vec<u8>) = conn.query_row(
+        "SELECT media_type, content FROM artifact_blobs WHERE content_ref = ?1",
+        [content_ref],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if stored.0 != media_type || stored.1 != content {
+        return Err(DbError::invalid_value(
+            content_ref,
+            "identical bytes and media type for an immutable blob reference; allocate a new content ref for an edit",
+        ));
+    }
+    Ok(())
+}
 fn artifact_blob_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactBlob> {
     Ok(ArtifactBlob {
         content_ref: row.get(0)?,

@@ -19,6 +19,26 @@ pub struct HostCapabilityRequest {
     pub input: Value,
 }
 
+/// A host service's fixed publication target, executed inside its caller's invocation.
+#[derive(Clone, Debug)]
+pub struct HostPluginInvocation {
+    /// Target plugin selected by the host service, never by an import request.
+    pub plugin_id: String,
+    /// Target export selected by the host service.
+    pub export_id: String,
+    /// Target export input.
+    pub input: Value,
+}
+
+/// Runtime-owned nested access with inherited identity, cancellation and deadline.
+///
+/// The result is the raw target export output, without a `plugin.invoke` envelope.
+/// Example: `nested.invoke_plugin(HostPluginInvocation { plugin_id, export_id, input })`.
+pub trait HostPluginInvoker: Send + Sync {
+    /// Executes one authorized nested export without registering another root invocation.
+    fn invoke_plugin(&self, request: HostPluginInvocation) -> Result<Value, HostCapabilityError>;
+}
+
 /// Policy or execution failure returned to a requesting plugin.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("Host Capability `{capability_id}` failed with `{code}`: {message}")]
@@ -75,6 +95,18 @@ pub trait HostCapabilityBroker: Send + Sync {
         _context: &PluginInvocationContext,
     ) -> Result<Value, HostCapabilityError> {
         self.invoke(request)
+    }
+
+    /// Executes a service with runtime-owned nested access for this host call only.
+    ///
+    /// Example: an importer publishes through `nested` under the original caller.
+    fn invoke_with_nested(
+        &self,
+        request: HostCapabilityRequest,
+        context: &PluginInvocationContext,
+        _nested: &dyn HostPluginInvoker,
+    ) -> Result<Value, HostCapabilityError> {
+        self.invoke_controlled(request, context)
     }
 }
 

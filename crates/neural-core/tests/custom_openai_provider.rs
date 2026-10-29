@@ -1,14 +1,18 @@
-use lumvise_neural_core::llm_providers::LlmRequest;
+#[path = "cerebras_provider/support.rs"]
+mod tool_bridge_support;
+
 use lumvise_neural_core::llm_providers::command_runner::{
     LlmCommandTransport, ProviderCommandOutput,
 };
 use lumvise_neural_core::llm_providers::contract::{LlmHttpClient, LlmHttpRequest};
+use lumvise_neural_core::llm_providers::{LlmMcpServerConfig, LlmRequest};
 use lumvise_neural_core::{
     LlmProviderAvailability, LlmProviderCandidate, LlmProviderConfig, LlmProviderKind,
     LlmProviderRegistry,
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
@@ -18,11 +22,15 @@ type Result<T, E = lumvise_neural_core::NeuralError> = StdResult<T, E>;
 struct CustomFakeHttpClient {
     calls: Arc<Mutex<Vec<LlmHttpRequest>>>,
     inventory: Arc<Mutex<Option<Value>>>,
+    responses: Arc<Mutex<VecDeque<Value>>>,
 }
 
 impl LlmHttpClient for CustomFakeHttpClient {
     fn post_json(&self, request: &LlmHttpRequest) -> Result<Value> {
         self.calls.lock().push(request.clone());
+        if let Some(response) = self.responses.lock().pop_front() {
+            return Ok(response);
+        }
         Ok(json!({
             "choices": [{ "message": { "content": "custom reply" } }]
         }))
@@ -37,8 +45,18 @@ impl LlmHttpClient for CustomFakeHttpClient {
             .unwrap_or_else(|| json!({"data": [{"id": "qwen3"}]})))
     }
 
-    fn stream_text(&self, _: &LlmHttpRequest) -> Result<Vec<String>> {
-        unreachable!("stream_text is not used by these tests")
+    fn stream_text(&self, request: &LlmHttpRequest) -> Result<Vec<String>> {
+        let response = self.post_json(request)?;
+        let mut delta = response["choices"][0]["message"].clone();
+        if let Some(calls) = delta["tool_calls"].as_array_mut() {
+            for (index, call) in calls.iter_mut().enumerate() {
+                call["index"] = json!(index);
+            }
+        }
+        Ok(vec![format!(
+            "data: {}\n\n",
+            json!({"choices":[{"delta":delta,"finish_reason":"stop"}]})
+        )])
     }
 }
 
@@ -85,6 +103,63 @@ fn custom_request() -> LlmRequest {
         mcp_servers: Vec::new(),
         modality_inputs: Vec::new(),
     }
+}
+
+fn custom_tool_responses(rounds: usize) -> VecDeque<Value> {
+    (0..rounds)
+        .map(|round| {
+            json!({"choices":[{"message":{"role":"assistant","content":null,
+                "tool_calls":[{"id":format!("call-{round}"),"type":"function",
+                    "function":{"name":tool_bridge_support::CEREBRAS_TEST_TOOL_NAME,
+                        "arguments":"{\"query\":\"synthetic fixture\"}"}}]}}]})
+        })
+        .collect()
+}
+
+fn custom_tool_request(server: &tool_bridge_support::FakeMcpServer) -> LlmRequest {
+    let mut request = custom_request();
+    request.mcp_servers = vec![LlmMcpServerConfig {
+        name: "synthetic-tools".into(),
+        url: format!("{}/mcp", server.url()),
+    }];
+    request
+}
+
+#[test]
+fn custom_openai_completes_visual_work_after_nine_tool_rounds() {
+    let server = tool_bridge_support::FakeMcpServer::spawn(10);
+    let http_client = CustomFakeHttpClient::default();
+    *http_client.responses.lock() = custom_tool_responses(9);
+    let registry =
+        LlmProviderRegistry::from_configs(vec![custom_config()], Arc::new(http_client.clone()))
+            .unwrap();
+    let response = registry
+        .complete("custom_openai", &custom_tool_request(&server))
+        .unwrap();
+    assert_eq!(response.content, "custom reply");
+    assert_eq!(server.tool_calls().len(), 9);
+    let calls = http_client.calls.lock();
+    assert_eq!(calls.len(), 10);
+    assert!(calls.iter().all(|call| call.payload["tools"].is_array()));
+}
+
+#[test]
+fn custom_openai_stops_at_the_tool_round_budget_without_an_extra_call() {
+    let server = tool_bridge_support::FakeMcpServer::spawn(33);
+    let http_client = CustomFakeHttpClient::default();
+    *http_client.responses.lock() = custom_tool_responses(32);
+    let registry =
+        LlmProviderRegistry::from_configs(vec![custom_config()], Arc::new(http_client.clone()))
+            .unwrap();
+    let error = registry
+        .complete("custom_openai", &custom_tool_request(&server))
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        lumvise_neural_core::NeuralError::ToolRoundsExhausted { .. }
+    ));
+    assert_eq!(server.tool_calls().len(), 32);
+    assert_eq!(http_client.calls.lock().len(), 32);
 }
 
 #[test]

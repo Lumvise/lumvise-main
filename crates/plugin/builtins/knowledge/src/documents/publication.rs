@@ -1,166 +1,208 @@
-//! Stages immutable bodies before publishing their locator and graph references.
-//! shortcut: retain immutable revisions for captured locators; add reader-safe GC if history size requires it.
+//! Owns atomic document locator/body publication through Semantic and the shared retry journal.
+//! Callers prepare a frozen batch, then resolve its exact receipt; storage policy stays in core.
+mod draft;
+mod reference;
+mod root;
+mod space;
 
-use lumvise_contracts::{KnowledgeDocument, KnowledgeDocumentIdentity};
+pub(super) use space::ensure as ensure_space;
+
+pub(crate) use reference::{accepted_lifecycle_revision, accepted_reference};
+
+use lumvise_contracts::{KnowledgeDocument, SemanticIndexObservation, SemanticRecordKind};
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde_json::{Value, json};
 
-use super::{record_format as format, reference_graph};
+use super::{record_format as format, records};
+use crate::publication_journal::FrozenKnowledgePublication;
 
-pub(super) fn write(
+pub(super) fn prepare(
     context: &mut PluginContext<'_>,
     document: &KnowledgeDocument,
     resources: Vec<Value>,
-) -> Result<(), PluginError> {
-    let anchor = ensure_root(context, &document.project_root)?;
-    let body = format::body_artifact(document, &anchor);
-    let relationships = reference_graph::relationships(context, document)?;
-    stage_body(context, &body)?;
-    publish(
+    expected_locator: Option<&str>,
+    operation_id: &str,
+) -> Result<FrozenKnowledgePublication, PluginError> {
+    let mut document = document.clone();
+    let evidence = super::citations::prepare(context, &mut document, operation_id)?;
+    draft::DocumentPublicationDraft::capture(context, &document, resources, expected_locator)?
+        .freeze(context, operation_id, evidence.dependencies)
+        .map(|publication| publication.with_citations(evidence.claims))
+}
+
+pub(super) fn prepare_remove(
+    context: &mut PluginContext<'_>,
+    document: &KnowledgeDocument,
+    operation_id: &str,
+) -> Result<FrozenKnowledgePublication, PluginError> {
+    let previous =
+        records::selected_locator(context, &document.project_root, &document.document_id)?
+            .ok_or_else(|| {
+                super::invalid(
+                    "document_revision_conflict",
+                    &document.document_id,
+                    "the original selected locator",
+                )
+            })?;
+    validate_base(Some(&document.semantic_element_id), Some(&previous))?;
+    let artifacts = format::body_id(&previous)
+        .map(|id| json!({"artifact_id":id}))
+        .into_iter()
+        .collect::<Vec<_>>();
+    let paths = vec![format::storage_path(&document.document_id)];
+    let observation = observe(
         context,
         &document.project_root,
-        json!({
-        "semantic_elements":[document_element(document, &body)],"semantic_relationships":relationships,
-        "removed_paths":[],"replace_paths":[format::storage_path(&document.document_id)],
-        "semantic_artifacts":resources}),
-    )
-}
-
-fn ensure_root(context: &mut PluginContext<'_>, root: &str) -> Result<String, PluginError> {
-    let elements = super::records::scoped_elements(
-        context,
-        root,
-        json!({"Location":{
-        "project_root":root,"path":format::ROOT_PATH,"line":1,"include_inactive":false}}),
+        &paths,
+        &artifacts,
+        Some(&previous),
     )?;
-    let roots: Vec<_> = elements
+    let element = json!({"semantic_element_id":previous["semantic_element_id"], "semantic_source_id":previous["semantic_source_id"],
+        "semantic_element_type":"virtual_document", "semantic_element_name":"Deleted document", "path":paths[0],
+        "revision_dependencies":[], "metadata":{"knowledge_document_deleted":format::deletion(document, &previous)}});
+    let removed = artifacts
         .iter()
-        .filter(|element| element["path"] == format::ROOT_PATH && element["project_root"] == root)
-        .collect();
-    match roots.as_slice() {
-        [] => create_root(context, root),
-        [element] if format::is_root(element) => {
-            Ok(element["semantic_element_id"].as_str().unwrap().into())
-        }
-        _ => Err(super::invalid(
-            "invalid_document_root",
-            &json!(roots).to_string(),
-            "one Knowledge-owned document root",
-        )),
-    }
-}
-
-fn create_root(context: &mut PluginContext<'_>, root: &str) -> Result<String, PluginError> {
-    let id = format::root_id(root);
-    if crate::storage::semantic_element(context, &id)?.is_some() {
-        return Err(super::invalid(
-            "document_root_conflict",
-            &id,
-            "an unused document root identity",
-        ));
-    }
-    let element = json!({"semantic_element_id":id,"semantic_source_id":format::source_id(root),
-        "semantic_element_type":"virtual_document_root","semantic_element_name":"Project documents",
-        "path":format::ROOT_PATH,"parent_element_id":null,"start_line":null,"end_line":null,
-        "content_fingerprint":null,"metadata":{"knowledge_document_root":{"schema":1}}});
-    publish(
-        context,
-        root,
-        json!({"semantic_elements":[element],"semantic_relationships":[],
-        "removed_paths":[],"replace_paths":[format::ROOT_PATH],"semantic_artifacts":[]}),
-    )?;
-    Ok(id)
-}
-
-fn document_element(document: &KnowledgeDocument, body: &Value) -> Value {
-    json!({"semantic_element_id":document.semantic_element_id,
-        "semantic_source_id":format::source_id(&document.project_root),
-        "semantic_element_type":"virtual_document","semantic_element_name":document.title,
-        "path":format::storage_path(&document.document_id),"parent_element_id":null,
-        "start_line":null,"end_line":null,"content_fingerprint":null,
-        "metadata":{"knowledge_document":{"schema":2,"document_id":document.document_id,
-            "artifact_id":body["artifact_id"]}}})
-}
-
-fn stage_body(context: &mut PluginContext<'_>, body: &Value) -> Result<(), PluginError> {
-    let stored = context.host_call(
-        "storage.semantic",
-        json!({"operation":"artifact",
-        "artifact_id":body["artifact_id"]}),
-    )?;
-    if !stored["artifact"].is_null() {
-        return validate_staged(body, &stored["artifact"]);
-    }
-    store_body(context, body)
-}
-
-fn store_body(context: &mut PluginContext<'_>, body: &Value) -> Result<(), PluginError> {
-    let output = context.host_call(
-        "storage.semantic",
-        json!({"operation":"upsert_artifact",
-        "artifact":body,"media_type":"text/plain; charset=utf-8"}),
-    )?;
-    if output["artifact_id"] != body["artifact_id"] {
-        return Err(super::invalid(
-            "invalid_document_storage",
-            &output.to_string(),
-            "the staged document artifact identity",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_staged(body: &Value, stored: &Value) -> Result<(), PluginError> {
-    if [
-        "artifact_kind",
-        "semantic_element_id",
-        "metadata",
-        "content",
-        "title",
-    ]
-    .iter()
-    .all(|key| body[key] == stored[key])
-    {
-        return Ok(());
-    }
-    Err(super::invalid(
-        "document_body_conflict",
-        &stored["artifact_id"].to_string(),
-        "an unused body identity or exactly the same immutable document payload",
+        .map(|artifact| artifact["artifact_id"].clone())
+        .collect::<Vec<_>>();
+    Ok(batch(
+        &document.project_root,
+        &previous["semantic_source_id"],
+        observation,
+        operation_id,
+        json!({
+            "semantic_elements":[element], "semantic_relationships":[], "replace_paths":paths,
+            "semantic_artifacts":[], "removed_artifact_ids":removed
+        }),
     ))
 }
 
-fn publish(
-    context: &mut PluginContext<'_>,
-    root: &str,
-    mut batch: Value,
+fn validate_base(
+    expected_locator: Option<&str>,
+    previous: Option<&Value>,
 ) -> Result<(), PluginError> {
-    batch["provider_instance_id"] = json!(format::PROVIDER);
-    batch["project_root"] = json!(root);
-    batch["semantic_sources"] = json!([{"semantic_source_id":format::source_id(root),"kind":"virtual_documents",
-            "name":"Knowledge documents","root_path":null,
-            "root_uri":format!("lumvise:documents/{}",hex::encode(root))}]);
-    let output = crate::semantic::invoke_public(context, "ingest_index_batch", batch)?;
-    if output["accepted"] != true {
-        return Err(super::invalid(
-            "invalid_document_storage",
-            &output.to_string(),
-            "an accepted document partition publication",
-        ));
+    let actual = previous.and_then(|row| row["semantic_element_id"].as_str());
+    if actual == expected_locator {
+        return Ok(());
     }
-    Ok(())
+    Err(super::invalid(
+        "document_revision_conflict",
+        &json!(actual).to_string(),
+        &format!("original observed document membership {expected_locator:?}"),
+    ))
 }
 
-pub(super) fn remove(
+pub(super) fn observe(
     context: &mut PluginContext<'_>,
-    identity: &KnowledgeDocumentIdentity,
-) -> Result<(), PluginError> {
-    // Keep the payload behind the inactive locator: generators must remember deliberate deletions.
-    publish(
+    root: &str,
+    paths: &[String],
+    artifacts: &[Value],
+    previous: Option<&Value>,
+) -> Result<SemanticIndexObservation, PluginError> {
+    let artifact_ids = artifacts
+        .iter()
+        .filter_map(|artifact| artifact["artifact_id"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    let coverage = json!({"kind":"partition", "partition":{"project_root":root,
+        "replace_paths":paths, "provider_instance_id":format::PROVIDER}});
+    let observation = crate::publication_observation::read(context, root, coverage, &artifact_ids)?;
+    let elements = observation
+        .expected
+        .records
+        .iter()
+        .filter(|record| record.kind == SemanticRecordKind::Element)
+        .map(|record| record.record_id.as_str())
+        .collect::<Vec<_>>();
+    let expected = previous
+        .and_then(|row| row["semantic_element_id"].as_str())
+        .into_iter()
+        .collect::<Vec<_>>();
+    if elements != expected {
+        return Err(super::invalid(
+            "document_revision_conflict",
+            &json!(elements).to_string(),
+            &format!("original observed locator membership {expected:?}"),
+        ));
+    }
+    Ok(observation)
+}
+
+pub(super) fn batch(
+    root: &str,
+    source_id: &Value,
+    observation: SemanticIndexObservation,
+    operation_id: &str,
+    mut batch: Value,
+) -> FrozenKnowledgePublication {
+    batch["provider_instance_id"] = json!(format::PROVIDER);
+    batch["project_root"] = json!(root);
+    batch["ingestion_job_id"] = json!(operation_id);
+    batch["ingestion_page_index"] = json!(0);
+    batch["ingestion_page_count"] = json!(1);
+    batch["semantic_sources"] = json!([{"semantic_source_id":source_id,"kind":"virtual_documents",
+        "name":"Knowledge documents", "root_path":null, "root_uri":format!("lumvise:documents/{}", observation.project_id)}]);
+    batch["revision_observation"] = json!(observation);
+    FrozenKnowledgePublication::DocumentBatch {
+        batch,
+        citations: vec![],
+    }
+}
+
+pub(super) fn accepted(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    document_id: &str,
+    receipt: Option<&Value>,
+) -> Result<KnowledgeDocument, PluginError> {
+    let receipt = receipt.ok_or_else(|| {
+        super::invalid(
+            "invalid_document_storage",
+            document_id,
+            "an accepted document receipt",
+        )
+    })?;
+    for remap in receipt["remaps"].as_array().into_iter().flatten() {
+        if remap["accepted"]["kind"] != "element" {
+            continue;
+        }
+        let id = remap["accepted"]["record_id"].as_str().unwrap_or_default();
+        let Some(element) = accepted_element(context, root, id)? else {
+            continue;
+        };
+        if element["path"] == format::storage_path(document_id) {
+            return records::exact_document(context, element);
+        }
+    }
+    Err(super::invalid(
+        "document_revision_unavailable",
+        document_id,
+        "the exact accepted document locator and payload, which may have been collected",
+    ))
+}
+
+fn accepted_element(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    id: &str,
+) -> Result<Option<Value>, PluginError> {
+    let revision = crate::storage::read_revision(
         context,
-        &identity.project_root,
-        json!({"semantic_elements":[],
-        "semantic_relationships":[],"removed_paths":[format::storage_path(&identity.document_id)],
-        "replace_paths":[],"semantic_artifacts":[]}),
-    )
+        root,
+        lumvise_contracts::SemanticRecordRef::element(id),
+    )?;
+    let Some(revision) = revision else {
+        return Ok(None);
+    };
+    match revision.body {
+        lumvise_semantic_revisions::SemanticRevisionBody::Element(element)
+            if element.project_root == root && element.semantic_element_id == id =>
+        {
+            Ok(Some(json!(element)))
+        }
+        lumvise_semantic_revisions::SemanticRevisionBody::Pruned => Ok(None),
+        other => Err(super::invalid(
+            "invalid_document_storage",
+            &format!("{other:?}"),
+            &format!("exact accepted element {id} in project {root}"),
+        )),
+    }
 }

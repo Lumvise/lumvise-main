@@ -93,6 +93,7 @@ mod tests {
             end_line: None,
             lifecycle: "active".into(),
             match_evidence: None,
+            revision_dependencies: Default::default(),
             metadata: json!({}),
         };
         app.semantic

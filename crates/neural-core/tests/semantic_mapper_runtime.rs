@@ -327,6 +327,7 @@ fn candidate_ids(results: &[SemanticMappingResult]) -> Vec<&str> {
 
 fn element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

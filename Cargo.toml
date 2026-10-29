@@ -2,6 +2,7 @@
 members = [
     "crates/app-core",
     "crates/db-core",
+    "crates/semantic-revisions",
     "crates/frontend-core",
     "crates/lumvise-contracts",
     "crates/mcp-app-adapter",
@@ -22,7 +23,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.9"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -81,6 +82,7 @@ toml = "0.8"
 # relative paths throughout the workspace.
 lumvise-app-core = { path = "crates/app-core" }
 lumvise-db-core = { path = "crates/db-core" }
+lumvise-semantic-revisions = { path = "crates/semantic-revisions" }
 lumvise-frontend-core = { path = "crates/frontend-core" }
 lumvise-mcp-app-adapter = { path = "crates/mcp-app-adapter" }
 lumvise-mcp-core = { path = "crates/mcp-core" }
@@ -110,4 +112,14 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.lumvise-project-indexer]
+opt-level = 2
+
+[profile.dev.package.lumvise-app-core]
+opt-level = 2
+
+# Image fingerprint resizing otherwise dominates development imports.
+[profile.dev.package.image]
+opt-level = 2
+
+[profile.dev.package."png:0.18.1"]
 opt-level = 2

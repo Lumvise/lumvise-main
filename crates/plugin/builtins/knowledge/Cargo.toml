@@ -1,6 +1,6 @@
 [package]
 name = "lumvise-plugin-knowledge"
-version = "0.1.52"
+version = "0.1.54"
 edition.workspace = true
 rust-version.workspace = true
 license = "LGPL-3.0-only"
@@ -9,6 +9,7 @@ license = "LGPL-3.0-only"
 chrono.workspace = true
 hex = "0.4"
 lumvise-contracts.workspace = true
+lumvise-semantic-revisions.workspace = true
 lumvise-plugin-protocol.workspace = true
 lumvise-plugin-package.workspace = true
 lumvise-plugin-sdk.workspace = true

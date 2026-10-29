@@ -52,5 +52,7 @@ native-voice = ["lumvise-neural-core/native-voice"]
 
 [dev-dependencies]
 ed25519-dalek = "2.1"
+lumvise-plugin-sdk = { workspace = true, features = ["test-support"] }
+lumvise-plugin-semantic.workspace = true
 parking_lot.workspace = true
 tempfile.workspace = true

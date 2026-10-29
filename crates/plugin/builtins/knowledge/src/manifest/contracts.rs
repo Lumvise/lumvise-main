@@ -10,6 +10,18 @@ use serde_json::{Value, json};
 
 pub(super) fn input_schema(id: &str) -> Value {
     use crate::*;
+    if id == crate::documents::maintenance::EXPORT_ID {
+        return crate::documents::maintenance::input_schema();
+    }
+    if id == crate::documents::inspection::EXPORT_ID {
+        return crate::documents::inspection::input_schema();
+    }
+    if id == crate::documents::delegation::EXPORT_ID {
+        return crate::documents::delegation::input_schema();
+    }
+    if let Some(schema) = crate::publication_journal::input_schema(id) {
+        return schema;
+    }
     if let Some(schema) = crate::documents::input_schema(id) {
         return if id.starts_with("document.") {
             with_scoped_identity(schema)
@@ -21,7 +33,9 @@ pub(super) fn input_schema(id: &str) -> Value {
         PREVIEW_TRANSFER_EXPORT_ID => id_input("project_root"),
         APPLY_TRANSFER_EXPORT_ID => closed_object(
             &["project_root", "transfer_ids"],
-            json!({"project_root": string(), "transfer_ids": array(string())}),
+            json!({"project_root": string(), "transfer_ids": array(string()),
+                "operation_id": nullable(json!({"type":"string", "minLength":1,
+                "description":"Keep this ID when retrying the same reviewed selection; use a new ID after a fresh review."}))}),
         ),
         MANIFEST_EXPORT_ID => closed_object(&[], json!({})),
         PROJECTION_EXPORT_ID => closed_object(
@@ -38,12 +52,14 @@ pub(super) fn input_schema(id: &str) -> Value {
             ],
             create_artifact_input_properties(),
         ),
-        UPDATE_EXPORT_ID | ASSISTANT_UPDATE_EXPORT_ID => {
-            closed_object(&["artifact_id"], update_artifact_input_properties())
-        }
+        UPDATE_EXPORT_ID | ASSISTANT_UPDATE_EXPORT_ID => closed_object(
+            &["artifact_id", "expected_revision"],
+            update_artifact_input_properties(),
+        ),
         DELETE_EXPORT_ID => closed_object(
-            &["artifact_id", "project_root"],
-            json!({"artifact_id": string(), "project_root": string()}),
+            &["artifact_id", "project_root", "expected_revision"],
+            json!({"artifact_id": string(), "project_root": string(), "expected_revision":{"type":"integer","minimum":0}, "operation_id": nullable(json!({"type":"string", "minLength":1,
+                "description":"Keep this ID when retrying one removal; use a new ID for a later intentional action."}))}),
         ),
         GET_EXPORT_ID | ASSISTANT_GET_EXPORT_ID => id_input("artifact_id"),
         LIST_DEPENDENTS_EXPORT_ID | ASSISTANT_LIST_DEPENDENTS_EXPORT_ID => closed_object(
@@ -115,7 +131,19 @@ fn with_scoped_identity(mut schema: Value) -> Value {
 }
 
 pub(super) fn output_schema(id: &str) -> Value {
+    if id == crate::documents::maintenance::EXPORT_ID {
+        return crate::documents::maintenance::output_schema();
+    }
+    if id == crate::documents::inspection::EXPORT_ID {
+        return crate::documents::inspection::output_schema();
+    }
+    if id == crate::documents::delegation::EXPORT_ID {
+        return crate::documents::delegation::output_schema();
+    }
     use crate::*;
+    if let Some(schema) = crate::publication_journal::output_schema(id) {
+        return schema;
+    }
     if let Some(schema) = crate::documents::output_schema(id) {
         return schema;
     }
@@ -183,18 +211,25 @@ pub(super) fn output_schema(id: &str) -> Value {
     }
 }
 
+/// Media anchors live on the field: create guidance has a length cap.
+const METADATA_HINT: &str = "Optional. A media artifact may pin anchor_selector: kind image_region with x, y, width, height as 0-1 fractions, or kind audio_segment or video_segment with start_seconds and end_seconds.";
+
 fn create_artifact_input_properties() -> Value {
     json!({
+        "operation_id": nullable(json!({"type":"string", "minLength":1,
+            "description":"Keep this ID when retrying one action; use a new ID for a later intentional action. Omitted: identical requests replay."})),
         "artifact_id": string(), "semantic_element_id": string(),
         "knowledge_type": knowledge_kind(), "title": string(), "content": string(),
         "tags": array(string()), "dependencies": array(artifact_dependency()),
-        "metadata": {"type": "object"}, "path": nullable(string()),
+        "metadata": {"type": "object", "description": METADATA_HINT}, "path": nullable(string()),
         "project_root": string(), "expires_at": nullable(string())
     })
 }
 
 fn update_artifact_input_properties() -> Value {
     json!({
+        "operation_id": nullable(json!({"type":"string", "minLength":1,
+            "description":"Keep this ID when retrying one action; use a new ID for a later intentional action, including after restoring history. Omitted: identical requests replay."})),
         "artifact_id": string(), "semantic_element_id": string(),
         "knowledge_type": nullable(knowledge_kind()), "title": nullable(string()),
         "content": nullable(string()), "tags": nullable(array(string())),
@@ -202,11 +237,11 @@ fn update_artifact_input_properties() -> Value {
         "metadata": nullable(json!({"type": "object"})), "path": nullable(string()),
         "project_root": nullable(string()), "status": nullable(knowledge_status()),
         "superseded_by": nullable(string()), "expires_at": nullable(string()),
-        "expected_revision": nullable(json!({"type": "integer", "minimum": 0}))
+        "expected_revision": {"type": "integer", "minimum": 0}
     })
 }
 
-fn artifact_schema() -> Value {
+pub(crate) fn artifact_schema() -> Value {
     closed_object(
         &[
             "artifact_id",
@@ -221,6 +256,7 @@ fn artifact_schema() -> Value {
             "revision",
         ],
         json!({"artifact_id": string(), "semantic_element_id": string(), "knowledge_type": knowledge_kind(),
+            "edit_version": nullable(json!({"type":"integer", "minimum":1})),
             "title": string(), "content": string(), "tags": array(string()), "metadata": {},
             "dependencies": array(artifact_dependency()),
             "path": nullable(string()),
@@ -232,7 +268,7 @@ fn artifact_schema() -> Value {
     )
 }
 
-fn element_schema() -> Value {
+pub(crate) fn element_schema() -> Value {
     closed_object(
         &[
             "semantic_element_id",
@@ -244,6 +280,8 @@ fn element_schema() -> Value {
             "end_line",
         ],
         json!({"semantic_element_id": string(), "element_kind": string(), "name": string(),
+            "project_root": string(), "semantic_source_id": string(), "content_fingerprint": string(),
+            "lifecycle": string(), "metadata": {},
             "path": string(), "parent_element_id": nullable(string()), "start_line": nullable(integer()),
             "end_line": nullable(integer())}),
     )

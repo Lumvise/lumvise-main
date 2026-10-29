@@ -12,6 +12,7 @@ pub(super) fn ingest_input() -> Value {
         ],
         json!({
             "provider_instance_id": string(), "project_root": string(),
+            "revision_observation": nullable(observation_schema()),
             "ingestion_job_id": nullable(string()),
             "ingestion_page_index": nullable(integer()),
             "ingestion_page_count": nullable(integer()),
@@ -27,7 +28,7 @@ pub(super) fn ingest_input() -> Value {
             ], json!({
                 "semantic_source_id": string(), "semantic_element_id": string(), "path": string(),
                 "semantic_element_type": string(), "semantic_element_name": string(),
-                "parent_element_id": nullable(string()),
+                "parent_element_id": nullable(string()), "revision_dependencies": array(revision_reference_schema()),
                 "content_fingerprint": nullable(string()), "start_line": nullable(integer()),
                 "end_line": nullable(integer()), "metadata": nullable(any())
             }))),
@@ -44,6 +45,8 @@ pub(super) fn ingest_input() -> Value {
                 "artifact_id": string(), "semantic_element_id": string(), "artifact_kind": string(),
                 "title": string(), "content_ref": nullable(string()), "content": nullable(string()),
                 "searchable_text": nullable(string()), "content_size_bytes": nullable(integer()),
+                "dependencies": array(lumvise_contracts::ArtifactDependency::input_schema()),
+                "media_type": string(),
                 "metadata": nullable(any())
             })))
         }),
@@ -65,6 +68,9 @@ pub(super) fn ingest_output() -> Value {
         ],
         json!({
             "accepted": boolean(), "semantic_sources_upserted": integer(),
+            "publication": nullable(object(&["outcome", "value"], json!({
+                "outcome": {"type":"string", "enum":["accepted","conflict"]}, "value": any()
+            }))),
             "semantic_elements_upserted": integer(), "semantic_relationships_upserted": integer(),
             "semantic_artifacts_upserted": integer(), "semantic_artifacts_removed": integer(),
             "ingestion_job_id": nullable(string()),
@@ -72,6 +78,53 @@ pub(super) fn ingest_output() -> Value {
             "snapshot_freshness": object(&["status", "latest_completed_snapshot", "active_ingestion_job_id"], json!({
                 "status": string(), "latest_completed_snapshot": nullable(any()),
                 "active_ingestion_job_id": nullable(string())
+            }))
+        }),
+    )
+}
+
+fn revision_reference_schema() -> Value {
+    object(
+        &["kind", "record_id"],
+        json!({
+            "kind": {"type":"string", "enum":["element","artifact"]}, "record_id": string()
+        }),
+    )
+}
+
+pub(super) fn family_query_schema() -> Value {
+    object(
+        &["project_root", "selection_id", "records"],
+        json!({
+            "project_root":string(), "selection_id":string(),
+            "expected_commit_version":nullable(integer()), "records":array(revision_reference_schema())
+        }),
+    )
+}
+
+pub(super) fn family_read_schema() -> Value {
+    object(
+        &["commit_version", "remaps"],
+        json!({
+            "commit_version":integer(), "remaps":array(object(&["incoming", "accepted"], json!({
+                "incoming":revision_reference_schema(), "accepted":revision_reference_schema()
+            })))
+        }),
+    )
+}
+
+pub(super) fn observation_schema() -> Value {
+    object(
+        &["project_id", "selection_id", "source_context", "expected"],
+        json!({
+            "project_id": string(), "selection_id": string(), "source_context": string(),
+            "producer_base": nullable(object(&["selection_id", "expected_generation"], json!({
+                "selection_id": string(), "expected_generation": integer()
+            }))),
+            "expected": object(&["generation", "records", "connection_ids"], json!({
+                "artifact_edits":{"type":"object", "additionalProperties":{"type":"integer", "minimum":1}},
+                "generation": integer(), "connection_ids": array(string()),
+                "records": array(revision_reference_schema())
             }))
         }),
     )
@@ -195,7 +248,7 @@ pub(super) fn full_element_schema() -> Value {
         json!({
             "project_root": string(), "semantic_element_id": string(), "semantic_source_id": string(),
             "path": string(), "element_kind": string(), "name": string(),
-            "parent_element_id": nullable(string()), "content_fingerprint": nullable(string()),
+            "parent_element_id": nullable(string()), "revision_dependencies": array(revision_reference_schema()), "content_fingerprint": nullable(string()),
             "start_line": nullable(integer()), "end_line": nullable(integer()),
             "lifecycle": string(), "metadata": any()
         }),
@@ -238,7 +291,8 @@ pub(super) fn full_artifact_schema() -> Value {
             "project_root": string(), "artifact_id": string(), "semantic_element_id": string(),
             "artifact_kind": string(), "title": string(), "content_ref": nullable(string()),
             "content": nullable(string()), "searchable_text": nullable(string()),
-            "content_size_bytes": nullable(integer()), "metadata": any()
+            "content_size_bytes": nullable(integer()), "metadata": any(),
+            "dependencies": array(lumvise_contracts::ArtifactDependency::input_schema())
         }),
     )
 }

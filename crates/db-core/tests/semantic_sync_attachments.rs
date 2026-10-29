@@ -158,6 +158,7 @@ fn sync(elements: Vec<SemanticElement>) -> SemanticOperation {
 }
 fn element(index: usize) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: ROOT.into(),
         semantic_element_id: format!("e{index}"),
         semantic_source_id: "fixture".into(),

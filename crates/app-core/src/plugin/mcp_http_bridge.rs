@@ -2,8 +2,8 @@ use crate::AppCore;
 use crate::PluginMcpTool;
 use crate::app::mcp_http::{HttpRequest, HttpResponse, error_response, json_response};
 use lumvise_mcp_core::{
-    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV1, AppBridgeCancellationResponseV1,
-    AppBridgeInvocationRequestV1, AppBridgeInvocationResponseV1, AppBridgeInvocationStatusV1,
+    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV2, AppBridgeCancellationResponseV2,
+    AppBridgeInvocationRequestV2, AppBridgeInvocationResponseV2, AppBridgeInvocationStatusV2,
 };
 use lumvise_plugin_protocol::WireOutcome;
 use lumvise_plugin_runtime::{
@@ -48,8 +48,8 @@ pub(crate) fn plugin_mcp_bridge_response(
         ("GET", "/api/mcp/plugins/scoped-surface") => {
             Some(scoped_plugin_surface_response(app, request))
         }
-        ("POST", "/api/mcp/plugins/invoke-v1") => Some(controlled_invoke_response(app, request)),
-        ("POST", "/api/mcp/plugins/cancel-v1") => Some(controlled_cancel_response(app, request)),
+        ("POST", "/api/mcp/plugins/invoke-v2") => Some(controlled_invoke_response(app, request)),
+        ("POST", "/api/mcp/plugins/cancel-v2") => Some(controlled_cancel_response(app, request)),
         _ => None,
     }
 }
@@ -93,7 +93,7 @@ pub(crate) fn start_controlled_invoke<'app>(
     app: &'app AppCore,
     request: &HttpRequest,
 ) -> Result<(String, PluginInvocationHandle<'app>), HttpResponse> {
-    let payload = AppBridgeInvocationRequestV1::decode(request.body.as_slice())
+    let payload = AppBridgeInvocationRequestV2::decode(request.body.as_slice())
         .map_err(|error| error_response("400 Bad Request", error))?;
     validate_controlled_request(&payload)
         .map_err(|error| error_response("400 Bad Request", error))?;
@@ -101,7 +101,7 @@ pub(crate) fn start_controlled_invoke<'app>(
     let runtime_request = controlled_runtime_request(app, &payload).map_err(|message| {
         protobuf_response(bridge_failure(
             request_id.clone(),
-            AppBridgeInvocationStatusV1::Internal,
+            AppBridgeInvocationStatusV2::Internal,
             message,
             false,
         ))
@@ -126,7 +126,7 @@ pub(crate) fn controlled_invoke_result(
 
 fn controlled_runtime_request(
     app: &AppCore,
-    payload: &AppBridgeInvocationRequestV1,
+    payload: &AppBridgeInvocationRequestV2,
 ) -> Result<RuntimeInvocationRequest, String> {
     let (plugin_id, export_id) = match payload.scope_id.as_deref() {
         Some(scope_id) => scoped_mcp_route(
@@ -140,21 +140,75 @@ fn controlled_runtime_request(
         None => global_mcp_route(app, payload).map_err(|error| error.to_string())?,
     };
     let input = serde_json::from_slice(&payload.input_json).map_err(|error| error.to_string())?;
-    let context = RuntimeInvocationContext::new(
-        &payload.request_id,
-        &payload.owner_id,
-        RuntimeInvocationClass::Foreground,
-        monotonic_deadline(payload.deadline_unix_ms),
-    )
-    .with_route_identity(&payload.session_id, payload.scope_id.clone());
+    let context = bridge_invocation_context(payload);
+    let context = capture_mcp_project(app, context)?;
     Ok(RuntimeInvocationRequest::new(
         plugin_id, export_id, input, context,
     ))
 }
 
+fn bridge_invocation_context(payload: &AppBridgeInvocationRequestV2) -> RuntimeInvocationContext {
+    RuntimeInvocationContext::new(
+        &payload.request_id,
+        &payload.owner_id,
+        RuntimeInvocationClass::Foreground,
+        monotonic_deadline(payload.deadline_unix_ms),
+    )
+    .with_route_identity(&payload.session_id, payload.scope_id.clone())
+    .with_scope_epoch(payload.scope_epoch)
+}
+
+fn capture_mcp_project(
+    app: &AppCore,
+    context: RuntimeInvocationContext,
+) -> Result<RuntimeInvocationContext, String> {
+    if context.scope_id() != Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE) {
+        return Ok(context);
+    }
+    let connection = context.session_id().unwrap_or_default();
+    let Some(root) = app.mcp_session_membership.project_root(connection)? else {
+        return Ok(context.with_scope_epoch(None));
+    };
+    let bridge = super::plugin_host_capabilities::invocation_control(&context);
+    let project = app
+        .semantic
+        .execute(
+            lumvise_db_core::SemanticOperation::ProjectAccess {
+                project_root: root.clone(),
+            },
+            &bridge.control(),
+        )
+        .map_err(|error| error.to_string())?;
+    let lumvise_db_core::SemanticResult::ProjectAccess(project) = project else {
+        return Err(format!(
+            "MCP project access {project:?}; expected fresh project membership"
+        ));
+    };
+    let (project_id, authority) = match project {
+        lumvise_db_core::SemanticProjectAccess::Local { project_id } => (project_id, None),
+        lumvise_db_core::SemanticProjectAccess::Member {
+            project_id,
+            storage_authority,
+            ..
+        } => (project_id, Some(storage_authority)),
+        lumvise_db_core::SemanticProjectAccess::Denied => {
+            return Err(format!(
+                "MCP project {root:?}; expected current project membership"
+            ));
+        }
+    };
+    let epoch = app.mcp_session_membership.capture_project(
+        connection,
+        &root,
+        &project_id,
+        authority.as_deref(),
+    )?;
+    Ok(context.with_scope_epoch(Some(epoch)))
+}
+
 fn global_mcp_route(
     app: &AppCore,
-    payload: &AppBridgeInvocationRequestV1,
+    payload: &AppBridgeInvocationRequestV2,
 ) -> crate::Result<(String, String)> {
     let tool_name = tool_name(&payload.plugin_id, &payload.capability_id);
     let route = McpCatalog::load(&app.plugin_endpoints())?.route(&tool_name)?;
@@ -168,7 +222,7 @@ fn global_mcp_route(
 }
 
 fn controlled_cancel_response(app: &AppCore, request: &HttpRequest) -> HttpResponse {
-    let payload = match AppBridgeCancellationRequestV1::decode(request.body.as_slice()) {
+    let payload = match AppBridgeCancellationRequestV2::decode(request.body.as_slice()) {
         Ok(payload) => payload,
         Err(error) => return error_response("400 Bad Request", error),
     };
@@ -185,17 +239,26 @@ fn controlled_cancel_response(app: &AppCore, request: &HttpRequest) -> HttpRespo
             scope_id: payload.scope_id,
         })
         .unwrap_or(false);
-    protobuf_response(AppBridgeCancellationResponseV1 {
+    protobuf_response(AppBridgeCancellationResponseV2 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         cancelled,
     })
 }
 
-fn validate_controlled_request(payload: &AppBridgeInvocationRequestV1) -> Result<(), String> {
+fn validate_controlled_request(payload: &AppBridgeInvocationRequestV2) -> Result<(), String> {
     if payload.protocol_major != APP_BRIDGE_PROTOCOL_MAJOR {
         return Err(format!(
             "app bridge protocol major {}; expected {APP_BRIDGE_PROTOCOL_MAJOR}",
             payload.protocol_major
+        ));
+    }
+    if payload.scope_id.as_deref() == Some("assistant_session")
+        && (payload.owner_id != "builtin.assistant"
+            || !payload.scope_epoch.is_some_and(|epoch| epoch > 0))
+    {
+        return Err(format!(
+            "Assistant bridge identity {:?}/{:?}; expected builtin.assistant with positive captured epoch",
+            payload.owner_id, payload.scope_epoch
         ));
     }
     for (field, value) in [
@@ -224,19 +287,19 @@ fn monotonic_deadline(deadline_unix_ms: u64) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
-fn bridge_wire_outcome(request_id: String, outcome: WireOutcome) -> AppBridgeInvocationResponseV1 {
+fn bridge_wire_outcome(request_id: String, outcome: WireOutcome) -> AppBridgeInvocationResponseV2 {
     match outcome {
-        WireOutcome::Succeeded { value } => AppBridgeInvocationResponseV1 {
+        WireOutcome::Succeeded { value } => AppBridgeInvocationResponseV2 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
             request_id,
-            status: AppBridgeInvocationStatusV1::Completed as i32,
+            status: AppBridgeInvocationStatusV2::Completed as i32,
             output_json: serde_json::to_vec(&value).unwrap_or_default(),
             message: String::new(),
             retryable: false,
         },
         WireOutcome::Failed { error } => bridge_failure(
             request_id,
-            AppBridgeInvocationStatusV1::Failed,
+            AppBridgeInvocationStatusV2::Failed,
             error.message,
             error.retryable,
         ),
@@ -246,15 +309,15 @@ fn bridge_wire_outcome(request_id: String, outcome: WireOutcome) -> AppBridgeInv
 fn bridge_runtime_error(
     request_id: String,
     error: RuntimeInvocationError,
-) -> AppBridgeInvocationResponseV1 {
+) -> AppBridgeInvocationResponseV2 {
     let status = match error.kind() {
-        RuntimeFailureKind::Busy => AppBridgeInvocationStatusV1::Busy,
-        RuntimeFailureKind::DeadlineExceeded => AppBridgeInvocationStatusV1::DeadlineExceeded,
-        RuntimeFailureKind::Cancelled => AppBridgeInvocationStatusV1::Cancelled,
-        RuntimeFailureKind::Unavailable => AppBridgeInvocationStatusV1::Unavailable,
-        RuntimeFailureKind::PluginFailure => AppBridgeInvocationStatusV1::Failed,
+        RuntimeFailureKind::Busy => AppBridgeInvocationStatusV2::Busy,
+        RuntimeFailureKind::DeadlineExceeded => AppBridgeInvocationStatusV2::DeadlineExceeded,
+        RuntimeFailureKind::Cancelled => AppBridgeInvocationStatusV2::Cancelled,
+        RuntimeFailureKind::Unavailable => AppBridgeInvocationStatusV2::Unavailable,
+        RuntimeFailureKind::PluginFailure => AppBridgeInvocationStatusV2::Failed,
         RuntimeFailureKind::InvalidInput | RuntimeFailureKind::Internal => {
-            AppBridgeInvocationStatusV1::Internal
+            AppBridgeInvocationStatusV2::Internal
         }
     };
     bridge_failure(request_id, status, error.to_string(), error.retryable())
@@ -262,11 +325,11 @@ fn bridge_runtime_error(
 
 fn bridge_failure(
     request_id: String,
-    status: AppBridgeInvocationStatusV1,
+    status: AppBridgeInvocationStatusV2,
     message: String,
     retryable: bool,
-) -> AppBridgeInvocationResponseV1 {
-    AppBridgeInvocationResponseV1 {
+) -> AppBridgeInvocationResponseV2 {
+    AppBridgeInvocationResponseV2 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         request_id,
         status: status as i32,
@@ -376,6 +439,86 @@ mod tests {
     use crate::plugin::http_dispatch::plugin_http_response;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+
+    fn assistant_invocation() -> AppBridgeInvocationRequestV2 {
+        AppBridgeInvocationRequestV2 {
+            protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
+            request_id: "proof".into(),
+            owner_id: "builtin.assistant".into(),
+            session_id: "conversation".into(),
+            scope_id: Some("assistant_session".into()),
+            scope_epoch: Some(27),
+            deadline_unix_ms: 1,
+            plugin_id: "builtin.knowledge".into(),
+            capability_id: "document.space".into(),
+            input_json: b"{}".to_vec(),
+        }
+    }
+
+    #[test]
+    fn bridge_rejects_old_major_and_unbound_assistant_identity() {
+        let mut payload = assistant_invocation();
+        assert!(validate_controlled_request(&payload).is_ok());
+        payload.protocol_major = 1;
+        assert!(
+            validate_controlled_request(&payload)
+                .unwrap_err()
+                .contains("expected 2")
+        );
+        payload.protocol_major = APP_BRIDGE_PROTOCOL_MAJOR;
+        payload.scope_epoch = None;
+        assert!(validate_controlled_request(&payload).is_err());
+        payload.scope_epoch = Some(27);
+        payload.owner_id = "model-supplied".into();
+        assert!(validate_controlled_request(&payload).is_err());
+    }
+
+    #[test]
+    fn bridge_keeps_captured_epoch_and_expired_deadline() {
+        let context = bridge_invocation_context(&assistant_invocation());
+        assert_eq!(context.owner_id(), "builtin.assistant");
+        assert_eq!(context.scope_epoch(), Some(27));
+        assert_eq!(context.session_id(), Some("conversation"));
+        assert!(context.deadline() <= Instant::now());
+    }
+
+    #[test]
+    fn mcp_ingress_discards_supplied_epoch_and_fences_project_switch() {
+        let app = AppCore::in_memory().unwrap();
+        let mut payload = assistant_invocation();
+        payload.scope_id = Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE.into());
+        payload.deadline_unix_ms = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
+            + Duration::from_secs(60))
+        .as_millis() as u64;
+        let context = bridge_invocation_context(&payload);
+        assert!(
+            capture_mcp_project(&app, context.clone())
+                .unwrap()
+                .scope_epoch()
+                .is_none()
+        );
+        app.mcp_session_membership
+            .register("conversation", "/first")
+            .unwrap();
+        let captured = capture_mcp_project(&app, context).unwrap();
+        let epoch = captured.scope_epoch().unwrap();
+        assert_ne!(epoch, 27);
+        assert_eq!(
+            app.mcp_session_membership
+                .scope("conversation", Some(epoch))
+                .unwrap()
+                .project_root,
+            "/first"
+        );
+        app.mcp_session_membership
+            .register("conversation", "/second")
+            .unwrap();
+        assert!(
+            app.mcp_session_membership
+                .scope("conversation", Some(epoch))
+                .is_err()
+        );
+    }
 
     fn request(
         method: &str,

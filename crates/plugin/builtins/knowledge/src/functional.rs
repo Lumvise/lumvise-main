@@ -134,6 +134,7 @@ pub(crate) fn is_usable(document: &KnowledgeDocument) -> bool {
 pub(crate) fn source_element_id(document: &KnowledgeDocument) -> Option<&str> {
     document.metadata["provenance"]["semantic_element_id"]
         .as_str()
+        .or_else(|| document.metadata["generation"]["source_element_id"].as_str())
         .or_else(|| {
             document
                 .references
@@ -148,10 +149,11 @@ pub(crate) fn source_element_id(document: &KnowledgeDocument) -> Option<&str> {
 }
 
 /// Reconcile retained source-context identities before creating a generated body.
-/// Example: existing_for_source(history, element) preserves explicitly converted IDs.
+/// Example: existing_for_source(documents, element, sources) preserves authored context IDs.
 pub(crate) fn existing_for_source<'a>(
     documents: &'a [KnowledgeDocument],
     element: &SemanticElement,
+    sources: &crate::source_revisions::SelectedSources,
 ) -> Option<&'a KnowledgeDocument> {
     let canonical = document_id_for(element);
     documents
@@ -163,7 +165,8 @@ pub(crate) fn existing_for_source<'a>(
                     .tags
                     .iter()
                     .any(|tag| tag == "cultivation-functional")
-                && source_element_id(document) == Some(element.semantic_element_id.as_str())
+                && source_element_id(document)
+                    .is_some_and(|source| sources.matches(source, &element.semantic_element_id))
         })
         .min_by_key(|document| {
             (
@@ -228,6 +231,7 @@ fn context_document(
     summary: &FunctionalSummary,
 ) -> KnowledgeDocument {
     documents::draft_document(CreateKnowledgeDocumentRequest {
+        operation_id: None,
         document_id: document_id_for(element),
         project_root: element.project_root.clone(),
         document_kind: KnowledgeDocumentKind::Context,

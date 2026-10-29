@@ -24,6 +24,55 @@ pub enum ProjectSnapshotScope {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SemanticOperation {
+    /// Resolves selected family members in one read without substituting historical bodies.
+    RevisionFamilies(crate::SemanticRevisionFamilyQuery),
+    /// Reads immutable connection definitions by exact ID, including unselected history.
+    RevisionConnections(crate::SemanticRevisionConnectionQuery),
+    /// Reads exact selected IDs plus the token required for a conditional publication.
+    RevisionSelection {
+        project_root: String,
+        selection_id: String,
+    },
+    /// Reads scoped record/connection membership without hydrating unrelated bodies.
+    RevisionSelectionMembers(crate::SemanticRevisionSelectionQuery),
+    /// Reconstructs exact historical membership even when some payloads were collected.
+    RevisionSelectionAt {
+        project_root: String,
+        selection_id: String,
+        generation: i64,
+    },
+    /// Finds previously indexed clean Git content for explicit conditional selection.
+    RevisionSourceAnchor {
+        project_root: String,
+        selection_id: String,
+        anchor: crate::SemanticSourceAnchor,
+    },
+    /// Atomically accepts immutable record revisions or returns a typed stale-writer conflict.
+    PublishRevisions(crate::SemanticRevisionPublication),
+    /// Chooses available exact revisions, including explicit historical and public pins.
+    SelectRevisions(crate::SemanticRevisionSelectionUpdate),
+    /// Retains exact citation evidence; the source adapter binds its authenticated actor.
+    AcquireCitationRetention(crate::SemanticCitationRetentionAcquire),
+    /// Conditionally releases only that actor's original citation claim, without source disclosure.
+    ReleaseCitationRetention(crate::SemanticCitationRetentionRelease),
+    /// Resolves an exact old body or its explicit pruned state and accepted successors.
+    ResolveRevision {
+        project_root: String,
+        record: crate::SemanticRecordRef,
+    },
+    /// Reads retained history for an authorized archive or persistence adapter.
+    RevisionHistory {
+        project_root: String,
+    },
+    PlanRevisionRetention {
+        project_root: String,
+        operation_id: String,
+        policy: crate::SemanticRevisionRetentionPolicy,
+    },
+    CollectRevisionRetention {
+        plan: crate::SemanticRevisionRetentionPlan,
+        policy: crate::SemanticRevisionRetentionPolicy,
+    },
     /// Creates and atomically publishes one complete validated PZ snapshot.
     CreatePzSnapshot {
         project_root: String,
@@ -144,6 +193,10 @@ pub enum SemanticOperation {
     ProjectIdentity {
         project_root: String,
     },
+    /// Reads current member rights, independently of public graph visibility.
+    ProjectAccess {
+        project_root: String,
+    },
     SemanticRevision,
     ProjectArtifacts {
         project_root: String,
@@ -227,6 +280,16 @@ pub struct ChangesSinceRevisionPage {
 /// Every successful semantic operation returns the data it observed or wrote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SemanticResult {
+    RevisionFamilies(Vec<crate::SemanticRevisionRemap>),
+    RevisionConnections(Vec<crate::SemanticRevisionConnection>),
+    RevisionMembership(Option<crate::SemanticRevisionSelectionState>),
+    RevisionObservation(Option<crate::SemanticRevisionSelectionObservation>),
+    RevisionSelection(Option<crate::SemanticRevisionSelectionSnapshot>),
+    RevisionPublication(crate::SemanticRevisionPublicationOutcome),
+    RevisionResolution(Option<crate::SemanticRevisionResolution>),
+    RevisionHistory(crate::SemanticRevisionState),
+    RevisionRetentionPlan(crate::SemanticRevisionRetentionPlan),
+    RevisionRetention(crate::SemanticRevisionRetentionReceipt),
     SyncStructure(SemanticBatchSyncReport),
     SyncPartition(SemanticBatchSyncReport),
     Element(Option<SemanticElement>),
@@ -251,6 +314,7 @@ pub enum SemanticResult {
     },
     ProjectRoots(Vec<String>),
     ProjectIdentity(ProjectIdentity),
+    ProjectAccess(crate::SemanticProjectAccess),
     SemanticRevision {
         commit_version: i64,
     },

@@ -10,7 +10,11 @@ fn duplicate_semantic_ids_fail_before_ingest_can_overwrite_records() {
     runtime.start(PLUGIN_ID).unwrap();
     for staged in [false, true] {
         let batch = duplicated_batch(staged);
-        let error = failure(runtime.invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch).unwrap());
+        let error = failure(
+            runtime
+                .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
+                .unwrap(),
+        );
         assert_eq!(error.code, "invalid_semantic_index_batch");
         assert!(error.message.contains("file:parser"));
         assert_eq!(broker.semantic_counts("/work/demo").0, 0);

@@ -29,6 +29,14 @@ fn projection_reports_parser_and_reference_coverage_without_false_edges() {
         .find(|element| element.semantic_element_name == "calls.rs")
         .unwrap();
     let extraction = &file.metadata.as_ref().unwrap()["extraction"];
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        file.metadata.as_ref().unwrap()["source_digest_sha256"],
+        format!(
+            "{:x}",
+            Sha256::digest(b"fn caller() { Vec::with_capacity(1); target(); } fn target() {}")
+        )
+    );
     assert_eq!(extraction["status"], "parsed");
     assert_eq!(extraction["resolution"]["resolved"], 1);
     assert_eq!(extraction["resolution"]["unresolved"], 1);

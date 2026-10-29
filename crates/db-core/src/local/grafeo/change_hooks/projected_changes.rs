@@ -1,5 +1,6 @@
 //! Change delivery needs identity and revision fields, never metadata or vectors.
 
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 use grafeo::{GrafeoDB, Value};
 use grafeo_core::graph::lpg::Node;
 use std::collections::HashSet;
@@ -22,9 +23,12 @@ pub(super) fn project_change_nodes(graph: &GrafeoDB, project_root: &str) -> Vec<
         .iter()
         .map(|key| (*key).into())
         .collect::<Vec<_>>();
-    let rows = store.get_nodes_properties_selective_batch(&ids, &keys);
+    let rows = store
+        .get_nodes_properties_selective_batch(&ids, &keys)
+        .committed_nodes(&*store, &ids);
     ids.into_iter()
         .zip(rows)
+        .filter(|(_, properties)| !properties.is_empty())
         .map(|(id, properties)| {
             let mut node = Node::with_labels(id, ["SemanticElement"]);
             node.properties = properties.into_iter().collect();

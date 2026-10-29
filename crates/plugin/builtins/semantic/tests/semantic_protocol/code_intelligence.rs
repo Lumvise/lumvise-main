@@ -31,7 +31,8 @@ fn code_intelligence_exports_cross_signed_protobuf_and_host_boundaries() {
     )
     .unwrap();
     let (_, installed) = signed_install(workspace.path(), &SigningKey::from_bytes(&[48; 32]));
-    let runtime = system(Arc::new(MemoryCapabilityBroker::default()));
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = system(broker.clone());
     runtime.install(&installed).unwrap();
     runtime.start(PLUGIN_ID).unwrap();
     let root = workspace.path().to_str().unwrap();
@@ -51,7 +52,11 @@ fn code_intelligence_exports_cross_signed_protobuf_and_host_boundaries() {
             "path":format!("src/missing/failure-{index}.rs"),"semantic_element_type":"file",
             "semantic_element_name":format!("failure-{index}.rs")})
     }));
-    success(runtime.invoke(PLUGIN_ID, INGEST_EXPORT_ID, batch).unwrap());
+    success(
+        runtime
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
+            .unwrap(),
+    );
     let invoke = |id: &str, mut input: serde_json::Value| {
         input["project_root"] = json!(root);
         success(runtime.invoke(PLUGIN_ID, id, input).unwrap())

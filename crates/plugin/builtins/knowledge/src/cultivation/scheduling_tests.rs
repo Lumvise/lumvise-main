@@ -22,6 +22,7 @@ struct SchedulingFakeHost {
 
 impl HostCallTransport for SchedulingFakeHost {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
+        self.graph.seed_sources(&self.elements)?;
         match (capability, input["operation"].as_str().unwrap_or_default()) {
             ("storage.plugin", "ensure_table") => Ok(json!({})),
             ("storage.plugin", "list_rows") => {
@@ -35,23 +36,34 @@ impl HostCallTransport for SchedulingFakeHost {
                 );
                 Ok(json!({"row":self.rows.get(&key).map(|value| json!({"value":value}))}))
             }
+            ("storage.plugin", "delete_row") => {
+                let key = (
+                    input["table_name"].as_str().unwrap().into(),
+                    input["row_key"].as_str().unwrap().into(),
+                );
+                self.rows.remove(&key);
+                Ok(json!({}))
+            }
             ("storage.plugin", "put_row") => {
                 let table = input["table_name"].as_str().unwrap_or_default().to_owned();
                 let key = input["row_key"].as_str().unwrap_or_default().to_owned();
                 self.rows.insert((table, key), input["value"].clone());
                 Ok(json!({}))
             }
-            ("storage.plugin", "mutate_rows") => {
-                self.mutate_rows(&input);
-                Ok(json!({}))
-            }
+            ("storage.plugin", "mutate_rows") => storage::test_rows::apply(&mut self.rows, &input),
             ("storage.plugin", "trim_rows_by_key") => Ok(json!({})),
             ("runtime.project_execution", "submit") => self.submit(input),
             ("storage.semantic", "project_snapshot") => Ok(self.project_snapshot(&input)),
+            ("storage.semantic", "revision_families") => Ok(
+                crate::semantic_context::test_source_reads::selected_sources(
+                    &self.elements,
+                    &input,
+                ),
+            ),
             ("storage.semantic", "selective_subgraph") => Ok(self.selective_subgraph(&input)),
             ("storage.semantic", "elements_by_ids_including_inactive") => {
                 let mut response = self.elements_by_ids(&input);
-                let documents = self.graph.host_call(capability, input)?;
+                let documents = self.graph.targeted_documents(input)?;
                 response["elements"]
                     .as_array_mut()
                     .unwrap()
@@ -82,25 +94,6 @@ impl SchedulingFakeHost {
     fn record_list_rows(&mut self, input: &Value) {
         self.listed_tables
             .push(input["table_name"].as_str().unwrap_or_default().to_owned());
-    }
-
-    fn mutate_rows(&mut self, input: &Value) {
-        for mutation in input["mutations"].as_array().into_iter().flatten() {
-            let table = mutation["table_name"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let key = mutation["row_key"].as_str().unwrap_or_default().to_owned();
-            match mutation["operation"].as_str() {
-                Some("delete") => {
-                    self.rows.remove(&(table, key));
-                }
-                Some("put") => {
-                    self.rows.insert((table, key), mutation["value"].clone());
-                }
-                _ => {}
-            }
-        }
     }
 
     fn submit(&mut self, input: Value) -> Result<Value, PluginError> {
@@ -150,6 +143,7 @@ impl SchedulingFakeHost {
 
 fn graph_with(documents: Vec<KnowledgeDocument>) -> FakeDocumentGraph {
     let mut graph = FakeDocumentGraph::default();
+    graph.seed_sources(&fixture().0).unwrap();
     for document in documents {
         let source = functional::source_element_id(&document)
             .or_else(|| document.metadata["nucleus"]["target_element_id"].as_str())
@@ -248,6 +242,7 @@ fn fixture() -> (
 
 fn element(id: &str, kind: &str, name: &str, path: &str, parent: Option<&str>) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".into(),
         semantic_element_id: id.into(),
         semantic_source_id: "source".into(),

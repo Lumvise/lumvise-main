@@ -20,6 +20,35 @@ use lumvise_resource_routing::{
 use serde_json::json;
 
 #[test]
+fn local_project_access_uses_the_same_durable_lineage_without_claiming_a_remote_domain() {
+    let store = LocalPersistence::in_memory().unwrap();
+    let expected = project_identity(&store, "/empty");
+    let operation = SemanticOperation::ProjectAccess {
+        project_root: "/empty".into(),
+    };
+    assert_eq!(operation.project_root(), Some("/empty"));
+    let result =
+        SemanticPersistence::execute(&store, operation, &InvocationControl::sixty_seconds())
+            .unwrap();
+    let SemanticResult::ProjectAccess(access) = result else {
+        panic!("expected project access, received {result:?}")
+    };
+    assert_eq!(
+        access,
+        lumvise_db_core::SemanticProjectAccess::Local {
+            project_id: expected
+        }
+    );
+    assert_eq!(
+        serde_json::from_value::<lumvise_db_core::SemanticProjectAccess>(
+            serde_json::to_value(&access).unwrap()
+        )
+        .unwrap(),
+        access
+    );
+}
+
+#[test]
 fn project_identity_is_uuid_v4_and_stable_after_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("semantic.sqlite");
@@ -241,6 +270,7 @@ fn local_persistence_shares_fresh_composition_and_executes_both_contracts() {
 
 fn semantic_element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/project".into(),
         semantic_element_id: id.into(),
         semantic_source_id: id.into(),

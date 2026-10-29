@@ -5,6 +5,8 @@ use tempfile::TempDir;
 
 fn credentialed_app() -> AppCore {
     let app = AppCore::in_memory().expect("in-memory app");
+    app.install_index_publication_client("project-import-test-client".into())
+        .unwrap();
     app.install_bridge_credential_store(std::sync::Arc::new(std::sync::Mutex::new(
         std::collections::HashMap::new(),
     )))
@@ -57,6 +59,42 @@ fn rejects_missing_folder_path() {
         let response = project_import_response(&app, &request(body));
         assert_eq!(response.status, "400 Bad Request");
     }
+}
+
+#[test]
+fn first_selective_import_establishes_the_complete_checkout_before_publication() {
+    let app = credentialed_app();
+    let directory = fixture_tree();
+    let root = directory.path().canonicalize().unwrap();
+    let response = project_import_response(
+        &app,
+        &request(json!({
+            "folderPath": root, "replacePaths": ["src/main.rs"]
+        })),
+    );
+    assert_eq!(response.status, "500 Internal Server Error");
+    let paths = pending_import_paths(&app, &root);
+    assert!(paths.contains("src/main.rs"));
+    assert!(paths.contains("README.md"));
+    assert!(!paths.contains("ignored.txt"));
+}
+
+fn pending_import_paths(app: &AppCore, root: &Path) -> BTreeSet<String> {
+    let sessions = app.project_import_sessions.lock().unwrap();
+    let key = (root.to_path_buf(), root.to_string_lossy().into_owned());
+    let pending = sessions[&key]
+        .source_checkout
+        .as_ref()
+        .unwrap()
+        .pending(&InvocationControl::sixty_seconds())
+        .unwrap()
+        .expect("complete source input must be frozen before the unavailable plugin is called");
+    pending
+        .batch
+        .semantic_elements
+        .into_iter()
+        .map(|element| element.path)
+        .collect()
 }
 
 #[test]
@@ -201,7 +239,10 @@ fn full_snapshot_pages_carry_no_replace_paths() {
     let scan = indexer.prepare(ScanScope::Full).unwrap();
     let mut projection = SemanticIndexProjection::new(&root, PROVIDER_INSTANCE_ID).unwrap();
     let batch = projection.project(&scan).unwrap();
-    let pages = snapshot_pages(&batch, "job", true);
+    let pages = snapshot_pages(&batch, "job", true)
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0]["replace_paths"], json!([]));
     assert_eq!(pages[0]["ingestion_page_count"], json!(1));
@@ -312,7 +353,7 @@ fn failed_refresh_waits_for_backoff_while_manual_import_still_runs() {
     assert!(refresh(&app).is_err());
     assert_eq!(retry(&app).unwrap().failures, 3);
 
-    // A successful refresh (nothing left to publish) clears the backoff.
+    // A volatile scan acknowledgement cannot discard durable unacknowledged work.
     {
         let mut sessions = app.project_import_sessions.lock().unwrap();
         let session = sessions
@@ -322,8 +363,34 @@ fn failed_refresh_waits_for_backoff_while_manual_import_still_runs() {
         session.indexer.commit(scan).unwrap();
     }
     expire(&app);
-    assert!(refresh(&app).is_ok());
-    assert_eq!(retry(&app), None);
+    assert!(refresh(&app).is_err());
+    assert_eq!(retry(&app).unwrap().failures, 4);
+    assert!(
+        app.project_import_sessions.lock().unwrap()[&(root.clone(), project_root.clone())]
+            .source_checkout
+            .as_ref()
+            .unwrap()
+            .pending(&InvocationControl::sixty_seconds())
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn an_acknowledged_success_clears_refresh_backoff() {
+    let directory = fixture_tree();
+    let mut session = import_session(directory.path(), Arc::default())
+        .ok()
+        .unwrap();
+    let now = Instant::now();
+    let failed = Err(error_response(
+        "500 Internal Server Error",
+        "publication failed",
+    ));
+    session.complete_refresh_attempt(&failed, now, "/project");
+    assert_eq!(session.refresh_retry.unwrap().failures, 1);
+    session.complete_refresh_attempt(&Ok(json!({"accepted":true})), now, "/project");
+    assert_eq!(session.refresh_retry, None);
 }
 
 fn index_fixture_project(app: &AppCore, project_root: &str) {
@@ -332,6 +399,7 @@ fn index_fixture_project(app: &AppCore, project_root: &str) {
             SemanticOperation::SyncStructure {
                 project_root: project_root.into(),
                 elements: vec![lumvise_db_core::SemanticElement {
+                    revision_dependencies: Vec::new(),
                     project_root: project_root.into(),
                     semantic_element_id: "fixture-file".into(),
                     semantic_source_id: "fixture-source".into(),
@@ -475,43 +543,45 @@ fn pz_import_publishes_snapshot_structure_and_fails_closed_without_index_log() {
     // provenance log cannot be written; the route must still publish the
     // archive through DB Core and then report the missing provenance.
     let app = credentialed_app();
+    let origin = lumvise_db_core::LocalPersistence::in_memory().unwrap();
     let control = InvocationControl::sixty_seconds();
-    app.semantic
-        .execute(
-            SemanticOperation::SyncStructure {
+    lumvise_db_core::SemanticPersistence::execute(
+        &origin,
+        SemanticOperation::SyncStructure {
+            project_root: "/seed".into(),
+            elements: vec![lumvise_db_core::SemanticElement {
+                revision_dependencies: Vec::new(),
                 project_root: "/seed".into(),
-                elements: vec![lumvise_db_core::SemanticElement {
-                    project_root: "/seed".into(),
-                    semantic_element_id: "seed-file".into(),
-                    semantic_source_id: "seed-source".into(),
-                    path: "src/main.rs".into(),
-                    element_kind: "file".into(),
-                    name: "main.rs".into(),
-                    parent_element_id: None,
-                    content_fingerprint: None,
-                    start_line: None,
-                    end_line: None,
-                    lifecycle: "active".into(),
-                    match_evidence: None,
-                    metadata: json!({}),
-                }],
-                relationships: vec![],
-            },
-            &control,
-        )
-        .unwrap();
+                semantic_element_id: "seed-file".into(),
+                semantic_source_id: "seed-source".into(),
+                path: "src/main.rs".into(),
+                element_kind: "file".into(),
+                name: "main.rs".into(),
+                parent_element_id: None,
+                content_fingerprint: None,
+                start_line: None,
+                end_line: None,
+                lifecycle: "active".into(),
+                match_evidence: None,
+                metadata: json!({}),
+            }],
+            relationships: vec![],
+        },
+        &control,
+    )
+    .unwrap();
     let linked = TempDir::new().unwrap();
     let archive = linked.path().join(".lv").join("graph.pz");
     fs::create_dir_all(archive.parent().unwrap()).unwrap();
-    app.semantic
-        .execute(
-            SemanticOperation::CreatePzSnapshot {
-                project_root: "/seed".into(),
-                output_path: archive.to_string_lossy().into_owned(),
-            },
-            &control,
-        )
-        .unwrap();
+    lumvise_db_core::SemanticPersistence::execute(
+        &origin,
+        SemanticOperation::CreatePzSnapshot {
+            project_root: "/seed".into(),
+            output_path: archive.to_string_lossy().into_owned(),
+        },
+        &control,
+    )
+    .unwrap();
     let project_root = linked
         .path()
         .canonicalize()

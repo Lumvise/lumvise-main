@@ -1,5 +1,6 @@
 //! Owns project aggregation inside Grafeo; no runtime element tree is materialized.
 use super::semantic_storage::SemanticStorage;
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 use crate::{DbError, Result, SemanticResult};
 use grafeo::{GrafeoDB, Value};
 use std::collections::BTreeMap;
@@ -31,11 +32,19 @@ fn count_project_kinds(graph: &GrafeoDB, project_root: &str) -> Result<BTreeMap<
         "project_root",
         project_root,
     );
-    let kinds = graph
+    let properties = graph
         .graph_store()
-        .get_node_property_batch(&ids, &"element_kind".into());
+        .get_nodes_properties_selective_batch(
+            &ids,
+            &["element_kind".into(), "revision_selected".into()],
+        )
+        .committed_nodes(&*graph.graph_store(), &ids);
+    let kinds = properties
+        .iter()
+        .filter(|row| row.get("revision_selected") != Some(&Value::from(false)))
+        .filter_map(|row| row.get("element_kind"));
     let mut counts = BTreeMap::new();
-    for value in kinds.into_iter().flatten() {
+    for value in kinds {
         let Value::String(kind) = value else {
             return Err(DbError::invalid_value(
                 format!("{value:?}"),

@@ -1,11 +1,11 @@
 use prost::{Enumeration, Message};
 
 /// Current major for the MCP-to-app Protobuf invocation envelope.
-pub const APP_BRIDGE_PROTOCOL_MAJOR: u32 = 1;
+pub const APP_BRIDGE_PROTOCOL_MAJOR: u32 = 2;
 
 /// Versioned MCP invocation sent from the standalone adapter to App Core.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeInvocationRequestV1 {
+pub struct AppBridgeInvocationRequestV2 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -33,12 +33,15 @@ pub struct AppBridgeInvocationRequestV1 {
     /// UTF-8 JSON input retained as opaque bytes inside the binary envelope.
     #[prost(bytes = "vec", tag = "9")]
     pub input_json: Vec<u8>,
+    /// Session generation captured by the trusted scoped-session owner.
+    #[prost(uint64, optional, tag = "10")]
+    pub scope_epoch: Option<u64>,
 }
 
 /// Stable typed outcome returned by the app bridge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
 #[repr(i32)]
-pub enum AppBridgeInvocationStatusV1 {
+pub enum AppBridgeInvocationStatusV2 {
     /// Plugin completed successfully.
     Completed = 0,
     /// Plugin-local admission is full.
@@ -57,7 +60,7 @@ pub enum AppBridgeInvocationStatusV1 {
 
 /// Versioned typed result returned from App Core.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeInvocationResponseV1 {
+pub struct AppBridgeInvocationResponseV2 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -65,7 +68,7 @@ pub struct AppBridgeInvocationResponseV1 {
     #[prost(string, tag = "2")]
     pub request_id: String,
     /// Stable terminal category.
-    #[prost(enumeration = "AppBridgeInvocationStatusV1", tag = "3")]
+    #[prost(enumeration = "AppBridgeInvocationStatusV2", tag = "3")]
     pub status: i32,
     /// Successful or Plugin-returned JSON payload.
     #[prost(bytes = "vec", tag = "4")]
@@ -80,7 +83,7 @@ pub struct AppBridgeInvocationResponseV1 {
 
 /// Versioned cancellation request for one active bridge invocation.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeCancellationRequestV1 {
+pub struct AppBridgeCancellationRequestV2 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -103,7 +106,7 @@ pub struct AppBridgeCancellationRequestV1 {
 
 /// Versioned acknowledgement for a bridge cancellation request.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeCancellationResponseV1 {
+pub struct AppBridgeCancellationResponseV2 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -217,19 +220,20 @@ mod tests {
 
     #[test]
     fn invocation_round_trip_preserves_absolute_deadline_and_owner_tuple() {
-        let request = AppBridgeInvocationRequestV1 {
+        let request = AppBridgeInvocationRequestV2 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
             request_id: "request-1".into(),
             owner_id: "owner-1".into(),
             session_id: "session-1".into(),
             scope_id: Some("scope-1".into()),
+            scope_epoch: Some(27),
             deadline_unix_ms: 9_999,
             plugin_id: "plugin-1".into(),
             capability_id: "run".into(),
             input_json: br#"{"value":1}"#.to_vec(),
         };
 
-        let decoded = AppBridgeInvocationRequestV1::decode(request.encode_to_vec().as_slice())
+        let decoded = AppBridgeInvocationRequestV2::decode(request.encode_to_vec().as_slice())
             .expect("decode invocation");
         assert_eq!(decoded, request);
 

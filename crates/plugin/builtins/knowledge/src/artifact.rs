@@ -14,6 +14,7 @@ pub(crate) fn knowledge_type_label(kind: &KnowledgeKind) -> &'static str {
     match kind {
         KnowledgeKind::Requirements => "requirements",
         KnowledgeKind::Specification => "specification",
+        KnowledgeKind::Media => "media",
     }
 }
 
@@ -37,6 +38,7 @@ pub(crate) fn create(request: CreateRequest) -> Result<KnowledgeArtifact, Plugin
     lumvise_contracts::validate_artifact_dependencies(&request.artifact_id, &request.dependencies)
         .map_err(|error| PluginError::new("invalid_knowledge_input", error, false))?;
     let artifact = KnowledgeArtifact {
+        edit_version: None,
         artifact_id: request.artifact_id,
         semantic_element_id: request.semantic_element_id,
         knowledge_type: request.knowledge_type,
@@ -67,11 +69,12 @@ pub(crate) fn update(
     mut artifact: KnowledgeArtifact,
     request: UpdateRequest,
 ) -> Result<KnowledgeArtifact, PluginError> {
-    // shortcut: read-check-write is not atomic across concurrent invocations, move the comparison into storage.semantic if agents need real claims
-    if let Some(expected) = request
-        .expected_revision
-        .filter(|expected| *expected != artifact.lifecycle.revision)
-    {
+    let expected = request.expected_revision.ok_or_else(|| PluginError::new(
+        "knowledge_revision_conflict",
+        format!("Knowledge artifact `{}` needs expected_revision from the original read; expected an explicit edit counter", artifact.artifact_id),
+        false,
+    ))?;
+    if expected != artifact.lifecycle.revision {
         return Err(PluginError::new(
             "knowledge_revision_conflict",
             format!(
@@ -154,7 +157,6 @@ pub(crate) fn filter_matches(artifact: &KnowledgeArtifact, request: &SearchReque
     matches_filter(
         artifact,
         request.project_root.as_ref(),
-        request.semantic_element_id.as_ref(),
         request.knowledge_type.as_ref(),
     ) && is_discoverable(artifact, request.include_inactive)
 }
@@ -167,17 +169,14 @@ pub(crate) fn is_discoverable(
     include_inactive == Some(true) || is_active(artifact, Utc::now())
 }
 
-/// Shared search/list filter over the fields both listings carry; `None`
-/// filters match everything. Project scope is exact equality on the record's
-/// `project_root` — the semantics `search_knowledge` has always applied.
+/// Filters discovery metadata after storage resolves contextual attachments.
+/// An inherited artifact keeps its immutable original owner ID.
 pub(crate) fn matches_filter(
     artifact: &KnowledgeArtifact,
     project_root: Option<&String>,
-    semantic_element_id: Option<&String>,
     knowledge_type: Option<&KnowledgeKind>,
 ) -> bool {
     project_root.is_none_or(|value| artifact.project_root.as_ref() == Some(value))
-        && semantic_element_id.is_none_or(|value| &artifact.semantic_element_id == value)
         && knowledge_type.is_none_or(|value| &artifact.knowledge_type == value)
 }
 
@@ -196,6 +195,7 @@ pub(crate) struct ListAllRequest {
 
 /// Applies the `list_knowledge` filters in memory: project scope, knowledge
 /// type, tags (any of the requested tags), then the result limit.
+/// Storage has already selected contextual attachments; their immutable owner may be an older element.
 pub(crate) fn filter_artifacts(
     artifacts: Vec<KnowledgeArtifact>,
     request: &ListAllRequest,
@@ -206,17 +206,11 @@ pub(crate) fn filter_artifacts(
             matches_filter(
                 artifact,
                 request.project_root.as_ref(),
-                None,
                 request.knowledge_type.as_ref(),
-            ) && request
-                .semantic_element_ids
-                .as_ref()
-                .is_none_or(|ids| ids.contains(&artifact.semantic_element_id))
-                && request.tags.as_ref().is_none_or(|tags| {
-                    tags.iter()
-                        .any(|tag| artifact.tags.iter().any(|own| own == tag))
-                })
-                && is_discoverable(artifact, request.include_inactive)
+            ) && request.tags.as_ref().is_none_or(|tags| {
+                tags.iter()
+                    .any(|tag| artifact.tags.iter().any(|own| own == tag))
+            }) && is_discoverable(artifact, request.include_inactive)
         })
         .collect();
     if let Some(limit) = request.limit {
@@ -377,7 +371,7 @@ mod tests {
         current: KnowledgeArtifact,
         fields: Value,
     ) -> Result<KnowledgeArtifact, PluginError> {
-        let mut request = json!({"artifact_id": current.artifact_id});
+        let mut request = json!({"artifact_id": current.artifact_id, "expected_revision":current.lifecycle.revision});
         request
             .as_object_mut()
             .expect("request object")

@@ -1,13 +1,16 @@
 #[cfg(test)]
 use crate::domain::vector_search::{SCORE_CALLS, cosine_score};
 use crate::domain::vector_search::{top_k as rank_vectors, validate_search_input};
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use crate::local::grafeo::graph_rows::{
+    artifact_is_current_in_project, semantic_element_by_id_selective,
+};
 use crate::local::grafeo::semantic_storage::SemanticStorage;
 use crate::{Result, VectorSearchResult};
 use grafeo::{NodeId, Value as GrafeoValue};
 use grafeo_core::graph::GraphStore as GrafeoGraphStore;
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 fn top_k(
@@ -40,28 +43,8 @@ impl<'db> SemanticStorage<'db> {
         model: Option<&str>,
     ) -> Result<Vec<VectorSearchResult>> {
         validate_search_input(project_root, query, k)?;
-        Ok(self.graph.read(|graph| {
+        self.graph.stable_read(|graph| {
             let store = graph.graph_store();
-            let project_nodes = graph
-                .find_nodes_by_property("project_root", &GrafeoValue::from(project_root))
-                .into_iter()
-                .collect::<HashSet<_>>();
-            let semantic_nodes = store
-                .nodes_by_label("SemanticElement")
-                .into_iter()
-                .filter(|node_id| project_nodes.contains(node_id))
-                .collect::<Vec<_>>();
-            let owner_keys = vec!["semantic_element_id".into(), "lifecycle".into()];
-            let owner_rows =
-                store.get_nodes_properties_selective_batch(&semantic_nodes, &owner_keys);
-            let owner_ids = owner_rows
-                .into_iter()
-                .filter_map(|properties| {
-                    (batch_string(properties.get("lifecycle")).as_deref() != Some("inactive"))
-                        .then(|| batch_string(properties.get("semantic_element_id")))
-                        .flatten()
-                })
-                .collect::<HashSet<_>>();
             let node_ids = store
                 .nodes_by_label(ARTIFACT_VECTOR_LABEL)
                 .into_iter()
@@ -72,10 +55,10 @@ impl<'db> SemanticStorage<'db> {
                 "artifact_id",
                 engine_id,
                 model,
-                Some(&owner_ids),
+                |id| artifact_is_current_in_project(graph, project_root, id),
             );
-            top_k(candidates, query, k)
-        }))
+            Ok(top_k(candidates, query, k))
+        })
     }
 
     /// Returns the exact cosine top-k semantic element-name vectors in one project.
@@ -88,16 +71,11 @@ impl<'db> SemanticStorage<'db> {
         model: Option<&str>,
     ) -> Result<Vec<VectorSearchResult>> {
         validate_search_input(project_root, query, k)?;
-        Ok(self.graph.read(|graph| {
-            let project_nodes = graph
-                .find_nodes_by_property("project_root", &GrafeoValue::from(project_root))
-                .into_iter()
-                .collect::<HashSet<_>>();
+        self.graph.stable_read(|graph| {
             let store = graph.graph_store();
             let node_ids = store
                 .nodes_by_label(ELEMENT_NAME_VECTOR_LABEL)
                 .into_iter()
-                .filter(|node_id| project_nodes.contains(node_id))
                 .collect::<Vec<_>>();
             let candidates = vector_candidates_from_properties(
                 &*store,
@@ -105,10 +83,13 @@ impl<'db> SemanticStorage<'db> {
                 "semantic_element_id",
                 engine_id,
                 model,
-                None,
+                |id| {
+                    semantic_element_by_id_selective(graph, id)
+                        .is_some_and(|element| element.project_root == project_root)
+                },
             );
-            top_k(candidates, query, k)
-        }))
+            Ok(top_k(candidates, query, k))
+        })
     }
 }
 
@@ -118,18 +99,17 @@ fn vector_candidates_from_properties(
     id_property: &str,
     engine_id: &str,
     model: Option<&str>,
-    owner_ids: Option<&HashSet<String>>,
+    include_record: impl Fn(&str) -> bool,
 ) -> Vec<(NodeId, String, Arc<[f32]>)> {
-    let mut keys = vec![
+    let keys = vec![
         id_property.into(),
         "engine_id".into(),
         "model".into(),
         VECTOR_PROPERTY.into(),
     ];
-    if owner_ids.is_some() {
-        keys.push("semantic_element_id".into());
-    }
-    let rows = store.get_nodes_properties_selective_batch(node_ids, &keys);
+    let rows = store
+        .get_nodes_properties_selective_batch(node_ids, &keys)
+        .committed_nodes(store, node_ids);
     node_ids
         .iter()
         .enumerate()
@@ -138,14 +118,9 @@ fn vector_candidates_from_properties(
             let id = batch_string(properties.get(id_property))?;
             if batch_string(properties.get("engine_id")).as_deref() != Some(engine_id)
                 || batch_string(properties.get("model")).as_deref() != model.or(Some(""))
+                || !include_record(&id)
             {
                 return None;
-            }
-            if let Some(allowed) = owner_ids {
-                let owner = batch_string(properties.get("semantic_element_id"));
-                if !owner.is_some_and(|owner| allowed.contains(&owner)) {
-                    return None;
-                }
             }
             let GrafeoValue::Vector(vector) = properties.get(VECTOR_PROPERTY)? else {
                 return None;
@@ -294,6 +269,7 @@ mod tests {
         let storage = db.storage_manager().semantic_storage();
         let project_element = element("project-element", "Project");
         let other_element = SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/other".into(),
             semantic_element_id: "other-element".into(),
             semantic_source_id: "other-element".into(),
@@ -312,25 +288,33 @@ mod tests {
         storage.upsert_element(&other_element).unwrap();
         let project_artifact = artifact("project-artifact", "project-element");
         let other_artifact = artifact("other-artifact", "other-element");
+        for (root, artifact) in [("/project", project_artifact), ("/other", other_artifact)] {
+            storage.upsert_artifact(&artifact).unwrap();
+            storage
+                .store_artifact_text_vectors(
+                    root,
+                    &[crate::StoredArtifactTextVector {
+                        artifact_id: artifact.artifact_id.clone(),
+                        semantic_element_id: artifact.semantic_element_id.clone(),
+                        source_text: artifact.searchable_text.unwrap(),
+                        vector: vector_record(vec![1.0, 0.0]),
+                    }],
+                )
+                .unwrap();
+        }
         storage
             .commit_graph_write(|graph, _, _| {
                 crate::local::grafeo::graph_rows::upsert_artifact_vector_node(
                     graph,
-                    &project_artifact,
-                    "project",
-                    &vector_record(vec![1.0, 0.0]),
-                )?;
-                crate::local::grafeo::graph_rows::upsert_artifact_vector_node(
-                    graph,
-                    &other_artifact,
-                    "other",
+                    &artifact("orphan", "project-element"),
+                    "orphan",
                     &vector_record(vec![1.0, 0.0]),
                 )
             })
             .unwrap();
 
         let results = storage
-            .search_artifact_text_vectors("/project", &[1.0, 0.0], 1, "test", None)
+            .search_artifact_text_vectors("/project", &[1.0, 0.0], 10, "test", None)
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "project-artifact");
@@ -338,6 +322,7 @@ mod tests {
 
     fn element(id: &str, name: &str) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/project".into(),
             semantic_element_id: id.into(),
             semantic_source_id: id.into(),

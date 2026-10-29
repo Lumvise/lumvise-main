@@ -95,7 +95,7 @@ fn workspace_playback_does_not_replace_dashboard_state_or_drop_its_completion() 
             .report_voice_playback_status(playback, VoicePlaybackStatus::Completed)
             .unwrap();
         assert_eq!(
-            owner.map(|(_, session, _)| session).as_deref(),
+            owner.map(|owner| owner.session_id).as_deref(),
             Some(session)
         );
     }
@@ -132,7 +132,7 @@ fn workspace_segments_and_cancellation_leave_floating_playback_intact() {
             .report_voice_playback_status("floating-turn", VoicePlaybackStatus::Completed)
             .unwrap()
             .unwrap()
-            .1,
+            .session_id,
         "floating"
     );
 }
@@ -175,4 +175,116 @@ fn four_held_workspace_llm_requests_leave_an_independent_floating_slot() {
     }
     floating.join().unwrap().unwrap();
     assert_eq!(parallel.unwrap(), "floating");
+}
+
+struct FailingSpeechSynthesis;
+
+impl SpeechSynthesizer for FailingSpeechSynthesis {
+    fn warmup(&self) -> lumvise_neural_core::Result<()> {
+        Ok(())
+    }
+    fn synthesize(
+        &self,
+        _: &Text2VoiceRequest,
+        _: &InvocationControl,
+    ) -> lumvise_neural_core::Result<Text2VoiceResponse> {
+        unreachable!("the caller must use streamed speech")
+    }
+    fn stream_with_events(
+        &self,
+        _: &Text2VoiceRequest,
+        _: &InvocationControl,
+        events: &mut Text2VoiceStreamEventSink<'_>,
+    ) -> lumvise_neural_core::Result<()> {
+        events(Text2VoiceStreamEvent::Error {
+            message: "HTTP 502 from synthetic speech provider".into(),
+        })
+    }
+}
+
+#[test]
+fn synthesis_failure_reaches_the_owning_session_before_any_audio() {
+    for (session, playback) in [
+        ("floating", "floating-failure"),
+        ("workspace:voice", "workspace-failure"),
+    ] {
+        let services = services();
+        services.install_speech_synthesizer(Arc::new(FailingSpeechSynthesis));
+        let events = services.voice_playback_transport().subscribe();
+        speak(&services, session, playback, "Synthetic speech");
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(1)).unwrap(),
+            VoicePlaybackTransportEvent::Cancelled { .. }
+        ));
+        let report = services
+            .report_voice_playback_status(playback, VoicePlaybackStatus::Cancelled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.session_id, session);
+        assert_eq!(
+            report.failure.as_deref(),
+            Some("Speech generation failed: HTTP 502 from synthetic speech provider")
+        );
+        assert!(
+            services
+                .report_voice_playback_status(playback, VoicePlaybackStatus::Cancelled)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn a_late_synthesis_failure_cannot_fail_the_new_response() {
+    let services = services();
+    services.install_speech_synthesizer(Arc::new(FailingSpeechSynthesis));
+    let events = services.voice_playback_transport().subscribe();
+    speak(&services, "floating", "old-failure", "Synthetic speech");
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(1)).unwrap(),
+        VoicePlaybackTransportEvent::Cancelled { .. }
+    ));
+    services.install_speech_synthesizer(Arc::new(StreamingSynthesizer));
+    speak(
+        &services,
+        "floating",
+        "new-response",
+        "New synthetic speech",
+    );
+    assert!(
+        services
+            .report_voice_playback_status("old-failure", VoicePlaybackStatus::Cancelled)
+            .unwrap()
+            .is_none()
+    );
+    let current = services
+        .report_voice_playback_status("new-response", VoicePlaybackStatus::Completed)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.session_id, "floating");
+    assert_eq!(current.failure, None);
+}
+
+#[test]
+fn cancelled_synthesis_does_not_record_a_generation_error() {
+    let services = services();
+    let request: TextToSpeechRequest = serde_json::from_value(
+        json!({"session_id":"floating","playback_id":"cancelled","text":"Synthetic speech"}),
+    )
+    .unwrap();
+    services.open_or_append_playback_segment(&request).unwrap();
+    services.remember_playback_owner("cancelled", "builtin.assistant", "floating", 0);
+    let control = InvocationControl::sixty_seconds();
+    control.cancel();
+    assert!(!super::super::speech_playback::record_synthesis_failure(
+        &services.playback_owners,
+        "cancelled",
+        &control,
+        "cancelled by user"
+    ));
+    let owner = services
+        .report_voice_playback_status("cancelled", VoicePlaybackStatus::Cancelled)
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner.failure, None);
 }

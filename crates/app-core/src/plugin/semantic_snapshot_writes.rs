@@ -4,9 +4,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use lumvise_contracts::{SemanticIndexObservation, SemanticSourceUpsert};
 use lumvise_db_core::{
-    SemanticElement, SemanticOperation, SemanticPartition, SemanticPersistence,
-    SemanticRelationship, SemanticResult,
+    SemanticArtifactRevisionWrite, SemanticElement, SemanticOperation, SemanticPartition,
+    SemanticPersistence, SemanticRelationship, SemanticResult, SemanticRevisionPublication,
+    SemanticRevisionPublicationOutcome, SemanticRevisionStructure,
 };
 use lumvise_plugin_runtime::HostCapabilityError;
 use lumvise_resource_routing::InvocationControl;
@@ -21,16 +23,32 @@ pub(super) struct SemanticSnapshotWrites {
     writes: Mutex<HashMap<String, StagedSemanticSnapshot>>,
 }
 
+/// One staged part of an atomic publication, including its exact payload mutations.
+/// Example: `SemanticSnapshotPage { elements, artifacts, ..Default::default() }`.
+#[derive(Default)]
+pub(super) struct SemanticSnapshotPage {
+    pub(super) page_index: usize,
+    pub(super) elements: Vec<SemanticElement>,
+    pub(super) relationships: Vec<SemanticRelationship>,
+    pub(super) sources: Vec<SemanticSourceUpsert>,
+    pub(super) artifacts: Vec<SemanticArtifactRevisionWrite>,
+    pub(super) removed_artifact_ids: Vec<String>,
+}
+
 struct StagedSemanticSnapshot {
     plugin_id: String,
     project_root: String,
     provider_instance_id: Option<String>,
     partition_paths: Vec<String>,
     page_count: usize,
+    observation: SemanticIndexObservation,
     next_page_index: usize,
     created_at: Instant,
-    elements: BTreeMap<String, SemanticElement>,
-    relationships: BTreeMap<String, SemanticRelationship>,
+    elements: Vec<SemanticElement>,
+    relationships: Vec<SemanticRelationship>,
+    sources: BTreeMap<String, SemanticSourceUpsert>,
+    artifacts: Vec<SemanticArtifactRevisionWrite>,
+    removed_artifact_ids: Vec<String>,
 }
 
 impl SemanticSnapshotWrites {
@@ -48,8 +66,10 @@ impl SemanticSnapshotWrites {
         provider_instance_id: Option<String>,
         partition_paths: Vec<String>,
         page_count: usize,
+        observation: SemanticIndexObservation,
     ) -> Result<Value, HostCapabilityError> {
         validate_identity(snapshot_id, project_root, page_count)?;
+        validate_observation(&observation)?;
         if provider_instance_id.is_some() {
             SemanticPartition {
                 project_root: project_root.to_owned(),
@@ -57,10 +77,27 @@ impl SemanticSnapshotWrites {
                 replace_paths: partition_paths.clone(),
             }
             .validate()
-            .map_err(storage_error)?;
+            .map_err(|error| storage_error(error.into()))?;
         }
         let mut writes = self.lock()?;
         discard_expired(&mut writes);
+        if let Some(previous) = writes.get(snapshot_id) {
+            if previous.plugin_id != plugin_id
+                || previous.project_root != project_root
+                || previous.provider_instance_id != provider_instance_id
+                || previous.partition_paths != partition_paths
+                || previous.page_count != page_count
+                || previous.observation != observation
+            {
+                return Err(write_error(
+                    "semantic_snapshot_identity_changed",
+                    format!(
+                        "snapshot `{snapshot_id}` changed its owner, scope or observation; expected the identical frozen publication"
+                    ),
+                    false,
+                ));
+            }
+        }
         if !writes.contains_key(snapshot_id) && writes.len() >= MAX_ACTIVE_WRITES {
             return Err(write_error(
                 "semantic_snapshot_write_limit",
@@ -78,10 +115,14 @@ impl SemanticSnapshotWrites {
                 provider_instance_id,
                 partition_paths,
                 page_count,
+                observation,
                 next_page_index: 0,
                 created_at: Instant::now(),
-                elements: BTreeMap::new(),
-                relationships: BTreeMap::new(),
+                elements: Vec::new(),
+                relationships: Vec::new(),
+                sources: BTreeMap::new(),
+                artifacts: Vec::new(),
+                removed_artifact_ids: Vec::new(),
             },
         );
         Ok(json!({"snapshot_id": snapshot_id, "status": "staging"}))
@@ -91,13 +132,12 @@ impl SemanticSnapshotWrites {
         &self,
         plugin_id: &str,
         snapshot_id: &str,
-        page_index: usize,
-        elements: Vec<SemanticElement>,
-        relationships: Vec<SemanticRelationship>,
+        page: SemanticSnapshotPage,
     ) -> Result<Value, HostCapabilityError> {
         let mut writes = self.lock()?;
         discard_expired(&mut writes);
         let write = owned_write_mut(&mut writes, snapshot_id, plugin_id)?;
+        let page_index = page.page_index;
         if page_index != write.next_page_index {
             return Err(write_error(
                 "semantic_snapshot_page_out_of_order",
@@ -118,15 +158,14 @@ impl SemanticSnapshotWrites {
                 false,
             ));
         }
-        for element in elements {
+        write.elements.extend(page.elements);
+        write.relationships.extend(page.relationships);
+        write.artifacts.extend(page.artifacts);
+        write.removed_artifact_ids.extend(page.removed_artifact_ids);
+        for source in page.sources {
             write
-                .elements
-                .insert(element.semantic_element_id.clone(), element);
-        }
-        for relationship in relationships {
-            write
-                .relationships
-                .insert(relationship_key(&relationship), relationship);
+                .sources
+                .insert(source.semantic_source_id.clone(), source);
         }
         write.next_page_index += 1;
         Ok(json!({
@@ -169,26 +208,10 @@ impl SemanticSnapshotWrites {
             element_count = write.elements.len(),
             relationship_count = write.relationships.len()
         );
-        let elements = write.elements.into_values().collect::<Vec<_>>();
-        let relationships = write.relationships.into_values().collect::<Vec<_>>();
-        let operation = if write.partition_paths.is_empty() && write.provider_instance_id.is_none()
-        {
-            SemanticOperation::SyncStructure {
-                project_root: write.project_root,
-                elements,
-                relationships,
-            }
-        } else {
-            SemanticOperation::SyncPartition {
-                partition: SemanticPartition {
-                    project_root: write.project_root,
-                    provider_instance_id: write.provider_instance_id,
-                    replace_paths: write.partition_paths,
-                },
-                elements,
-                relationships,
-            }
-        };
+        let sources = write.sources.values().cloned().collect::<Vec<_>>();
+        let project_id = write.observation.project_id.clone();
+        let project_root = write.project_root.clone();
+        let operation = SemanticOperation::PublishRevisions(write.into_publication(snapshot_id));
         let result = semantic.execute(operation, &InvocationControl::sixty_seconds());
         tracing::info!(
             event = "semantic_snapshot_commit_finished",
@@ -198,16 +221,21 @@ impl SemanticSnapshotWrites {
             success = result.is_ok()
         );
         let result = result.map_err(storage_error)?;
-        let report = match result {
-            SemanticResult::SyncStructure(report) | SemanticResult::SyncPartition(report) => report,
+        let outcome = match result {
+            SemanticResult::RevisionPublication(outcome) => outcome,
             _ => {
                 return Err(storage_error(lumvise_db_core::DbError::invalid_value(
                     "semantic result",
-                    "snapshot sync result",
+                    "conditional revision publication result",
                 )));
             }
         };
-        Ok(json!({"snapshot_id": snapshot_id, "status": "committed", "report": report}))
+        let accepted = matches!(outcome, SemanticRevisionPublicationOutcome::Accepted(_));
+        Ok(
+            json!({"snapshot_id": snapshot_id, "status": if accepted { "committed" } else { "conflict" },
+            "accepted": accepted, "project_id":project_id, "project_root":project_root,
+            "publication": outcome, "sources": if accepted { sources } else { vec![] }}),
+        )
     }
 
     pub(super) fn abort(
@@ -255,14 +283,53 @@ fn validate_identity(
     Ok(())
 }
 
-fn relationship_key(relationship: &SemanticRelationship) -> String {
-    format!(
-        "{}\u{0}{}\u{0}{}\u{0}{}",
-        relationship.source_element_id,
-        relationship.target_element_id,
-        relationship.relationship_kind,
-        relationship.label
-    )
+fn validate_observation(observation: &SemanticIndexObservation) -> Result<(), HostCapabilityError> {
+    if [
+        &observation.project_id,
+        &observation.selection_id,
+        &observation.source_context,
+    ]
+    .iter()
+    .any(|id| id.trim().is_empty())
+        || observation.expected.generation < 0
+    {
+        return Err(write_error(
+            "invalid_semantic_observation",
+            format!(
+                "observation `{observation:?}`; expected nonempty lineage/selection/context and a nonnegative generation"
+            ),
+            false,
+        ));
+    }
+    Ok(())
+}
+
+impl StagedSemanticSnapshot {
+    fn into_publication(self, operation_id: &str) -> SemanticRevisionPublication {
+        let partition = (!self.partition_paths.is_empty() || self.provider_instance_id.is_some())
+            .then(|| SemanticPartition {
+                project_root: self.project_root.clone(),
+                replace_paths: self.partition_paths,
+                provider_instance_id: self.provider_instance_id,
+            });
+        SemanticRevisionPublication {
+            operation_id: operation_id.into(),
+            producer_base: self.observation.producer_base,
+            project_root: self.project_root,
+            project_id: self.observation.project_id,
+            selection_id: self.observation.selection_id,
+            source_context: self.observation.source_context,
+            expected: self.observation.expected,
+            structure: Some(SemanticRevisionStructure {
+                partition,
+                elements: self.elements,
+                relationships: self.relationships,
+            }),
+            artifacts: self.artifacts,
+            removed_artifact_ids: self.removed_artifact_ids,
+            source_anchor: None,
+        }
+    }
 }
 
 fn owned_write<'a>(
@@ -317,11 +384,29 @@ fn write_error(code: &str, message: impl Into<String>, retryable: bool) -> HostC
 mod tests {
     use super::*;
 
+    fn observation() -> SemanticIndexObservation {
+        SemanticIndexObservation {
+            project_id: "lineage".into(),
+            producer_base: None,
+            selection_id: "working".into(),
+            source_context: "local".into(),
+            expected: Default::default(),
+        }
+    }
+
     #[test]
     fn stages_more_than_two_hundred_thousand_input_records() {
         let writes = SemanticSnapshotWrites::new();
         writes
-            .begin("plugin", "snapshot", "/repo", None, Vec::new(), 1)
+            .begin(
+                "plugin",
+                "snapshot",
+                "/repo",
+                None,
+                Vec::new(),
+                1,
+                observation(),
+            )
             .unwrap();
         let repeated_relationship = SemanticRelationship {
             project_root: "/repo".to_owned(),
@@ -335,13 +420,14 @@ mod tests {
         let result = writes.stage(
             "plugin",
             "snapshot",
-            0,
-            Vec::new(),
-            vec![repeated_relationship; 200_001],
+            SemanticSnapshotPage {
+                relationships: vec![repeated_relationship; 200_001],
+                ..Default::default()
+            },
         );
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap()["staged_relationships"], 1);
+        assert_eq!(result.unwrap()["staged_relationships"], 200_001);
     }
 
     #[test]
@@ -351,7 +437,15 @@ mod tests {
 
         let writes = SemanticSnapshotWrites::new();
         writes
-            .begin("plugin", "snapshot", "/repo", None, Vec::new(), PAGE_COUNT)
+            .begin(
+                "plugin",
+                "snapshot",
+                "/repo",
+                None,
+                Vec::new(),
+                PAGE_COUNT,
+                observation(),
+            )
             .unwrap();
 
         for page_index in 0..PAGE_COUNT {
@@ -366,11 +460,48 @@ mod tests {
             let result = writes.stage(
                 "plugin",
                 "snapshot",
-                page_index,
-                Vec::new(),
-                vec![relationship],
+                SemanticSnapshotPage {
+                    page_index,
+                    relationships: vec![relationship],
+                    ..Default::default()
+                },
             );
             assert!(result.is_ok(), "page {page_index} failed: {result:?}");
         }
+    }
+
+    #[test]
+    fn frozen_observations_cannot_change_or_transfer_to_another_plugin() {
+        let writes = SemanticSnapshotWrites::new();
+        writes
+            .begin(
+                "plugin",
+                "snapshot",
+                "/repo",
+                None,
+                vec![],
+                1,
+                observation(),
+            )
+            .unwrap();
+        let mut changed = observation();
+        changed.expected.generation += 1;
+        assert!(
+            writes
+                .begin("plugin", "snapshot", "/repo", None, vec![], 1, changed)
+                .is_err()
+        );
+        assert!(
+            writes
+                .begin("other", "snapshot", "/repo", None, vec![], 1, observation())
+                .is_err()
+        );
+        let mut invalid = observation();
+        invalid.project_id.clear();
+        assert!(
+            writes
+                .begin("plugin", "other", "/repo", None, vec![], 1, invalid)
+                .is_err()
+        );
     }
 }

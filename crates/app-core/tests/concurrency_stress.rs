@@ -18,8 +18,8 @@ use lumvise_app_core::{
     RuntimeConnection,
 };
 use lumvise_mcp_core::{
-    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeInvocationRequestV1, AppBridgeInvocationResponseV1,
-    AppBridgeInvocationStatusV1,
+    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeInvocationRequestV2, AppBridgeInvocationResponseV2,
+    AppBridgeInvocationStatusV2,
 };
 use lumvise_plugin_package::{
     BuildPackageRequest, ExecutionMode, ExportDescriptor, ExportSurface, HostCompatibility,
@@ -295,12 +295,12 @@ fn immediate_client_eof_cancels_exact_invoke_v1_without_cancelling_sibling() {
     let sibling_response = sibling_receiver
         .recv_timeout(REQUEST_TIMEOUT)
         .expect("sibling invocation exceeded cancellation deadline")
-        .expect("sibling invoke-v1 response");
+        .expect("sibling invoke-v2 response");
     sibling.join().expect("sibling client thread");
     assert_eq!(sibling_response.request_id, "eof-sibling-request");
     assert_ne!(
         sibling_response.status,
-        AppBridgeInvocationStatusV1::Cancelled as i32,
+        AppBridgeInvocationStatusV2::Cancelled as i32,
         "EOF for tuple A must not cancel sibling tuple B"
     );
 
@@ -429,7 +429,7 @@ fn invoke_mcp_tool(
         "concurrency-scope",
         &barrier,
     )?;
-    if response.status != AppBridgeInvocationStatusV1::Completed as i32 {
+    if response.status != AppBridgeInvocationStatusV2::Completed as i32 {
         return Err(format!(
             "invoke status was {}: {}",
             response.status, response.message
@@ -445,19 +445,19 @@ fn invoke_mcp_tool_response(
     session_id: &str,
     scope_id: &str,
     barrier: &str,
-) -> Result<AppBridgeInvocationResponseV1, String> {
+) -> Result<AppBridgeInvocationResponseV2, String> {
     let payload = mcp_invocation_payload(request_id, owner_id, session_id, scope_id, barrier);
     let (status, body) = send_request(
         endpoint,
         "POST",
-        "/api/mcp/plugins/invoke-v1",
+        "/api/mcp/plugins/invoke-v2",
         Some("application/protobuf"),
         &payload,
     )?;
     if status != 200 {
         return Err(format!("mcp invocation returned HTTP status {status}"));
     }
-    AppBridgeInvocationResponseV1::decode(body.as_slice())
+    AppBridgeInvocationResponseV2::decode(body.as_slice())
         .map_err(|error| format!("decode invoke response: {error}"))
 }
 
@@ -473,12 +473,13 @@ fn mcp_invocation_payload(
         .expect("system time after Unix epoch")
         .as_millis() as u64
         + 5_000;
-    AppBridgeInvocationRequestV1 {
+    AppBridgeInvocationRequestV2 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         request_id: request_id.into(),
         owner_id: owner_id.into(),
         session_id: session_id.into(),
         scope_id: Some(scope_id.into()),
+        scope_epoch: None,
         deadline_unix_ms,
         plugin_id: CONCURRENCY_PLUGIN_ID.into(),
         capability_id: MCP_TOOL_ID.into(),
@@ -525,7 +526,7 @@ fn send_invoke_request_then_close_write(
         .map_err(|error| error.to_string())?;
     write!(
         stream,
-        "POST /api/mcp/plugins/invoke-v1 HTTP/1.1\r\nHost: {authority}\r\n\
+        "POST /api/mcp/plugins/invoke-v2 HTTP/1.1\r\nHost: {authority}\r\n\
          Authorization: Bearer {}\r\nConnection: close\r\nContent-Type: application/protobuf\r\n\
          Content-Length: {}\r\n\r\n",
         endpoint.credential,

@@ -3,6 +3,7 @@ use lumvise_contracts::CreateKnowledgeDocumentRequest;
 
 fn report() -> KnowledgeDocument {
     crate::documents::draft_document(CreateKnowledgeDocumentRequest {
+        operation_id: None,
         document_id: "weekly".into(),
         project_root: "/current".into(),
         document_kind: KnowledgeDocumentKind::Report,
@@ -30,6 +31,29 @@ fn an_unanchored_report_uses_its_document_identity_title_grouping_and_body() {
     );
     assert_eq!(page["properties"], json!({}));
     assert_eq!(page["artifacts"], json!([]));
+}
+
+#[test]
+fn qualified_citations_keep_their_authority_and_selection_without_local_id_aliases() {
+    let mut document = report();
+    let citation = json!({"target_kind":"qualified","project":{"project_root":"/foreign",
+        "project_id":"foreign-lineage","storage_authority":"foreign-store"},
+        "target":{"target_kind":"semantic_element","semantic_element_id":"same-id",
+        "selection":{"mode":"exact","source_context":"git:reviewed"}}});
+    document
+        .references
+        .push(serde_json::from_value(citation.clone()).unwrap());
+    let page = project(&document);
+    assert_eq!(page["sourceRefs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        page["properties"]["lumvise_citations"][0]["project"],
+        citation["project"]
+    );
+    assert_eq!(
+        page["properties"]["lumvise_citations"][0]["target"],
+        citation["target"]
+    );
+    assert_eq!(page["markdown"], document.content);
 }
 
 #[test]

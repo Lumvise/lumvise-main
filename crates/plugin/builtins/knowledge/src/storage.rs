@@ -1,11 +1,16 @@
 use std::collections::{BTreeMap, HashSet};
 
-use chrono::Utc;
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use crate::KnowledgeArtifact;
+mod artifact_routes;
+mod revision_reads;
+pub(crate) use revision_reads::{artifact_at_edit, observe_knowledge, read_revision};
+
+#[cfg(test)]
+pub(crate) mod test_rows;
 
 pub(crate) const VECTORS: &str = "knowledge_vectors";
 pub(crate) const CULTIVATION_RUNS: &str = "knowledge_cultivation_runs";
@@ -55,6 +60,47 @@ pub(crate) fn list<T: DeserializeOwned>(
     list_sql(context, table, key_prefix)
 }
 
+/// Atomically applies SDK mutations only while the observed row is unchanged.
+/// Example: `mutate_rows_if_unchanged(context, table, key, Some(&pending), mutations)`.
+pub(crate) fn mutate_rows_if_unchanged<T: Serialize>(
+    context: &mut PluginContext<'_>,
+    table: &str,
+    key: &str,
+    expected: Option<&T>,
+    mutations: Vec<Value>,
+) -> Result<Value, PluginError> {
+    ensure_mutation_tables(context, table, &mutations)?;
+    let expected = expected.map_or(
+        json!({"presence":"absent"}),
+        |value| json!({"presence":"present", "value":value}),
+    );
+    let mut conditional = vec![json!({"operation":"require_value", "table_name":table,
+        "row_key":key, "expected":expected})];
+    conditional.extend(mutations);
+    context.host_call(
+        CAPABILITY,
+        json!({"operation":"mutate_rows", "mutations":conditional}),
+    )
+}
+
+fn ensure_mutation_tables(
+    context: &mut PluginContext<'_>,
+    table: &str,
+    mutations: &[Value],
+) -> Result<(), PluginError> {
+    let tables = std::iter::once(table)
+        .chain(
+            mutations
+                .iter()
+                .filter_map(|mutation| mutation["table_name"].as_str()),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    for table in tables {
+        ensure(context, table)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn list_project_knowledge(
     context: &mut PluginContext<'_>,
     project_root: &str,
@@ -68,7 +114,7 @@ pub(crate) fn list_project_knowledge(
         .get("artifacts")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid_response("semantic project snapshot artifacts", &output))?;
-    let mut artifacts = decode_graph_knowledge_artifacts(artifacts)?;
+    let mut artifacts = decode_graph_knowledge_artifacts(artifacts, project_root)?;
     artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
     Ok(artifacts)
 }
@@ -203,29 +249,6 @@ pub(crate) fn selective_subgraph(
     crate::semantic_context::load_selective_subgraph(context, project_root, root_element_id)
 }
 
-/// The only Knowledge write path: stamps revision and timestamps from the stored
-/// record, then persists and returns the stamped record.
-pub(crate) fn put_knowledge(
-    context: &mut PluginContext<'_>,
-    artifact: &KnowledgeArtifact,
-) -> Result<KnowledgeArtifact, PluginError> {
-    let stored = raw_graph_artifact(context, &artifact.artifact_id)?;
-    validate_knowledge_owner(artifact, stored.as_ref())?;
-    let previous = stored
-        .as_ref()
-        .map(decode_graph_artifact::<KnowledgeArtifact>)
-        .transpose()?
-        .filter(|previous| previous.project_root == artifact.project_root);
-    let mut stamped = artifact.clone();
-    crate::artifact::stamp(
-        &mut stamped,
-        previous.as_ref().map(|previous| &previous.lifecycle),
-        Utc::now(),
-    );
-    stamped.artifact_id = put_graph_artifact(context, &stamped)?;
-    Ok(stamped)
-}
-
 pub(crate) fn get_knowledge(
     context: &mut PluginContext<'_>,
     artifact_id: &str,
@@ -233,32 +256,58 @@ pub(crate) fn get_knowledge(
     get_graph_artifact(context, artifact_id)
 }
 
-pub(crate) fn remove_knowledge(
-    context: &mut PluginContext<'_>,
-    artifact_id: &str,
-) -> Result<bool, PluginError> {
-    let output = context.host_call(
-        SEMANTIC_CAPABILITY,
-        json!({"operation": "remove_artifact", "artifact_id": artifact_id}),
-    )?;
-    output["removed"]
-        .as_bool()
-        .ok_or_else(|| invalid_response("semantic Knowledge artifact removal boolean", &output))
-}
-
 pub(crate) fn artifacts_for_elements(
     context: &mut PluginContext<'_>,
-    semantic_element_ids: &std::collections::HashSet<String>,
+    semantic_element_ids: &HashSet<String>,
+    project_root: Option<&str>,
 ) -> Result<Vec<KnowledgeArtifact>, PluginError> {
-    if semantic_element_ids.is_empty() {
+    let rows = artifact_rows_for_elements(context, semantic_element_ids)?;
+    match project_root {
+        Some(root) => artifact_routes::project_rows(context, root, rows),
+        None => artifact_routes::routed_rows(context, &rows, BTreeMap::new()),
+    }
+}
+
+pub(crate) fn artifacts_for_sources(
+    context: &mut PluginContext<'_>,
+    elements: &[crate::semantic_context::SemanticElement],
+) -> Result<Vec<KnowledgeArtifact>, PluginError> {
+    let ids = elements
+        .iter()
+        .map(|element| element.semantic_element_id.clone())
+        .collect();
+    let rows = artifact_rows_for_elements(context, &ids)?;
+    let routes = elements
+        .iter()
+        .map(|element| {
+            (
+                element.semantic_element_id.clone(),
+                element.project_root.clone(),
+            )
+        })
+        .collect();
+    artifact_routes::routed_rows(context, &rows, routes)
+}
+
+fn artifact_rows_for_elements(
+    context: &mut PluginContext<'_>,
+    ids: &HashSet<String>,
+) -> Result<Vec<Value>, PluginError> {
+    if ids.is_empty() {
         return Ok(Vec::new());
     }
     let output = context.host_call(
         SEMANTIC_CAPABILITY,
-        json!({"operation": "artifacts_for_elements",
-            "semantic_element_ids": semantic_element_ids}),
+        json!({"operation":"artifacts_for_elements","semantic_element_ids":ids}),
     )?;
-    decode_graph_knowledge_list(&output)
+    artifact_rows(&output).cloned()
+}
+
+fn artifact_rows(output: &Value) -> Result<&Vec<Value>, PluginError> {
+    output
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_response("semantic Knowledge artifacts", output))
 }
 
 pub(crate) fn list_knowledge_dependents(
@@ -274,7 +323,7 @@ pub(crate) fn list_knowledge_dependents(
             "target_id": target_id
         }),
     )?;
-    decode_graph_knowledge_list(&output)
+    artifact_routes::routed_rows(context, artifact_rows(&output)?, BTreeMap::new())
 }
 
 pub(crate) fn list_all_knowledge(
@@ -385,13 +434,10 @@ pub(crate) fn page<T: DeserializeOwned>(
         .collect()
 }
 
-fn put_graph_artifact(
-    context: &mut PluginContext<'_>,
-    value: &KnowledgeArtifact,
-) -> Result<String, PluginError> {
+pub(crate) fn graph_artifact(value: &KnowledgeArtifact) -> Result<Value, PluginError> {
     let knowledge = serde_json::to_value(value).map_err(encode_error)?;
     let lifecycle = serde_json::to_value(&value.lifecycle).map_err(encode_error)?;
-    let artifact = json!({
+    Ok(json!({
         "artifact_id": knowledge["artifact_id"],
         "semantic_element_id": knowledge["semantic_element_id"],
         "artifact_kind": knowledge["knowledge_type"],
@@ -408,16 +454,7 @@ fn put_graph_artifact(
             "project_root": knowledge["project_root"],
             "lifecycle": lifecycle
         }}
-    });
-    let output = context.host_call(
-        SEMANTIC_CAPABILITY,
-        json!({"operation": "upsert_artifact", "artifact": artifact,
-            "media_type": "text/markdown; charset=utf-8"}),
-    )?;
-    output["artifact_id"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| invalid_response("stored artifact identity", &output))
+    }))
 }
 
 pub(crate) fn has_knowledge_record(
@@ -433,14 +470,15 @@ fn get_graph_artifact<T: DeserializeOwned>(
     context: &mut PluginContext<'_>,
     artifact_id: &str,
 ) -> Result<Option<T>, PluginError> {
-    raw_graph_artifact(context, artifact_id)?
-        .as_ref()
-        .filter(|artifact| is_knowledge_artifact(artifact))
-        .map(decode_graph_artifact)
-        .transpose()
+    let Some(artifact) = raw_graph_artifact(context, artifact_id)?.filter(is_knowledge_artifact)
+    else {
+        return Ok(None);
+    };
+    let artifact = revision_reads::current_knowledge_body(context, artifact)?;
+    decode_graph_artifact(&artifact).map(Some)
 }
 
-fn validate_knowledge_owner(
+pub(crate) fn validate_knowledge_owner(
     artifact: &KnowledgeArtifact,
     stored: Option<&Value>,
 ) -> Result<(), PluginError> {
@@ -457,7 +495,7 @@ fn validate_knowledge_owner(
     Ok(())
 }
 
-fn raw_graph_artifact(
+pub(crate) fn raw_graph_artifact(
     context: &mut PluginContext<'_>,
     artifact_id: &str,
 ) -> Result<Option<Value>, PluginError> {
@@ -471,21 +509,18 @@ fn raw_graph_artifact(
         .cloned())
 }
 
-fn decode_graph_knowledge_list(output: &Value) -> Result<Vec<KnowledgeArtifact>, PluginError> {
-    let artifacts = output
-        .get("artifacts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid_response("semantic Knowledge artifacts", output))?;
-    decode_graph_knowledge_artifacts(artifacts)
-}
-
 pub(crate) fn decode_graph_knowledge_artifacts(
     artifacts: &[Value],
+    project_root: &str,
 ) -> Result<Vec<KnowledgeArtifact>, PluginError> {
     artifacts
         .iter()
         .filter(|artifact| is_knowledge_artifact(artifact))
-        .map(decode_graph_artifact)
+        .map(|row| {
+            let mut artifact: KnowledgeArtifact = decode_graph_artifact(row)?;
+            artifact.project_root = Some(project_root.into());
+            Ok(artifact)
+        })
         .collect()
 }
 
@@ -504,17 +539,19 @@ fn is_knowledge_artifact(artifact: &Value) -> bool {
     artifact["metadata"]["knowledge"].is_object()
 }
 
-fn decode_graph_artifact<T: DeserializeOwned>(artifact: &Value) -> Result<T, PluginError> {
+pub(crate) fn decode_graph_artifact<T: DeserializeOwned>(
+    artifact: &Value,
+) -> Result<T, PluginError> {
     let kind = artifact["artifact_kind"].as_str().unwrap_or_default();
-    if !matches!(kind, "requirements" | "specification") {
+    if !matches!(kind, "requirements" | "specification" | "media") {
         let root = artifact["metadata"]["knowledge"]["project_root"]
             .as_str()
             .or_else(|| artifact["project_root"].as_str())
             .unwrap_or("the owning project");
         return Err(PluginError::new(
-            "knowledge_conversion_required",
+            "unsupported_knowledge_format",
             format!(
-                "Artifact `{}` has retired kind `{kind}`; expected requirements or specification. Preview convert_legacy_documents for project `{root}` before applying conversion.",
+                "Artifact `{}` has retired kind `{kind}`; expected requirements, specification or media. Project `{root}` needs a database in the current format; back up and rebuild with a compatible build.",
                 artifact["artifact_id"]
             ),
             false,
@@ -522,6 +559,7 @@ fn decode_graph_artifact<T: DeserializeOwned>(artifact: &Value) -> Result<T, Plu
     }
     let knowledge = &artifact["metadata"]["knowledge"];
     let mut record = json!({
+        "edit_version":artifact["edit_version"],
         "artifact_id": artifact["artifact_id"],
         "semantic_element_id": artifact["semantic_element_id"],
         "knowledge_type": kind,
@@ -531,7 +569,7 @@ fn decode_graph_artifact<T: DeserializeOwned>(artifact: &Value) -> Result<T, Plu
         "metadata": knowledge["metadata"],
         "dependencies": artifact["dependencies"],
         "path": knowledge["path"],
-        "project_root": knowledge["project_root"]
+        "project_root": artifact.get("project_root").unwrap_or(&knowledge["project_root"])
     });
     merge_lifecycle(&mut record, knowledge);
     decode(&record, "semantic Knowledge artifacts")
@@ -642,7 +680,7 @@ mod tests {
 
     #[test]
     fn current_kinds_decode_without_reclassifying_the_stored_record() {
-        for kind in ["requirements", "specification"] {
+        for kind in ["requirements", "specification", "media"] {
             let artifact: KnowledgeArtifact = decode_graph_artifact(&row(kind)).unwrap();
             assert_eq!(serde_json::to_value(artifact.knowledge_type).unwrap(), kind);
             assert_eq!(artifact.lifecycle.revision, 3);
@@ -654,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_kinds_require_explicit_conversion_and_never_become_current_artifacts() {
+    fn retired_kinds_are_rejected_without_rewriting_their_bodies() {
         for kind in [
             "issue",
             "task_assignment",
@@ -669,9 +707,9 @@ mod tests {
             "derived_summary",
         ] {
             let error = decode_graph_artifact::<KnowledgeArtifact>(&row(kind)).unwrap_err();
-            assert_eq!(error.code, "knowledge_conversion_required");
+            assert_eq!(error.code, "unsupported_knowledge_format");
             assert!(error.message.contains(kind));
-            assert!(error.message.contains("convert_legacy_documents"));
+            assert!(error.message.contains("back up and rebuild"));
         }
     }
 }

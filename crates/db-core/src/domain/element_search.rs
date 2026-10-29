@@ -1,33 +1,5 @@
-//! Shared element-name matching; adapters may index candidates before scoring.
-pub(crate) struct ElementNameQuery {
-    pub(crate) normalized: String,
-    pub(crate) tokens: Vec<String>,
-}
-
-impl ElementNameQuery {
-    pub(crate) fn new(query: &str) -> Self {
-        let normalized = query.trim().to_ascii_lowercase();
-        let tokens = normalized
-            .split(|ch: char| !ch.is_alphanumeric())
-            .filter(|token| !token.is_empty())
-            .map(str::to_owned)
-            .collect();
-        Self { normalized, tokens }
-    }
-
-    pub(crate) fn score(&self, name: &str, id: &str) -> u8 {
-        if name == self.normalized {
-            return 4;
-        }
-        if name.contains(&self.normalized) {
-            return 3;
-        }
-        if self.tokens.iter().any(|token| name.contains(token)) {
-            return 2;
-        }
-        u8::from(id.contains(&self.normalized))
-    }
-}
+//! Snapshot name searches delegate matching to the shared revision policy.
+use crate::SemanticElementNameQuery;
 
 impl crate::SemanticProjectSnapshot {
     /// Finds active element candidates with the same ranking as local persistence.
@@ -43,7 +15,7 @@ impl crate::SemanticProjectSnapshot {
                 "non-empty semantic element search query",
             ));
         }
-        let query = ElementNameQuery::new(query);
+        let query = SemanticElementNameQuery::new(query);
         let mut ranked = self
             .elements
             .iter()

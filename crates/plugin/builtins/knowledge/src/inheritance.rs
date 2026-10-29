@@ -37,11 +37,7 @@ pub(crate) fn project_transfer_candidates(
         .cloned()
         .collect::<Vec<_>>();
     let elements = transfer_source_elements(target_root, &targets, context)?;
-    let candidate_ids = elements
-        .iter()
-        .map(|element| element.semantic_element_id.clone())
-        .collect::<HashSet<_>>();
-    let artifacts = storage::artifacts_for_elements(context, &candidate_ids)?;
+    let artifacts = storage::artifacts_for_sources(context, &elements)?;
     let sources = owned_transfer_sources(elements, &artifacts);
     let source_index = SourceElementIndex::new(&sources);
     Ok(collect_transfer_matches(
@@ -835,6 +831,7 @@ mod tests {
         hash: &str,
     ) -> SemanticElement {
         SemanticElement {
+            revision_dependencies: Vec::new(),
             project_root: "/new".into(),
             semantic_element_id: id.into(),
             semantic_source_id: "source".into(),
@@ -866,6 +863,7 @@ mod tests {
 
     fn artifact(index: usize, knowledge_type: KnowledgeKind) -> KnowledgeArtifact {
         KnowledgeArtifact {
+            edit_version: None,
             artifact_id: format!("artifact-{index}"),
             semantic_element_id: "old-element".into(),
             knowledge_type,
@@ -880,7 +878,11 @@ mod tests {
         }
     }
 
-    fn knowledge_kinds() -> [KnowledgeKind; 2] {
-        [KnowledgeKind::Requirements, KnowledgeKind::Specification]
+    fn knowledge_kinds() -> [KnowledgeKind; 3] {
+        [
+            KnowledgeKind::Requirements,
+            KnowledgeKind::Specification,
+            KnowledgeKind::Media,
+        ]
     }
 }

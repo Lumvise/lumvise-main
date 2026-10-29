@@ -30,6 +30,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         .expect("install real Knowledge package");
     let broker = Arc::new(MemoryStorageBroker::default());
     broker.seed_projection_graph();
+    broker.put_unrelated_graph_artifact("retired-untyped-artifact", "element-a");
     broker
         .rows
         .lock()
@@ -67,11 +68,13 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         .scoped_exports("assistant_session")
         .expect("assistant-scoped exports");
     assert_eq!(scoped.len(), 1);
-    assert_eq!(scoped[0].exports.len(), 14);
+    assert_eq!(scoped[0].exports.len(), 16);
     for name in [
         "knowledge.create",
         "knowledge.update",
         "document.create",
+        "document.space",
+        "document.reference",
         "document.update",
     ] {
         assert!(scoped[0].exports.iter().any(|export| export.id == name));
@@ -127,7 +130,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
             PLUGIN_ID,
             UPDATE_EXPORT_ID,
             serde_json::json!({
-                "artifact_id": "absent", "title": "Still absent"
+                "artifact_id": "absent", "title": "Still absent", "expected_revision":0
             }),
         )
         .expect("structured missing update failure");
@@ -206,32 +209,24 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
 
     system.stop(PLUGIN_ID).expect("restart stop");
     system.start(PLUGIN_ID).expect("restart start");
-    let persisted = system
-        .invoke(
-            PLUGIN_ID,
-            GET_EXPORT_ID,
-            serde_json::json!({"artifact_id": "artifact-a"}),
-        )
-        .expect("get persisted Knowledge");
-    assert!(
-        matches!(persisted, WireOutcome::Succeeded { value } if value["artifact"]["title"] == "Alpha")
+    let persisted = invoke_value(
+        &system,
+        GET_EXPORT_ID,
+        serde_json::json!({"artifact_id":"artifact-a"}),
     );
-    let persisted_pathed = system
-        .invoke(
-            PLUGIN_ID,
-            GET_EXPORT_ID,
-            serde_json::json!({"artifact_id": "artifact-path"}),
-        )
-        .expect("get persisted pathed Knowledge");
-    assert!(
-        matches!(persisted_pathed, WireOutcome::Succeeded { ref value } if value["artifact"]["path"] == "notes/deep.md"),
-        "knowledge-space path must survive a plugin restart: {persisted_pathed:?}"
+    assert_eq!(persisted["artifact"]["title"], "Alpha");
+    let persisted_pathed = invoke_value(
+        &system,
+        GET_EXPORT_ID,
+        serde_json::json!({"artifact_id":"artifact-path"}),
     );
+    assert_eq!(persisted_pathed["artifact"]["path"], "notes/deep.md");
     let moved = system
         .invoke(
             PLUGIN_ID,
             "knowledge.update",
             serde_json::json!({"artifact_id": "artifact-path", "path": "decisions/moved.md",
+                "expected_revision":persisted_pathed["artifact"]["revision"],
                 "mcp_owner_id": "workspace", "plugin_id": "builtin.knowledge", "session_id": "voice-edit"}),
         )
         .expect("update pathed Knowledge");
@@ -280,20 +275,19 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         "unexpected projection outcome: {projection:?}"
     );
 
-    broker.ensure_element("element-b", "/project");
-    let updated = system
-        .invoke(
-            PLUGIN_ID,
-            UPDATE_EXPORT_ID,
-            serde_json::json!({
-                "artifact_id": "artifact-a", "title": "Alpha Updated",
-                "semantic_element_id": "element-b"
-            }),
-        )
-        .expect("update persisted Knowledge");
-    assert!(matches!(updated, WireOutcome::Succeeded { value }
-            if value["artifact"]["title"] == "Alpha Updated"
-                && value["artifact"]["semantic_element_id"] == "element-b"));
+    broker.add_source_after_publication(test_element("element-b", "/project"));
+    let updated = invoke_value(
+        &system,
+        UPDATE_EXPORT_ID,
+        serde_json::json!({
+            "artifact_id": "artifact-a", "title": "Alpha Updated",
+            "expected_revision":persisted["artifact"]["revision"],
+            "semantic_element_id": "element-b"
+        }),
+    );
+    assert_eq!(updated["artifact"]["title"], "Alpha Updated");
+    assert_eq!(updated["artifact"]["semantic_element_id"], "element-b");
+    let updated_id = updated["artifact"]["artifact_id"].as_str().unwrap();
 
     let listed = system
         .invoke(
@@ -304,7 +298,7 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         .expect("list Knowledge");
     assert!(matches!(listed, WireOutcome::Succeeded { value }
         if value["artifacts"].as_array().is_some_and(|items| items.len() == 1)
-            && value["artifacts"][0]["artifact_id"] == "artifact-a"));
+            && value["artifacts"][0]["artifact_id"] == updated_id));
     assert_eq!(
         broker.plugin_invoke_count("get_semantic_tree"),
         get_semantic_tree_before,
@@ -344,14 +338,13 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         .expect_err("signed input schema rejects unexpected fields");
     assert!(extra_field.to_string().contains("unexpected"));
 
-    broker.put_unrelated_graph_artifact("retired-untyped-artifact", "element-a");
     assert_extended_exports(&system, &broker);
     let vector_rows = broker.rows.lock().expect("Knowledge vector rows");
     let rebuilt = vector_rows
         .get(&(PLUGIN_ID.into(), "knowledge_vectors".into()))
         .expect("persisted Knowledge vector table");
     assert!(rebuilt.len() >= 2);
-    assert!(rebuilt.contains_key("artifact-a"));
+    assert!(rebuilt.contains_key(updated_id));
     assert!(rebuilt.contains_key("artifact-z"));
     drop(vector_rows);
 
@@ -477,16 +470,18 @@ fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
         HTTP_UPDATE_ARTIFACT_EXPORT_ID,
         http_envelope(
             "/api/knowledge/artifacts/update",
-            serde_json::json!({"artifact_id": artifact_id, "title": "HTTP v2 updated"}),
+            serde_json::json!({"artifact_id": artifact_id, "title": "HTTP v2 updated",
+                "expected_revision":created["artifact"]["revision"]}),
         ),
     );
     assert_eq!(updated["artifact"]["title"], "HTTP v2 updated");
+    let updated_id = updated["artifact"]["artifact_id"].as_str().unwrap();
     assert_eq!(
         updated,
         invoke_value(
             system,
             GET_EXPORT_ID,
-            serde_json::json!({"artifact_id": artifact_id}),
+            serde_json::json!({"artifact_id": updated_id}),
         )
     );
 
@@ -494,7 +489,7 @@ fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
         .invoke(
             PLUGIN_ID,
             UPDATE_EXPORT_ID,
-            serde_json::json!({"artifact_id": "artifact:missing", "title": "Missing"}),
+            serde_json::json!({"artifact_id": "artifact:missing", "title": "Missing", "expected_revision":0}),
         )
         .expect("direct missing update is a structured failure");
     let http_not_found = system
@@ -503,7 +498,7 @@ fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
             HTTP_UPDATE_ARTIFACT_EXPORT_ID,
             http_envelope(
                 "/api/knowledge/artifacts/update",
-                serde_json::json!({"artifact_id": "artifact:missing", "title": "Missing"}),
+                serde_json::json!({"artifact_id": "artifact:missing", "title": "Missing", "expected_revision":0}),
             ),
         )
         .expect("HTTP missing update is a structured failure");
@@ -518,7 +513,8 @@ fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
         .invoke(
             PLUGIN_ID,
             DELETE_EXPORT_ID,
-            serde_json::json!({"artifact_id": artifact_id, "project_root": "/other"}),
+            serde_json::json!({"artifact_id": updated_id, "project_root": "/other",
+                "expected_revision":updated["artifact"]["revision"]}),
         )
         .expect("direct project mismatch is a structured failure");
     let http_mismatch = system
@@ -527,7 +523,8 @@ fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
             HTTP_DELETE_ARTIFACT_EXPORT_ID,
             http_envelope(
                 "/api/knowledge/artifacts/delete",
-                serde_json::json!({"artifact_id": artifact_id, "project_root": "/other"}),
+                serde_json::json!({"artifact_id": updated_id, "project_root": "/other",
+                    "expected_revision":updated["artifact"]["revision"]}),
             ),
         )
         .expect("HTTP project mismatch is a structured failure");
@@ -543,28 +540,49 @@ fn assert_http_knowledge_crud_matches_direct(system: &PluginSystem) {
         HTTP_DELETE_ARTIFACT_EXPORT_ID,
         http_envelope(
             "/api/knowledge/artifacts/delete",
-            serde_json::json!({"artifact_id": artifact_id, "project_root": "/project"}),
+            serde_json::json!({"artifact_id": updated_id, "project_root": "/project",
+                "expected_revision":updated["artifact"]["revision"]}),
         ),
     );
     assert_eq!(
         deleted,
-        serde_json::json!({"artifact_id": artifact_id, "deleted": true})
+        serde_json::json!({"artifact_id": updated_id, "deleted": true})
     );
     let direct_deleted_again = invoke_value(
         system,
         DELETE_EXPORT_ID,
-        serde_json::json!({"artifact_id": artifact_id, "project_root": "/project"}),
+        serde_json::json!({"artifact_id": updated_id, "project_root": "/project",
+            "expected_revision":updated["artifact"]["revision"]}),
     );
     let http_deleted_again = invoke_value(
         system,
         HTTP_DELETE_ARTIFACT_EXPORT_ID,
         http_envelope(
             "/api/knowledge/artifacts/delete",
-            serde_json::json!({"artifact_id": artifact_id, "project_root": "/project"}),
+            serde_json::json!({"artifact_id": updated_id, "project_root": "/project",
+                "expected_revision":updated["artifact"]["revision"]}),
         ),
     );
     assert_eq!(direct_deleted_again, http_deleted_again);
-    assert_eq!(http_deleted_again["deleted"], false);
+    assert_eq!(http_deleted_again, deleted);
+    let new_removal = invoke_value(
+        system,
+        DELETE_EXPORT_ID,
+        serde_json::json!({
+            "artifact_id":updated_id, "project_root":"/project", "operation_id":"another-http-removal", "expected_revision":0
+        }),
+    );
+    assert_eq!(new_removal["deleted"], false);
+    assert_eq!(
+        invoke_value(
+            system,
+            GET_EXPORT_ID,
+            serde_json::json!({
+                "artifact_id":artifact_id
+            })
+        )["artifact"]["title"],
+        "HTTP v2 updated"
+    );
 }
 
 fn http_envelope(path: &str, body: serde_json::Value) -> serde_json::Value {
@@ -750,26 +768,24 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
         .invoke(
             PLUGIN_ID,
             "delete_document",
-            serde_json::json!({"document_id": report_id, "project_root": "/other"}),
+            serde_json::json!({"document_id": report_id, "project_root": "/other", "expected_revision":report_after["document"]["revision"], "expected_semantic_element_id":report_after["document"]["semantic_element_id"]}),
         )
         .expect("project-scoped delete failure");
     assert!(matches!(wrong_project, WireOutcome::Failed { .. }));
     let deleted = invoke_value(
         system,
         "delete_document",
-        serde_json::json!({"document_id": report_id, "project_root": "/project"}),
+        serde_json::json!({"document_id": report_id, "project_root": "/project", "expected_revision":report_after["document"]["revision"], "expected_semantic_element_id":report_after["document"]["semantic_element_id"]}),
     );
     assert_eq!(deleted["deleted"], true);
     let deleted_again = system
         .invoke(
             PLUGIN_ID,
             "delete_document",
-            serde_json::json!({"document_id":report_id,"project_root":"/project"}),
+            serde_json::json!({"document_id":report_id,"project_root":"/project", "expected_revision":report_after["document"]["revision"], "expected_semantic_element_id":report_after["document"]["semantic_element_id"]}),
         )
         .unwrap();
-    assert!(
-        matches!(deleted_again, WireOutcome::Failed {error} if error.code == "document_not_found")
-    );
+    assert!(matches!(deleted_again, WireOutcome::Succeeded {value} if value == deleted));
     let deletion_delta = invoke_value(
         system,
         HTTP_SYNC_EXPORT_ID,
@@ -836,7 +852,11 @@ fn assert_extended_exports(system: &PluginSystem, broker: &MemoryStorageBroker) 
         project_artifacts_before,
         "StorageTrigger must not scan project artifacts for implicit transfer"
     );
-    assert!(broker.semantic_operation_count("selective_subgraph") > selective_before);
+    assert_eq!(
+        broker.semantic_operation_count("selective_subgraph"),
+        selective_before,
+        "a deleted report holds its refresh before reading or deriving a replacement source subgraph"
+    );
     let live_events_after = broker.row_count(PLUGIN_ID, "knowledge_live_events");
     assert!(live_events_after > live_events_before);
     assert!(

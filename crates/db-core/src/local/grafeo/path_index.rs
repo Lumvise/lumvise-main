@@ -4,18 +4,49 @@
 
 use super::graph_rows::value_string;
 use crate::domain::graph_views::normalized_path;
-use grafeo::{GrafeoDB, NodeId};
+use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use grafeo::{GrafeoDB, NodeId, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-#[derive(Default)]
+#[cfg(test)]
+mod tests;
+
 pub(super) struct ElementPathIndex {
+    label: &'static str,
+    root_property: &'static str,
+    path_property: &'static str,
+    current_only: bool,
     built: bool,
     keys: BTreeSet<(String, String, u64)>,
     locations: BTreeSet<(String, String, u64)>,
     by_node: HashMap<u64, (String, String)>,
 }
 
+impl Default for ElementPathIndex {
+    fn default() -> Self {
+        Self {
+            label: "SemanticElement",
+            root_property: "project_root",
+            path_property: "path",
+            current_only: true,
+            built: false,
+            keys: BTreeSet::new(),
+            locations: BTreeSet::new(),
+            by_node: HashMap::new(),
+        }
+    }
+}
+
 impl ElementPathIndex {
+    pub(super) fn revision_headers() -> Self {
+        Self {
+            label: "SemanticRevisionRow",
+            root_property: "revision_project_root",
+            path_property: "revision_record_path",
+            current_only: false,
+            ..Self::default()
+        }
+    }
     pub(super) fn is_built(&self) -> bool {
         self.built
     }
@@ -24,9 +55,13 @@ impl ElementPathIndex {
     pub(super) fn rebuild(&mut self, graph: &GrafeoDB) {
         *self = Self {
             built: true,
+            label: self.label,
+            root_property: self.root_property,
+            path_property: self.path_property,
+            current_only: self.current_only,
             ..Self::default()
         };
-        self.update(graph, graph.graph_store().nodes_by_label("SemanticElement"));
+        self.update(graph, graph.graph_store().nodes_by_label(self.label));
     }
 
     /// Requires the writer gate: `touched` were created or changed and `deleted` removed by one commit.
@@ -65,15 +100,19 @@ impl ElementPathIndex {
     }
 
     fn update(&mut self, graph: &GrafeoDB, ids: Vec<NodeId>) {
-        let keys = ["project_root", "path"].map(Into::into);
+        let keys = [self.root_property, self.path_property, "revision_selected"].map(Into::into);
         let rows = graph
             .graph_store()
-            .get_nodes_properties_selective_batch(&ids, &keys);
+            .get_nodes_properties_selective_batch(&ids, &keys)
+            .committed_nodes(&*graph.graph_store(), &ids);
         for (id, row) in ids.into_iter().zip(rows) {
             self.remove(id.0);
+            if self.current_only && row.get("revision_selected") == Some(&Value::from(false)) {
+                continue;
+            }
             if let (Some(root), Some(path)) = (
-                row.get("project_root").and_then(value_string),
-                row.get("path").and_then(value_string),
+                row.get(self.root_property).and_then(value_string),
+                row.get(self.path_property).and_then(value_string),
             ) {
                 self.keys.insert((root.clone(), path.clone(), id.0));
                 self.locations

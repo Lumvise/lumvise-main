@@ -15,7 +15,7 @@ pub(crate) fn prepare_element_upsert(
             element,
             element.match_evidence.as_ref(),
             serde_json::to_string(&element.metadata)?,
-        ),
+        )?,
     })
 }
 
@@ -115,7 +115,7 @@ pub(super) fn dependency_target_node(
         .into_iter()
         .next()
         .map(|node_id| ("semantic_element".into(), node_id)),
-        ArtifactDependencyTarget::Artifact { artifact_id } => node_ids_by_label_and_property(
+        ArtifactDependencyTarget::Artifact { artifact_id, .. } => node_ids_by_label_and_property(
             database,
             "SemanticArtifact",
             ARTIFACT_ID_PROPERTY,
@@ -150,7 +150,7 @@ pub(crate) fn upsert_element_node(
             element,
             element.match_evidence.as_ref(),
             serde_json::to_string(&element.metadata)?,
-        ) {
+        )? {
             database.set_node_property(*node_id, property, value)?;
         }
         set_element_change_state(database, *node_id, element, commit_version)?;
@@ -186,7 +186,7 @@ pub(super) fn element_properties(
     element: &SemanticElement,
     evidence: Option<&SemanticMatchEvidence>,
     metadata_json: String,
-) -> Vec<(&'static str, GrafeoValue)> {
+) -> Result<Vec<(&'static str, GrafeoValue)>> {
     let mut properties = vec![
         (
             PROJECT_ROOT_PROPERTY,
@@ -255,10 +255,14 @@ pub(super) fn element_properties(
                     .unwrap_or(""),
             ),
         ),
+        (
+            "revision_dependencies_json",
+            GrafeoValue::from(serde_json::to_string(&element.revision_dependencies)?),
+        ),
         ("metadata_json", GrafeoValue::from(metadata_json)),
     ];
     properties.extend(storage_alias_properties(&element.metadata));
-    properties
+    Ok(properties)
 }
 
 pub(super) fn element_properties_with_change_state(
@@ -269,7 +273,7 @@ pub(super) fn element_properties_with_change_state(
         element,
         element.match_evidence.as_ref(),
         serde_json::to_string(&element.metadata)?,
-    );
+    )?;
     properties.extend(element_change_properties(element, commit_version));
     Ok(properties)
 }

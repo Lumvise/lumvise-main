@@ -13,6 +13,7 @@ mod contracts;
 mod guidance;
 mod schema;
 mod transfer_schema;
+pub(crate) use contracts::{artifact_schema, element_schema};
 
 use contracts::{
     http_input_schema, http_output_schema, http_stream_input_schema, input_schema, output_schema,
@@ -300,6 +301,21 @@ pub(crate) fn source(target: &str, executable_sha256: &str) -> PluginManifest {
 fn exports() -> Vec<ExportDescriptor> {
     let mut exports = mcp_exports();
     exports.push(descriptor(
+        crate::documents::maintenance::EXPORT_ID,
+        "Prepare captured document maintenance provenance",
+        ExportSurface::Command,
+    ));
+    exports.push(descriptor(
+        crate::documents::inspection::EXPORT_ID,
+        "Inspect persistent memory",
+        ExportSurface::Command,
+    ));
+    exports.push(descriptor(
+        crate::documents::delegation::EXPORT_ID,
+        "Execute bounded memory maintenance",
+        ExportSurface::Command,
+    ));
+    exports.push(descriptor(
         crate::PROJECTION_EXPORT_ID,
         "Project Knowledge",
         ExportSurface::Command,
@@ -321,6 +337,7 @@ fn mcp_exports() -> Vec<ExportDescriptor> {
     ALL_MCP_EXPORTS
         .iter()
         .chain(crate::documents::EXPORTS.iter())
+        .chain(crate::publication_journal::EXPORTS.iter())
         .map(|(id, name)| {
             let surface = if id.starts_with("knowledge.") || id.starts_with("document.") {
                 ExportSurface::ScopedMcpTool {
@@ -528,11 +545,12 @@ fn descriptor(id: &str, name: &str, surface: ExportSurface) -> ExportDescriptor 
 fn host_capabilities() -> Vec<HostCapabilityRequirement> {
     [
         ("storage.plugin", "^1.0"),
-        ("storage.semantic", "^1.5.0"),
+        ("storage.semantic", "^1.6.0"),
         ("plugin.invoke", "^1.0"),
         ("neural.embed", "^1.0"),
         ("neural.llm", "^1.0"),
-        ("runtime.project_execution", "^1.0"),
+        ("runtime.project_execution", "^1.1"),
+        ("runtime.knowledge_scope", "^1.3"),
     ]
     .into_iter()
     .map(|(id, version)| HostCapabilityRequirement {
@@ -549,6 +567,21 @@ pub(crate) fn invoke(
     projection_cache: &crate::projection::ProjectProjectionCache,
     search_vectors: &crate::search::KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
+    if capability_id == crate::documents::maintenance::EXPORT_ID {
+        return crate::documents::maintenance::invoke(input);
+    }
+    if capability_id == crate::documents::inspection::EXPORT_ID {
+        return crate::documents::inspection::invoke(input, context, search_vectors);
+    }
+    if capability_id == crate::documents::delegation::EXPORT_ID {
+        return crate::documents::delegation::invoke(input, context);
+    }
+    if crate::publication_journal::EXPORTS
+        .iter()
+        .any(|(id, _)| *id == capability_id)
+    {
+        return crate::publication_journal::invoke(capability_id, input, context);
+    }
     if crate::documents::EXPORTS
         .iter()
         .any(|(id, _)| *id == capability_id)
@@ -673,6 +706,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn signed_template_matches_document_exports_and_authority_capability() {
+        let template: PluginManifest =
+            serde_json::from_str(include_str!("../lumvise-plugin-manifest.json")).unwrap();
+        let runtime = crate::package_manifest_source("test", &"0".repeat(64));
+        assert_eq!(
+            serde_json::to_value(template.host_capabilities).unwrap(),
+            serde_json::to_value(runtime.host_capabilities).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(template.exports).unwrap(),
+            serde_json::to_value(runtime.exports).unwrap()
+        );
+    }
+
+    #[test]
     fn create_knowledge_schema_requires_typed_known_fields_and_rejects_extras() {
         let schema = input_schema(CREATE_EXPORT_ID);
 
@@ -691,7 +739,7 @@ mod tests {
         assert_eq!(schema["properties"]["artifact_id"]["type"], "string");
         assert_eq!(
             schema["properties"]["knowledge_type"]["enum"],
-            serde_json::json!(["requirements", "specification"])
+            serde_json::json!(["requirements", "specification", "media"])
         );
     }
 }

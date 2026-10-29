@@ -27,6 +27,7 @@ fn persistent_graph_failed_write_does_not_publish_partial_mutation() {
 
 fn element(id: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: "/repo".to_string(),
         semantic_element_id: id.to_string(),
         semantic_source_id: "source".to_string(),

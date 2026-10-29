@@ -54,13 +54,24 @@ pub(super) fn build_tables(
     artifact_blobs: &[crate::ArtifactBlob],
     artifact_text_vectors: &[crate::StoredArtifactTextVector],
     element_name_vectors: &[crate::StoredSemanticElementNameVector],
+    blob_owner_ids: &BTreeSet<String>,
+    selection: &crate::SemanticRevisionSelectionState,
+    associations: &[crate::SemanticRevisionAssociation],
 ) -> Result<Vec<TableBytes>> {
-    let active: Vec<&SemanticElement> = snapshot
-        .elements
+    let selected_elements = selection
+        .records
         .iter()
-        .filter(|e| e.lifecycle == "active")
-        .collect();
-    let active_ids: BTreeSet<&str> = active
+        .filter(|record| record.kind == crate::SemanticRecordKind::Element)
+        .map(|record| record.record_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let selected_artifacts = selection
+        .records
+        .iter()
+        .filter(|record| record.kind == crate::SemanticRecordKind::Artifact)
+        .map(|record| record.record_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let available: Vec<&SemanticElement> = snapshot.elements.iter().collect();
+    let available_ids: BTreeSet<&str> = available
         .iter()
         .map(|e| e.semantic_element_id.as_str())
         .collect();
@@ -70,7 +81,7 @@ pub(super) fn build_tables(
         .iter()
         .map(|e| e.semantic_element_id.as_str())
         .collect();
-    for e in &active {
+    for e in &available {
         elements.push(vec![
             Some(e.semantic_element_id.clone()),
             Some(e.semantic_source_id.clone()),
@@ -83,7 +94,13 @@ pub(super) fn build_tables(
             e.end_line.map(|v| v.to_string()),
             Some(e.lifecycle.clone()),
             serde_json::to_string(&e.match_evidence).ok(),
+            Some(serde_json::to_string(&e.revision_dependencies)?),
             Some(canonical_json_value(&e.metadata)?),
+            Some(
+                selected_elements
+                    .contains(e.semantic_element_id.as_str())
+                    .to_string(),
+            ),
         ]);
     }
     elements.sort_by(|a, b| a[0].cmp(&b[0]));
@@ -91,8 +108,8 @@ pub(super) fn build_tables(
         .relationships
         .iter()
         .filter(|r| {
-            active_ids.contains(r.source_element_id.as_str())
-                && active_ids.contains(r.target_element_id.as_str())
+            available_ids.contains(r.source_element_id.as_str())
+                && available_ids.contains(r.target_element_id.as_str())
         })
         .map(|r| {
             vec![
@@ -162,7 +179,7 @@ pub(super) fn build_tables(
         .relationships
         .iter()
         .filter(|r| {
-            active_ids.contains(r.source_element_id.as_str())
+            available_ids.contains(r.source_element_id.as_str())
                 && !all_ids.contains(r.target_element_id.as_str())
         })
         .filter_map(|r| {
@@ -180,7 +197,6 @@ pub(super) fn build_tables(
     let mut artifacts = snapshot
         .artifacts
         .iter()
-        .filter(|artifact| active_ids.contains(artifact.semantic_element_id.as_str()))
         .map(|artifact| {
             Ok(vec![
                 Some(artifact.artifact_id.clone()),
@@ -190,20 +206,64 @@ pub(super) fn build_tables(
                 artifact.content_ref.clone(),
                 artifact.searchable_text.clone(),
                 artifact.content_size_bytes.map(|size| size.to_string()),
+                artifact.content.clone(),
+                Some(serde_json::to_string(&artifact.dependencies)?),
                 Some(canonical_json_value(&artifact.metadata)?),
+                Some(
+                    selected_artifacts
+                        .contains(artifact.artifact_id.as_str())
+                        .to_string(),
+                ),
             ])
         })
         .collect::<Result<Vec<_>>>()?;
     artifacts.sort_by(|a, b| a[1].cmp(&b[1]).then(a[0].cmp(&b[0])));
+    let artifact_locations = artifacts
+        .iter()
+        .enumerate()
+        .filter_map(|(row, fields)| {
+            fields[0]
+                .as_deref()
+                .map(|id| (id, row / ROWS_PER_ROW_GROUP))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut artifact_index = associations
+        .iter()
+        .map(|association| {
+            let group = artifact_locations
+                .get(association.artifact_id.as_str())
+                .ok_or_else(|| {
+                    DbError::invalid_value(
+                        &association.artifact_id,
+                        "an available selected artifact body",
+                    )
+                })?;
+            Ok(vec![
+                Some(association.semantic_element_id.clone()),
+                Some(association.artifact_id.clone()),
+                Some("artifacts.parquet".into()),
+                Some(group.to_string()),
+            ])
+        })
+        .collect::<Result<Vec<_>>>()?;
+    artifact_index.sort();
+    artifact_index.dedup();
     let artifact_ids = snapshot
         .artifacts
         .iter()
-        .filter(|artifact| active_ids.contains(artifact.semantic_element_id.as_str()))
         .map(|artifact| artifact.artifact_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let content_refs = snapshot
+        .artifacts
+        .iter()
+        .filter_map(|artifact| artifact.content_ref.as_deref())
         .collect::<BTreeSet<_>>();
     let blob_rows = artifact_blobs
         .iter()
-        .filter(|blob| artifact_ids.contains(blob.artifact_id.as_str()))
+        .filter(|blob| {
+            blob_owner_ids.contains(&blob.artifact_id)
+                || content_refs.contains(blob.content_ref.as_str())
+        })
         .map(|blob| {
             vec![
                 TypedCell::Text(blob.content_ref.clone()),
@@ -219,7 +279,7 @@ pub(super) fn build_tables(
     let artifact_vector_rows = artifact_text_vectors
         .iter()
         .filter(|vector| {
-            active_ids.contains(vector.semantic_element_id.as_str())
+            available_ids.contains(vector.semantic_element_id.as_str())
                 && artifact_ids.contains(vector.artifact_id.as_str())
         })
         .map(|stored| {
@@ -241,7 +301,7 @@ pub(super) fn build_tables(
         .collect::<Result<Vec<_>>>()?;
     let element_vector_rows = element_name_vectors
         .iter()
-        .filter(|vector| active_ids.contains(vector.semantic_element_id.as_str()))
+        .filter(|vector| available_ids.contains(vector.semantic_element_id.as_str()))
         .map(|stored| {
             vector_row(
                 &[
@@ -266,6 +326,7 @@ pub(super) fn build_tables(
         ("artifacts.parquet", artifacts),
         ("path_index.parquet", path_rows),
         ("adjacency_index.parquet", adjacency),
+        ("artifact_index.parquet", artifact_index),
     ] {
         let (_, schema_id, columns) = TABLE_SCHEMAS
             .iter()
@@ -309,7 +370,7 @@ pub(super) fn column_data_type(name: &str) -> DataType {
     match name {
         "start_line" | "end_line" | "content_size_bytes" | "byte_size" | "dimensions"
         | "row_group" => DataType::Int64,
-        "normalized" => DataType::Boolean,
+        "normalized" | "selected" => DataType::Boolean,
         "content" => DataType::Binary,
         "vector" => DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
         _ => DataType::Utf8,
@@ -373,7 +434,7 @@ pub(super) fn encode_table(
             | "row_group" => {
                 arrays.push(Arc::new(Int64Array::from(parse_optional_i64(rows, col)?)) as ArrayRef);
             }
-            "normalized" => {
+            "normalized" | "selected" => {
                 arrays.push(
                     Arc::new(BooleanArray::from(parse_optional_bool(rows, col)?)) as ArrayRef,
                 );

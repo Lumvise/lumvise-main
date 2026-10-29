@@ -1,4 +1,6 @@
 //! Indexed prefix and location reads must equal full snapshots across every write path.
+mod common;
+use common::RevisionTestClient;
 use lumvise_db_core::{
     CentralizedPersistence, LocalPersistence, ProjectSnapshotScope, ScopedSemanticRead,
     SemanticElement, SemanticOperation, SemanticPartition, SemanticPersistence, SemanticResult,
@@ -16,6 +18,7 @@ fn execute(persistence: &LocalPersistence, operation: SemanticOperation) -> Sema
 
 fn element(root: &str, id: &str, path: &str) -> SemanticElement {
     SemanticElement {
+        revision_dependencies: Vec::new(),
         project_root: root.into(),
         semantic_element_id: id.into(),
         semantic_source_id: "prefix-test".into(),
@@ -299,28 +302,35 @@ fn stays_consistent_after_upsert_move_remove_partition_and_snapshot_commit() {
 fn stays_consistent_after_archive_import_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let archive = directory.path().join("source.pz");
+    let earlier = directory.path().join("earlier.pz");
     let source = LocalPersistence::in_memory().unwrap();
-    sync(
-        &source,
-        "/repo",
-        vec![
-            element("/repo", "doc-1", "@documents/01"),
-            element("/repo", "doc-2", "@documents/02"),
-        ],
-    );
+    let source_client = RevisionTestClient::new(&source, "/repo", "local");
     execute(
         &source,
-        SemanticOperation::CreatePzSnapshot {
-            project_root: "/repo".into(),
-            output_path: archive.to_string_lossy().into_owned(),
-        },
+        SemanticOperation::PublishRevisions(
+            source_client.publication("initial", vec![element("/repo", "stale", "@documents/99")]),
+        ),
     );
+    write_archive(&source, &earlier);
+    execute(
+        &source,
+        SemanticOperation::PublishRevisions(source_client.publication(
+            "advance",
+            vec![
+                element("/repo", "doc-1", "@documents/01"),
+                element("/repo", "doc-2", "@documents/02"),
+            ],
+        )),
+    );
+    write_archive(&source, &archive);
     let database = directory.path().join("database/lumvise.db");
     let target = LocalPersistence::open(&database).unwrap();
-    sync(
+    execute(
         &target,
-        "/repo",
-        vec![element("/repo", "stale", "@documents/99")],
+        SemanticOperation::ImportPzSnapshot {
+            project_root: "/repo".into(),
+            input_path: earlier.to_string_lossy().into_owned(),
+        },
     );
     assert_eq!(assert_matches_scan(&target, "/repo"), ["stale"]);
     execute(
@@ -334,6 +344,56 @@ fn stays_consistent_after_archive_import_and_reopen() {
     drop(target);
     let reopened = LocalPersistence::open(&database).unwrap();
     assert_eq!(assert_matches_scan(&reopened, "/repo"), ["doc-1", "doc-2"]);
+}
+
+fn write_archive(persistence: &LocalPersistence, path: &std::path::Path) {
+    execute(
+        persistence,
+        SemanticOperation::CreatePzSnapshot {
+            project_root: "/repo".into(),
+            output_path: path.to_string_lossy().into_owned(),
+        },
+    );
+}
+
+#[test]
+fn unrelated_archive_import_preserves_the_existing_prefix_index_and_lineage() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = directory.path().join("foreign.pz");
+    let source = LocalPersistence::in_memory().unwrap();
+    sync(
+        &source,
+        "/repo",
+        vec![element("/repo", "foreign", "@documents/01")],
+    );
+    write_archive(&source, &archive);
+    let target = LocalPersistence::in_memory().unwrap();
+    sync(
+        &target,
+        "/repo",
+        vec![element("/repo", "stale", "@documents/99")],
+    );
+    let client = RevisionTestClient::new(&target, "/repo", "local");
+    let identity = client.project_id();
+    assert_eq!(assert_matches_scan(&target, "/repo"), ["stale"]);
+    let error = target
+        .execute(
+            SemanticOperation::ImportPzSnapshot {
+                project_root: "/repo".into(),
+                input_path: archive.to_string_lossy().into_owned(),
+            },
+            &InvocationControl::sixty_seconds(),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("project identity"));
+    assert_eq!(client.project_id(), identity);
+    assert_eq!(assert_matches_scan(&target, "/repo"), ["stale"]);
+    sync(
+        &target,
+        "/repo",
+        vec![element("/repo", "usable", "@documents/02")],
+    );
+    assert_eq!(assert_matches_scan(&target, "/repo"), ["usable"]);
 }
 
 #[test]

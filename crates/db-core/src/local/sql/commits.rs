@@ -86,8 +86,20 @@ fn pending_commit_versions(conn: &Connection) -> Result<Vec<i64>> {
 }
 
 pub(crate) fn begin_semantic_commit(conn: &Connection) -> Result<i64> {
+    begin_semantic_commit_after(conn, 0)
+}
+
+pub(crate) fn begin_semantic_commit_after(conn: &Connection, archived_version: i64) -> Result<i64> {
     reject_unresolved_commit(conn)?;
-    let next = latest_commit_version(conn)? + 1;
+    let next = latest_commit_version(conn)?
+        .max(archived_version)
+        .checked_add(1)
+        .ok_or_else(|| {
+            DbError::invalid_value(
+                archived_version.to_string(),
+                "a semantic commit version with room for the next publication",
+            )
+        })?;
     let mut statement = conn.prepare_cached(
         "INSERT INTO semantic_commits(commit_version, state, created_at)
          VALUES (?1, 'pending', ?2)",

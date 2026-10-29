@@ -168,14 +168,15 @@ fn artifacts_for_search(
     request: &SearchRequest,
     context: &mut PluginContext<'_>,
 ) -> Result<Vec<KnowledgeArtifact>, PluginError> {
-    if let Some(project_root) = request.project_root.as_deref() {
-        return storage::list_project_knowledge(context, project_root);
-    }
     if let Some(element_id) = request.semantic_element_id.as_deref() {
         return storage::artifacts_for_elements(
             context,
             &std::collections::HashSet::from([element_id.to_owned()]),
+            request.project_root.as_deref(),
         );
+    }
+    if let Some(project_root) = request.project_root.as_deref() {
+        return storage::list_project_knowledge(context, project_root);
     }
     storage::list_all_knowledge(context)
 }

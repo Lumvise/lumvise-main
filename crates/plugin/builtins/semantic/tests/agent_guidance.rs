@@ -143,6 +143,10 @@ fn freshness_guidance_distinguishes_index_source_and_vector_rebuilds() {
         "never fabricate",
         "replace_paths",
         "snapshot pages",
+        "revision_observation captured before preparing the edit",
+        "never adopt a fresh head",
+        "exact accepted revision remaps or a conflict",
+        "identical frozen request",
     ] {
         assert!(
             ingest.contains(concept),
