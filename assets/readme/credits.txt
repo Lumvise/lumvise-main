@@ -1,9 +1,9 @@
 Lumvise README media.
 
-Interaction video: supplied by Lumvise as Insta1.mp4.
-README edit: cropped to the Assistant window and encoded for browser playback.
-Original audio and timing retained; no added narration, music, or presentation cards.
-assistant-preview.png: a frame extracted from the README video.
+assistant-preview.png: actual desktop Assistant dashboard captured 2026-10-29.
+The screenshot shows a release-planning example from before 0.2.0 was published.
+Captured directly from the Workspace window, excluding the debug status bar
+above it. Canvas content and conversation text are unchanged.
 
 Micrograd screenshots: actual Lumvise app views.
 Repository: https://github.com/karpathy/micrograd
