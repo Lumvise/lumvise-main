@@ -2,30 +2,116 @@
 
 # Lumvise
 
-**Explore your project. Talk it through. Keep the knowledge.**
+**Your project's knowledge, in one place, for you and your agents.**
 
-Lumvise brings source files, project relationships, AI conversations, and saved
-knowledge into one workspace. Understand unfamiliar code, sketch an idea with
-your Assistant, and keep the useful explanation beside the source it describes.
-The next conversation or connected agent can build on what you already learned.
+Lumvise keeps source files, documents, media, saved knowledge and conversations
+in one workspace on your computer. People and connected AI agents read and write
+the same project memory through MCP, background agents keep reports up to date,
+and you can talk the project through with an Assistant that draws on a
+whiteboard.
 
-[Download for macOS](https://github.com/Lumvise/lumvise-main/releases/latest) ·
-[Watch the demo](#see-it-in-action) · [Features](#what-you-can-do) ·
+## Download Lumvise 0.2.0
+
+| Platform | Edition | Package |
+| --- | --- | --- |
+| macOS 14 or later, Apple Silicon | Full and Community | DMG |
+| Linux x64 | Full | AppImage |
+| Windows 10 or later, x64 | Full | Installer or portable ZIP |
+
+[**Download Lumvise 0.2.0**](https://github.com/Lumvise/lumvise-main/releases/latest)
+from the latest release. Each download has a SHA-256 checksum file and ships
+with signed plugins. Windows builds are not code-signed, so Windows shows a
+warning for unknown software; see the [platform notes](#platform-notes). Not sure which edition you need? See
+[Choose an edition](#choose-an-edition).
+
+Lumvise 0.2.0 starts with a fresh database and does not open data from earlier
+versions. Follow the steps under "Before you update" in the
+[0.2.0 release notes](https://github.com/Lumvise/lumvise-main/releases/tag/v0.2.0)
+before you start it.
+
+**New in 0.2.0**
+
+- Reusable background agents and Automations that run on schedules or watches
+  (Full).
+- Documents that cite code, Knowledge records and other documents.
+- Notes on image regions and on audio and video time segments.
+- History and retention for Knowledge records and project content.
+- A redesigned Workspace: Overview, Knowledge, Reports, Automations, Scratchboard
+  and Chat.
+- An Assistant that queues requests instead of refusing them while it is busy.
+
+[Watch the demo](#an-assistant-you-can-talk-to) ·
 [Explore a graph online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fhuggingface__safetensors%2F.lv%2Fgraph.pz) ·
 [Choose an edition](#choose-an-edition) ·
 [Contributing](#contributing)
 
-![Lumvise Workspace showing micrograd source, knowledge attached to a function, and an Assistant conversation side by side](assets/readme/workspace.png)
+![The Lumvise Workspace on the micrograd demo: destinations in the left sidebar, engine.py in the centre and its attached Knowledge in the right inspector](assets/readme/workspace.png)
 
-*Source, knowledge, and conversation in the same view. Desktop screenshots show
-the Full edition; Community provides the same local Knowledge and Semantic
-capabilities through MCP.*
+*The Workspace on the micrograd demo: destinations on the left, `engine.py` in
+the middle, and the Knowledge attached to it with quick actions on the right.
+Actual Lumvise app views; the Automations screenshot comes from the desktop
+Full edition, and Community provides the local Knowledge and Semantic
+capabilities through MCP. [Media credits](assets/readme/credits.txt).*
 
-## See it in action
+## Your knowledge in one place
 
-**Talk it through, with the explanation in view.** This short screen recording
-shows the Assistant speaking beside its interactive whiteboard. Follow a
-technical explanation with a diagram you can inspect, annotate, and discuss.
+A project is more than its code. Lumvise brings source files, documents, images,
+audio and video, saved Knowledge and your conversations into one Workspace, so
+you do not have to search several tools for the reasoning behind a file.
+
+Browse a folder, open a file or a PDF, preview media, and see the Knowledge
+attached to each. Save an explanation, a decision, a specification or a report
+where it belongs, and find it again next to the source it describes.
+
+The [Earth Observatory demo](demos/earth-observatory/) shows this beyond code: a
+research collection with a PDF, CSV measurements, geographic records, imagery,
+audio and video. Its guide explains the example annotations and each source's
+provenance.
+
+## Shared project memory for people and agents
+
+Lumvise keeps project memory local first. The database lives on your computer,
+and any MCP-capable editor or AI client can connect to it to inspect project
+structure and create or retrieve Knowledge. What you or one agent saved is
+there for the next person or agent, with no copy-and-paste between tools. See
+[Connect an MCP client](#connect-an-mcp-client).
+
+A project can also travel as a portable `.pz` snapshot, like the demo graphs in
+this repository. Others open it in the online graph viewer and explore it in a
+browser without installing Lumvise.
+
+[Explore the Safetensors demo online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fhuggingface__safetensors%2F.lv%2Fgraph.pz)
+without installing the desktop app.
+
+## Automatic reports with Automations
+
+*Full edition.* Background agents work on the project while you do something
+else. An agent is a shared worker with its own model, permissions, documents and
+queue. An Automation decides when and what: each has its own name, schedule,
+watches, task and actions. Run one weekly at a set time in your time zone or when
+something it watches changes, and let it keep a generated report or document up
+to date. Several Automations can share one agent, or each can use its own.
+
+An Automation can send a message to a recipient you choose, another agent or the
+project's Assistant inbox. The agent writes the content but cannot pick a
+different recipient. Messages in the Assistant inbox do not start a
+conversation or speak.
+
+![The Automations screen in the Lumvise Workspace listing two disabled Automations, Docs check and Weekly coverage report, with the schedule and agent of Docs check](assets/readme/automations.png)
+
+*The Automations screen: each Automation shows its schedule, its agent and its
+state. These two belong to a demo agent and are disabled.*
+
+## An Assistant you can talk to
+
+*Full edition.* Ask the Assistant by voice or by text. It answers aloud beside
+an interactive whiteboard, so you can follow a technical explanation with a
+diagram you can inspect, annotate and discuss. Turn voice off to continue in
+text. Save a whiteboard you want to keep, archive a conversation when you are
+done, and reopen it later.
+
+If the Assistant is busy, your request is queued and started when it is free.
+Agents ask you questions through the same queue.
 
 [![An actual video frame of Lumvise's Assistant whiteboard, comparing three dependency updates and summarizing their validation](assets/readme/assistant-preview.png)](assets/readme/lumvise-assistant.mp4)
 
@@ -45,76 +131,46 @@ The canvas toolbar provides drawing, text, color, and zoom controls.
 
 </details>
 
-## What you can do
-
-| Capability | What it makes possible |
-| --- | --- |
-| **Explore a project** | Browse files and semantic elements, follow relationships in a graph, and find the knowledge attached to a source. |
-| **Talk and think visually** | Ask the Assistant by voice or text, explain an idea on a whiteboard, and work with a canvas inside your conversation. |
-| **Keep useful reasoning** | Save explanations, decisions, specifications, reports, and tasks on the file, function, or project they describe. |
-| **Work beyond code** | Explore documents and preview PDFs, images, audio, and video alongside the knowledge attached to them. |
-| **Give agents project context** | Connect an MCP-capable editor or AI client to inspect project structure and create or retrieve saved knowledge. |
-| **Extend the workspace** | Add capabilities through signed, separately installed plugins, or build a plugin with the public SDK. |
-
-Full includes the graphical workspace, whiteboard, media previews, and voice and
-text Assistant. Both editions share the local database, Semantic and Knowledge
-plugins, and MCP access. See [the edition comparison](#choose-an-edition).
-
-### See how the project fits together
-
-Move from a folder or file to its semantic elements and relationships. Use the
-graph to explore a project, then inspect the source and its saved knowledge.
-
-[Explore the Safetensors demo online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fhuggingface__safetensors%2F.lv%2Fgraph.pz)
-without installing the desktop app.
-
-### Discuss an idea, then keep what matters
-
-Start a conversation about the project or the source you are inspecting. Type a
-question or talk it through by voice; use the conversation canvas for diagrams
-and visual explanations. Turn voice off to continue in text. Save a canvas you
-want to keep, and save useful conclusions as project knowledge. Archive a
-conversation when you are done, and reopen it to continue later.
-
-An explanation can belong to one function. An architecture decision can belong
-to a module. A research note can belong to its source document. That gives the
-next person or connected agent a place to find the reasoning.
-
-![A saved explanation open in Lumvise, with its source attachment, tags, and dependency visible in the context panel](assets/readme/saved-knowledge.png)
-
-*The explanation stays attached to its source after the conversation ends.
-Saved knowledge can be retrieved through another MCP session.*
-
-### Bring documents and media into the same project
-
-Project context also includes the material around the code: specifications,
-research documents, measurements, illustrations, and recordings. Browse those
-sources and keep their definitions, annotations, and decisions together.
-
-The [Earth Observatory demo](demos/earth-observatory/) shows a research collection
-with a PDF, CSV measurements, geographic records, imagery, audio, and video.
-Its guide explains the example annotations and each source's provenance.
-
-[![Lumvise displaying a PDF alongside its saved annotations and extracted passages in the Earth Observatory demo](assets/readme/documents.png)](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fearth-observatory%2F.lv%2Fgraph.pz)
-
-*A source document, its passages, and its annotations in one view.
-[Explore the research demo online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fearth-observatory%2F.lv%2Fgraph.pz).*
-
-### Try a conversation like this
+Things to ask:
 
 - **Understand a new repository:** “Find the module that owns this behavior and
   explain how its main pieces connect.”
-- **Make architecture visible:** “Sketch this request flow on the canvas and
+- **Make architecture visible:** “Sketch this request flow on the whiteboard and
   walk me through each step.”
 - **Keep a decision:** “Save why we chose this design, with the tradeoffs, and
   attach it to the module it affects.”
 - **Review research:** “Summarize this document and separate the evidence from
   what we still need to check.”
-- **Continue with another agent:** “Find the saved explanation for this function
-  and use it as context before suggesting a change.”
 
-Use the visual prompts in Full. Project structure and saved-knowledge prompts
-also work through a [connected MCP client](#connect-an-mcp-client).
+## Project context attached to the code
+
+Knowledge is pinned to the exact place it describes: a function, a line range,
+an image region, or a segment of an audio or video file. The semantic graph shows
+how files, functions and other elements relate, so you can move from a
+folder to an element, follow its relationships, and read the Knowledge attached
+to it. Documents can cite code and Knowledge records, so a report links back to
+its evidence.
+
+![The micrograd engine.py with lines 54 to 70 highlighted and the Knowledge record "Why backward accumulates gradients" selected in the inspector](assets/readme/semantic-context.png)
+
+*A Knowledge record pinned to `backward()` in `micrograd/engine.py` (lines 54–70):
+it stays attached to the function after the conversation ends, and another MCP
+session can retrieve it.*
+
+[![The Earth Observatory knowledge overview report with its Knowledge map linking each cited record](assets/readme/documents.png)](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fearth-observatory%2F.lv%2Fgraph.pz)
+
+*A report document whose Knowledge map links every record it cites.
+[Explore the research demo online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fearth-observatory%2F.lv%2Fgraph.pz).*
+
+![observation-islands.png in the Earth Observatory demo with the central mountain region outlined and its media note selected in the inspector](assets/readme/media-notes.png)
+
+*A media note on an image region: the outlined mountain belongs to the selected
+note. Notes can also pin to an audio or video time segment.*
+
+Knowledge uses three kinds: `requirements`, `specification` and `media`.
+Reports and context are documents. Knowledge records and project content keep
+their revisions, and a project's retention setting decides how much history is
+kept.
 
 ## Try a graph online
 
@@ -124,15 +180,14 @@ repository, so you can explore it without installing the desktop app.
 
 ## Choose an edition
 
-Choose how you interact with Lumvise. Both editions share the local database,
-Knowledge and Semantic plugins, and MCP access. They use the same foundation for
-project and knowledge workflows; Full adds the graphical interfaces and desktop
-Assistant experience.
+Both editions share the local database, Knowledge and Semantic plugins, and MCP
+access. Full adds the graphical workspace, Automations and the desktop
+Assistant.
 
 | Edition | How you use it | What is included | Source license |
 | --- | --- | --- | --- |
 | **Community** | Through an MCP-capable editor or AI client | Headless runtime, local database, MCP access, Knowledge and Semantic plugins | MIT core; LGPL-3.0-only public plugins |
-| **Full** | Through the desktop app or an MCP client | Community capabilities, plus the graphical workspace, whiteboard, voice and text Assistant, and conversation canvases | Proprietary desktop application; included open-source components retain their licenses |
+| **Full** | Through the desktop app or an MCP client | Community capabilities, plus the graphical workspace, Automations, whiteboard, voice and text Assistant, and seven built-in plugins (Agents, Assistant, Canvas, Challenges, Knowledge, Nucleus, Semantic) | Proprietary desktop application; included open-source components retain their licenses |
 
 Use Community when your MCP client is your interface. Use Full when you also
 want to explore and discuss the same project knowledge visually. Community has
@@ -141,22 +196,30 @@ no desktop window; Full also supports MCP access.
 This repository contains the Community source. The full application's
 proprietary source and internal implementation documentation stay private.
 
-### Signed macOS release
+### Platform notes
 
-[Download the latest macOS release](https://github.com/Lumvise/lumvise-main/releases/latest)
-for **Apple Silicon Macs running macOS 14 or newer**. Full and Community DMGs
-are available; this release provides macOS installers only.
+Packages are listed on the
+[latest release](https://github.com/Lumvise/lumvise-main/releases/latest).
 
-Both editions are **Developer ID signed and Apple-notarized**, with notarization
-tickets stapled to the apps and DMGs. Each download includes a matching SHA-256
-checksum file. The release notes identify the source commit and completed
-signature, Gatekeeper, integrity, and packaged command-line checks.
+- **macOS:** Apple Silicon Macs running macOS 14 or newer. Full and Community
+  DMGs are Developer ID signed and Apple-notarized, with notarization tickets
+  stapled to the apps and DMGs.
+- **Linux:** the Full AppImage is built against an Ubuntu 22.04 baseline. Make it
+  executable, then run it. AppImages need FUSE; without it, start the file with
+  `--appimage-extract-and-run`. Inference runs on the CPU. The tray icon needs a
+  desktop panel with a status tray. The floating orb needs X11 or XWayland;
+  Wayland sessions are untested.
+- **Windows:** Windows 10 or later on x64. Use the installer or the portable ZIP.
+  The installer and the program are not code-signed; choose **More info**, then
+  **Run anyway** when Windows warns about unknown software. The installer adds
+  the Microsoft WebView2 runtime if it is missing; the portable ZIP needs it
+  installed already. Inference runs on the CPU.
 
 ## Build from source
 
 Install the current stable Rust toolchain, a C/C++ toolchain, CMake and
 Protobuf's `protoc`.
-The macOS installer targets Apple Silicon and macOS 14 or newer.
+The bundled macOS installer script targets Apple Silicon and macOS 14 or newer.
 
 ```sh
 git clone https://github.com/Lumvise/lumvise-main.git
@@ -207,8 +270,8 @@ formats vary; preserve the command and arguments when adapting this example.
 
 Once the project is imported and indexed, try:
 
-> Find the module that owns authentication. Create a decision artifact explaining
-> why tokens expire after one hour, attach it to that module, and read it back.
+> Find the module that owns authentication. Save a specification explaining why
+> tokens expire after one hour, attach it to that module, and read it back.
 
 Knowledge and Semantic tools return the real artifact and element identifiers.
 Use those identifiers when assigning knowledge, rather than guessing paths or
@@ -245,12 +308,17 @@ restrictions do not limit rights in the included open-source components.
 
 ## Plugins
 
-Community includes two plugins:
+Community includes two plugins. Full bundles seven built-ins: Agents, Assistant,
+Canvas, Challenges, Knowledge, Nucleus and Semantic. All built-in plugins are
+version 0.2.0 and use plugin protocol 7.
 
 | Plugin | Purpose | License |
 | --- | --- | --- |
 | Knowledge | Create, retrieve and assign typed project knowledge | LGPL-3.0-only |
 | Semantic | Index and explore code elements and relationships | LGPL-3.0-only |
+
+Connected agents that update the semantic index call `observe_index_base` first
+and pass its result to `ingest_index_batch`; the tool descriptions explain this.
 
 Plugins run as separate executables. The MIT-licensed SDK owns the Protobuf
 handshake, framing, host calls and shutdown. Packages contain a signed manifest,
@@ -333,7 +401,7 @@ capabilities. Do not log credentials or place signing material in packages.
 Search with `app_plugin.builtin.semantic.search_graph`, using `project_root`
 and a name or path filter. Copy a returned `semantic_element_id`. Pass that ID,
 the project root, an artifact ID, title, content and a supported knowledge type
-to `app_plugin.builtin.knowledge.create_knowledge`. Retrieve it using
+(`requirements`, `specification` or `media`) to `app_plugin.builtin.knowledge.create_knowledge`. Retrieve it using
 `get_knowledge`, or inspect the element's assignments using
 `list_knowledge_for_element`.
 
@@ -358,7 +426,8 @@ remain MIT; each third-party component retains its own license.
 
 Lumvise Community is the headless edition. It installs the local Lumvise MCP
 server and the Knowledge and Semantic built-in plugins. It does not open a
-desktop window.
+desktop window. `scripts/build-macos-installer` builds the Community installer
+from this repository; the Linux and Windows downloads are Full builds.
 
 <details>
 <summary>Build, sign, and install a macOS package</summary>
