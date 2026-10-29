@@ -188,7 +188,10 @@ mod tests {
         assert_eq!(trust["keys"][0]["key_id"], DEVELOPMENT_KEY_ID);
         for artifact in index.artifacts {
             assert_eq!(artifact.key_id, DEVELOPMENT_KEY_ID);
-            let host = HostCompatibility::new(6, "aarch64-apple-darwin");
+            let host = HostCompatibility::new(
+                u32::from(lumvise_plugin_protocol::CURRENT_PROTOCOL_VERSION.major),
+                "aarch64-apple-darwin",
+            );
             let verified = verify_package(
                 &output.join(&artifact.archive_path),
                 &key.verifying_key(),
