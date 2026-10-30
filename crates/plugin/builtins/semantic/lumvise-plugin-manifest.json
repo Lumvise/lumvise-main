@@ -5015,7 +5015,7 @@
     }
   ],
   "plugin_id": "builtin.semantic",
-  "plugin_version": "0.2.0",
+  "plugin_version": "0.2.1",
   "protocol": {
     "max": 7,
     "min": 7
