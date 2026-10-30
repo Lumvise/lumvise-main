@@ -2,12 +2,21 @@
 //! The project provider supplies an argument-complete command; MCP input remains broker-owned.
 use std::process::{Output, Stdio};
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
+
+#[path = "native_command/process_tree.rs"]
+mod process_tree;
+use process_tree::NativeCommandTree;
+
+#[cfg(all(test, unix))]
+#[path = "native_command/tests.rs"]
+mod tree_tests;
 
 /// Captures an argument-driven child without sharing MCP stdin.
 /// Example: `capture_native_command(command, Duration::from_secs(60)).await`.
 pub(super) async fn capture_native_command(
-    mut command: Command,
+    command: Command,
     deadline: Duration,
 ) -> Result<Output, String> {
     let executable = command
@@ -15,22 +24,67 @@ pub(super) async fn capture_native_command(
         .get_program()
         .to_string_lossy()
         .into_owned();
+    let (mut child, mut tree) = spawn_native_command(command, &executable).await?;
+    let output = tokio::time::timeout(deadline, collect_native_output(&mut child, &mut tree)).await;
+    tree.close().await;
+    let _ = child.wait().await;
+    output
+        .map_err(|_| format!("native command timed out after {}ms", deadline.as_millis()))?
+        .map_err(|error| format!("failed to collect native command `{executable}` output: {error}"))
+}
+
+async fn spawn_native_command(
+    mut command: Command,
+    executable: &str,
+) -> Result<(Child, NativeCommandTree), String> {
     command
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command.spawn().map_err(|error| {
+    NativeCommandTree::configure(&mut command);
+    let mut child = command.spawn().map_err(|error| {
         format!("failed to start `{executable}`: expected an executable command; {error}")
     })?;
-    collect_native_output(child, deadline).await
+    let tree = match NativeCommandTree::attach(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill().await;
+            return Err(format!(
+                "native command `{executable}`: expected an owned process tree; {error}"
+            ));
+        }
+    };
+    Ok((child, tree))
 }
 
-async fn collect_native_output(child: Child, deadline: Duration) -> Result<Output, String> {
-    tokio::time::timeout(deadline, child.wait_with_output())
-        .await
-        .map_err(|_| format!("native command timed out after {}ms", deadline.as_millis()))?
-        .map_err(|error| format!("failed to collect native command output: {error}"))
+async fn collect_native_output(
+    child: &mut Child,
+    tree: &mut NativeCommandTree,
+) -> std::io::Result<Output> {
+    let mut stdout = native_output_pipe(child.stdout.take(), "stdout")?;
+    let mut stderr = native_output_pipe(child.stderr.take(), "stderr")?;
+    let (mut stdout_bytes, mut stderr_bytes) = (Vec::new(), Vec::new());
+    let completion = async {
+        let status = child.wait().await?;
+        // Descendants can retain output pipes after the CLI exits. Close them before joining readers.
+        tree.close().await;
+        Ok::<_, std::io::Error>(status)
+    };
+    let (status, _, _) = tokio::try_join!(
+        completion,
+        stdout.read_to_end(&mut stdout_bytes),
+        stderr.read_to_end(&mut stderr_bytes)
+    )?;
+    Ok(Output {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+    })
+}
+
+fn native_output_pipe<P>(pipe: Option<P>, name: &str) -> std::io::Result<P> {
+    pipe.ok_or_else(|| std::io::Error::other(format!("native child: expected {name} pipe")))
 }
 
 #[cfg(all(test, unix))]
