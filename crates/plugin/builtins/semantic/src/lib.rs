@@ -9,6 +9,8 @@ mod analysis;
 mod context;
 mod graph;
 mod http;
+mod indexing;
+mod indexing_request;
 mod ingest;
 mod manifest;
 mod models;
@@ -19,6 +21,7 @@ mod snapshot;
 mod storage;
 mod triggers;
 
+pub use indexing::INDEX_PROJECT_EXPORT_ID;
 use lumvise_plugin_package::PluginManifest;
 use lumvise_plugin_sdk::{PluginApplication, PluginContext, PluginError};
 pub use manifest::{

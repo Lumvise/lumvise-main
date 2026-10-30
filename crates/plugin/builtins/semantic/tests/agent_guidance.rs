@@ -39,6 +39,25 @@ fn every_signed_export_has_concise_capability_guidance() {
 }
 
 #[test]
+fn signed_search_guidance_explains_live_reads_without_new_result_fields() {
+    let manifest = packaged_manifest();
+    for id in ["search_graph", "search_code", "search_semantic_elements"] {
+        let descriptor = export(&manifest, id);
+        assert!(descriptor.description.contains("Live graph reads permit"));
+        assert!(
+            descriptor
+                .description
+                .contains("missing matches as inconclusive")
+        );
+        assert!(
+            descriptor.output_schema["properties"]
+                .get("read_consistency")
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn guidance_preserves_existing_export_and_host_contracts() {
     let template: PluginManifest =
         serde_json::from_str(include_str!("../lumvise-plugin-manifest.json")).unwrap();

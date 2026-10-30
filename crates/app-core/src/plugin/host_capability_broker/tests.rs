@@ -43,7 +43,7 @@ impl HostPluginInvoker for UnexpectedImportPublisher {
 fn source_import_arguments_cannot_create_the_required_runtime_scope() {
     let broker = broker_with_local_persistence();
     let input = json!({"operation":"import_folder","request":{"folderPath":"/not-authorized"}});
-    let call = || request("builtin.canvas", "project.import", input.clone());
+    let call = || request("builtin.semantic", "project.import", input.clone());
     assert!(
         broker
             .invoke(call())
@@ -61,7 +61,11 @@ fn source_import_arguments_cannot_create_the_required_runtime_scope() {
         .invoke_with_nested(call(), &context, &UnexpectedImportPublisher)
         .unwrap_err();
     assert!(denied.to_string().contains("source_import_root_denied"));
-    assert!(denied.to_string().contains("live Canvas MCP import export"));
+    assert!(
+        denied
+            .to_string()
+            .contains("live Semantic MCP index_project export")
+    );
 }
 
 #[test]
@@ -79,9 +83,9 @@ fn source_import_cannot_invent_membership_with_scope_strings() {
         Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE.into()),
     )
     .with_scope_epoch(Some(1))
-    .enter_plugin("builtin.canvas", "import_folder");
+    .enter_plugin("builtin.semantic", "index_project");
     let call = request(
-        "builtin.canvas",
+        "builtin.semantic",
         "project.import",
         json!({"operation":"import_folder",
         "request":{"folderPath":"/not-authorized","projectRoot":"/not-authorized"}}),

@@ -119,6 +119,9 @@ impl IndexPublicationJournal {
         partition: &SemanticPartition,
         control: &InvocationControl,
     ) -> Result<Vec<CheckpointPath>> {
+        if partition.replace_paths.len() > 1 {
+            return self.paths_in_multiple_scopes(partition, control);
+        }
         let mut paths = BTreeMap::new();
         for prefix in partition
             .replace_paths
@@ -136,6 +139,34 @@ impl IndexPublicationJournal {
             }
         }
         Ok(paths.into_values().collect())
+    }
+
+    fn paths_in_multiple_scopes(
+        &self,
+        partition: &SemanticPartition,
+        control: &InvocationControl,
+    ) -> Result<Vec<CheckpointPath>> {
+        // One paged inventory avoids a storage round trip for every changed file.
+        let inventory: BTreeMap<String, CheckpointPath> = self
+            .rows
+            .scan::<CheckpointPath>("path/", control)?
+            .into_iter()
+            .map(|path| (path.digest.path.clone(), path))
+            .collect();
+        let mut selected = BTreeMap::new();
+        for scope in &partition.replace_paths {
+            if let Some(path) = inventory.get(scope) {
+                selected.insert(scope.clone(), path.clone());
+            }
+            let prefix = format!("{}/", scope.trim_end_matches('/'));
+            for (name, path) in inventory
+                .range(prefix.clone()..)
+                .take_while(|(name, _)| name.starts_with(&prefix))
+            {
+                selected.insert(name.clone(), path.clone());
+            }
+        }
+        Ok(selected.into_values().collect())
     }
 
     pub(super) fn validate_partition(&self, partition: &SemanticPartition) -> Result<()> {

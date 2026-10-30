@@ -654,6 +654,10 @@ pub(crate) fn invocation_control(context: &PluginInvocationContext) -> Invocatio
             .min(Duration::from_secs(60)),
     );
     let cancellation = context.cancellation();
+    // Admission must observe cancellation before the monitoring thread can run.
+    if cancellation.is_cancelled() {
+        control.cancel();
+    }
     let monitoring = Arc::new(AtomicBool::new(true));
     let monitor = Arc::clone(&monitoring);
     let forwarded = control.clone();

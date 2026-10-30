@@ -263,6 +263,9 @@ impl AppCore {
         semantic_snapshots: Arc<crate::SemanticSnapshotService>,
         #[cfg(test)] plugin_host_capability_broker: Option<Arc<AppCoreHostCapabilityBroker>>,
     ) -> Self {
+        plugin_host_services
+            .project_import_service()
+            .install_runtime(&plugin_system);
         let frontend = plugin_host_services.frontend();
         let project_execution = crate::ProjectExecutionService::with_local_artifacts(
             Arc::clone(&frontend),

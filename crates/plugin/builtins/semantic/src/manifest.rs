@@ -241,6 +241,10 @@ pub(crate) fn source(target: &str, executable_sha256: &str) -> PluginManifest {
         exports: exports(),
         host_capabilities: vec![
             HostCapabilityRequirement {
+                id: "project.import".into(),
+                version: "^1.0".into(),
+            },
+            HostCapabilityRequirement {
                 id: "project.source".into(),
                 version: "^1.0".into(),
             },
@@ -522,6 +526,7 @@ fn exports() -> Vec<ExportDescriptor> {
             "/api/semantic-relationship-tree",
         ),
     ];
+    exports.push(crate::indexing::descriptor());
     exports.extend(trigger_exports());
     exports.extend(crate::analysis::manifest::exports());
     exports.extend(crate::revision_control::exports());
@@ -668,6 +673,9 @@ pub(crate) fn invoke(
     input: Value,
     context: &mut PluginContext<'_>,
 ) -> Result<Value, PluginError> {
+    if capability_id == crate::INDEX_PROJECT_EXPORT_ID {
+        return crate::indexing::invoke(input, context);
+    }
     if crate::revision_control::supports(capability_id) {
         return crate::revision_control::invoke(capability_id, input, context);
     }

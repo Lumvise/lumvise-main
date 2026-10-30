@@ -1,0 +1,204 @@
+{
+  "id": "index_project",
+  "name": "Index a project folder",
+  "description": "Start an app-owned folder scan or continue its staged publication. Use a real authorized absolute folderPath. Keep folderPath, projectRoot and replacePaths unchanged when continuing with the returned importId. Calls return promptly while App Core advances the job. Repeat until completed or completed_with_errors; only the terminal result confirms publication. Individual file failures preserve previous accepted records and appear in result.failures. statusOnly observes without advancing. cancel is allowed only while canCancel is true. Each invocation retains its 60-second deadline; CPU preparation continues between calls. This handle is in memory; after restart start again to replay any frozen publication and rescan.",
+  "kind": "mcp_tool",
+  "execution": "foreground",
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "folderPath": {
+        "type": "string"
+      },
+      "projectRoot": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "replacePaths": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "importId": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "cancel": {
+        "type": "boolean"
+      },
+      "statusOnly": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "folderPath"
+    ]
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "importId": {
+        "type": "string"
+      },
+      "projectRoot": {
+        "type": "string"
+      },
+      "phase": {
+        "type": "string",
+        "enum": [
+          "preparing",
+          "publishing",
+          "completed",
+          "completed_with_errors",
+          "canceled",
+          "failed"
+        ]
+      },
+      "canCancel": {
+        "type": "boolean"
+      },
+      "filesScanned": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "filesParsed": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "entriesInspected": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "pagesPublished": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "result": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "projectRoot": {
+                "type": "string"
+              },
+              "filesScanned": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "elementsUpserted": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "relationshipsUpserted": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "skipped": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "reason"
+                  ]
+                }
+              },
+              "failures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "reason"
+                  ]
+                }
+              },
+              "startedAt": {
+                "type": "string"
+              },
+              "finishedAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "projectRoot",
+              "filesScanned",
+              "elementsUpserted",
+              "relationshipsUpserted",
+              "skipped",
+              "failures",
+              "startedAt",
+              "finishedAt"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "error": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "importId",
+      "projectRoot",
+      "phase",
+      "canCancel",
+      "filesScanned",
+      "filesParsed",
+      "entriesInspected",
+      "pagesPublished",
+      "result",
+      "error"
+    ]
+  }
+}

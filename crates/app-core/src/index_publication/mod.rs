@@ -4,6 +4,7 @@
 mod acknowledgement;
 mod adoption;
 mod host;
+mod invocations;
 mod pending;
 mod records;
 mod source;
@@ -15,9 +16,10 @@ mod tests;
 mod validation;
 
 pub(crate) use host::invoke_index_publication;
+use invocations::IndexPublicationInvocations;
 use records::*;
 pub(crate) use records::{FrozenIndexPublication, IndexCheckoutBinding, IndexPathDigest};
-pub(crate) use source::IndexSourceCheckout;
+pub(crate) use source::{IndexSourceBase, IndexSourceCheckout};
 use storage::CheckpointRows;
 
 use crate::{AppCoreError, Result};
@@ -57,6 +59,7 @@ pub(crate) struct IndexPublicationJournal {
     project_root: String,
     semantic: Arc<dyn SemanticPersistence>,
     rows: CheckpointRows,
+    invocations: IndexPublicationInvocations,
 }
 
 impl IndexPublicationJournal {
@@ -78,7 +81,13 @@ impl IndexPublicationJournal {
             project_root,
             semantic,
             rows,
+            invocations: IndexPublicationInvocations::Inherited,
         })
+    }
+
+    fn use_app_owned_invocations(&mut self) {
+        self.invocations = IndexPublicationInvocations::AppOwned;
+        self.rows.use_app_owned_invocations();
     }
 
     fn semantic(
@@ -86,7 +95,8 @@ impl IndexPublicationJournal {
         operation: SemanticOperation,
         control: &InvocationControl,
     ) -> Result<SemanticResult> {
-        Ok(self.semantic.execute(operation, control)?)
+        let control = self.invocations.operation(control);
+        Ok(self.semantic.execute(operation, &control)?)
     }
 
     fn header(&self, control: &InvocationControl) -> Result<CheckpointHeader> {

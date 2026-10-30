@@ -78,7 +78,8 @@ pub(crate) fn invoke(
     if id == "get_code_snippet" {
         return source::snippet(&request, context);
     }
-    let mut snapshot = active_snapshot(&request, context)?;
+    let live_search = matches!(id, "search_graph" | "search_code");
+    let mut snapshot = active_snapshot(&request, context, live_search)?;
     if id == "ingest_runtime_trace" {
         return traces::ingest(&request, &snapshot, context);
     }
@@ -97,12 +98,17 @@ pub(crate) fn invoke(
 fn active_snapshot(
     request: &Request,
     context: &mut PluginContext<'_>,
+    live_search: bool,
 ) -> Result<Snapshot, PluginError> {
-    let mut snapshot: Snapshot = storage::project_snapshot(
-        context,
-        &json!({"project_root":request.project_root}),
-        Some("code_intelligence"),
-    )?;
+    let mut snapshot: Snapshot = if live_search {
+        storage::search_project_structure(context, &request.project_root)?
+    } else {
+        storage::project_snapshot(
+            context,
+            &json!({"project_root":request.project_root}),
+            Some("code_intelligence"),
+        )?
+    };
     if request
         .expected_commit_version
         .is_some_and(|version| version != snapshot.commit_version)

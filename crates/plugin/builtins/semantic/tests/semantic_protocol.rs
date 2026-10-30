@@ -719,7 +719,7 @@ fn graph_exports_and_invalid_input_are_public_contracts() {
 #[test]
 fn manifest_declares_all_exports_and_versioned_host_capabilities() {
     let manifest = package_manifest_source("test-target", &"a".repeat(64));
-    assert_eq!(manifest.exports.len(), 39);
+    assert_eq!(manifest.exports.len(), 40);
     for http_id in [
         "http_semantic_context",
         "http_search_context",

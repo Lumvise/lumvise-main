@@ -23,6 +23,13 @@ pub(crate) struct IndexSourceBase {
 }
 
 impl IndexSourceCheckout {
+    /// App-owned jobs bound each persistence call independently of CPU preparation.
+    /// Example: `IndexSourceCheckout::open(... )?.for_background_job()`.
+    pub(crate) fn for_background_job(mut self) -> Self {
+        self.journal.use_app_owned_invocations();
+        self
+    }
+
     /// Resolves a logical source before parsing; checkout paths stay client-local identities.
     /// Example: open two physical roots against one project route with separate client IDs.
     pub(crate) fn open(
@@ -133,12 +140,39 @@ impl IndexSourceCheckout {
     /// Example: a full scan after restart publishes only changes against this checkout's old base.
     pub(crate) fn freeze_batch(
         &self,
-        mut batch: IndexBatchRequest,
+        batch: IndexBatchRequest,
         full: bool,
         before: IndexSourceBase,
         control: &InvocationControl,
     ) -> Result<Option<FrozenIndexPublication>> {
-        let inventory = source_projection::projected_inventory(&batch)?;
+        self.freeze_batch_with_failures(batch, full, before, &[], control)
+    }
+
+    /// Failed source paths retain their last accepted records and checkpoint.
+    /// Example: freeze healthy files with `failed_paths = &["broken.pdf".into()]`.
+    pub(crate) fn freeze_batch_with_failures(
+        &self,
+        mut batch: IndexBatchRequest,
+        full: bool,
+        before: IndexSourceBase,
+        failed_paths: &[String],
+        control: &InvocationControl,
+    ) -> Result<Option<FrozenIndexPublication>> {
+        let protected: BTreeSet<_> = failed_paths.iter().map(String::as_str).collect();
+        let mut inventory = source_projection::projected_inventory(&batch)?;
+        let projected: BTreeSet<_> = inventory.iter().map(|entry| entry.path.as_str()).collect();
+        let retained: Vec<_> = before
+            .inventory
+            .iter()
+            .filter(|previous| {
+                protected.contains(previous.path.as_str())
+                    && !projected.contains(previous.path.as_str())
+            })
+            .cloned()
+            .collect();
+        drop(projected);
+        inventory.extend(retained);
+        inventory.sort_by(|left, right| left.path.cmp(&right.path));
         let current = self
             .journal
             .rows
@@ -163,7 +197,9 @@ impl IndexSourceCheckout {
             changed_paths(&inventory, &before.inventory)
         };
         changed.extend(source_projection::affected_callers(&batch, &changed));
-        let removed = removed_paths(&batch, full, &inventory, &before.inventory);
+        changed.retain(|path| !protected.contains(path.as_str()));
+        let mut removed = removed_paths(&batch, full, &inventory, &before.inventory);
+        removed.retain(|path| !protected.contains(path.as_str()));
         if changed.is_empty()
             && removed.is_empty()
             && self
@@ -174,7 +210,12 @@ impl IndexSourceCheckout {
         {
             return Ok(None);
         }
-        let replace_all = full && changed.len() == inventory.len();
+        // A never-accepted failed path has nothing to preserve in the source partition.
+        let protects_accepted = before
+            .inventory
+            .iter()
+            .any(|entry| protected.contains(entry.path.as_str()));
+        let replace_all = full && !protects_accepted && changed.len() == inventory.len();
         retain_changed(&mut batch, &changed, &removed);
         if replace_all {
             // A complete source replacement needs one provider scope, not thousands of path filters.

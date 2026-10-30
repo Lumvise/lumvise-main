@@ -1,5 +1,6 @@
 //! One folder scanner/publication owner for native and delegated imports.
-//! Call `import_folder` for controlled compiled callers; native adapters use `import_native`.
+//! Semantic calls `import_folder`; native HTTP uses `import_native_request`.
+//! Automatic refresh drives that same lifecycle through `import_native`.
 //! Session/checkpoint internals stay in this module and the existing publication owner.
 use super::*;
 use lumvise_db_core::{RelationalPersistence, SemanticPersistence};
@@ -9,27 +10,35 @@ use lumvise_plugin_runtime::{
 };
 use std::sync::{Mutex, OnceLock};
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FolderImportInput {
-    folder_path: String,
-    project_root: Option<String>,
-    replace_paths: Option<Vec<String>>,
+pub(super) struct FolderImportInput {
+    pub(super) folder_path: String,
+    pub(super) project_root: Option<String>,
+    pub(super) replace_paths: Option<Vec<String>>,
+    pub(super) import_id: Option<String>,
+    #[serde(default)]
+    pub(super) cancel: bool,
+    #[serde(default)]
+    pub(super) status_only: bool,
+    #[serde(skip)]
+    pub(super) existing_only: bool,
 }
 
 pub(crate) struct ProjectFolderImportService {
     pub(super) semantic: Arc<dyn SemanticPersistence>,
     pub(super) relational: Arc<dyn RelationalPersistence>,
     pub(super) index_publication_client: Arc<OnceLock<String>>,
-    sessions: Arc<Mutex<ProjectImportSessions>>,
+    pub(super) sessions: Arc<Mutex<ProjectImportSessions>>,
     frontend: Arc<Mutex<FrontendCore>>,
     converter: Arc<Mutex<Arc<lumvise_project_indexer::DocumentConverter>>>,
+    pub(super) jobs: super::jobs::ImportJobs,
+    runtime: OnceLock<std::sync::Weak<lumvise_plugin_runtime::PluginSystem>>,
 }
 
 pub(super) struct ImportExecution<'a> {
     pub(super) control: &'a InvocationControl,
-    nested: &'a dyn HostPluginInvoker,
-    log_plugin_id: &'a str,
+    pub(super) nested: &'a dyn HostPluginInvoker,
 }
 
 impl ProjectFolderImportService {
@@ -48,55 +57,165 @@ impl ProjectFolderImportService {
             sessions,
             frontend,
             converter,
+            jobs: Default::default(),
+            runtime: OnceLock::new(),
         }
     }
 
-    /// Imports one authorized folder with the caller's lifecycle and nested Semantic authority.
-    /// Example: `service.import_folder(json!({"folderPath": root}), context, nested)`.
-    pub(crate) fn import_folder(
+    pub(crate) fn install_runtime(&self, runtime: &Arc<lumvise_plugin_runtime::PluginSystem>) {
+        let _ = self.runtime.set(Arc::downgrade(runtime));
+    }
+
+    pub(crate) fn publisher(
         &self,
+        scope: Option<PluginInvocationContext>,
+        authorization: Option<Arc<dyn ImportAuthorization>>,
+    ) -> Arc<dyn ImportPublicationPort> {
+        Arc::new(ProjectImportPublisher::new(
+            self.runtime.get().cloned().unwrap_or_default(),
+            scope,
+            authorization,
+        ))
+    }
+
+    /// Starts or observes one authorized job; CPU and publication never borrow the caller's process channel.
+    /// Example: call with `{ "folderPath": root }`, then repeat with the returned `importId`.
+    pub(crate) fn import_folder(
+        self: &Arc<Self>,
         input: Value,
         context: &PluginInvocationContext,
-        nested: &dyn HostPluginInvoker,
+        publisher: Arc<dyn ImportPublicationPort>,
     ) -> Result<Value, HostCapabilityError> {
-        let request: FolderImportInput = serde_json::from_value(input.clone()).map_err(|error| HostCapabilityError::new(
-            "project.import", "invalid_import_input", format!("folder import {input}; expected {{folderPath:string,projectRoot?:string,replacePaths?:string[]}}: {error}"), false))?;
+        let request = decode_request(input).map_err(import_host_error)?;
         let bridge = crate::plugin::PluginHostServices::project_import_control(context);
-        let control = bridge.control();
+        active_import(&bridge.control()).map_err(import_host_error)?;
+        self.schedule(
+            request,
+            context.session_id().unwrap_or("unbound"),
+            publisher,
+            &bridge.control(),
+        )
+        .map_err(import_host_error)
+    }
+
+    pub(crate) fn import_native_request(
+        self: &Arc<Self>,
+        mut input: Value,
+        _app: &AppCore,
+    ) -> Result<Value, HttpResponse> {
+        if let Some(object) = input.as_object_mut() {
+            object.remove("source");
+        }
+        self.schedule(
+            decode_request(input)?,
+            "native-human",
+            self.publisher(None, None),
+            &InvocationControl::sixty_seconds(),
+        )
+    }
+
+    fn schedule(
+        self: &Arc<Self>,
+        mut input: FolderImportInput,
+        owner: &str,
+        publisher: Arc<dyn ImportPublicationPort>,
+        control: &InvocationControl,
+    ) -> Result<Value, HttpResponse> {
+        let observe_only = input.status_only;
+        input.status_only = true;
         let execution = ImportExecution {
-            control: &control,
-            nested,
-            log_plugin_id: "builtin.canvas",
+            control,
+            nested: publisher.as_ref(),
         };
-        import_project(self, request, false, &execution).map_err(import_host_error)
+        let status = super::jobs::import_job_request(self, input.clone(), owner, &execution)?;
+        if observe_only
+            || (!input.cancel
+                && matches!(
+                    status["phase"].as_str(),
+                    Some("failed" | "canceled" | "completed" | "completed_with_errors")
+                ))
+        {
+            return Ok(status);
+        }
+        input.status_only = false;
+        input.import_id = status["importId"].as_str().map(str::to_owned);
+        super::jobs::schedule_import_publication(self.clone(), input, owner.into(), publisher)?;
+        Ok(status)
+    }
+
+    pub(crate) fn with_project_imports_stopped<T>(
+        &self,
+        root: &str,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.jobs.with_project_stopped(root, action)
     }
 
     pub(super) fn import_native(
-        &self,
+        self: &Arc<Self>,
         input: ImportInput,
-        app: &AppCore,
+        _app: &AppCore,
         existing_only: bool,
     ) -> Result<Value, HttpResponse> {
-        let publisher = super::publication::NativeImportPublisher::new(app);
-        let control = publisher.control();
-        let execution = ImportExecution {
-            control: &control,
-            nested: &publisher,
-            log_plugin_id: IMPORTER_PLUGIN_ID,
-        };
-        let input = FolderImportInput {
-            folder_path: input.folder_path,
-            project_root: input.project_root,
-            replace_paths: input.replace_paths,
-        };
-        import_project(self, input, existing_only, &execution)
+        let root = canonical_root(&input.folder_path)?;
+        let route = input
+            .project_root
+            .clone()
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        if existing_only
+            && (self.jobs.active(&route)
+                || !self.project_is_indexed(&route, &InvocationControl::sixty_seconds())?
+                || self.refresh_deferred(&root, &route)?)
+        {
+            return Ok(finished(&route, 0, 0, 0, vec![], &Utc::now().to_rfc3339()));
+        }
+        let mut request = json!({"folderPath":input.folder_path,"projectRoot":input.project_root,"replacePaths":input.replace_paths});
+        loop {
+            let mut input = decode_request(request.clone())?;
+            input.existing_only = existing_only;
+            let status = self.schedule(
+                input,
+                "native-human",
+                self.publisher(None, None),
+                &InvocationControl::sixty_seconds(),
+            )?;
+            match status["phase"].as_str() {
+                Some("completed" | "completed_with_errors") => return Ok(status["result"].clone()),
+                Some("failed" | "canceled") => {
+                    return Err(error_response(
+                        "500 Internal Server Error",
+                        status["error"].to_string(),
+                    ));
+                }
+                _ => {
+                    request["importId"] = status["importId"].clone();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
     }
 
-    fn converter(&self) -> Result<Arc<lumvise_project_indexer::DocumentConverter>, String> {
+    fn refresh_deferred(&self, root: &Path, route: &str) -> Result<bool, HttpResponse> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| error_response("500 Internal Server Error", "import sessions poisoned"))?;
+        Ok(sessions
+            .get(&(root.to_path_buf(), route.into()))
+            .is_some_and(|session| {
+                session
+                    .refresh_retry
+                    .is_some_and(|retry| Instant::now() < retry.not_before)
+            }))
+    }
+
+    pub(super) fn converter(
+        &self,
+    ) -> Result<Arc<lumvise_project_indexer::DocumentConverter>, String> {
         super::super::document_conversion::shared_converter(&self.frontend, &self.converter)
     }
 
-    fn project_is_indexed(
+    pub(super) fn project_is_indexed(
         &self,
         root: &str,
         control: &InvocationControl,
@@ -123,7 +242,7 @@ fn import_host_error(response: HttpResponse) -> HostCapabilityError {
     )
 }
 
-fn active_import(control: &InvocationControl) -> Result<(), HttpResponse> {
+pub(super) fn active_import(control: &InvocationControl) -> Result<(), HttpResponse> {
     if control.is_cancelled() || control.is_expired() {
         return Err(revisions::source_failure(
             "folder import cancelled or deadline expired; expected active inherited invocation",
@@ -150,7 +269,10 @@ pub(super) fn semantic(
         .map_err(|error| error.to_string())
 }
 
-fn record_index_log(execution: &ImportExecution<'_>, entry: Value) -> Result<Value, String> {
+pub(super) fn record_index_log(
+    execution: &ImportExecution<'_>,
+    entry: Value,
+) -> Result<Value, String> {
     semantic(execution, RECORD_INDEX_LOG_EXPORT_ID, entry)
 }
 
@@ -176,257 +298,7 @@ pub(super) fn import_session(
     })
 }
 
-fn import_project(
-    service: &ProjectFolderImportService,
-    input: FolderImportInput,
-    existing_only: bool,
-    execution: &ImportExecution<'_>,
-) -> Result<Value, HttpResponse> {
-    active_import(execution.control)?;
-    let started_at = Utc::now().to_rfc3339();
-    let root = canonical_root(&input.folder_path)?;
-    let project_root = input
-        .project_root
-        .unwrap_or_else(|| root.to_string_lossy().into_owned());
-
-    // Keep scan acknowledgements across refreshes. Serialize publication with
-    // manual imports so a delayed batch cannot overwrite a newer source state.
-    let mut sessions = service.sessions.lock().map_err(|_| {
-        error_response(
-            "500 Internal Server Error",
-            "project import sessions poisoned; expected available importer",
-        )
-    })?;
-    // The refresh catalog is read before this lock. Recheck inside the same
-    // lifecycle gate as removal so an old catalog cannot resurrect a project.
-    if existing_only && !service.project_is_indexed(&project_root, execution.control)? {
-        return Ok(finished(&project_root, 0, 0, 0, Vec::new(), &started_at));
-    }
-    let converter = service
-        .converter()
-        .map_err(|error| error_response("500 Internal Server Error", error))?;
-    let mut configuration_changed = false;
-    let session = match sessions.entry((root.clone(), project_root.clone())) {
-        std::collections::btree_map::Entry::Occupied(mut entry) => {
-            if !Arc::ptr_eq(&entry.get().document_converter, &converter) {
-                entry.insert(import_session(&root, converter)?);
-                configuration_changed = true;
-            }
-            entry.into_mut()
-        }
-        std::collections::btree_map::Entry::Vacant(entry) => {
-            entry.insert(import_session(&root, converter)?)
-        }
-    };
-    let now = Instant::now();
-    if existing_only
-        && session
-            .refresh_retry
-            .is_some_and(|retry| now < retry.not_before)
-    {
-        // A failed refresh waits out its backoff; manual imports still run.
-        return Ok(finished(&project_root, 0, 0, 0, Vec::new(), &started_at));
-    }
-    let result = publish_scan(
-        service,
-        session,
-        &root,
-        &project_root,
-        input.replace_paths,
-        configuration_changed,
-        &started_at,
-        execution,
-    );
-    session.complete_refresh_attempt(&result, now, &project_root);
-    result
-}
-
-/// Scans one session's changes and publishes them as staged snapshot pages.
-fn publish_scan(
-    service: &ProjectFolderImportService,
-    session: &mut ProjectImportSession,
-    root: &Path,
-    project_root: &str,
-    replace_paths: Option<Vec<String>>,
-    configuration_changed: bool,
-    started_at: &str,
-    execution: &ImportExecution<'_>,
-) -> Result<Value, HttpResponse> {
-    revisions::prepare_checkout(service, session, root, project_root, execution.control)?;
-    let ProjectImportSession {
-        indexer,
-        projection,
-        source_checkout,
-        ..
-    } = session;
-    let checkout = source_checkout
-        .as_ref()
-        .ok_or_else(|| revisions::source_failure("missing source checkout"))?;
-    revisions::replay_pending(checkout, execution)?;
-    let before = checkout
-        .before_scan(execution.control)
-        .map_err(revisions::source_failure)?;
-    let scope = match &replace_paths {
-        Some(paths)
-            if !paths.is_empty() && !configuration_changed && !before.requires_full_scan =>
-        {
-            ScanScope::Paths(paths.clone())
-        }
-        _ => ScanScope::Full,
-    };
-    active_import(execution.control)?;
-    let scan = indexer.prepare(scope).map_err(scan_failure)?;
-    active_import(execution.control)?;
-    let full_snapshot = scan.is_full_snapshot();
-    let files_scanned = scan
-        .changed_files()
-        .filter(|file| file.entry.kind == SourceKind::File)
-        .count();
-
-    if !scan.needs_publication() {
-        indexer.commit(scan).map_err(scan_failure)?;
-        return Ok(finished(project_root, 0, 0, 0, Vec::new(), started_at));
-    }
-
-    let mut batch = projection.project(&scan).map_err(scan_failure)?;
-    let skipped = if full_snapshot {
-        collect_excluded(root, &accepted_paths(&scan))
-    } else {
-        // A selective import replaces exactly the requested paths; policy
-        // exclusions outside that scope are not part of this import.
-        Vec::new()
-    };
-    // The caller-supplied identity wins so scoped reads later match the
-    // returned `projectRoot`; the source upsert keeps the real folder path.
-    batch.project_root = project_root.to_owned();
-    let Some(frozen) = checkout
-        .freeze_batch(batch, full_snapshot, before, execution.control)
-        .map_err(revisions::source_failure)?
-    else {
-        indexer.commit(scan).map_err(scan_failure)?;
-        return Ok(finished(
-            project_root,
-            files_scanned,
-            0,
-            0,
-            skipped,
-            started_at,
-        ));
-    };
-    let batch = &frozen.batch;
-    let elements_upserted = batch.semantic_elements.len();
-    let relationships_upserted = batch.semantic_relationships.len();
-
-    let job_id = &frozen.operation_id;
-    let pages = snapshot_pages(
-        batch,
-        job_id,
-        batch.replace_paths.is_empty() && batch.removed_paths.is_empty(),
-    );
-    let page_count = pages.len();
-    let source_id = batch
-        .semantic_sources
-        .first()
-        .map(|source| source.semantic_source_id.clone());
-
-    // Best-effort start marker so the UI can observe an in-flight import.
-    let _ = record_index_log(
-        execution,
-        json!({
-            "provider_instance_id": PROVIDER_INSTANCE_ID,
-            "plugin_id": execution.log_plugin_id,
-            "semantic_source_id": source_id,
-            "project_root": project_root,
-            "index_log_id": job_id,
-            "status": "running",
-            "metrics": {
-                "filesScanned": files_scanned,
-                "elementsUpserted": elements_upserted,
-                "relationshipsUpserted": relationships_upserted,
-                "skipped": skipped.len(),
-                "pageCount": page_count,
-            },
-            "started_at": started_at,
-        }),
-    );
-
-    let outcome = publish_pages(execution, pages);
-    if let Err(error) = &outcome {
-        // Terminal state record; the staging area itself expires via TTL.
-        let _ = record_index_log(
-            execution,
-            json!({
-                "provider_instance_id": PROVIDER_INSTANCE_ID,
-                "plugin_id": execution.log_plugin_id,
-                "project_root": project_root,
-                "index_log_id": job_id,
-                "status": "failed",
-                "metrics": {
-                    "filesScanned": files_scanned,
-                    "pageCount": page_count,
-                },
-                "error": error,
-                "started_at": started_at,
-                "completed_at": Utc::now().to_rfc3339(),
-            }),
-        )
-        .inspect_err(|log_error| {
-            tracing::warn!(event = "project_import_terminal_log_failed",
-                project_root, index_log_id = %job_id, error = %log_error);
-        });
-        return Err(error_response(
-            "500 Internal Server Error",
-            format!("project import failed: {error}"),
-        ));
-    }
-    let receipt = outcome.map_err(revisions::source_failure)?;
-    checkout
-        .acknowledge(&receipt, execution.control)
-        .map_err(revisions::source_failure)?;
-    indexer.commit(scan).map_err(scan_failure)?;
-
-    record_index_log(
-        execution,
-        json!({
-            "provider_instance_id": PROVIDER_INSTANCE_ID,
-            "plugin_id": execution.log_plugin_id,
-            "project_root": project_root,
-            "index_log_id": job_id,
-            "status": "completed",
-            "metrics": {
-                "filesScanned": files_scanned,
-                "elementsUpserted": elements_upserted,
-                "relationshipsUpserted": relationships_upserted,
-                "skipped": skipped.len(),
-                "pageCount": page_count,
-            },
-            "started_at": started_at,
-            "completed_at": Utc::now().to_rfc3339(),
-        }),
-    )
-    .map_err(|error| {
-        error_response(
-            "500 Internal Server Error",
-            format!("project import published but the completion log failed: {error}"),
-        )
-    })?;
-
-    Ok(finished(
-        project_root,
-        files_scanned,
-        elements_upserted,
-        relationships_upserted,
-        skipped,
-        started_at,
-    ))
-}
-
-/// Splits one projection batch into staged ingestion pages. Page 0 carries the
-/// source upsert and the complete replacement partition (`replace_paths` +
-/// `removed_paths`) because the host takes the partition from the first page;
-/// a full snapshot deliberately keeps `replace_paths` empty so the commit
-/// replaces the whole project structure. Later pages carry the paths their
-/// elements cover (partial imports only).
+#[cfg(test)]
 pub(super) fn snapshot_pages<'a>(
     batch: &'a IndexBatchRequest,
     job_id: &'a str,
@@ -435,41 +307,9 @@ pub(super) fn snapshot_pages<'a>(
     SemanticIndexPages::new(batch, job_id, full_snapshot)
 }
 
-/// Publishes every staged page through the semantic plugin's
-/// `ingest_index_batch` MCP tool.
-pub(super) fn publish_pages(
-    execution: &ImportExecution<'_>,
-    pages: SemanticIndexPages<'_>,
-) -> Result<lumvise_db_core::SemanticRevisionPublicationReceipt, String> {
-    let mut receipt = None;
-    for page in pages {
-        let input = serde_json::to_value(page)
-            .map_err(|error| format!("cannot serialize frozen ingestion page: {error}"))?;
-        let response = semantic(execution, INGEST_EXPORT_ID, input)?;
-        if response["accepted"] != json!(true) {
-            return Err(format!(
-                "semantic ingestion rejected an import page: {response}"
-            ));
-        }
-        if !response["publication"].is_null() {
-            let outcome: lumvise_db_core::SemanticRevisionPublicationOutcome =
-                serde::Deserialize::deserialize(&response["publication"]).map_err(|error| {
-                    format!(
-                        "invalid Semantic publication `{}`; expected typed outcome: {error}",
-                        response["publication"]
-                    )
-                })?;
-            match outcome {
-                lumvise_db_core::SemanticRevisionPublicationOutcome::Accepted(accepted) => {
-                    receipt = Some(accepted)
-                }
-                lumvise_db_core::SemanticRevisionPublicationOutcome::Conflict(conflict) => {
-                    return Err(format!("source publication conflict: {conflict:?}"));
-                }
-            }
-        }
-    }
-    receipt.ok_or_else(|| "Semantic completed pages without an accepted publication receipt".into())
+fn decode_request(input: Value) -> Result<FolderImportInput, HttpResponse> {
+    serde_json::from_value(input.clone()).map_err(|error| error_response("400 Bad Request", format!(
+        "folder import {input}; expected {{folderPath:string,projectRoot?:string,replacePaths?:string[],importId?:string,cancel?:boolean,statusOnly?:boolean}}: {error}")))
 }
 
 /// Validates and canonicalizes the requested folder.
@@ -503,6 +343,7 @@ pub(super) fn canonical_root(folder_path: &str) -> Result<PathBuf, HttpResponse>
 pub(super) fn accepted_paths(scan: &PreparedProjectScan) -> BTreeSet<String> {
     scan.changed_files()
         .map(|file| file.entry.path.clone())
+        .chain(scan.failures().iter().map(|error| error.path.clone()))
         .collect()
 }
 

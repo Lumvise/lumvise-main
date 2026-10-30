@@ -32,7 +32,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "search_semantic_elements",
-        "Find indexed owners by semantic or lexical search with explicit project_root. Inspect mode/index_state and use returned IDs for focused tree, dependency, or source reads; an empty or stale index does not prove the code is absent.",
+        "Find indexed owners by semantic or lexical search with explicit project_root. Live graph reads permit mixed old/new entries during indexing without waiting for the publication gate. Inspect mode/index_state; use revision observations for writes. An empty or stale index does not prove the code is absent. Treat missing matches as inconclusive while indexing.",
     ),
     (
         "rebuild_search_index",
@@ -99,7 +99,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
 const ANALYSIS_GUIDANCE: &[(&str, &str)] = &[
     (
         "search_graph",
-        "Start with this project's indexed symbols, then inspect tree/dependencies, trace_path and get_code_snippet before editing. For pagination retain commit_version as expected_commit_version and restart if it changes.",
+        "Search reads the live graph without waiting for an import commit. Live graph reads permit mixed old/new entries; commit_version is the last completed publication watermark, not a frozen result set. Pagination may shift during indexing. Inspect tree/dependencies and source before editing; use revision observations for writes. Treat missing matches as inconclusive while indexing.",
     ),
     (
         "get_code_snippet",
@@ -107,7 +107,7 @@ const ANALYSIS_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "search_code",
-        "Reads current worktree text within indexed paths; owner ranges remain indexed. Inspect failures/failure_count and source_revision, and restart paginated reads if expected_commit_version is rejected.",
+        "Search reads live graph ownership and current worktree text without waiting for an import commit. Live graph reads permit mixed old/new entries and shifting pages during indexing. commit_version fences completed publications only. Inspect failures/failure_count and source_revision before trusting ownership. Treat missing matches as inconclusive while indexing.",
     ),
     (
         "get_graph_schema",

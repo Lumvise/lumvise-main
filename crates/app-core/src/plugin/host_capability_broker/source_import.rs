@@ -6,6 +6,7 @@ use super::{
 use lumvise_plugin_runtime::HostCapabilityError;
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -24,15 +25,21 @@ struct FolderRoute {
     project_root: Option<String>,
     #[serde(rename = "replacePaths")]
     _replace_paths: Option<Vec<String>>,
+    #[serde(rename = "importId")]
+    _import_id: Option<String>,
+    #[serde(rename = "cancel", default)]
+    _cancel: bool,
+    #[serde(rename = "statusOnly", default)]
+    _status_only: bool,
 }
 
 pub(super) fn invoke(
     broker: &AppCoreHostCapabilityBroker,
     call: HostCapabilityRequest,
     context: &PluginInvocationContext,
-    nested: &dyn HostPluginInvoker,
+    _nested: &dyn HostPluginInvoker,
 ) -> Result<Value, HostCapabilityError> {
-    require_canvas_import(&call, context)?;
+    require_semantic_import(&call, context)?;
     let ImportDelegation::ImportFolder { mut request } = decode(call.input)?;
     let route: FolderRoute = decode(request.clone())?;
     let services = broker
@@ -47,9 +54,21 @@ pub(super) fn invoke(
     // The shared scanner receives the authorized canonical path, not a mutable alias.
     request["folderPath"] = serde_json::json!(folder);
     request["projectRoot"] = serde_json::json!(root);
-    let output = services
-        .project_import_service()
-        .import_folder(request, context, nested)?;
+    let service = services.project_import_service();
+    let permit = Arc::new(ScopedImportAuthorization {
+        authority: super::super::knowledge_authority::KnowledgeAuthority::new(
+            broker.relational.clone(),
+            services.mcp_session_membership(),
+        ),
+        semantic: broker.semantic.clone(),
+        policy: policy.clone(),
+        folder: folder.clone(),
+        route: root.clone(),
+        context: context.clone(),
+        membership: services.mcp_session_membership(),
+    });
+    let publisher = service.publisher(Some(context.clone()), Some(permit));
+    let output = service.import_folder(request, context, publisher)?;
     require_active_host_call("project.import", context)?;
     authorize_project(broker, context, &root)?;
     policy.canonical_folder(folder.to_str().ok_or_else(requires_nested_context)?)?;
@@ -84,18 +103,18 @@ fn require_import_membership(
         })
 }
 
-fn require_canvas_import(
+fn require_semantic_import(
     call: &HostCapabilityRequest,
     context: &PluginInvocationContext,
 ) -> Result<(), HostCapabilityError> {
-    if call.plugin_id != "builtin.canvas"
+    if call.plugin_id != "builtin.semantic"
         || context.scope_id() != Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE)
         || context.plugin_chain().last().is_none_or(|frame| {
-            frame.plugin_id != "builtin.canvas" || frame.export_id != "import_folder"
+            frame.plugin_id != "builtin.semantic" || frame.export_id != "index_project"
         })
     {
         return Err(import_denied(&format!(
-            "caller {:?}, scope {:?}; expected the live Canvas MCP import export",
+            "caller {:?}, scope {:?}; expected the live Semantic MCP index_project export",
             call.plugin_id,
             context.scope_id()
         )));
@@ -240,6 +259,9 @@ mod tests {
             folder_path: "/allowed/alias".into(),
             project_root: None,
             _replace_paths: None,
+            _import_id: None,
+            _cancel: false,
+            _status_only: false,
         };
         assert_eq!(
             effective_project_root(&route, Path::new("/allowed/actual")).unwrap(),
@@ -322,5 +344,43 @@ mod tests {
                 .canonical_folder(root.path().join("..").to_str().unwrap())
                 .is_err()
         );
+    }
+}
+
+struct ScopedImportAuthorization {
+    authority: super::super::knowledge_authority::KnowledgeAuthority,
+    semantic: Arc<dyn lumvise_db_core::SemanticPersistence>,
+    policy: Arc<SourceImportAuthorization>,
+    folder: PathBuf,
+    route: String,
+    context: PluginInvocationContext,
+    membership: Arc<crate::app::mcp_session_registry::McpSessionMembership>,
+}
+
+impl crate::app::project_import::ImportAuthorization for ScopedImportAuthorization {
+    fn check(
+        &self,
+        control: &lumvise_resource_routing::InvocationControl,
+    ) -> Result<(), HostCapabilityError> {
+        let connection = self
+            .context
+            .session_id()
+            .ok_or_else(requires_nested_context)?;
+        self.membership
+            .scope(connection, self.context.scope_epoch())
+            .map_err(|error| import_denied(&error))?;
+        let canonical = self
+            .policy
+            .canonical_folder(self.folder.to_str().ok_or_else(requires_nested_context)?)?;
+        if canonical != self.folder {
+            return Err(import_denied("source root changed after indexing began"));
+        }
+        self.authority.authorize_source(
+            &self.context,
+            self.semantic.as_ref(),
+            &self.route,
+            true,
+            control,
+        )
     }
 }

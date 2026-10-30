@@ -1,7 +1,8 @@
 //! Real shared scanner -> Semantic -> public native persistence; only publication faults are faked.
 use super::*;
 use lumvise_db_core::{
-    LocalPersistence, RelationalPersistence, SemanticPersistence, SemanticRevisionSelectionSnapshot,
+    LocalPersistence, PersistenceResult, RelationalOperation, RelationalPersistence,
+    RelationalReadiness, RelationalResult, SemanticPersistence, SemanticRevisionSelectionSnapshot,
 };
 use lumvise_frontend_core::{AppSettingsPatch, FrontendCore};
 use lumvise_neural_core::LlmProviderRegistry;
@@ -11,7 +12,11 @@ use lumvise_plugin_runtime::{
 };
 use lumvise_plugin_sdk::{HostCallTransport, PluginApplication, PluginContext, PluginError};
 use lumvise_plugin_semantic::SemanticPlugin;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 
 const PROJECT: &str = "/shared-folder-import";
 
@@ -91,13 +96,20 @@ impl HostPluginInvoker for SemanticImportPublisher {
 struct SharedImportHost {
     app: AppCore,
     local: Arc<LocalPersistence>,
-    publisher: SemanticImportPublisher,
+    publisher: Arc<SemanticImportPublisher>,
 }
 
 impl SharedImportHost {
     fn new(local: Arc<LocalPersistence>, client: &str) -> Self {
+        Self::with_relational(local.clone(), local, client)
+    }
+
+    fn with_relational(
+        local: Arc<LocalPersistence>,
+        relational: Arc<dyn RelationalPersistence>,
+        client: &str,
+    ) -> Self {
         let semantic: Arc<dyn SemanticPersistence> = local.clone();
-        let relational: Arc<dyn RelationalPersistence> = local.clone();
         let app = AppCore::new(
             semantic.clone(),
             relational.clone(),
@@ -116,21 +128,14 @@ impl SharedImportHost {
         Self {
             app,
             local,
-            publisher: SemanticImportPublisher {
+            publisher: Arc::new(SemanticImportPublisher {
                 boundary: Mutex::new(boundary),
-            },
+            }),
         }
     }
 
     fn import(&self, root: &Path) -> Result<Value, HostCapabilityError> {
-        self.app
-            .plugin_host_services
-            .project_import_service()
-            .import_folder(
-                json!({"folderPath":root,"projectRoot":PROJECT}),
-                &import_context(),
-                &self.publisher,
-            )
+        drive_import(self, root, self.publisher.clone())
     }
 
     fn selected(&self) -> SemanticRevisionSelectionSnapshot {
@@ -149,6 +154,81 @@ impl SharedImportHost {
     }
 }
 
+struct GatedCheckpointReads {
+    local: Arc<LocalPersistence>,
+    enabled: AtomicBool,
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl RelationalPersistence for GatedCheckpointReads {
+    fn execute(
+        &self,
+        operation: RelationalOperation,
+        control: &InvocationControl,
+    ) -> PersistenceResult<RelationalResult> {
+        if matches!(&operation, RelationalOperation::GetPluginData{plugin_id,..} if plugin_id=="app.index-publication")
+            && self.enabled.swap(false, Ordering::AcqRel)
+        {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        }
+        RelationalPersistence::execute(self.local.as_ref(), operation, control)
+    }
+
+    fn readiness(&self) -> PersistenceResult<RelationalReadiness> {
+        RelationalPersistence::readiness(self.local.as_ref())
+    }
+}
+
+struct CheckpointReadRelease(mpsc::Sender<()>);
+impl Drop for CheckpointReadRelease {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+#[test]
+fn import_admission_returns_while_checkpoint_io_is_blocked() {
+    let local = Arc::new(LocalPersistence::in_memory().unwrap());
+    let (entered, blocked) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let gate = Arc::new(GatedCheckpointReads {
+        local: local.clone(),
+        enabled: AtomicBool::new(true),
+        entered,
+        release: Mutex::new(released),
+    });
+    let host = SharedImportHost::with_relational(local, gate, "client");
+    let root = checkout();
+    let service = host.app.plugin_host_services.project_import_service();
+    let publisher = host.publisher.clone();
+    let input = json!({"folderPath":root.path(),"projectRoot":PROJECT,"statusOnly":true});
+    let (sent, admission) = mpsc::channel();
+    let request = input.clone();
+    let _release = CheckpointReadRelease(release);
+    let caller = std::thread::spawn(move || {
+        sent.send(service.import_folder(request, &import_context(), publisher))
+            .unwrap()
+    });
+    blocked.recv_timeout(Duration::from_secs(3)).unwrap();
+    let result = admission
+        .recv_timeout(Duration::from_secs(1))
+        .expect("checkpoint I/O held import admission")
+        .unwrap();
+    assert_eq!(result["phase"], "preparing");
+    caller.join().unwrap();
+    drop(_release);
+    let mut continuation = input;
+    continuation["importId"] = result["importId"].clone();
+    continuation["statusOnly"] = json!(false);
+    drive_import_input(&host, continuation, host.publisher.clone()).unwrap();
+}
+
 fn import_context() -> PluginInvocationContext {
     PluginInvocationContext::new(
         "shared-folder-import",
@@ -156,7 +236,7 @@ fn import_context() -> PluginInvocationContext {
         PluginInvocationClass::Foreground,
         Instant::now() + Duration::from_secs(60),
     )
-    .enter_plugin("builtin.canvas", "import_folder")
+    .enter_plugin("builtin.semantic", "index_project")
 }
 
 fn checkout() -> tempfile::TempDir {
@@ -314,7 +394,11 @@ fn shared_folder_import_rejects_expired_or_cancelled_lifecycle_before_scanning()
             host.app
                 .plugin_host_services
                 .project_import_service()
-                .import_folder(json!({"folderPath":"/missing"}), &context, &host.publisher)
+                .import_folder(
+                    json!({"folderPath":"/missing"}),
+                    &context,
+                    host.publisher.clone()
+                )
                 .is_err()
         );
     }
@@ -322,9 +406,9 @@ fn shared_folder_import_rejects_expired_or_cancelled_lifecycle_before_scanning()
     assert!(host.publisher.boundary.lock().unwrap().batches.is_empty());
 }
 
-struct MalformedReceiptPublisher<'a>(&'a SemanticImportPublisher);
+struct MalformedReceiptPublisher(Arc<SemanticImportPublisher>);
 
-impl HostPluginInvoker for MalformedReceiptPublisher<'_> {
+impl HostPluginInvoker for MalformedReceiptPublisher {
     fn invoke_plugin(&self, request: HostPluginInvocation) -> Result<Value, HostCapabilityError> {
         let mut response = self.0.invoke_plugin(request)?;
         if !response["publication"].is_null() {
@@ -351,13 +435,309 @@ fn shared_folder_import_preserves_malformed_receipt_value_and_replays_pending() 
 }
 
 fn malformed_import_error(host: &SharedImportHost, root: &Path) -> HostCapabilityError {
-    host.app
-        .plugin_host_services
-        .project_import_service()
-        .import_folder(
-            json!({"folderPath":root,"projectRoot":PROJECT}),
-            &import_context(),
-            &MalformedReceiptPublisher(&host.publisher),
+    drive_import(
+        host,
+        root,
+        Arc::new(MalformedReceiptPublisher(host.publisher.clone())),
+    )
+    .unwrap_err()
+}
+
+fn drive_import(
+    host: &SharedImportHost,
+    root: &Path,
+    publisher: Arc<dyn ImportPublicationPort>,
+) -> Result<Value, HostCapabilityError> {
+    drive_import_input(
+        host,
+        json!({"folderPath":root,"projectRoot":PROJECT}),
+        publisher,
+    )
+}
+
+fn drive_import_input(
+    host: &SharedImportHost,
+    mut input: Value,
+    publisher: Arc<dyn ImportPublicationPort>,
+) -> Result<Value, HostCapabilityError> {
+    let service = host.app.plugin_host_services.project_import_service();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(Instant::now() < deadline, "import fixture failed to settle");
+        let progress =
+            service.import_folder(input.clone(), &import_context(), publisher.clone())?;
+        match progress["phase"].as_str() {
+            Some("completed" | "completed_with_errors") => return Ok(progress["result"].clone()),
+            Some("failed") => {
+                return Err(HostCapabilityError::new(
+                    "project.import",
+                    "import_failed",
+                    progress["error"].to_string(),
+                    false,
+                ));
+            }
+            _ => input["importId"] = progress["importId"].clone(),
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+impl ImportPublicationPort for SemanticImportPublisher {}
+impl ImportPublicationPort for MalformedReceiptPublisher {}
+
+struct SpentPublicationStep {
+    semantic: Arc<SemanticImportPublisher>,
+    control: Mutex<Option<InvocationControl>>,
+}
+
+impl ImportPublicationPort for SpentPublicationStep {
+    fn authorize(&self, control: &InvocationControl) -> Result<(), HostCapabilityError> {
+        *self.control.lock().unwrap() = Some(control.clone());
+        Ok(())
+    }
+}
+
+impl HostPluginInvoker for SpentPublicationStep {
+    fn invoke_plugin(&self, request: HostPluginInvocation) -> Result<Value, HostCapabilityError> {
+        let output = self.semantic.invoke_plugin(request)?;
+        if output["ingestion_status"] == "completed" {
+            self.control.lock().unwrap().as_ref().unwrap().cancel();
+        }
+        Ok(output)
+    }
+}
+
+#[test]
+fn accepted_publication_acknowledges_after_its_step_budget_is_spent() {
+    let root = checkout();
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let publisher = Arc::new(SpentPublicationStep {
+        semantic: host.publisher.clone(),
+        control: Mutex::new(None),
+    });
+    drive_import(&host, root.path(), publisher).unwrap();
+    assert!(!host.selected().elements.is_empty());
+    let log = host
+        .publisher
+        .invoke_plugin(HostPluginInvocation {
+            plugin_id: "builtin.semantic".into(),
+            export_id: "latest_index_log".into(),
+            input: json!({"project_root":PROJECT}),
+        })
+        .unwrap();
+    assert_eq!(log["index_log"]["status"], "completed", "{log}");
+    host.publisher.boundary.lock().unwrap().batches.clear();
+    let unchanged = host.import(root.path()).unwrap();
+    assert_eq!(unchanged["filesScanned"], 0);
+    assert!(host.publisher.boundary.lock().unwrap().batches.is_empty());
+}
+
+#[test]
+fn continuing_import_cancellation_and_scope_are_checked_before_publication() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    let service = host.app.plugin_host_services.project_import_service();
+    let mut input = json!({"folderPath":root.path(),"projectRoot":PROJECT,"statusOnly":true});
+    let pending = service
+        .import_folder(input.clone(), &import_context(), host.publisher.clone())
+        .unwrap();
+    assert_eq!(pending["phase"], "preparing");
+    assert!(host.publisher.boundary.lock().unwrap().batches.is_empty());
+    input["importId"] = pending["importId"].clone();
+    let other_owner = PluginInvocationContext::new(
+        "other",
+        "other",
+        PluginInvocationClass::Foreground,
+        Instant::now() + Duration::from_secs(60),
+    )
+    .with_route_identity("other-connection", None);
+    assert!(
+        service
+            .import_folder(input.clone(), &other_owner, host.publisher.clone())
+            .is_err()
+    );
+    let mut wrong_scope = input.clone();
+    wrong_scope["replacePaths"] = json!(["a.rs"]);
+    assert!(
+        service
+            .import_folder(wrong_scope, &import_context(), host.publisher.clone())
+            .is_err()
+    );
+    input["cancel"] = json!(true);
+    let canceled = service
+        .import_folder(input, &import_context(), host.publisher.clone())
+        .unwrap();
+    assert_eq!(canceled["phase"], "canceled");
+    assert!(host.publisher.boundary.lock().unwrap().batches.is_empty());
+    host.import(root.path()).unwrap();
+    assert!(!host.selected().elements.is_empty());
+}
+
+#[test]
+fn a_later_refresh_does_not_erase_an_unread_completed_import_handle() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    let service = host.app.plugin_host_services.project_import_service();
+    let mut input = json!({"folderPath":root.path(),"projectRoot":PROJECT,"statusOnly":true});
+    let first = service
+        .import_folder(input.clone(), &import_context(), host.publisher.clone())
+        .unwrap();
+    input["importId"] = first["importId"].clone();
+    input["statusOnly"] = json!(false);
+    drive_import_input(&host, input.clone(), host.publisher.clone()).unwrap();
+    host.import(root.path()).unwrap();
+    input["statusOnly"] = json!(true);
+    let completed = service
+        .import_folder(input, &import_context(), host.publisher.clone())
+        .unwrap();
+    assert_eq!(completed["phase"], "completed");
+    assert_eq!(completed["importId"], first["importId"]);
+}
+
+#[test]
+fn cold_selective_import_reconciles_deleted_paths_against_the_complete_inventory() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    host.import(root.path()).unwrap();
+    host.app.project_import_sessions.lock().unwrap().clear();
+    std::fs::remove_file(root.path().join("a.rs")).unwrap();
+    std::fs::write(root.path().join("b.rs"), "fn updated_b() {}\n").unwrap();
+    drive_import_input(
+        &host,
+        json!({"folderPath":root.path(),"projectRoot":PROJECT,
+        "replacePaths":["a.rs","b.rs"]}),
+        host.publisher.clone(),
+    )
+    .unwrap();
+    let current = host.selected();
+    assert!(
+        !current
+            .elements
+            .iter()
+            .any(|element| element.path == "a.rs")
+    );
+    assert!(
+        current
+            .elements
+            .iter()
+            .any(|element| element.name == "updated_b")
+    );
+}
+
+#[test]
+fn deleting_a_cold_failed_file_removes_its_retained_accepted_elements() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    let path = root.path().join("report.pdf");
+    std::fs::write(
+        &path,
+        include_bytes!("../../../../project-indexer/tests/fixtures/documents/report.pdf"),
+    )
+    .unwrap();
+    host.import(root.path()).unwrap();
+    host.app.project_import_sessions.lock().unwrap().clear();
+    std::fs::write(&path, b"%PDF-invalid").unwrap();
+    let partial = host.import(root.path()).unwrap();
+    assert_eq!(partial["failures"].as_array().unwrap().len(), 1);
+    assert!(
+        host.selected()
+            .elements
+            .iter()
+            .any(|element| element.path == "report.pdf")
+    );
+    std::fs::remove_file(path).unwrap();
+    host.import(root.path()).unwrap();
+    let current = host.selected();
+    assert!(
+        !current
+            .elements
+            .iter()
+            .any(|element| element.path == "report.pdf")
+    );
+    assert!(
+        current
+            .elements
+            .iter()
+            .any(|element| element.path == "a.rs")
+    );
+}
+
+#[test]
+fn healthy_changes_publish_while_broken_pdf_retains_accepted_content_with_warm_and_cold_caches() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    let pdf = include_bytes!("../../../../project-indexer/tests/fixtures/documents/report.pdf");
+    std::fs::write(root.path().join("report.pdf"), pdf).unwrap();
+    host.import(root.path()).unwrap();
+    let original = host.selected();
+    let accepted_pdf = file_id(&original, "report.pdf");
+    std::fs::write(root.path().join("report.pdf"), b"%PDF-invalid").unwrap();
+    for value in [2, 3] {
+        if value == 3 {
+            host.app.project_import_sessions.lock().unwrap().clear();
+        }
+        let previous = host.selected();
+        std::fs::write(
+            root.path().join("a.rs"),
+            format!("fn a() {{ let value = {value}; }}\n"),
         )
-        .unwrap_err()
+        .unwrap();
+        let result = host.import(root.path()).unwrap();
+        assert_eq!(result["failures"].as_array().unwrap().len(), 1);
+        assert_eq!(result["failures"][0]["path"], "report.pdf");
+        let current = host.selected();
+        assert_eq!(file_id(&current, "report.pdf"), accepted_pdf);
+        let pdf_elements = |snapshot: &SemanticRevisionSelectionSnapshot| {
+            snapshot
+                .elements
+                .iter()
+                .filter(|element| element.path == "report.pdf")
+                .map(|element| element.semantic_element_id.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        assert!(pdf_elements(&original).len() > 1);
+        assert_eq!(pdf_elements(&current), pdf_elements(&original));
+        assert_ne!(file_id(&current, "a.rs"), file_id(&previous, "a.rs"));
+    }
+    std::fs::write(root.path().join("report.pdf"), pdf).unwrap();
+    assert!(
+        host.import(root.path()).unwrap()["failures"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(file_id(&host.selected(), "report.pdf"), accepted_pdf);
+}
+
+#[test]
+fn prepared_job_survives_its_original_call_and_requires_fresh_control_to_continue() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    let service = host.app.plugin_host_services.project_import_service();
+    let context = import_context();
+    let mut input = json!({"folderPath":root.path(),"projectRoot":PROJECT,"statusOnly":true});
+    let pending = service
+        .import_folder(input.clone(), &context, host.publisher.clone())
+        .unwrap();
+    context.cancellation().cancel();
+    input["importId"] = pending["importId"].clone();
+    input["statusOnly"] = json!(false);
+    assert!(
+        service
+            .import_folder(input.clone(), &context, host.publisher.clone())
+            .is_err()
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline);
+        let state = service
+            .import_folder(input.clone(), &import_context(), host.publisher.clone())
+            .unwrap();
+        if state["phase"] == "completed" {
+            break;
+        }
+        assert_ne!(state["phase"], "failed");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!host.selected().elements.is_empty());
 }
