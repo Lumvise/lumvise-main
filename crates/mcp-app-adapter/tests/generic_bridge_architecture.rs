@@ -4,6 +4,7 @@ use std::process::Command;
 const ALLOWED_DEPENDENCIES: &[&str] = &[
     "lumvise-app-core",
     "lumvise-contracts",
+    "libc",
     "lumvise-mcp-core",
     "prost",
     "serde",
@@ -12,6 +13,7 @@ const ALLOWED_DEPENDENCIES: &[&str] = &[
     "thiserror",
     "tokio",
     "tracing",
+    "windows-sys",
 ];
 
 #[test]
