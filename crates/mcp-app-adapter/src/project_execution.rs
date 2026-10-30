@@ -15,7 +15,10 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::watch;
 
+mod command_queue;
 mod native_command;
+#[cfg(test)]
+mod tests;
 
 const CAPABILITY: &str = "semantic.generate_functional_artifacts.v1";
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -168,14 +171,21 @@ async fn run_connected(
     )
     .await?;
     tracing::info!(provider_id = %config.provider_id, project_root = %config.project_root.display(), "registered project execution provider");
-
+    let mut queue = command_queue::ProjectCommandQueue::default();
     loop {
         let request = AuthenticatedRequest {
             provider_id: &config.provider_id,
             connection_token: &connection.connection_token,
             timeout_ms: 2_000,
         };
-        let next = post_json::<_, NextResponse>(client, config, NEXT_ENDPOINT, &request);
+        let next = async {
+            if let Some(command) = queue.pop() {
+                return Ok(NextResponse {
+                    command: Some(command),
+                });
+            }
+            post_json::<_, NextResponse>(client, config, NEXT_ENDPOINT, &request).await
+        };
         let response = tokio::select! {
             response = next => response?,
             _ = shutdown.changed() => break,
@@ -183,7 +193,15 @@ async fn run_connected(
         let Some(command) = response.command else {
             continue;
         };
-        execute_command(client, config, &connection, command).await?;
+        let job_id = match &command {
+            ProjectExecutionCommand::Execute { job_id, .. } => job_id.clone(),
+            ProjectExecutionCommand::Cancel { .. } => continue,
+        };
+        tokio::select! {
+            result = execute_command(client, config, &connection, command) => result?,
+            result = wait_for_job_cancellation(client, config, &connection, &job_id, &mut queue) => result?,
+            _ = shutdown.changed() => break,
+        }
     }
 
     let _ = post_json::<_, Value>(
@@ -197,6 +215,30 @@ async fn run_connected(
     )
     .await;
     Ok(())
+}
+
+async fn wait_for_job_cancellation(
+    client: &AppBridgeHttpTransport,
+    config: &ProjectExecutionConfig,
+    connection: &ProviderConnection,
+    job_id: &str,
+    queue: &mut command_queue::ProjectCommandQueue,
+) -> Result<(), String> {
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let request = AuthenticatedRequest {
+            provider_id: &config.provider_id,
+            connection_token: &connection.connection_token,
+            timeout_ms: 0,
+        };
+        let response: NextResponse = post_json(client, config, NEXT_ENDPOINT, &request).await?;
+        if response
+            .command
+            .is_some_and(|command| queue.observe(command, job_id))
+        {
+            return Ok(());
+        }
+    }
 }
 
 async fn execute_command(
@@ -500,6 +542,9 @@ impl NativeLlmEngine {
             Self::Codex => (
                 command_from_env("LUMVISE_NATIVE_LLM_CODEX_COMMAND", "codex"),
                 vec![
+                    // App-owned jobs must not invoke the desktop agent's completion notification recursively.
+                    "-c".into(),
+                    "notify=[]".into(),
                     "exec".into(),
                     "--skip-git-repo-check".into(),
                     "--sandbox".into(),
