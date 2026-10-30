@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use lumvise_contracts::{SemanticIndexObservation, SemanticSourceUpsert};
 use lumvise_db_core::{
@@ -16,11 +16,16 @@ use serde_json::{Value, json};
 
 use super::host_capability_catalog::SEMANTIC_STORAGE;
 
+/// A staged write nobody has begun or staged into for this long is abandoned: its job failed,
+/// was canceled or lost its project, and nothing aborts the write. Active imports stay fresh
+/// because every page they stage refreshes it, however long the whole import takes.
+const WRITE_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_ACTIVE_WRITES: usize = 2;
 
 pub(super) struct SemanticSnapshotWrites {
-    // Independent invocations share this domain write until commit, abort or app shutdown.
+    // Independent invocations share this domain write until commit, abort or going idle.
     writes: Mutex<HashMap<String, StagedSemanticSnapshot>>,
+    idle_ttl: Duration,
 }
 
 /// One staged part of an atomic publication, including its exact payload mutations.
@@ -43,6 +48,7 @@ struct StagedSemanticSnapshot {
     page_count: usize,
     observation: SemanticIndexObservation,
     next_page_index: usize,
+    touched_at: Instant,
     elements: Vec<SemanticElement>,
     relationships: Vec<SemanticRelationship>,
     sources: BTreeMap<String, SemanticSourceUpsert>,
@@ -54,6 +60,7 @@ impl SemanticSnapshotWrites {
     pub(super) fn new() -> Self {
         Self {
             writes: Mutex::new(HashMap::new()),
+            idle_ttl: WRITE_IDLE_TTL,
         }
     }
 
@@ -79,6 +86,7 @@ impl SemanticSnapshotWrites {
             .map_err(|error| storage_error(error.into()))?;
         }
         let mut writes = self.lock()?;
+        discard_idle(&mut writes, self.idle_ttl);
         if let Some(previous) = writes.get(snapshot_id) {
             if previous.plugin_id != plugin_id
                 || previous.project_root != project_root
@@ -115,6 +123,7 @@ impl SemanticSnapshotWrites {
                 page_count,
                 observation,
                 next_page_index: 0,
+                touched_at: Instant::now(),
                 elements: Vec::new(),
                 relationships: Vec::new(),
                 sources: BTreeMap::new(),
@@ -132,6 +141,7 @@ impl SemanticSnapshotWrites {
         page: SemanticSnapshotPage,
     ) -> Result<Value, HostCapabilityError> {
         let mut writes = self.lock()?;
+        discard_idle(&mut writes, self.idle_ttl);
         let write = owned_write_mut(&mut writes, snapshot_id, plugin_id)?;
         let page_index = page.page_index;
         if page_index != write.next_page_index {
@@ -164,6 +174,7 @@ impl SemanticSnapshotWrites {
                 .insert(source.semantic_source_id.clone(), source);
         }
         write.next_page_index += 1;
+        write.touched_at = Instant::now();
         Ok(json!({
             "snapshot_id": snapshot_id,
             "staged_pages": write.next_page_index,
@@ -180,6 +191,7 @@ impl SemanticSnapshotWrites {
     ) -> Result<Value, HostCapabilityError> {
         let write = {
             let mut writes = self.lock()?;
+            discard_idle(&mut writes, self.idle_ttl);
             let write = owned_write(&writes, snapshot_id, plugin_id)?;
             if write.next_page_index != write.page_count {
                 return Err(write_error(
@@ -239,6 +251,7 @@ impl SemanticSnapshotWrites {
         snapshot_id: &str,
     ) -> Result<Value, HostCapabilityError> {
         let mut writes = self.lock()?;
+        discard_idle(&mut writes, self.idle_ttl);
         owned_write(&writes, snapshot_id, plugin_id)?;
         writes.remove(snapshot_id);
         Ok(json!({"snapshot_id": snapshot_id, "status": "aborted"}))
@@ -348,6 +361,10 @@ fn owned_write_mut<'a>(
         .ok_or_else(|| snapshot_not_found(snapshot_id, plugin_id))
 }
 
+fn discard_idle(writes: &mut HashMap<String, StagedSemanticSnapshot>, ttl: Duration) {
+    writes.retain(|_, write| write.touched_at.elapsed() < ttl);
+}
+
 fn snapshot_not_found(snapshot_id: &str, plugin_id: &str) -> HostCapabilityError {
     write_error(
         "semantic_snapshot_write_not_found",
@@ -382,6 +399,74 @@ mod tests {
             source_context: "local".into(),
             expected: Default::default(),
         }
+    }
+
+    fn begin_two_pages(
+        writes: &SemanticSnapshotWrites,
+        snapshot_id: &str,
+    ) -> Result<Value, HostCapabilityError> {
+        writes.begin(
+            "plugin",
+            snapshot_id,
+            "/repo",
+            None,
+            Vec::new(),
+            2,
+            observation(),
+        )
+    }
+
+    fn stage_page(
+        writes: &SemanticSnapshotWrites,
+        snapshot_id: &str,
+        page_index: usize,
+    ) -> Result<Value, HostCapabilityError> {
+        writes.stage(
+            "plugin",
+            snapshot_id,
+            SemanticSnapshotPage {
+                page_index,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn abandoned_writes_expire_and_free_their_slots() {
+        // A failed, canceled or removed import never aborts its staged write.
+        let mut writes = SemanticSnapshotWrites::new();
+        begin_two_pages(&writes, "failed-import").unwrap();
+        stage_page(&writes, "failed-import", 0).unwrap();
+        begin_two_pages(&writes, "removed-project").unwrap();
+        assert!(
+            begin_two_pages(&writes, "next-import")
+                .unwrap_err()
+                .to_string()
+                .contains("semantic_snapshot_write_limit")
+        );
+
+        writes.idle_ttl = Duration::ZERO;
+        begin_two_pages(&writes, "next-import").unwrap();
+        for abandoned in ["failed-import", "removed-project"] {
+            assert!(
+                stage_page(&writes, abandoned, 1)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("semantic_snapshot_write_not_found")
+            );
+        }
+    }
+
+    #[test]
+    fn staging_a_page_keeps_a_long_import_alive() {
+        let writes = SemanticSnapshotWrites::new();
+        let touched =
+            |writes: &SemanticSnapshotWrites| writes.writes.lock().unwrap()["import"].touched_at;
+        begin_two_pages(&writes, "import").unwrap();
+        let begun = touched(&writes);
+        std::thread::sleep(Duration::from_millis(2));
+        stage_page(&writes, "import", 0).unwrap();
+        assert!(touched(&writes) > begun);
     }
 
     #[test]
