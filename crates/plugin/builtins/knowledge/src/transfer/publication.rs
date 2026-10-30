@@ -328,6 +328,7 @@ fn prepare_copy(
     let mut copy = references.prepare(candidate)?;
     copy.metadata["inheritance"]["transfer_id"] = json!(candidate.copy.artifact_id);
     copy.metadata["inheritance"]["copied_revision_id"] = json!(copy.artifact_id);
+    copy.anchor_fingerprint = candidate.target.content_fingerprint.clone();
     crate::artifact::stamp(&mut copy, None, chrono::Utc::now());
     attachments::copy_referenced_attachments(&candidate.source, &mut copy, context)?;
     Ok(copy)

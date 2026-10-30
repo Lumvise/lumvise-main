@@ -14,20 +14,27 @@ impl HostCallTransport for ScopedArtifactStorage {
             Some("semantic_revision") => return Ok(json!({"commit_version": 7})),
             Some("revision_selection_members") => {
                 assert_eq!(request["query"]["project_root"], "/demo");
-                assert_eq!(request["query"]["artifact_ids"], json!(["note-child"]));
+                assert!(matches!(
+                    request["query"]["artifact_ids"]
+                        .as_array()
+                        .unwrap()
+                        .as_slice(),
+                    [] | [_]
+                ));
                 return Ok(json!({"membership": null}));
             }
             _ => {}
         }
         let mut ids = request["semantic_element_ids"].as_array().unwrap().clone();
         ids.sort_by_key(Value::to_string);
-        assert_eq!(ids, vec![json!("child"), json!("file")]);
         match request["operation"].as_str() {
             Some("artifacts_for_elements") => {
+                assert_eq!(ids, vec![json!("child"), json!("file")]);
                 Ok(json!({"artifacts": [record("child", "/old-route"), record("file", "/demo")]}))
             }
             Some("elements_by_ids_including_inactive") => {
                 assert_eq!(request["project_root"], "/demo");
+                assert!(ids.iter().all(|id| id == "child" || id == "file"));
                 Ok(
                     json!({"elements":[{"project_root":"/demo","semantic_element_id":"child","semantic_source_id":"source",
                     "path":"src/lib.rs","element_kind":"function","name":"Child","parent_element_id":null,
@@ -58,7 +65,7 @@ fn scoped_listing_batches_deduplicated_owners_and_retains_project_filter() {
             &mut PluginContext::for_test(&mut storage),
         )
         .unwrap();
-    assert_eq!(storage.calls, 5);
+    assert_eq!(storage.calls, 7);
     assert_eq!(output["artifacts"].as_array().unwrap().len(), 1);
     assert_eq!(output["artifacts"][0]["semantic_element_id"], "child");
     assert_eq!(output["artifacts"][0]["project_root"], "/demo");

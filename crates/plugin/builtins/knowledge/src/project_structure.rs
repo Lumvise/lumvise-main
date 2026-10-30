@@ -730,6 +730,8 @@ mod tests {
             metadata: json!({}),
             path: None,
             project_root: Some("/other".into()),
+            anchor_fingerprint: None,
+            outdated: None,
             lifecycle: Default::default(),
         };
         let semantic = SemanticContext {

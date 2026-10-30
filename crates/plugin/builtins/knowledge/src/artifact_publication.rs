@@ -11,7 +11,7 @@ use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{KnowledgeArtifact, artifact, storage};
+use crate::{KnowledgeArtifact, artifact, outdated, storage};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -148,7 +148,7 @@ fn prepare_create(
     artifact::require(&request.artifact_id, "artifact_id")?;
     let mut proposed = artifact::create(request.clone())?;
     let element = storage::required_semantic_element(context, &request.semantic_element_id)?;
-    attach_project_scope(&mut proposed, &element)?;
+    attach_project_scope(context, &mut proposed, &element)?;
     let stored = storage::raw_graph_artifact(context, &request.artifact_id)?;
     if let Some(stored) = stored
         && stored_in_project(context, &stored, project_root(&proposed)?)?
@@ -209,7 +209,7 @@ fn validate_updated_scope(
     proposed: &mut KnowledgeArtifact,
 ) -> Result<(), PluginError> {
     let element = storage::required_semantic_element(context, &proposed.semantic_element_id)?;
-    attach_project_scope(proposed, &element)?;
+    attach_project_scope(context, proposed, &element)?;
     if project_root(proposed)? != original_root {
         return Err(conflict(
             &proposed.artifact_id,
@@ -247,6 +247,7 @@ fn project_root(artifact: &KnowledgeArtifact) -> Result<&str, PluginError> {
 }
 
 fn attach_project_scope(
+    context: &mut PluginContext<'_>,
     artifact: &mut KnowledgeArtifact,
     element: &Value,
 ) -> Result<(), PluginError> {
@@ -267,6 +268,9 @@ fn attach_project_scope(
         ));
     }
     artifact.project_root = Some(owner.into());
+    // Every accepted write records the anchor's current content as the new baseline.
+    artifact.anchor_fingerprint =
+        outdated::baseline(context, owner, &artifact.semantic_element_id, element)?;
     Ok(())
 }
 

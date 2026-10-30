@@ -49,6 +49,8 @@ pub(crate) fn create(request: CreateRequest) -> Result<KnowledgeArtifact, Plugin
         metadata: request.metadata,
         path: request.path,
         project_root: request.project_root,
+        anchor_fingerprint: None,
+        outdated: None,
         lifecycle: Lifecycle {
             expires_at: request
                 .expires_at

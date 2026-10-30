@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 use crate::KnowledgeArtifact;
 mod artifact_routes;
 mod revision_reads;
-pub(crate) use revision_reads::{artifact_at_edit, observe_knowledge, read_revision};
+pub(crate) use revision_reads::{
+    artifact_at_edit, observe_knowledge, read_revision, selection_membership,
+};
 
 #[cfg(test)]
 pub(crate) mod test_rows;
@@ -452,6 +454,7 @@ pub(crate) fn graph_artifact(value: &KnowledgeArtifact) -> Result<Value, PluginE
             "metadata": knowledge["metadata"],
             "path": knowledge["path"],
             "project_root": knowledge["project_root"],
+            "anchor_fingerprint": knowledge["anchor_fingerprint"],
             "lifecycle": lifecycle
         }}
     }))
@@ -569,7 +572,8 @@ pub(crate) fn decode_graph_artifact<T: DeserializeOwned>(
         "metadata": knowledge["metadata"],
         "dependencies": artifact["dependencies"],
         "path": knowledge["path"],
-        "project_root": artifact.get("project_root").unwrap_or(&knowledge["project_root"])
+        "project_root": artifact.get("project_root").unwrap_or(&knowledge["project_root"]),
+        "anchor_fingerprint": knowledge["anchor_fingerprint"]
     });
     merge_lifecycle(&mut record, knowledge);
     decode(&record, "semantic Knowledge artifacts")
@@ -689,6 +693,30 @@ mod tests {
                 lumvise_contracts::KnowledgeArtifactStatusV2::Resolved
             );
         }
+    }
+
+    #[test]
+    fn anchor_fingerprint_round_trips_and_outdated_is_never_encoded() {
+        use lumvise_contracts::{KnowledgeOutdatedReasonV2, KnowledgeOutdatedV2};
+        let mut artifact: KnowledgeArtifact = decode_graph_artifact(&row("specification")).unwrap();
+        assert_eq!(artifact.anchor_fingerprint, None);
+        artifact.anchor_fingerprint = Some("fp1:0000000000000000:a".into());
+        artifact.outdated = Some(KnowledgeOutdatedV2 {
+            reason: KnowledgeOutdatedReasonV2::Rewritten,
+            distance: Some(64),
+        });
+        let stored = graph_artifact(&artifact).unwrap();
+        assert_eq!(
+            stored["metadata"]["knowledge"]["anchor_fingerprint"],
+            "fp1:0000000000000000:a"
+        );
+        assert!(!stored.to_string().contains("outdated"));
+        let decoded: KnowledgeArtifact = decode_graph_artifact(&stored).unwrap();
+        assert_eq!(
+            decoded.anchor_fingerprint.as_deref(),
+            Some("fp1:0000000000000000:a")
+        );
+        assert_eq!(decoded.outdated, None);
     }
 
     #[test]

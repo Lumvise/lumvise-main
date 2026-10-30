@@ -64,17 +64,27 @@ fn selected_versions(
     root: &str,
     ids: Vec<String>,
 ) -> Result<BTreeMap<String, u64>, PluginError> {
+    Ok(
+        selection_membership(context, root, json!({"kind":"none"}), ids)?
+            .map(|value| value.expected.artifact_edits)
+            .unwrap_or_default(),
+    )
+}
+
+/// Exact working-selection membership for one scope; `None` when the project is not revision-managed.
+pub(crate) fn selection_membership(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    structure_coverage: Value,
+    artifact_ids: Vec<String>,
+) -> Result<Option<lumvise_semantic_revisions::SemanticRevisionSelectionObservation>, PluginError> {
     let output = context.host_call(SEMANTIC_CAPABILITY, json!({"operation":"revision_selection_members","query":{
-        "project_root":root,"selection_id":"working","structure_coverage":{"kind":"none"},"artifact_ids":ids
+        "project_root":root,"selection_id":"working","structure_coverage":structure_coverage,"artifact_ids":artifact_ids
     }}))?;
-    let membership: Option<lumvise_semantic_revisions::SemanticRevisionSelectionObservation> =
-        crate::parse(
-            output["membership"].clone(),
-            "scoped artifact versions or null",
-        )?;
-    Ok(membership
-        .map(|value| value.expected.artifact_edits)
-        .unwrap_or_default())
+    crate::parse(
+        output["membership"].clone(),
+        "scoped selection membership or null",
+    )
 }
 
 pub(crate) fn read_revision(

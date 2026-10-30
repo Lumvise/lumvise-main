@@ -4,7 +4,7 @@ use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{KnowledgeArtifact, artifact, artifact::SearchRequest, storage};
+use crate::{KnowledgeArtifact, artifact, artifact::SearchRequest, outdated, storage};
 
 const EMBED_BATCH_SIZE: usize = 64;
 // Match neural.embed's input contract without dropping long artifact content.
@@ -161,7 +161,36 @@ pub(crate) fn search(
             .then_with(|| result_order(left, right))
     });
     results.truncate(request.limit.unwrap_or(20));
+    mark_results(context, &artifacts, &mut results)?;
     Ok(json!({"mode": mode, "results": results}))
+}
+
+/// Marks only the returned hits, so anchor lookups scale with the result limit, not the candidates.
+fn mark_results(
+    context: &mut PluginContext<'_>,
+    artifacts: &[KnowledgeArtifact],
+    results: &mut [Value],
+) -> Result<(), PluginError> {
+    let mut hits = artifacts
+        .iter()
+        .filter(|item| {
+            results
+                .iter()
+                .any(|result| result["artifact_id"] == item.artifact_id.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    outdated::mark(context, &mut hits)?;
+    for hit in hits {
+        let Some(signal) = hit.outdated else { continue };
+        for result in results
+            .iter_mut()
+            .filter(|result| result["artifact_id"] == hit.artifact_id.as_str())
+        {
+            result["outdated"] = json!(signal);
+        }
+    }
+    Ok(())
 }
 
 fn artifacts_for_search(
