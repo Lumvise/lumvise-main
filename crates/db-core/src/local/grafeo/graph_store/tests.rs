@@ -131,6 +131,7 @@ fn failed_post_commit_invalidates_projection_cache_and_blocks_stable_reads() {
             assert!(error.to_string().contains("forced SQL publication failure"));
         }
         super::GraphPostCommit::Completed(_) => panic!("publication unexpectedly succeeded"),
+        super::GraphPostCommit::RolledBack(_) => panic!("publication had already committed"),
     }
     assert_eq!(store.projection_cache_len(), 0);
     assert_eq!(store.read(|graph| graph.iter_nodes().count()), 1);

@@ -263,6 +263,13 @@ pub enum SemanticOperation {
     ProjectArchive {
         project_root: String,
     },
+    /// Reads live graph structure for search without waiting for publication.
+    /// Records may span an in-progress write; the version is the last published watermark.
+    /// Artifacts are omitted. Use revision observations for writes and ProjectArchive for export.
+    /// Example: `SemanticOperation::SearchProjectStructure { project_root: "/repo".into() }`.
+    SearchProjectStructure {
+        project_root: String,
+    },
 }
 
 /// Stateless graph-derived delta page for transient external consumers.

@@ -6,6 +6,7 @@ use crate::local::grafeo::graph_store::{
 use crate::local::grafeo::semantic_storage::SemanticStorage;
 use crate::local::sql::commits::{
     begin_semantic_commit, fail_semantic_commit, publish_semantic_commit,
+    published_commit_timestamp,
 };
 use crate::{DbError, Result};
 use grafeo::GrafeoDB;
@@ -54,7 +55,7 @@ impl<'sql> SemanticSqlPublication<'sql> {
         &self,
         value: &R,
         sql_finish: impl FnOnce(&Transaction<'_>, &R) -> Result<()>,
-    ) -> Result<()> {
+    ) -> Result<(i64, String)> {
         let (transaction, commit_version) = self
             .pending
             .borrow_mut()
@@ -73,6 +74,13 @@ impl<'sql> SemanticSqlPublication<'sql> {
             transaction.commit()?;
         }
         Err(error)
+    }
+
+    fn rollback(self) -> Result<()> {
+        if let Some((transaction, _)) = self.pending.into_inner() {
+            transaction.rollback()?;
+        }
+        Ok(())
     }
 }
 
@@ -187,11 +195,22 @@ impl<'db> SemanticStorage<'db> {
                     )
                 },
                 |value| {
-                    publication.finish(&value.0, sql_finish)?;
+                    let (version, published_at) = publication.finish(&value.0, sql_finish)?;
+                    self.graph.remember_published_commit(version, published_at);
                     Ok(value)
                 },
                 |(_, _, dirty_elements)| dirty_elements.len(),
             );
+            if matches!(
+                &outcome,
+                Ok(ConditionalGraphWrite::Applied(GraphPostCommit::RolledBack(
+                    _
+                )))
+            ) {
+                // Only a verified graph rollback lets us abort SQL without a recovery marker.
+                publication.rollback()?;
+                return outcome;
+            }
             publication.complete(outcome)
         })
     }
@@ -222,7 +241,7 @@ impl<'db> SemanticStorage<'db> {
                 self.notify_graph_commit(commit_version, dirty_elements);
                 Ok(value)
             }
-            GraphPostCommit::Failed(error) => Err(error),
+            GraphPostCommit::RolledBack(error) | GraphPostCommit::Failed(error) => Err(error),
         }
     }
 
@@ -243,12 +262,16 @@ impl<'db> SemanticStorage<'db> {
     }
 }
 
-fn publish_graph_commit_sql(transaction: Transaction<'_>, commit_version: i64) -> Result<()> {
+fn publish_graph_commit_sql(
+    transaction: Transaction<'_>,
+    commit_version: i64,
+) -> Result<(i64, String)> {
     publish_semantic_commit(&transaction, commit_version)?;
+    let published_at = published_commit_timestamp(&transaction, commit_version)?;
     transaction.commit()?;
     #[cfg(test)]
     GRAPH_PUBLICATION_SQL_COMMITS.with(|count| count.set(count.get() + 1));
-    Ok(())
+    Ok((commit_version, published_at))
 }
 
 #[cfg(test)]

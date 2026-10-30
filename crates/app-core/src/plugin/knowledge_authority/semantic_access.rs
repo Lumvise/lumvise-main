@@ -204,6 +204,7 @@ impl KnowledgeSemanticAccess<'_> {
                 scope: selected, ..
             } => self.authorize_snapshot(selected, scope),
             SelectiveSubgraph { project_root, .. }
+            | SearchProjectStructure { project_root }
             | ProjectElementCounts { project_root }
             | ProjectArchive { project_root }
             | RevisionHistory { project_root }

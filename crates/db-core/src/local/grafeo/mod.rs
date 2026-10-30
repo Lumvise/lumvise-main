@@ -13,6 +13,7 @@ mod graph_row_projection;
 pub(crate) mod graph_rows;
 pub(crate) mod graph_store;
 mod lifecycle;
+mod live_search;
 mod media;
 mod path_index;
 mod project_counts;

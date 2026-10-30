@@ -1,7 +1,10 @@
 //! Owns exclusive graph publication. SQL participants acquire their writer only
 //! inside `publish_exclusively`; transaction and checkpoint details stay here.
 
-use super::{ConditionalGraphWrite, GraphPostCommit, GraphState, GraphTransaction};
+use super::{
+    ConditionalGraphWrite, GraphPostCommit, GraphState, GraphTransaction,
+    GraphTransactionCompletion,
+};
 use crate::Result;
 use std::cell::Cell;
 use std::sync::atomic::Ordering;
@@ -97,11 +100,19 @@ impl GraphPublication<'_> {
         let graph = self.store.snapshot();
         let transaction = GraphTransaction::begin(graph.as_ref(), &self.store.work)?;
         let write_result = write(&transaction);
-        if transaction.elements_changed.get() {
+        let elements_changed = transaction.elements_changed.get();
+        let result = self.store.finish_indexed(transaction, write_result);
+        // Live search may cache intermediate properties; invalidate after commit or rollback.
+        if elements_changed {
             self.store.element_revision.fetch_add(1, Ordering::Release);
         }
-        let value = self.store.finish_indexed(transaction, write_result)?;
-        Ok(self.publish_sql(value, after_commit, mutation_count))
+        match result {
+            GraphTransactionCompletion::Committed(value) => {
+                Ok(self.publish_sql(value, after_commit, mutation_count))
+            }
+            GraphTransactionCompletion::RolledBack(error) => Ok(GraphPostCommit::RolledBack(error)),
+            GraphTransactionCompletion::Uncertain(error) => Err(error),
+        }
     }
 
     fn publish_sql<R, T>(

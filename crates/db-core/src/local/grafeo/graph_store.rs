@@ -25,6 +25,8 @@ pub(crate) struct GraphState {
     /// writer owns the gate. A conditional writer validates the exact even
     /// value before it opens its Grafeo transaction.
     revision: AtomicU64,
+    /// SQL remains authoritative; live graph searches must not acquire its writer connection.
+    published_watermark: RwLock<Option<(i64, String)>>,
     // Search/path caches depend on semantic nodes, not artifact/vector writes.
     element_revision: AtomicU64,
     committed_semantic_entities: AtomicUsize,
@@ -79,7 +81,24 @@ pub(crate) enum ConditionalGraphWrite<T> {
 /// graph writer gate is still held.
 pub(crate) enum GraphPostCommit<T> {
     Completed(T),
+    RolledBack(DbError),
     Failed(DbError),
+}
+
+pub(super) enum GraphTransactionCompletion<T> {
+    Committed(T),
+    RolledBack(DbError),
+    Uncertain(DbError),
+}
+
+#[cfg(test)]
+impl<T> GraphTransactionCompletion<T> {
+    fn into_result(self) -> Result<T> {
+        match self {
+            Self::Committed(value) => Ok(value),
+            Self::RolledBack(error) | Self::Uncertain(error) => Err(error),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -141,6 +160,7 @@ impl GraphStore {
             write_admission: Mutex::new(()),
             structure_sync: Mutex::new(()),
             revision: AtomicU64::new(0),
+            published_watermark: RwLock::new(None),
             element_revision: AtomicU64::new(0),
             committed_semantic_entities: AtomicUsize::new(0),
             graph_entities: AtomicUsize::new(0),
@@ -171,6 +191,26 @@ impl Drop for GraphStore {
 }
 
 impl GraphState {
+    pub(crate) fn remember_published_commit(&self, version: i64, published_at: String) {
+        *self
+            .published_watermark
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((version, published_at));
+    }
+
+    pub(crate) fn published_graph_watermark(&self) -> Result<(i64, String)> {
+        self.published_watermark
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| {
+                DbError::invalid_value(
+                    "missing graph publication watermark",
+                    "initialized LocalPersistence",
+                )
+            })
+    }
+
     #[cfg(test)]
     pub(crate) fn publication_attempts(&self) -> usize {
         self.work.publication_attempts.load(Ordering::Acquire)
@@ -208,7 +248,7 @@ impl GraphState {
         query: &str,
         limit: usize,
     ) -> Result<Vec<SemanticElement>> {
-        self.stable_read(|graph| {
+        self.read(|graph| {
             let revision = self.element_revision.load(Ordering::Acquire);
             let ids = self
                 .element_lookup
@@ -604,7 +644,7 @@ impl GraphState {
         }
         let result = self.finish_indexed(transaction, write_result);
         self.revision.fetch_add(1, Ordering::Release);
-        result.map(ConditionalGraphWrite::Applied)
+        result.into_result().map(ConditionalGraphWrite::Applied)
     }
 
     fn invalidate_projection_cache_after_publication_failure(&self, error: &DbError) {
@@ -677,22 +717,20 @@ impl<'graph> GraphTransaction<'graph> {
         })
     }
 
-    fn finish<R>(mut self, result: Result<R>) -> Result<R> {
+    fn finish<R>(mut self, result: Result<R>) -> GraphTransactionCompletion<R> {
         match result {
-            Ok(value) => {
-                self.session
-                    .commit()
-                    .map_err(|error| DbError::Grafeo(error.to_string()))?;
-                Ok(value)
-            }
-            Err(error) => {
-                if let Err(rollback) = self.session.rollback() {
-                    return Err(DbError::Grafeo(format!(
-                        "write failed with {error}; rollback also failed with {rollback}"
-                    )));
+            Ok(value) => match self.session.commit() {
+                Ok(()) => GraphTransactionCompletion::Committed(value),
+                Err(error) => {
+                    GraphTransactionCompletion::Uncertain(DbError::Grafeo(error.to_string()))
                 }
-                Err(error)
-            }
+            },
+            Err(error) => match self.session.rollback() {
+                Ok(()) => GraphTransactionCompletion::RolledBack(error),
+                Err(rollback) => GraphTransactionCompletion::Uncertain(DbError::Grafeo(format!(
+                    "write failed with {error}; rollback also failed with {rollback}"
+                ))),
+            },
         }
     }
 

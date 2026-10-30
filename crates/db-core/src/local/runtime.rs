@@ -6,8 +6,8 @@ use crate::local::grafeo::graph_store::GraphStore;
 use crate::local::grafeo::storage_manager::StorageManager;
 use crate::local::sql::artifact_blobs::ArtifactBlobRepository;
 use crate::local::sql::commits::{
-    latest_published_commit_version, recover_stale_pending_commits, resolve_failed_commits,
-    semantic_recovery_status,
+    latest_published_commit_version, published_commit_timestamp, recover_stale_pending_commits,
+    resolve_failed_commits, semantic_recovery_status,
 };
 use crate::local::sql::connections::SqlConnections;
 #[cfg(test)]
@@ -84,10 +84,7 @@ impl DbCore {
                 resolve_failed_commits(&write_conn)
             })?;
         }
-        let latest_published_revision = {
-            let read_conn = conn.read_conn();
-            latest_published_commit_version(&read_conn)?
-        };
+        let latest_published_revision = initialize_published_graph_watermark(&conn, &graph_store)?;
         let db = Self {
             conn,
             graph: graph_store,
@@ -125,6 +122,7 @@ impl DbCore {
         let graph = open_graph_database(&graph_path)?;
         let graph_store = GraphStore::new(graph);
         graph_store.checkpoint()?;
+        let latest_published_revision = initialize_published_graph_watermark(&conn, &graph_store)?;
         let db = Self {
             conn,
             graph: graph_store,
@@ -134,7 +132,7 @@ impl DbCore {
                 tokio::sync::broadcast::channel(STORAGE_CHANGE_BROADCAST_CAPACITY).0,
             ),
             clock,
-            change_buffer: Arc::new(Mutex::new(ChangeBuffer::new(0))),
+            change_buffer: Arc::new(Mutex::new(ChangeBuffer::new(latest_published_revision))),
             change_hook_operations: Mutex::new(()),
         };
         Ok(db)
@@ -420,6 +418,13 @@ fn in_memory_graph_path() -> PathBuf {
         "lumvise-db-core-{}-{nanos}-{sequence}.semantic.grafeo",
         std::process::id()
     ))
+}
+
+fn initialize_published_graph_watermark(conn: &SqlConnections, graph: &GraphStore) -> Result<i64> {
+    let conn = conn.read_conn();
+    let version = latest_published_commit_version(&conn)?;
+    graph.remember_published_commit(version, published_commit_timestamp(&conn, version)?);
+    Ok(version)
 }
 
 fn open_graph_database(path: &Path) -> Result<GrafeoDB> {

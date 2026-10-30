@@ -193,6 +193,9 @@ enum SemanticStorageRequest {
         scope: ProjectSnapshotScope,
         artifact_namespace: Option<String>,
     },
+    SearchProjectStructure {
+        project_root: String,
+    },
     SelectiveSubgraph {
         project_root: String,
         root_element_id: String,
@@ -653,6 +656,13 @@ fn dispatch(
                 result => unexpected_result("ScopedGraph", result),
             }
         }
+        SemanticStorageRequest::SearchProjectStructure { project_root } => match execute(
+            semantic,
+            SemanticOperation::SearchProjectStructure { project_root },
+        )? {
+            SemanticResult::ProjectSnapshot(snapshot) => project_snapshot_value(snapshot),
+            result => unexpected_result("ProjectSnapshot", result),
+        },
         SemanticStorageRequest::ProjectSnapshot {
             scope,
             artifact_namespace,
@@ -855,6 +865,7 @@ fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), Ho
             matches!(plugin_id, SEMANTIC_PLUGIN_ID | KNOWLEDGE_PLUGIN_ID)
         }
         SemanticStorageRequest::SyncStructure { .. }
+        | SemanticStorageRequest::SearchProjectStructure { .. }
         | SemanticStorageRequest::SyncPartition { .. }
         | SemanticStorageRequest::BeginProjectSnapshot { .. }
         | SemanticStorageRequest::StageProjectSnapshot { .. }

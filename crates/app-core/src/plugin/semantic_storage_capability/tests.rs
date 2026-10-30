@@ -137,6 +137,29 @@ fn unrelated_plugin_cannot_write_semantic_structure() {
 }
 
 #[test]
+fn live_search_structure_is_routed_without_exposing_artifact_bodies() {
+    let broker = broker_for(persistence());
+    broker.invoke(request(SEMANTIC_PLUGIN_ID, json!({"operation":"sync_structure", "project_root":"/repo", "elements":[element()], "relationships":[]}))).unwrap();
+    let result = broker
+        .invoke(request(
+            SEMANTIC_PLUGIN_ID,
+            json!({"operation":"search_project_structure", "project_root":"/repo"}),
+        ))
+        .unwrap();
+    assert_eq!(result["project_root"], "/repo");
+    assert_eq!(result["elements"].as_array().unwrap().len(), 1);
+    assert_eq!(result["artifacts"], json!([]));
+    assert!(
+        broker
+            .invoke(request(
+                "third.party",
+                json!({"operation":"search_project_structure", "project_root":"/repo"})
+            ))
+            .is_err()
+    );
+}
+
+#[test]
 fn controlled_attachment_copy_returns_staged_bytes_before_destination_publication() {
     let db = persistence();
     let broker = broker_for(db.clone());

@@ -59,6 +59,7 @@ fn view_root(operation: &SemanticOperation) -> Option<&str> {
         | ProjectArtifacts { project_root, .. }
         | SelectiveSubgraph { project_root, .. }
         | ProjectElementCounts { project_root }
+        | SearchProjectStructure { project_root }
         | ProjectArchive { project_root } => Some(project_root),
         SearchElementCandidates { project_root, .. } => project_root.as_deref(),
         _ => None,
