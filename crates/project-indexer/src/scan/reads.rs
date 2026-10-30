@@ -83,7 +83,7 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
     fn retain_failed(&self, path: &str, error: ScanError, scan: &mut PreparedProjectScan) {
         scan.failures.push(ScanError {
             path: path.into(),
-            reason: error.to_string(),
+            reason: error.reason,
         });
         if let Some(previous) = self.files.get(path) {
             scan.retain(Arc::clone(previous), false);

@@ -88,6 +88,7 @@ fn resilient_updates_keep_failed_content_and_retry_it_after_healthy_changes_comm
         .unwrap();
     assert_eq!(update.failures().len(), 1);
     assert_eq!(update.failures()[0].path, "bad.rs");
+    assert_eq!(update.failures()[0].reason, "expected valid source");
     assert_eq!(
         update
             .changed_files()
@@ -122,6 +123,18 @@ fn resilient_initial_scan_reports_read_and_parse_failures_without_inventing_empt
         .prepare_resilient(ScanScope::Full, |_| Ok(()))
         .unwrap();
     assert_eq!(scan.failures().len(), 2);
+    let reasons: BTreeMap<_, _> = scan
+        .failures()
+        .iter()
+        .map(|failure| (failure.path.as_str(), failure.reason.as_str()))
+        .collect();
+    assert_eq!(
+        reasons,
+        BTreeMap::from([
+            ("bad.rs", "expected valid source"),
+            ("unreadable.rs", "expected readable file"),
+        ])
+    );
     assert_eq!(
         scan.changed_files()
             .map(|file| file.entry.path.as_str())
