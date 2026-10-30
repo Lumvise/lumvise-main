@@ -157,6 +157,16 @@ impl ProjectFolderImportService {
         _app: &AppCore,
         existing_only: bool,
     ) -> Result<Value, HttpResponse> {
+        self.import_native_via(self.publisher(None, None), input, existing_only)
+    }
+
+    /// `import_native` with an explicit publication port, so tests observe the Semantic calls.
+    pub(super) fn import_native_via(
+        self: &Arc<Self>,
+        publisher: Arc<dyn ImportPublicationPort>,
+        input: ImportInput,
+        existing_only: bool,
+    ) -> Result<Value, HttpResponse> {
         let root = canonical_root(&input.folder_path)?;
         let route = input
             .project_root
@@ -176,7 +186,7 @@ impl ProjectFolderImportService {
             let status = self.schedule(
                 input,
                 "native-human",
-                self.publisher(None, None),
+                publisher.clone(),
                 &InvocationControl::sixty_seconds(),
             )?;
             match status["phase"].as_str() {

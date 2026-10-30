@@ -10,6 +10,10 @@ use std::sync::{
     mpsc,
 };
 
+/// Finished jobs kept per project. A refresh can start before a caller has read the
+/// previous completion, so the newest handles stay pollable; older ones are dropped.
+pub(super) const RETAINED_FINISHED_JOBS: usize = 3;
+
 #[derive(Default)]
 pub(super) struct ImportJobs {
     entries: Mutex<BTreeMap<String, Arc<ImportJob>>>,
@@ -21,6 +25,7 @@ struct ImportJob {
     route: String,
     owner: String,
     input: FolderImportInput,
+    created: Instant,
     started_at: String,
     cancel: Arc<AtomicBool>,
     advancing: AtomicBool,
@@ -57,6 +62,11 @@ struct FailedPreparation {
 }
 
 impl ImportJobs {
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.entries.lock().map_or(0, |entries| entries.len())
+    }
+
     pub(super) fn active(&self, route: &str) -> bool {
         self.entries
             .lock()
@@ -151,15 +161,6 @@ pub(super) fn import_job_request(
         cancel_import_preparation(&job, &mut state)?;
     }
     if input.import_id.is_some() && !input.status_only && !state.terminal() {
-        if !state.log_started {
-            let _ = record_index_log(
-                execution,
-                json!({"provider_instance_id":PROVIDER_INSTANCE_ID,
-                "plugin_id":"builtin.semantic","project_root":job.route,"index_log_id":job.id,
-                "status":"running","started_at":job.started_at,"metrics":{"phase":state.phase()}}),
-            );
-            state.log_started = true;
-        }
         if let Err(error) = advance_import_publication(service, &job, &mut state, execution) {
             state.error = Some(import_failure_message(&error));
             if let Some(mut prepared) = state.prepared.take() {
@@ -249,7 +250,17 @@ fn start_import_job(
             };
         }
     }
-    // Refresh may start before a caller reads completion; retain terminal handles until restart.
+    // Every job of this route is finished here. Drop all but the newest handles so idle
+    // refresh rounds cannot accumulate; the new job takes the last retained slot.
+    let mut finished: Vec<_> = entries
+        .values()
+        .filter(|job| job.route == route)
+        .map(|job| (job.created, job.id.clone()))
+        .collect();
+    finished.sort_unstable_by(|left, right| right.cmp(left));
+    for (_, id) in finished.into_iter().skip(RETAINED_FINISHED_JOBS - 1) {
+        entries.remove(&id);
+    }
     let converter = service
         .converter()
         .map_err(|error| error_response("500 Internal Server Error", error))?;
@@ -269,6 +280,7 @@ fn start_import_job(
         route,
         owner: owner.into(),
         input,
+        created: Instant::now(),
         started_at: Utc::now().to_rfc3339(),
         cancel: Arc::default(),
         advancing: AtomicBool::default(),
@@ -523,6 +535,7 @@ fn advance_import_publication(
         // Freezing can span many bounded storage calls; ingestion starts on a fresh step.
         return Ok(());
     }
+    log_publication_started(job, state, execution);
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(5) {
         if publish_import_page(state, execution)? {
@@ -535,6 +548,25 @@ fn advance_import_publication(
         }
     }
     Ok(())
+}
+
+/// Idle scans publish nothing and stay out of the index log; the start is logged once there is
+/// a publication to follow, and `acknowledge_import_job` closes exactly the jobs that started.
+fn log_publication_started(
+    job: &ImportJob,
+    state: &mut ImportState,
+    execution: &ImportExecution<'_>,
+) {
+    if state.log_started {
+        return;
+    }
+    let _ = record_index_log(
+        execution,
+        json!({"provider_instance_id":PROVIDER_INSTANCE_ID,
+        "plugin_id":"builtin.semantic","project_root":job.route,"index_log_id":job.id,
+        "status":"running","started_at":job.started_at,"metrics":{"phase":state.phase()}}),
+    );
+    state.log_started = true;
 }
 
 fn freeze_import_projection(
@@ -679,13 +711,15 @@ fn acknowledge_import_job(
         .insert((job.root.clone(), job.route.clone()), prepared.session);
     state.result = Some(result);
     state.frozen = None;
-    let _ = record_index_log(
-        execution,
-        json!({"provider_instance_id":PROVIDER_INSTANCE_ID,"plugin_id":"builtin.semantic",
-        "project_root":job.route,"index_log_id":job.id,"status":"completed","started_at":job.started_at,
-        "completed_at":Utc::now().to_rfc3339(),"metrics":{"filesScanned":prepared.files_scanned,
-            "elementsUpserted":elements,"relationshipsUpserted":relationships,"failures":prepared.failures.len()}}),
-    );
+    if state.log_started {
+        let _ = record_index_log(
+            execution,
+            json!({"provider_instance_id":PROVIDER_INSTANCE_ID,"plugin_id":"builtin.semantic",
+            "project_root":job.route,"index_log_id":job.id,"status":"completed","started_at":job.started_at,
+            "completed_at":Utc::now().to_rfc3339(),"metrics":{"filesScanned":prepared.files_scanned,
+                "elementsUpserted":elements,"relationshipsUpserted":relationships,"failures":prepared.failures.len()}}),
+        );
+    }
     Ok(())
 }
 
