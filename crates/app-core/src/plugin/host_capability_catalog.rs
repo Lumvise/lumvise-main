@@ -126,7 +126,7 @@ const fn semantic_capability() -> HostCapabilityDefinition {
         id: SEMANTIC_STORAGE,
         route: HostCapabilityRoute::SemanticStorage,
         major: 1,
-        minor: 8,
+        minor: 9,
         patch: 0,
     }
 }
@@ -178,7 +178,7 @@ mod tests {
         let versions = compiled_host_capability_versions();
 
         assert_eq!(versions.len(), 25);
-        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 8, 0));
+        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 9, 0));
         assert_eq!(versions[PROJECT_EXECUTION], Version::new(1, 1, 0));
         assert_eq!(
             versions[super::super::knowledge_authority::CAPABILITY],
@@ -210,7 +210,7 @@ mod tests {
 
         assert_eq!(definition.route, expected);
         let expected_version = if id == SEMANTIC_STORAGE {
-            Version::new(1, 8, 0)
+            Version::new(1, 9, 0)
         } else if id == super::super::knowledge_authority::CAPABILITY {
             Version::new(1, 4, 0)
         } else if id == PROJECT_EXECUTION {

@@ -426,7 +426,7 @@ fn host_owned_versions_publish_the_complete_neutral_contract() {
             "storage.semantic",
         ]
     );
-    assert_eq!(host["storage.semantic"], semver::Version::new(1, 8, 0));
+    assert_eq!(host["storage.semantic"], semver::Version::new(1, 9, 0));
     assert_eq!(host[PROJECT_EXECUTION], semver::Version::new(1, 1, 0));
     assert_eq!(
         host["runtime.knowledge_scope"],
