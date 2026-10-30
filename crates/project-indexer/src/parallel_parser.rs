@@ -1,6 +1,6 @@
 //! Owns reusable syntax workers. All extraction remains in TreeSitterProjectParser;
-//! the pool only schedules independent, already-read code bodies; documents
-//! convert serially on the caller.
+//! the pool schedules independent, already-read code bodies. Documents use
+//! bounded scoped threads outside Rayon to prevent nested parser-lock reentry.
 use crate::source::invalid;
 use crate::{
     BlockSettings, ParsedFile, ProjectFileParser, ScanError, SourceParseInput, SyntaxParserMetrics,
@@ -98,6 +98,63 @@ impl ParallelTreeSitterProjectParser {
             .map_err(|_| invalid(index.to_string(), "expected unpoisoned syntax worker"))?
             .parse(path, bytes)
     }
+
+    fn parse_document_inputs(
+        &self,
+        inputs: &[SourceParseInput<'_>],
+    ) -> Vec<Option<Result<ParsedFile, ScanError>>> {
+        let documents: Vec<_> = inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, input)| is_document_path(input.path))
+            .collect();
+        let mut results = vec![None; inputs.len()];
+        for (position, result) in self.parse_documents_concurrently(&documents) {
+            results[position] = Some(result);
+        }
+        results
+    }
+
+    fn parse_documents_concurrently(
+        &self,
+        documents: &[(usize, &SourceParseInput<'_>)],
+    ) -> Vec<(usize, Result<ParsedFile, ScanError>)> {
+        let worker_count = documents.len().min(self.workers.len());
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..worker_count)
+                .map(|worker| {
+                    scope.spawn(move || self.parse_document_worker(documents, worker, worker_count))
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| {
+                    worker
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        })
+    }
+
+    fn parse_document_worker(
+        &self,
+        documents: &[(usize, &SourceParseInput<'_>)],
+        worker: usize,
+        worker_count: usize,
+    ) -> Vec<(usize, Result<ParsedFile, ScanError>)> {
+        documents
+            .iter()
+            .skip(worker)
+            .step_by(worker_count)
+            .map(|(position, input)| {
+                (
+                    *position,
+                    self.parse_on_worker(worker, input.path, input.bytes),
+                )
+            })
+            .collect()
+    }
 }
 
 impl ProjectFileParser for ParallelTreeSitterProjectParser {
@@ -113,22 +170,23 @@ impl ProjectFileParser for ParallelTreeSitterProjectParser {
         &mut self,
         inputs: &[SourceParseInput<'_>],
     ) -> Result<Vec<ParsedFile>, ScanError> {
+        self.parse_batch_results(inputs).into_iter().collect()
+    }
+
+    fn parse_batch_results(
+        &mut self,
+        inputs: &[SourceParseInput<'_>],
+    ) -> Vec<Result<ParsedFile, ScanError>> {
         if inputs.len() <= 1 {
             return inputs
                 .iter()
                 .map(|input| self.parse(input.path, input.bytes))
                 .collect();
         }
-        // Converters fork their own Rayon work. On a syntax worker that fork can
-        // steal a sibling parse for the worker's locked parser, so documents
-        // convert on the caller before the pool runs.
-        let documents: Vec<_> = inputs
-            .iter()
-            .map(|input| {
-                is_document_path(input.path)
-                    .then(|| self.parse_on_worker(0, input.path, input.bytes))
-            })
-            .collect();
+        // Converters fork Rayon work which can steal a sibling's locked parser.
+        // Fixed parser ownership on scoped OS threads prevents that reentry;
+        // join all documents before admitting code to the syntax pool.
+        let documents = self.parse_document_inputs(inputs);
         // Collect ordered per-file results before choosing an error; scheduling
         // must not change which source error a caller sees.
         let results: Vec<_> = self.pool.install(|| {
@@ -144,6 +202,6 @@ impl ProjectFileParser for ParallelTreeSitterProjectParser {
                 })
                 .collect()
         });
-        results.into_iter().collect()
+        results
     }
 }

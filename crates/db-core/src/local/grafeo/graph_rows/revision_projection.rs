@@ -6,7 +6,10 @@ use crate::{
     SemanticRevisionPublicationPlan, SemanticRevisionSelectionState, SemanticRevisionState,
     SemanticStoredRevision,
 };
+use std::collections::BTreeSet;
 
+#[cfg(test)]
+mod flag_tests;
 mod notifications;
 mod working;
 
@@ -211,7 +214,7 @@ impl RevisionProjection {
             &known,
             adopted,
         )?;
-        let mut flags = changed
+        let flags = changed
             .into_iter()
             .map(|record| {
                 let active = selected.contains(&record);
@@ -232,26 +235,14 @@ impl RevisionProjection {
             &mut nodes,
             &dirty,
         )?;
-        for insert in &inserts {
-            if !flags.iter().any(|flag| flag.record == insert.record) {
-                flags.push(RevisionProjectionFlag::new(
-                    insert.record.clone(),
-                    selected.contains(&insert.record),
-                    &records,
-                ));
-            }
-        }
-        if adopted {
-            for record in &state.records {
-                if !flags.iter().any(|flag| flag.record == record.record) {
-                    flags.push(RevisionProjectionFlag::new(
-                        record.record.clone(),
-                        selected.contains(&record.record),
-                        &records,
-                    ));
-                }
-            }
-        }
+        let candidates = inserts.iter().map(|insert| &insert.record).chain(
+            state
+                .records
+                .iter()
+                .filter(|_| adopted)
+                .map(|row| &row.record),
+        );
+        let flags = Self::complete_flags(flags, candidates, &selected, &records);
         Ok(Self {
             nodes,
             inserts,
@@ -262,6 +253,29 @@ impl RevisionProjection {
             working,
             project_root: state.project_root.clone(),
         })
+    }
+
+    fn complete_flags<'a>(
+        mut flags: Vec<RevisionProjectionFlag>,
+        candidates: impl Iterator<Item = &'a SemanticRecordRef>,
+        selected: &BTreeSet<SemanticRecordRef>,
+        records: &BTreeMap<&SemanticRecordRef, &SemanticStoredRevision>,
+    ) -> Vec<RevisionProjectionFlag> {
+        // Full imports contribute hundreds of thousands of already-flagged inserts.
+        let mut seen = flags
+            .iter()
+            .map(|flag| flag.record.clone())
+            .collect::<BTreeSet<_>>();
+        for record in candidates {
+            if seen.insert(record.clone()) {
+                flags.push(RevisionProjectionFlag::new(
+                    record.clone(),
+                    selected.contains(record),
+                    records,
+                ));
+            }
+        }
+        flags
     }
 
     pub(crate) fn apply(

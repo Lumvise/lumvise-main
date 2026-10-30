@@ -111,6 +111,10 @@ opt-level = 2
 [profile.dev.package.lumvise-db-core]
 opt-level = 2
 
+# Large revision metadata preparation must also fit each publication invocation.
+[profile.dev.package.lumvise-semantic-revisions]
+opt-level = 2
+
 [profile.dev.package.lumvise-project-indexer]
 opt-level = 2
 
@@ -122,4 +126,11 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package."png:0.18.1"]
+opt-level = 2
+
+# Hashing and basic PDF decoding otherwise dominate large development imports.
+[profile.dev.package."sha2:0.10.9"]
+opt-level = 2
+
+[profile.dev.package."lopdf:0.42.0"]
 opt-level = 2

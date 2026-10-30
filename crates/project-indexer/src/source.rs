@@ -1,7 +1,7 @@
 //! Source and parser interfaces keep filesystem and language engines out of delta policy.
 
 /// Failure includes the source location and the expected invariant.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("project scan `{path}` failed: {reason}")]
 pub struct ScanError {
     /// Offending project-relative path or state identifier.
@@ -189,6 +189,18 @@ pub trait ProjectFileParser {
         &mut self,
         inputs: &[SourceParseInput<'_>],
     ) -> Result<Vec<ParsedFile>, ScanError> {
+        inputs
+            .iter()
+            .map(|input| self.parse(input.path, input.bytes))
+            .collect()
+    }
+
+    /// Keeps one outcome per file so an import can report failures without
+    /// discarding successful siblings. Example: `parser.parse_batch_results(&inputs)`.
+    fn parse_batch_results(
+        &mut self,
+        inputs: &[SourceParseInput<'_>],
+    ) -> Vec<Result<ParsedFile, ScanError>> {
         inputs
             .iter()
             .map(|input| self.parse(input.path, input.bytes))

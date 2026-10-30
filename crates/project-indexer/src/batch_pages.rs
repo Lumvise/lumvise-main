@@ -100,6 +100,11 @@ impl<'a> Iterator for SemanticIndexPages<'a> {
         Some(self.build_index_page(index))
     }
 
+    fn nth(&mut self, count: usize) -> Option<Self::Item> {
+        self.next = self.next.saturating_add(count).min(self.count);
+        self.next()
+    }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.count - self.next;
         (remaining, Some(remaining))
