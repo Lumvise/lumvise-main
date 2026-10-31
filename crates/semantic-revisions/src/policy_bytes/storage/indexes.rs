@@ -9,6 +9,9 @@ pub(in crate::policy_bytes) struct StorageIndex {
     pub(super) value: String,
 }
 
+/// The one value of the `element_root` entries, which only say that an active element has no parent.
+pub(super) const ELEMENT_ROOT: &str = "root";
+
 pub(super) fn entries(
     metadata: &SemanticRevisionMetadata,
     body: Option<&SemanticRevisionBody>,
@@ -17,6 +20,9 @@ pub(super) fn entries(
     if let Some(SemanticRevisionBody::Element(element)) = body {
         entries.push(entry("element_header", &super::headers::encode(element)?));
         entries.extend(super::names::indexes(element));
+        if element.parent_element_id.is_none() && element.lifecycle != "inactive" {
+            entries.push(entry("element_root", ELEMENT_ROOT));
+        }
         if let Some((_, extension)) = element
             .path
             .rsplit('/')
@@ -36,6 +42,16 @@ pub(super) fn entries(
             entries.push(entry("artifact_changes", changes));
         }
         entries.push(entry("artifact_owner", &artifact.semantic_element_id));
+        // A namespace is a metadata key that holds an object, as `knowledge` does for Knowledge artifacts.
+        entries.extend(
+            artifact
+                .metadata
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(_, value)| value.is_object())
+                .map(|(namespace, _)| entry("artifact_namespace", namespace)),
+        );
         if let Some(author) = artifact
             .metadata
             .get("contributorSubjectHash")

@@ -80,6 +80,16 @@ impl IndexedGatewayStorage {
                             .starts_with(query["prefix"].as_str().unwrap())
                 }) && self.selected(row, query["selection_id"].as_str().unwrap())
             }
+            // The page boundary belongs to the SQL adapter; this fake answers with every match, the unpaged answer.
+            "index_page" => {
+                let names = query["names"].as_array().unwrap();
+                let values = query["values"].as_array().unwrap();
+                names.iter().any(|name| {
+                    values.iter().any(|value| {
+                        has_index(row, name.as_str().unwrap(), value.as_str().unwrap())
+                    })
+                }) && self.selected(row, query["selection_id"].as_str().unwrap())
+            }
             "all" => true,
             other => panic!("unexpected storage query {other}"),
         }

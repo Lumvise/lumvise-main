@@ -1,5 +1,9 @@
 //! Ordinary reads use current indexed membership; unrelated heads and retained bodies stay unloaded.
-use super::{common::*, storage_reads::IndexedGatewayStorage};
+use super::{
+    common::*,
+    storage_envelopes::{response, storage},
+    storage_reads::IndexedGatewayStorage,
+};
 use lumvise_semantic_revisions::*;
 use serde_json::{Value, json};
 
@@ -177,6 +181,317 @@ fn public_selected_read_keeps_the_shared_explicit_dependency_gate() {
         json!({"kind":"records","records":[SemanticRecordRef::element("b")]}),
     );
     assert!(private.records.is_empty());
+}
+
+/// The queries Rust asks for in its first round of a selected read.
+fn first_queries(query: Value) -> Value {
+    storage(json!({
+        "action":"read",
+        "context":{"project_root":ROOT,"project_id":PROJECT_ID,"commit_version":"1"},
+        "intent_json":json!({"operation":"selected","selection_id":"working","query":query}).to_string(),
+        "rows":[],
+        "completed":[],
+    }))["queries"]
+        .clone()
+}
+
+fn read_response(query: Value) -> Value {
+    response(json!({
+        "action":"read",
+        "context":{"project_root":ROOT,"project_id":PROJECT_ID,"commit_version":"1"},
+        "intent_json":json!({"operation":"selected","selection_id":"working","query":query}).to_string(),
+        "rows":[],
+        "completed":[],
+    }))
+}
+
+#[test]
+fn paged_reads_ask_for_one_ordered_stream_and_pass_the_cursor_to_the_adapter() {
+    let queries =
+        first_queries(json!({"kind":"prefix","prefix":"src/","limit":500,"after":"cursor-1"}));
+    assert!(queries.as_array().unwrap().contains(&json!(
+        {"query":"prefix","prefix":"src/","selection_id":"working","limit":500,"after":"cursor-1"}
+    )));
+    let queries = first_queries(
+        json!({"kind":"connections","element_ids":["a","b"],"incoming":true,"limit":2}),
+    );
+    // Both directions of both elements are one stream, so one cursor covers them.
+    assert!(queries.as_array().unwrap().contains(&json!(
+        {"query":"index_page","names":["connection_source","connection_target"],"values":["a","b"],
+         "selection_id":"working","limit":2,"after":null}
+    )));
+    assert!(!queries.to_string().contains("\"query\":\"index\""));
+    let queries = first_queries(
+        json!({"kind":"artifacts_by_namespace","artifact_namespace":"knowledge","limit":1000,"after":"c"}),
+    );
+    assert!(queries.as_array().unwrap().contains(&json!(
+        {"query":"index_page","names":["artifact_namespace"],"values":["knowledge"],
+         "selection_id":"working","limit":1000,"after":"c"}
+    )));
+    let queries = first_queries(json!({"kind":"element_roots","limit":500}));
+    assert!(queries.as_array().unwrap().contains(&json!(
+        {"query":"index_page","names":["element_root"],"values":["root"],
+         "selection_id":"working","limit":500,"after":null}
+    )));
+}
+
+#[test]
+fn reads_without_a_limit_ask_exactly_what_they_always_asked() {
+    let queries = first_queries(json!({"kind":"prefix","prefix":"src/"}));
+    assert!(queries.as_array().unwrap().contains(&json!(
+        {"query":"prefix","prefix":"src/","selection_id":"working"}
+    )));
+    let queries = first_queries(json!({"kind":"connections","element_ids":["a"],"incoming":true}));
+    for name in ["connection_source", "connection_target"] {
+        assert!(queries.as_array().unwrap().contains(&json!(
+            {"query":"index","name":name,"value":"a","selection_id":"working"}
+        )));
+    }
+    let queries =
+        first_queries(json!({"kind":"artifacts_by_namespace","artifact_namespace":"knowledge"}));
+    assert!(queries.as_array().unwrap().contains(&json!(
+        {"query":"index","name":"artifact_namespace","value":"knowledge","selection_id":"working"}
+    )));
+    let queries = first_queries(json!({"kind":"element_roots"}));
+    assert!(queries.as_array().unwrap().contains(&json!(
+        {"query":"index","name":"element_root","value":"root","selection_id":"working"}
+    )));
+}
+
+#[test]
+fn a_limit_outside_1_to_1000_and_a_cursor_without_a_limit_are_refused() {
+    for (query, expected) in [
+        (
+            json!({"kind":"prefix","prefix":"src/","limit":0}),
+            "a page limit from 1 to 1,000",
+        ),
+        (
+            json!({"kind":"connections","element_ids":["a"],"incoming":false,"limit":1001}),
+            "a page limit from 1 to 1,000",
+        ),
+        (
+            json!({"kind":"artifacts_by_namespace","artifact_namespace":"knowledge","limit":-1}),
+            "invalid value",
+        ),
+        (
+            json!({"kind":"prefix","prefix":"src/","after":"cursor"}),
+            "a page limit together with the cursor",
+        ),
+        (
+            json!({"kind":"element_roots","limit":0}),
+            "a page limit from 1 to 1,000",
+        ),
+        (
+            json!({"kind":"element_roots","after":"cursor"}),
+            "a page limit together with the cursor",
+        ),
+    ] {
+        let response = read_response(query.clone());
+        assert_eq!(response["status"], "rejected", "{query}");
+        assert!(
+            response["message"].as_str().unwrap().contains(expected),
+            "{query}: {response}"
+        );
+    }
+    // 1 and 1,000 are the ends of the range.
+    for limit in [1, 1000] {
+        let queries = first_queries(json!({"kind":"prefix","prefix":"src/","limit":limit}));
+        assert!(queries.to_string().contains(&format!("\"limit\":{limit}")));
+    }
+}
+
+#[test]
+fn an_artifact_gets_one_namespace_entry_for_each_metadata_key_that_holds_an_object() {
+    let namespaces = |rows: &Value, id: &str| {
+        let mut found = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| {
+                row["key"]["kind"] == "record"
+                    && row["key"]["identity"]
+                        == serde_json::to_string(&SemanticRecordRef::artifact(id)).unwrap()
+            })
+            .flat_map(|row| row["indexes"].as_array().unwrap().clone())
+            .filter(|index| index["name"] == "artifact_namespace")
+            .map(|index| index["value"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        found.sort();
+        found
+    };
+    let mut note = artifact("note", "a", "note");
+    note.metadata =
+        json!({"knowledge":{"kind":"note"},"reports":{},"title":"plain","count":3,"tags":["x"]});
+    let mut plain = artifact("plain", "a", "plain");
+    plain.metadata = json!({"title":"nothing here"});
+    // Publication writes them.
+    let mut project = ProjectFixture::new();
+    project.initial();
+    let mut edit = project.edit("artifacts", vec![]);
+    edit.structure = None;
+    for artifact in [&note, &plain] {
+        edit.artifacts.push(SemanticArtifactRevisionWrite {
+            checkpoint: false,
+            artifact: artifact.clone(),
+            media_type: "text/plain".into(),
+        });
+    }
+    project.publish(&edit);
+    let rows = storage(
+        json!({"action":"rows","state_json":serde_json::to_string(&project.state).unwrap()}),
+    );
+    assert_eq!(namespaces(&rows, "note"), ["knowledge", "reports"]);
+    assert_eq!(namespaces(&rows, "plain"), Vec::<String>::new());
+    // Archive adoption writes the same entries.
+    let adopted = SemanticRevisionState::adopt(
+        ROOT,
+        PROJECT_ID,
+        "working",
+        "local",
+        vec![element("a", "a.rs", "body")],
+        vec![note, plain],
+        vec![],
+        1,
+        1,
+    )
+    .unwrap();
+    let rows =
+        storage(json!({"action":"rows","state_json":serde_json::to_string(&adopted).unwrap()}));
+    assert_eq!(namespaces(&rows, "note"), ["knowledge", "reports"]);
+    assert_eq!(namespaces(&rows, "plain"), Vec::<String>::new());
+}
+
+#[test]
+fn a_namespace_read_loads_the_selected_artifacts_of_that_namespace_only() {
+    let mut project = ProjectFixture::new();
+    project.initial();
+    let mut edit = project.edit("artifacts", vec![]);
+    edit.structure = None;
+    for (id, namespace) in [("k1", "knowledge"), ("k2", "knowledge"), ("r1", "reports")] {
+        let mut artifact = artifact(id, "a", id);
+        artifact.metadata = json!({ namespace: {"kind":"note"} });
+        edit.artifacts.push(SemanticArtifactRevisionWrite {
+            checkpoint: false,
+            artifact,
+            media_type: "text/plain".into(),
+        });
+    }
+    project.publish(&edit);
+    for query in [
+        json!({"kind":"artifacts_by_namespace","artifact_namespace":"knowledge"}),
+        json!({"kind":"artifacts_by_namespace","artifact_namespace":"knowledge","limit":10}),
+    ] {
+        let (facts, _) = selected_facts(&project, "working", query);
+        let mut ids = facts
+            .snapshot("working", "now")
+            .unwrap()
+            .unwrap()
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(ids, ["k1", "k2"]);
+    }
+}
+
+fn tree() -> Vec<SemanticElement> {
+    let mut inner = element("inner", "inner.rs", "inner");
+    inner.parent_element_id = Some("top".into());
+    let mut dormant = element("dormant", "dormant.rs", "dormant");
+    dormant.lifecycle = "inactive".into();
+    vec![
+        element("top", "top.rs", "top"),
+        element("also-top", "also.rs", "also"),
+        inner,
+        dormant,
+    ]
+}
+
+#[test]
+fn an_active_element_without_a_parent_gets_the_root_entry_by_every_write_path() {
+    let roots = |rows: &Value| {
+        let mut found =
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| {
+                    row["key"]["kind"] == "record"
+                        && row["indexes"].as_array().unwrap().iter().any(|index| {
+                            index["name"] == "element_root" && index["value"] == "root"
+                        })
+                })
+                .map(|row| {
+                    serde_json::from_str::<Value>(row["key"]["identity"].as_str().unwrap()).unwrap()
+                        ["record_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+        found.sort();
+        found
+    };
+    let mut project = ProjectFixture::new();
+    project.publish(&project.edit("tree", tree()));
+    let rows = storage(
+        json!({"action":"rows","state_json":serde_json::to_string(&project.state).unwrap()}),
+    );
+    // The child has a parent and the dormant element is not active: neither is a root.
+    assert_eq!(roots(&rows), ["also-top", "top"]);
+    // Archive adoption writes the same entries.
+    let adopted = SemanticRevisionState::adopt(
+        ROOT,
+        PROJECT_ID,
+        "working",
+        "local",
+        tree(),
+        vec![],
+        vec![],
+        1,
+        1,
+    )
+    .unwrap();
+    let rows =
+        storage(json!({"action":"rows","state_json":serde_json::to_string(&adopted).unwrap()}));
+    assert_eq!(roots(&rows), ["also-top", "top"]);
+}
+
+#[test]
+fn a_roots_read_loads_the_selected_active_roots_and_follows_revisions() {
+    let ids = |project: &ProjectFixture, query: Value| {
+        let (facts, _) = selected_facts(project, "working", query);
+        let mut ids = facts
+            .snapshot("working", "now")
+            .unwrap()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|element| element.semantic_element_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    };
+    let mut project = ProjectFixture::new();
+    project.publish(&project.edit("tree", tree()));
+    for query in [
+        json!({"kind":"element_roots"}),
+        json!({"kind":"element_roots","limit":10}),
+    ] {
+        assert_eq!(ids(&project, query), ["also-top", "top"]);
+    }
+    // A root that gains a parent stops being one. The edit repeats the others, as a whole-project edit does.
+    let mut regrouped = tree();
+    regrouped[1].parent_element_id = Some("top".into());
+    project.publish(&project.edit("regroup", regrouped.clone()));
+    assert_eq!(ids(&project, json!({"kind":"element_roots"})), ["top"]);
+    // A revised root is read as its new revision, and the old one is not read at all.
+    regrouped[0].metadata = json!({"body":"top, revised"});
+    let receipt = project.publish(&project.edit("revise", regrouped));
+    assert_eq!(
+        ids(&project, json!({"kind":"element_roots","limit":10})),
+        [accepted_id(&receipt, "top")]
+    );
 }
 
 pub(super) fn cases() -> Vec<Vec<u8>> {
