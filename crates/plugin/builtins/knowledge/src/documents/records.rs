@@ -1,6 +1,6 @@
 //! Single graph representation for Knowledge-owned independent documents.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use lumvise_contracts::{
@@ -183,7 +183,7 @@ pub(super) fn exact_document(
             _ => None,
         })
         .collect::<Vec<_>>();
-    format::decode(&element, &body, &roots)
+    format::decode(&element, &body, &format::ActiveRoots::new(&roots))
 }
 
 fn exact_payload(
@@ -211,22 +211,40 @@ pub(super) fn is_document_record(metadata: &Value) -> bool {
     format::is_owned(metadata)
 }
 
-pub(super) fn decode(
-    element: &Value,
-    artifacts: &[Value],
-    roots: &[Value],
-) -> Result<Option<KnowledgeDocument>, PluginError> {
-    if let Some(document) = format::deleted(element)? {
-        return Ok(Some(document));
+/// One read's document bodies and roots, indexed so decoding N documents stays linear.
+/// Example: Decoder::new(&artifacts, &elements).decode(&element) for each listed element.
+pub(super) struct Decoder<'a> {
+    bodies: HashMap<&'a str, &'a Value>,
+    roots: format::ActiveRoots<'a>,
+}
+
+impl<'a> Decoder<'a> {
+    pub(super) fn new(artifacts: &'a [Value], roots: &'a [Value]) -> Self {
+        let mut bodies = HashMap::new();
+        for row in artifacts {
+            if let Some(id) = row["artifact_id"].as_str() {
+                bodies.entry(id).or_insert(row);
+            }
+        }
+        Self {
+            bodies,
+            roots: format::ActiveRoots::new(roots),
+        }
     }
-    let Some(locator) = format::locator(element)? else {
-        return Ok(None);
-    };
-    let artifact = artifacts
-        .iter()
-        .find(|row| row["artifact_id"] == locator["artifact_id"])
-        .unwrap_or(&Value::Null);
-    format::decode(element, artifact, roots).map(Some)
+
+    pub(super) fn decode(&self, element: &Value) -> Result<Option<KnowledgeDocument>, PluginError> {
+        if let Some(document) = format::deleted(element)? {
+            return Ok(Some(document));
+        }
+        let Some(locator) = format::locator(element)? else {
+            return Ok(None);
+        };
+        let body = locator["artifact_id"]
+            .as_str()
+            .and_then(|id| self.bodies.get(id).copied())
+            .unwrap_or(&Value::Null);
+        format::decode(element, body, &self.roots).map(Some)
+    }
 }
 
 pub(super) fn list(
@@ -282,6 +300,7 @@ pub(super) fn project_document_records(
     let mut elements = project_elements(context, root, include_deleted)?;
     super::spaces::filter_elements(context, root, &mut elements)?;
     let artifacts = read_indexed_bodies(context, &elements)?;
+    let decoder = Decoder::new(&artifacts, &elements);
     elements
         .iter()
         .filter(|element| element["project_root"] == root)
@@ -290,7 +309,7 @@ pub(super) fn project_document_records(
                 || (element["lifecycle"] != "inactive"
                     && format::deleted(element).is_ok_and(|deleted| deleted.is_none()))
         })
-        .filter_map(|element| decode(element, &artifacts, &elements).transpose())
+        .filter_map(|element| decoder.decode(element).transpose())
         .collect()
 }
 

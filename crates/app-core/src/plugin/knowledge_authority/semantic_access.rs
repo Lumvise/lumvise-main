@@ -364,14 +364,25 @@ impl KnowledgeSemanticAccess<'_> {
         artifact: &SemanticArtifact,
         scope: Option<&KnowledgeAccessContext>,
     ) -> lumvise_db_core::Result<bool> {
-        let Some(owner) = self.element(&artifact.semantic_element_id)? else {
+        Ok(self.owner_allowed(&artifact.semantic_element_id, scope)?
+            && self.metadata_allowed(&artifact.metadata, scope)?)
+    }
+
+    /// Whether the scope may see an artifact's owner element.
+    /// Example: every body of one document space has the same owner.
+    fn owner_allowed(
+        &self,
+        id: &str,
+        scope: Option<&KnowledgeAccessContext>,
+    ) -> lumvise_db_core::Result<bool> {
+        let Some(owner) = self.element(id)? else {
             return Ok(false);
         };
         if !self.element_allowed(&owner, scope)? {
             return Ok(false);
         }
         self.require_root(&owner.project_root, scope, false)?;
-        self.metadata_allowed(&artifact.metadata, scope)
+        Ok(true)
     }
 
     fn search_sources(
@@ -484,9 +495,19 @@ impl KnowledgeSemanticAccess<'_> {
         artifacts: Vec<SemanticArtifact>,
         scope: Option<&KnowledgeAccessContext>,
     ) -> lumvise_db_core::Result<SemanticResult> {
+        // A listing reads each distinct owner once, not once per body.
+        let mut owners = std::collections::HashMap::new();
         let mut allowed = Vec::new();
         for artifact in artifacts {
-            if self.artifact_allowed(&artifact, scope)? {
+            let owner_visible = match owners.get(&artifact.semantic_element_id) {
+                Some(visible) => *visible,
+                None => {
+                    let visible = self.owner_allowed(&artifact.semantic_element_id, scope)?;
+                    owners.insert(artifact.semantic_element_id.clone(), visible);
+                    visible
+                }
+            };
+            if owner_visible && self.metadata_allowed(&artifact.metadata, scope)? {
                 allowed.push(artifact);
             }
         }

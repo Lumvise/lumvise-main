@@ -78,8 +78,9 @@ pub(crate) fn partition_indexed_elements(
         known_documents: Vec::new(),
     };
     let roots: Vec<Value> = elements.iter().map(|element| json!(element)).collect();
+    let decoder = records::Decoder::new(artifacts, &roots);
     for element in elements {
-        partition.append(root, element, artifacts, &roots)?;
+        partition.append(root, element, &decoder)?;
     }
     Ok(partition)
 }
@@ -89,8 +90,7 @@ impl IndexedDocumentPartition {
         &mut self,
         root: &str,
         element: SemanticElement,
-        artifacts: &[Value],
-        roots: &[Value],
+        decoder: &records::Decoder,
     ) -> Result<(), PluginError> {
         records::validate_element_scope(root, &element)?;
         if !records::is_document_record(&element.metadata) {
@@ -98,7 +98,7 @@ impl IndexedDocumentPartition {
             return Ok(());
         }
         let record = json!(element);
-        if let Some(document) = records::decode(&record, artifacts, roots)? {
+        if let Some(document) = decoder.decode(&record)? {
             self.known_documents.push(document.clone());
             if element.lifecycle != "inactive" && record_format::deleted(&record)?.is_none() {
                 self.documents.push(document);
