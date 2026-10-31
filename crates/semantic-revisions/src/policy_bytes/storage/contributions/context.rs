@@ -1,4 +1,4 @@
-//! Scope-complete challenge facts: exact public owners, affected reports and intersecting pins.
+//! Scope-complete challenge facts: the source in the current head, affected reports and intersecting pins.
 use super::super::read::{ReadPlan, SelectedQuery};
 use super::*;
 
@@ -19,7 +19,7 @@ pub(in crate::policy_bytes::storage) fn request(
         SelectedQuery::Records {
             records: vec![SemanticRecordRef::element(element)],
         }
-        .request(plan, "public")?;
+        .request(plan, "working")?;
     }
     if let Some(changes) = request.input["changes"].as_str() {
         SelectedQuery::Records {
@@ -35,7 +35,7 @@ pub(in crate::policy_bytes::storage) fn request(
         SelectedQuery::Records {
             records: vec![SemanticRecordRef::element(&artifact.semantic_element_id)],
         }
-        .request(plan, "public")?;
+        .request(plan, "working")?;
     } else if matches!(request.purpose, ChallengePurpose::Contribution)
         && request.input["reportId"].is_null()
     {
@@ -72,8 +72,11 @@ pub(super) fn project(
     let owner_rejection = request.owner_override
         && matches!(request.purpose, ChallengePurpose::Vote)
         && request.input["approve"] == false;
-    if !owner_rejection && !public.records.contains(&SemanticRecordRef::element(&owner)) {
-        return Err(invalid(owner, "the exact currently public source element"));
+    if !owner_rejection && !is_current_element(state, &owner) {
+        return Err(invalid(
+            owner,
+            "an active element of the project's current head",
+        ));
     }
     validate_current_report(request, state)?;
     let records = state.records.iter().filter(|stored| {
@@ -113,6 +116,18 @@ pub(super) fn project(
         "challenge_context",
         &json!({"nodes":nodes,"artifactCount":null,"targetReplaced":target_replaced,"revisions":revisions,"source_element_id":owner}),
     )
+}
+
+/// The public list holds approved reports only, so a source is judged by the project's `working` head.
+fn is_current_element(state: &SemanticRevisionState, id: &str) -> bool {
+    let reference = SemanticRecordRef::element(id);
+    state
+        .selection("working")
+        .is_some_and(|head| head.records.contains(&reference))
+        && state.records.iter().any(|stored| {
+            stored.record == reference
+                && matches!(&stored.body, SemanticRevisionBody::Element(element) if element.lifecycle != "inactive")
+        })
 }
 
 fn validate_current_report(

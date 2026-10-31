@@ -1,5 +1,9 @@
 //! The private purpose entry preserves exact public revisions and durable acceptance evidence.
-use super::{common::*, storage_envelopes::storage};
+use super::{
+    common::*,
+    storage_envelopes::{response, storage},
+    storage_reads::IndexedGatewayStorage,
+};
 use lumvise_semantic_revisions::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -17,25 +21,34 @@ pub(super) fn cases() -> Vec<Vec<u8>> {
     [common,write,json!({"action":"challenge_identity","project_id":PROJECT_ID,"authenticated_actor":"author"})].into_iter().map(|request|serde_json::to_vec(&json!({"operation":"storage","request":request})).unwrap()).collect()
 }
 
-struct ChallengeGateway {
-    state: SemanticRevisionState,
-    rows: Vec<Value>,
+pub(super) struct ChallengeGateway {
+    pub(super) state: SemanticRevisionState,
+    pub(super) rows: Vec<Value>,
 }
 impl ChallengeGateway {
     fn new() -> Self {
+        Self::with_public("public:git", |working| working.records.clone())
+    }
+    /// A revision-managed project as adopted: `working` holds its elements and `public` exists but is empty.
+    pub(super) fn with_empty_public_list() -> Self {
+        Self::with_public("public:reports", |_| vec![])
+    }
+    fn with_public(
+        context: &str,
+        records: impl FnOnce(&SemanticRevisionSelectionState) -> Vec<SemanticRecordRef>,
+    ) -> Self {
         let mut fixture = ProjectFixture::new();
         fixture.initial();
-        let head = fixture.state.selection("working").unwrap();
         let update = SemanticRevisionSelectionUpdate {
             operation_id: "public-initial".into(),
             project_root: ROOT.into(),
             project_id: PROJECT_ID.into(),
             selection_id: "public".into(),
-            source_context: "public:git".into(),
+            source_context: context.into(),
             expected_generation: 0,
             artifact_edits: Default::default(),
             mode: SemanticSelectionMode::Pinned,
-            records: head.records.clone(),
+            records: records(fixture.state.selection("working").unwrap()),
             connection_ids: vec![],
             source_anchor: None,
         };
@@ -55,7 +68,7 @@ impl ChallengeGateway {
             rows,
         }
     }
-    fn request(&self, actor: &str, input: Value, vote: bool) -> Value {
+    pub(super) fn request(&self, actor: &str, input: Value, vote: bool) -> Value {
         let prepared = storage(
             json!({"action":"challenge_prepare","purpose":if vote {"vote"} else {"contribution"},"project_id":PROJECT_ID,"authenticated_actor":actor,"owner_override":actor == "owner","input_json":input.to_string()}),
         );
@@ -66,7 +79,22 @@ impl ChallengeGateway {
             json!({"action":"challenge_execute","request_json":request["request_json"],"state_json":serde_json::to_string(&self.state).unwrap(),"rows":self.rows,"prepared_json":prepared.map(|body|body.to_string()),"now_ms":"3000","published_at":"2026-10-26T00:00:00Z"}),
         )
     }
-    fn accept(&mut self, delta: &Value) {
+    /// Executes as the website gateway does: Rust names the rows it needs, storage serves only those,
+    /// and the policy sees nothing else. An unaccepted call returns the policy's message.
+    pub(super) fn scoped(&self, request: &Value, prepared: Option<Value>) -> Result<Value, String> {
+        let intent = serde_json::from_str(request["intent_json"].as_str().unwrap()).unwrap();
+        let mut store = IndexedGatewayStorage::with_rows(self.rows.clone());
+        let facts = store.read(&self.state, intent);
+        let response = response(
+            json!({"action":"challenge_execute","request_json":request["request_json"],"state_json":serde_json::to_string(&facts).unwrap(),"rows":store.loaded,"prepared_json":prepared.map(|body|body.to_string()),"now_ms":(3000 + 1000 * self.state.commit_version).to_string(),"published_at":"2026-10-26T00:00:00Z"}),
+        );
+        if response["status"] == "accepted" {
+            Ok(response["result"]["value"]["value"].clone())
+        } else {
+            Err(response["message"].as_str().unwrap().to_owned())
+        }
+    }
+    pub(super) fn accept(&mut self, delta: &Value) {
         self.rows.retain(|row| {
             !delta["removed"].as_array().unwrap().contains(&row["key"])
                 && !delta["rows"]
@@ -84,13 +112,33 @@ impl ChallengeGateway {
 }
 
 fn contribution(request: &Value, approved: bool) -> Value {
+    report(
+        request,
+        "a",
+        "review",
+        if approved { "approved" } else { "pending" },
+        None,
+    )
+}
+
+/// The patch the website prepares for a contributed report, pending or already decided.
+pub(super) fn report(
+    request: &Value,
+    element: &str,
+    title: &str,
+    publication: &str,
+    changes: Option<&str>,
+) -> Value {
     let trusted: Value = serde_json::from_str(request["request_json"].as_str().unwrap()).unwrap();
     let domain = request["identity_domain"].as_str().unwrap();
     let actor = trusted["actor"].as_str().unwrap();
-    let mut artifact = artifact(request["report_id"].as_str().unwrap(), "a", "review");
+    let mut artifact = artifact(request["report_id"].as_str().unwrap(), element, title);
     artifact.artifact_kind = "report".into();
-    artifact.metadata = json!({"contributionId":artifact.artifact_id,"provenance":"community_contribution","contributorSubjectHash":format!("contributor:{:x}",Sha256::digest(format!("{domain}/{actor}"))),"publication":if approved {"approved"} else {"pending"},"votes":{}});
-    json!({"nodes":[{"metadata":{"lumviseRecord":json!({"kind":"Artifact","value":[artifact,[]]}).to_string()}}],"status":if approved {"published"} else {"pending"}})
+    artifact.metadata = json!({"contributionId":artifact.artifact_id,"provenance":"community_contribution","contributorSubjectHash":format!("contributor:{:x}",Sha256::digest(format!("{domain}/{actor}"))),"publication":publication,"votes":{}});
+    if let Some(target) = changes {
+        artifact.metadata["changes"] = json!(target);
+    }
+    json!({"nodes":[{"metadata":{"lumviseRecord":json!({"kind":"Artifact","value":[artifact,[]]}).to_string()}}],"status":if publication == "approved" {"published"} else {"pending"}})
 }
 
 #[test]
@@ -133,12 +181,13 @@ fn purpose_publication_is_atomic_private_and_replays_exact_endpoint_outcome() {
 }
 
 #[test]
-fn approval_keeps_unrelated_public_members_and_exact_old_source() {
-    let mut gateway = ChallengeGateway::new();
+fn approval_keeps_other_listed_reports_and_anchors_to_the_exact_source_revision() {
+    let mut gateway = ChallengeGateway::with_empty_public_list();
     let mut fixture = ProjectFixture {
         state: gateway.state.clone(),
         now: 3000,
     };
+    // A private edit moves `a` to a successor revision, which is what the current head now holds.
     let request = fixture.edit(
         "private-successor",
         vec![
@@ -155,39 +204,44 @@ fn approval_keeps_unrelated_public_members_and_exact_old_source() {
     .as_array()
     .unwrap()
     .clone();
-    let request = gateway.request(
-        "author",
-        json!({"elementId":"a","title":"review","content":"review"}),
-        false,
-    );
-    let delta = gateway.execute(&request, Some(contribution(&request, true)));
-    gateway.accept(&delta);
+    // The creator lists two reports at once: one on `b`, one on the successor revision.
+    let mut listed = vec![];
+    for (source, title) in [("b", "earlier"), (successor.as_str(), "review")] {
+        let request = gateway.request(
+            "owner",
+            json!({"elementId":source,"title":title,"content":title}),
+            false,
+        );
+        let delta = gateway
+            .scoped(
+                &request,
+                Some(report(&request, source, title, "approved", None)),
+            )
+            .unwrap();
+        gateway.accept(&delta);
+        listed.push(request["report_id"].as_str().unwrap().to_owned());
+    }
     let public = gateway.state.snapshot("public", "").unwrap().unwrap();
-    assert!(
-        public
-            .elements
-            .iter()
-            .any(|element| element.semantic_element_id == "a")
-    );
-    assert!(
-        public
-            .elements
-            .iter()
-            .any(|element| element.semantic_element_id == "b")
-    );
-    assert!(
-        !public
-            .elements
-            .iter()
-            .any(|element| element.semantic_element_id == successor)
-    );
-    assert_eq!(public.artifacts[0].semantic_element_id, "a");
+    assert!(public.elements.is_empty(), "no source element is listed");
+    let mut expected = listed.clone();
+    expected.sort();
+    let mut actual = public
+        .artifacts
+        .iter()
+        .map(|report| report.artifact_id.clone())
+        .collect::<Vec<_>>();
+    actual.sort();
+    assert_eq!(actual, expected, "the earlier report stays listed");
+    let review = public
+        .artifacts
+        .iter()
+        .find(|report| report.artifact_id == listed[1])
+        .unwrap();
+    assert_eq!(review.semantic_element_id, successor);
     assert!(
         gateway
             .state
-            .resolve(&SemanticRecordRef::artifact(
-                &public.artifacts[0].artifact_id
-            ))
+            .resolve(&SemanticRecordRef::artifact(&review.artifact_id))
             .unwrap()
             .artifact_state
             .unwrap()

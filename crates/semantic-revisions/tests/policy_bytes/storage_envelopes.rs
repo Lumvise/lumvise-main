@@ -9,7 +9,7 @@ pub(super) fn storage(request: Value) -> Value {
     response["result"]["value"]["value"].clone()
 }
 
-fn response(request: Value) -> Value {
+pub(super) fn response(request: Value) -> Value {
     serde_json::from_slice(&evaluate_revision_policy(
         &serde_json::to_vec(&json!({"operation":"storage", "request":request})).unwrap(),
     ))

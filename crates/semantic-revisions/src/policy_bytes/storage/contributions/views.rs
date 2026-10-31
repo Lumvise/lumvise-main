@@ -7,12 +7,7 @@ pub(in crate::policy_bytes::storage) fn request(
     owners: &[String],
 ) -> SemanticRevisionResult<()> {
     for owner in owners {
-        if plan.membership(
-            "public",
-            SemanticRevisionMember::Record(SemanticRecordRef::element(owner)),
-        )? {
-            plan.index("challenge_source", owner, None);
-        }
+        plan.index("challenge_source", owner, None);
     }
     let heads = plan
         .rows

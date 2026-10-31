@@ -16,6 +16,8 @@ mod content;
 mod contributions;
 #[path = "policy_bytes/names.rs"]
 mod names;
+#[path = "policy_bytes/public_list.rs"]
+mod public_list;
 #[path = "policy_bytes/selected_reads.rs"]
 mod selected_reads;
 #[path = "policy_bytes/storage_envelopes.rs"]
@@ -128,6 +130,7 @@ fn accepted_cases() -> Vec<Vec<u8>> {
     cases.extend(selected_reads::cases());
     cases.extend(citations::cases());
     cases.extend(contributions::cases());
+    cases.extend(public_list::cases());
     cases.extend(
         content::cases()
             .into_iter()
