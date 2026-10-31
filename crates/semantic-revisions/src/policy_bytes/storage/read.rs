@@ -40,6 +40,14 @@ pub(in crate::policy_bytes) enum StorageQuery {
         prefix: String,
         selection_id: String,
     },
+    /// Name search: `tokens` and `patterns` are LIKE patterns (`patterns` also holds the escaped whole query).
+    Search {
+        selection_id: String,
+        normalized: String,
+        tokens: Vec<String>,
+        patterns: Vec<String>,
+        limit: usize,
+    },
     All,
 }
 
