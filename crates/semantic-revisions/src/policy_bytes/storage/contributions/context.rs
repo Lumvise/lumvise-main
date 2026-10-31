@@ -1,6 +1,8 @@
 //! Scope-complete challenge facts: the source in the current head, affected reports and intersecting pins.
 use super::super::read::{ReadPlan, SelectedQuery};
 use super::*;
+use crate::revision_index::{selected_successor, source_successors};
+use std::collections::BTreeSet;
 
 pub(in crate::policy_bytes::storage) fn request(
     plan: &mut ReadPlan,
@@ -16,10 +18,7 @@ pub(in crate::policy_bytes::storage) fn request(
     plan.selection("public", false);
     plan.records([SemanticRecordRef::artifact(&request.report_id)])?;
     if let Some(element) = request.input["elementId"].as_str() {
-        SelectedQuery::Records {
-            records: vec![SemanticRecordRef::element(element)],
-        }
-        .request(plan, "working")?;
+        plan.resolve_in("working", vec![SemanticRecordRef::element(element)])?;
     }
     if let Some(changes) = request.input["changes"].as_str() {
         SelectedQuery::Records {
@@ -32,10 +31,10 @@ pub(in crate::policy_bytes::storage) fn request(
     if let Some(artifact) = artifact {
         let head = selection(logical(&artifact)?)?;
         plan.selection(&head, true);
-        SelectedQuery::Records {
-            records: vec![SemanticRecordRef::element(&artifact.semantic_element_id)],
-        }
-        .request(plan, "working")?;
+        plan.resolve_in(
+            "working",
+            vec![SemanticRecordRef::element(&artifact.semantic_element_id)],
+        )?;
         // Approving a replacement takes the replaced report off the list, so its membership is needed.
         if let Some(changes) = artifact.metadata.get("changes").and_then(Value::as_str) {
             SelectedQuery::Records {
@@ -79,7 +78,7 @@ pub(super) fn project(
     let owner_rejection = request.owner_override
         && matches!(request.purpose, ChallengePurpose::Vote)
         && request.input["approve"] == false;
-    if !owner_rejection && !is_current_element(state, &owner) {
+    if !owner_rejection && !is_current_element(state, &owner)? {
         return Err(invalid(
             owner,
             "an active element of the project's current head",
@@ -125,16 +124,24 @@ pub(super) fn project(
     )
 }
 
-/// The public list holds approved reports only, so a source is judged by the project's `working` head.
-fn is_current_element(state: &SemanticRevisionState, id: &str) -> bool {
-    let reference = SemanticRecordRef::element(id);
-    state
-        .selection("working")
-        .is_some_and(|head| head.records.contains(&reference))
-        && state.records.iter().any(|stored| {
-            stored.record == reference
-                && matches!(&stored.body, SemanticRevisionBody::Element(element) if element.lifecycle != "inactive")
-        })
+/// The public list holds approved reports only, so a source is judged by the project's `working` head: the
+/// revision family of the named element must have reached an active element there. The named revision itself
+/// stays the report's anchor, even after the head has moved on to a successor.
+fn is_current_element(state: &SemanticRevisionState, id: &str) -> SemanticRevisionResult<bool> {
+    let Some(head) = state.selection("working") else {
+        return Ok(false);
+    };
+    let selected = head.records.iter().cloned().collect::<BTreeSet<_>>();
+    let successors = source_successors(state, &head.selection.source_context);
+    let Some(current) =
+        selected_successor(&successors, &SemanticRecordRef::element(id), &selected)?
+    else {
+        return Ok(false);
+    };
+    Ok(state.records.iter().any(|stored| {
+        stored.record == current
+            && matches!(&stored.body, SemanticRevisionBody::Element(element) if element.lifecycle != "inactive")
+    }))
 }
 
 fn validate_current_report(

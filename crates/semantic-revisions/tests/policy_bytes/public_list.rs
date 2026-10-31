@@ -34,7 +34,8 @@ fn contribute(
     Ok(request["report_id"].as_str().unwrap().to_owned())
 }
 
-/// The tally belongs to the website; the policy applies the patch it prepares.
+/// The tally belongs to the website; the policy applies the patch it prepares. Returns the id the report
+/// answers to afterwards: a report the owner's edit froze takes a successor revision with its first vote.
 fn vote(
     gateway: &mut ChallengeGateway,
     voter: &str,
@@ -42,7 +43,7 @@ fn vote(
     approve: bool,
     yes: &[&str],
     publication: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let request = gateway.request(voter, json!({"reportId":report,"approve":approve}), true);
     gateway.scoped(&request, None)?;
     let SemanticRevisionBody::Artifact(mut proposed) = gateway
@@ -62,19 +63,21 @@ fn vote(
     let patch = json!({"nodes":[{"metadata":{"lumviseRecord":json!({"kind":"Artifact","value":[proposed,[]]}).to_string()}}],"receipt":{"reportId":report,"status":publication,"votes":{"yes":yes.len(),"no":0}}});
     let delta = gateway.scoped(&request, Some(patch))?;
     gateway.accept(&delta);
-    Ok(())
+    let outcome: Value = serde_json::from_str(delta["outcome_json"].as_str().unwrap()).unwrap();
+    Ok(outcome["reportId"].as_str().unwrap().to_owned())
 }
 
-/// Two votes leave the report pending and the list untouched; the third passes it.
-fn approve_by_three_votes(gateway: &mut ChallengeGateway, report: &str) {
+/// Two votes leave the report pending and the list untouched; the third passes it. Returns the final id.
+fn approve_by_three_votes(gateway: &mut ChallengeGateway, report: &str) -> String {
     let before = public_reports(gateway);
     let voters = ["v1", "v2", "v3"];
+    let mut report = report.to_owned();
     for count in 1..=3 {
         let publication = if count == 3 { "approved" } else { "pending" };
-        vote(
+        report = vote(
             gateway,
             voters[count - 1],
-            report,
+            &report,
             true,
             &voters[..count],
             publication,
@@ -84,19 +87,112 @@ fn approve_by_three_votes(gateway: &mut ChallengeGateway, report: &str) {
             assert_eq!(public_reports(gateway), before, "vote {count} of 3");
         }
     }
+    report
+}
+
+/// Applies an owner publication the way the gateway does: the policy's delta, then the stored contents of
+/// every re-emitted row, so a report the edit freezes keeps its text.
+fn publish(
+    gateway: &mut ChallengeGateway,
+    project: &ProjectFixture,
+    request: &SemanticRevisionPublication,
+) -> SemanticRevisionPublicationReceipt {
+    let plan = project.plan(request);
+    let SemanticRevisionPublicationOutcome::Accepted(receipt) = plan.outcome.clone() else {
+        panic!("accepted edit")
+    };
+    let delta = storage(
+        json!({"action":"publication","state_json":serde_json::to_string(&gateway.state).unwrap(),"plan_json":serde_json::to_string(&plan).unwrap()}),
+    );
+    let delta = storage(
+        json!({"action":"contents","delta_json":json!({"kind":"delta","value":delta}).to_string(),"request_json":json!({"operation":"publication","request":request}).to_string(),"rows":gateway.rows}),
+    );
+    gateway.accept(&delta);
+    receipt
+}
+
+fn owner_edit(gateway: &ChallengeGateway) -> ProjectFixture {
+    ProjectFixture {
+        state: gateway.state.clone(),
+        now: 3000 + 1000 * gateway.state.commit_version,
+    }
 }
 
 /// Publishes an ordinary working edit, keeping the stored report bodies the gateway already holds.
 fn edit_working(gateway: &mut ChallengeGateway, id: &str, elements: Vec<SemanticElement>) {
-    let project = ProjectFixture {
-        state: gateway.state.clone(),
-        now: 3000 + 1000 * gateway.state.commit_version,
+    let project = owner_edit(gateway);
+    publish(gateway, &project, &project.edit(id, elements));
+}
+
+/// An owner edit that rewrites the elements under one path, as the desktop publishes it after adoption.
+fn edit_path(
+    gateway: &mut ChallengeGateway,
+    id: &str,
+    path: &str,
+    elements: Vec<SemanticElement>,
+) -> SemanticRevisionPublicationReceipt {
+    let project = owner_edit(gateway);
+    let partition = SemanticPartition {
+        project_root: ROOT.into(),
+        replace_paths: vec![path.into()],
+        provider_instance_id: None,
     };
-    let plan = project.plan(&project.edit(id, elements));
-    let delta = storage(
-        json!({"action":"publication","state_json":serde_json::to_string(&gateway.state).unwrap(),"plan_json":serde_json::to_string(&plan).unwrap()}),
+    let mut request = project.edit(id, elements);
+    request.expected = project
+        .state
+        .selection_members(&SemanticRevisionSelectionQuery {
+            project_root: ROOT.into(),
+            selection_id: "working".into(),
+            structure_coverage: SemanticRevisionStructureCoverage::Partition(partition.clone()),
+            artifact_ids: vec![],
+        })
+        .unwrap()
+        .unwrap()
+        .expected;
+    request.structure.as_mut().unwrap().partition = Some(partition);
+    publish(gateway, &project, &request)
+}
+
+/// A paper folder with its proof next to unrelated elements, adopted under the ids `e17` and `pdf17`.
+fn paper_project() -> ChallengeGateway {
+    let mut gateway = ChallengeGateway::with_empty_public_list();
+    let mut folder = element("e17", "paper", "paper");
+    folder.element_kind = "folder".into();
+    let mut proof = element("pdf17", "paper/proof.pdf", "proof");
+    proof.parent_element_id = Some("e17".into());
+    edit_working(
+        &mut gateway,
+        "adopt-paper",
+        vec![
+            element("a", "a.rs", "A1"),
+            element("b", "b.rs", "B1"),
+            folder,
+            proof,
+        ],
     );
-    gateway.accept(&delta);
+    gateway
+}
+
+/// Edits the paper again, so the head swaps both records for new revisions; `retired` marks the folder
+/// inactive and drops its proof.
+fn revise_paper(
+    gateway: &mut ChallengeGateway,
+    operation: &str,
+    revision: &str,
+    retired: bool,
+) -> SemanticRevisionPublicationReceipt {
+    let mut folder = element("e17", "paper", "paper");
+    folder.element_kind = "folder".into();
+    folder.metadata = json!({"private": revision});
+    let mut elements = vec![folder];
+    if retired {
+        elements[0].lifecycle = "inactive".into();
+    } else {
+        let mut proof = element("pdf17", "paper/proof.pdf", "proof");
+        proof.parent_element_id = Some("e17".into());
+        elements.push(proof);
+    }
+    edit_path(gateway, operation, "paper", elements)
 }
 
 fn public_reports(gateway: &ChallengeGateway) -> Vec<SemanticRecordRef> {
@@ -259,6 +355,128 @@ fn the_creators_rejection_removes_an_approved_report_even_after_its_source_left_
 }
 
 #[test]
+fn an_element_revised_after_adoption_takes_a_contribution_and_an_approving_vote() {
+    let mut gateway = paper_project();
+    let receipt = revise_paper(&mut gateway, "private-newer", "v2", false);
+    let (folder, proof) = (accepted_id(&receipt, "e17"), accepted_id(&receipt, "pdf17"));
+    let head = gateway.state.selection("working").unwrap();
+    assert!(head.records.contains(&SemanticRecordRef::element(&folder)));
+    assert!(!head.records.contains(&SemanticRecordRef::element("e17")));
+
+    // The revised elements answer to the id they were adopted under and to the revision the head holds now.
+    let mut reports = vec![];
+    for (source, title) in [
+        ("e17", "adopted folder"),
+        (folder.as_str(), "current folder"),
+        ("pdf17", "adopted proof"),
+        (proof.as_str(), "current proof"),
+        ("a", "unrelated"),
+    ] {
+        reports.push(contribute(&mut gateway, "author", source, title, None).unwrap());
+    }
+    approve_by_three_votes(&mut gateway, &reports[0]);
+
+    assert_eq!(
+        public_reports(&gateway),
+        vec![SemanticRecordRef::artifact(&reports[0])]
+    );
+    let SemanticRevisionBody::Artifact(approved) = gateway
+        .state
+        .resolve(&SemanticRecordRef::artifact(&reports[0]))
+        .unwrap()
+        .body
+    else {
+        panic!("artifact")
+    };
+    assert_eq!(
+        approved.semantic_element_id, "e17",
+        "the report keeps the exact revision it was written against"
+    );
+    let public = gateway.state.snapshot("public", "").unwrap().unwrap();
+    assert!(public.elements.is_empty());
+    // The exact source revision stays stored for as long as the approved report is public, while an
+    // unreferenced superseded revision is collectable.
+    revise_paper(&mut gateway, "edit-again", "v3", false);
+    edit_path(
+        &mut gateway,
+        "edit-b",
+        "b.rs",
+        vec![element("b", "b.rs", "B2")],
+    );
+    let policy = SemanticRevisionRetentionPolicy::Age {
+        history_age_seconds: 1,
+    };
+    let sweep = gateway
+        .state
+        .plan_retention("collect", &policy, 1_000_000_000)
+        .unwrap();
+    assert!(sweep.records.contains(&SemanticRecordRef::element("b")));
+    assert!(!sweep.records.contains(&SemanticRecordRef::element("e17")));
+}
+
+#[test]
+fn votes_on_a_pending_report_follow_its_source_through_later_revisions() {
+    let mut gateway = paper_project();
+    let report = contribute(&mut gateway, "author", "e17", "pending", None).unwrap();
+    let report = vote(&mut gateway, "v1", &report, true, &["v1"], "pending").unwrap();
+    revise_paper(&mut gateway, "edit-1", "v2", false);
+    // The edit froze the pending report, so this vote moves it to a successor revision.
+    let report = vote(&mut gateway, "v2", &report, true, &["v1", "v2"], "pending").unwrap();
+    revise_paper(&mut gateway, "edit-2", "v3", false);
+    let report = vote(
+        &mut gateway,
+        "v3",
+        &report,
+        true,
+        &["v1", "v2", "v3"],
+        "approved",
+    )
+    .unwrap();
+    assert_eq!(
+        public_reports(&gateway),
+        vec![SemanticRecordRef::artifact(&report)]
+    );
+    let SemanticRevisionBody::Artifact(approved) = gateway
+        .state
+        .resolve(&SemanticRecordRef::artifact(&report))
+        .unwrap()
+        .body
+    else {
+        panic!("artifact")
+    };
+    assert_eq!(
+        approved.semantic_element_id, "e17",
+        "every revision of the report keeps the source it was written against"
+    );
+}
+
+#[test]
+fn a_revised_element_that_went_inactive_or_left_the_head_is_refused() {
+    let mut gateway = paper_project();
+    let receipt = revise_paper(&mut gateway, "edit-1", "v2", false);
+    let (folder, proof) = (accepted_id(&receipt, "e17"), accepted_id(&receipt, "pdf17"));
+    let pending = contribute(&mut gateway, "author", "e17", "pending", None).unwrap();
+    // The owner retires the paper: the folder is revised once more and marked inactive, its proof leaves.
+    revise_paper(&mut gateway, "retire", "v3", true);
+    let head = gateway.state.selection("working").unwrap();
+    assert!(!head.records.contains(&SemanticRecordRef::element(&folder)));
+
+    for source in ["e17", folder.as_str(), "pdf17", proof.as_str()] {
+        assert_eq!(
+            contribute(&mut gateway, "author", source, "late", None),
+            Err(refusal(source)),
+            "{source}"
+        );
+    }
+    assert_eq!(
+        vote(&mut gateway, "v1", &pending, true, &["v1"], "pending"),
+        Err(refusal("e17"))
+    );
+    contribute(&mut gateway, "author", "b", "unrelated", None).unwrap();
+    vote(&mut gateway, "owner", &pending, false, &[], "rejected").unwrap();
+}
+
+#[test]
 fn a_replacement_has_its_own_vote_and_takes_the_old_versions_place_only_when_approved() {
     let mut gateway = ChallengeGateway::with_empty_public_list();
     let old = contribute(&mut gateway, "author", "a", "first", None).unwrap();
@@ -310,11 +528,47 @@ fn members_enumerate_pending_reports_by_source_element_and_public_readers_see_no
     assert!(view(true).is_empty());
 }
 
-pub(super) fn cases() -> Vec<Vec<u8>> {
-    let mut gateway = ChallengeGateway::with_empty_public_list();
+#[test]
+fn a_member_asking_about_the_current_revision_sees_reports_written_against_older_ones() {
+    let mut gateway = paper_project();
+    let before = contribute(&mut gateway, "author", "e17", "on the adopted folder", None).unwrap();
+    let receipt = revise_paper(&mut gateway, "edit-1", "v2", false);
+    let folder = accepted_id(&receipt, "e17");
+    let after = contribute(
+        &mut gateway,
+        "author",
+        &folder,
+        "on the revised folder",
+        None,
+    )
+    .unwrap();
+    contribute(&mut gateway, "author", "a", "elsewhere", None).unwrap();
+    for (asked, expected) in [
+        (
+            folder.as_str(),
+            vec!["on the adopted folder", "on the revised folder"],
+        ),
+        // A report follows its element forward; asking about the older revision finds only its own.
+        ("e17", vec!["on the adopted folder"]),
+    ] {
+        let mut store = IndexedGatewayStorage::with_rows(gateway.rows.clone());
+        let facts = store.read(
+            &gateway.state,
+            json!({"operation":"challenge_view","element_ids":[asked]}),
+        );
+        let view = titles(storage(
+            json!({"action":"challenge_display","state_json":serde_json::to_string(&facts).unwrap(),"rows":store.loaded,"public_only":false}),
+        ));
+        assert_eq!(view, expected, "asked about {asked}");
+    }
+    assert_ne!(before, after);
+}
+
+/// The byte requests of one contribution on `element`, then of a pending view asking about `viewed`.
+fn requests(gateway: &mut ChallengeGateway, element: &str, viewed: &str) -> Vec<Vec<u8>> {
     let request = gateway.request(
         "author",
-        json!({"elementId":"a","title":"review","content":"review"}),
+        json!({"elementId":element,"title":"review","content":"review"}),
         false,
     );
     let intent = serde_json::from_str(request["intent_json"].as_str().unwrap()).unwrap();
@@ -325,19 +579,28 @@ pub(super) fn cases() -> Vec<Vec<u8>> {
     requests.extend(
         [
             execute(None),
-            execute(Some(report(&request, "a", "review", "pending", None))),
+            execute(Some(report(&request, element, "review", "pending", None))),
         ]
         .into_iter()
         .map(|request| {
             serde_json::to_vec(&json!({"operation":"storage","request":request})).unwrap()
         }),
     );
-    contribute(&mut gateway, "author", "a", "review", None).unwrap();
+    contribute(gateway, "author", element, "review", None).unwrap();
     let mut view = IndexedGatewayStorage::with_rows(gateway.rows.clone());
     view.read(
         &gateway.state,
-        json!({"operation":"challenge_view","element_ids":["a"]}),
+        json!({"operation":"challenge_view","element_ids":[viewed]}),
     );
     requests.extend(view.requests);
     requests
+}
+
+pub(super) fn cases() -> Vec<Vec<u8>> {
+    let mut cases = requests(&mut ChallengeGateway::with_empty_public_list(), "a", "a");
+    // The head holds a successor of `e17`, so the family walk and the older-revision view run as well.
+    let mut revised = paper_project();
+    let receipt = revise_paper(&mut revised, "edit-1", "v2", false);
+    cases.extend(requests(&mut revised, "e17", &accepted_id(&receipt, "e17")));
+    cases
 }
