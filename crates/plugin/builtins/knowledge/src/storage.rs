@@ -334,11 +334,32 @@ pub(crate) fn list_all_knowledge(
     let roots = semantic_project_roots(context)?;
     let mut artifacts = BTreeMap::new();
     for root in roots {
-        for artifact in list_project_knowledge(context, &root)? {
-            artifacts.insert(artifact.artifact_id.clone(), artifact);
+        match list_project_knowledge(context, &root) {
+            Ok(listed) => artifacts.extend(
+                listed
+                    .into_iter()
+                    .map(|artifact| (artifact.artifact_id.clone(), artifact)),
+            ),
+            // A joined online project can be unreadable (offline, signed out, revoked, too large) without
+            // hiding the local ones; a failure of a local project still fails the listing.
+            Err(error) if is_online_root(&root) => eprintln!(
+                "{}",
+                json!({
+                    "event": "knowledge_online_project_skipped",
+                    "project_root": root,
+                    "code": error.code,
+                    "error": error.message,
+                })
+            ),
+            Err(error) => return Err(error),
         }
     }
     Ok(artifacts.into_values().collect())
+}
+
+/// Online projects are rooted at `lumvise://projects/<UUID>` (ADR 0002); every other root is local.
+fn is_online_root(root: &str) -> bool {
+    root.starts_with("lumvise://projects/")
 }
 
 fn list_sql<T: DeserializeOwned>(
