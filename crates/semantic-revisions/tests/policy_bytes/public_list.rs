@@ -259,7 +259,7 @@ fn the_creators_rejection_removes_an_approved_report_even_after_its_source_left_
 }
 
 #[test]
-fn a_replacement_waits_for_its_own_vote_while_the_old_version_stays_public() {
+fn a_replacement_has_its_own_vote_and_takes_the_old_versions_place_only_when_approved() {
     let mut gateway = ChallengeGateway::with_empty_public_list();
     let old = contribute(&mut gateway, "author", "a", "first", None).unwrap();
     approve_by_three_votes(&mut gateway, &old);
@@ -267,8 +267,28 @@ fn a_replacement_waits_for_its_own_vote_while_the_old_version_stays_public() {
     assert_ne!(new, old);
     assert_eq!(
         public_reports(&gateway),
+        vec![SemanticRecordRef::artifact(&old)],
+        "the old version stays public while the change waits for its vote"
+    );
+    approve_by_three_votes(&mut gateway, &new);
+    assert_eq!(
+        public_reports(&gateway),
+        vec![SemanticRecordRef::artifact(&new)]
+    );
+}
+
+#[test]
+fn rejecting_a_pending_replacement_leaves_the_old_version_public() {
+    let mut gateway = ChallengeGateway::with_empty_public_list();
+    let old = contribute(&mut gateway, "author", "a", "first", None).unwrap();
+    approve_by_three_votes(&mut gateway, &old);
+    let new = contribute(&mut gateway, "author", "a", "second", Some(&old)).unwrap();
+    vote(&mut gateway, "owner", &new, false, &[], "rejected").unwrap();
+    assert_eq!(
+        public_reports(&gateway),
         vec![SemanticRecordRef::artifact(&old)]
     );
+    assert_eq!(displayed(&gateway, true), vec!["first"]);
 }
 
 #[test]

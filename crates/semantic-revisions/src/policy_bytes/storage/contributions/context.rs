@@ -36,6 +36,13 @@ pub(in crate::policy_bytes::storage) fn request(
             records: vec![SemanticRecordRef::element(&artifact.semantic_element_id)],
         }
         .request(plan, "working")?;
+        // Approving a replacement takes the replaced report off the list, so its membership is needed.
+        if let Some(changes) = artifact.metadata.get("changes").and_then(Value::as_str) {
+            SelectedQuery::Records {
+                records: vec![SemanticRecordRef::artifact(changes)],
+            }
+            .request(plan, "public")?;
+        }
     } else if matches!(request.purpose, ChallengePurpose::Contribution)
         && request.input["reportId"].is_null()
     {
