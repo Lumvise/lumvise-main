@@ -104,7 +104,9 @@ fn permission_view(
         return Err(invalid(
             "memory_hook_scope",
             root,
-            "the host-authorized owning memory space",
+            "the host-authorized owning memory space: pass the project_root from resolve_document_space \
+             (MCP callers use purpose current_project, Assistant callers self). Reports under a source \
+             project are hooked from the Hooks tab or Agents automation watches (configure_automation_watch)",
         ));
     }
     Ok(view)
@@ -289,5 +291,27 @@ impl ConfigureDocumentHook {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The example closing the tool description is the first call an agent copies, so it must
+    /// satisfy the request type and every field the signed input schema requires.
+    #[test]
+    fn the_described_enable_example_is_a_complete_valid_request() {
+        let description = crate::documents::description("configure_document_hook").unwrap();
+        let (_, example) = description.split_once("Example: ").expect("example");
+        let example: Value = serde_json::from_str(example).expect("example is JSON");
+
+        let request: ConfigureDocumentHook =
+            crate::parse(example.clone(), "described example").unwrap();
+        request.require_enabled_fields().unwrap();
+        let schema = schema::input_schema("configure_document_hook").unwrap();
+        for field in schema["required"].as_array().unwrap() {
+            assert!(example.get(field.as_str().unwrap()).is_some(), "{field}");
+        }
     }
 }
