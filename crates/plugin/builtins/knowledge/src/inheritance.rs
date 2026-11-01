@@ -874,6 +874,8 @@ mod tests {
             metadata: json!({"author": "test"}),
             path: None,
             project_root: Some("/old".into()),
+            anchor_fingerprint: None,
+            outdated: None,
             lifecycle: Default::default(),
         }
     }

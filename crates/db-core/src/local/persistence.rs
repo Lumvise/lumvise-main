@@ -106,6 +106,9 @@ impl SemanticPersistence for LocalPersistence {
             .semantic_storage()
             .with_control(control.clone());
         match operation {
+            SemanticOperation::SearchProjectStructure { project_root } => Ok(
+                SemanticResult::ProjectSnapshot(storage.search_project_structure(&project_root)?),
+            ),
             SemanticOperation::RevisionFamilies(query) => Ok(SemanticResult::RevisionFamilies(
                 storage.revision_families(&query)?,
             )),
@@ -883,3 +886,6 @@ impl RelationalPersistence for LocalPersistence {
 
 #[cfg(test)]
 mod control_tests;
+
+#[cfg(test)]
+mod live_search_tests;

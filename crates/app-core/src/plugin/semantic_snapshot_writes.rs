@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use lumvise_contracts::{SemanticIndexObservation, SemanticSourceUpsert};
 use lumvise_db_core::{
@@ -16,10 +16,10 @@ use serde_json::{Value, json};
 
 use super::host_capability_catalog::SEMANTIC_STORAGE;
 
-const WRITE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_ACTIVE_WRITES: usize = 2;
 
 pub(super) struct SemanticSnapshotWrites {
+    // Independent invocations share this domain write until commit, abort or app shutdown.
     writes: Mutex<HashMap<String, StagedSemanticSnapshot>>,
 }
 
@@ -43,7 +43,6 @@ struct StagedSemanticSnapshot {
     page_count: usize,
     observation: SemanticIndexObservation,
     next_page_index: usize,
-    created_at: Instant,
     elements: Vec<SemanticElement>,
     relationships: Vec<SemanticRelationship>,
     sources: BTreeMap<String, SemanticSourceUpsert>,
@@ -80,7 +79,6 @@ impl SemanticSnapshotWrites {
             .map_err(|error| storage_error(error.into()))?;
         }
         let mut writes = self.lock()?;
-        discard_expired(&mut writes);
         if let Some(previous) = writes.get(snapshot_id) {
             if previous.plugin_id != plugin_id
                 || previous.project_root != project_root
@@ -117,7 +115,6 @@ impl SemanticSnapshotWrites {
                 page_count,
                 observation,
                 next_page_index: 0,
-                created_at: Instant::now(),
                 elements: Vec::new(),
                 relationships: Vec::new(),
                 sources: BTreeMap::new(),
@@ -135,7 +132,6 @@ impl SemanticSnapshotWrites {
         page: SemanticSnapshotPage,
     ) -> Result<Value, HostCapabilityError> {
         let mut writes = self.lock()?;
-        discard_expired(&mut writes);
         let write = owned_write_mut(&mut writes, snapshot_id, plugin_id)?;
         let page_index = page.page_index;
         if page_index != write.next_page_index {
@@ -184,7 +180,6 @@ impl SemanticSnapshotWrites {
     ) -> Result<Value, HostCapabilityError> {
         let write = {
             let mut writes = self.lock()?;
-            discard_expired(&mut writes);
             let write = owned_write(&writes, snapshot_id, plugin_id)?;
             if write.next_page_index != write.page_count {
                 return Err(write_error(
@@ -244,7 +239,6 @@ impl SemanticSnapshotWrites {
         snapshot_id: &str,
     ) -> Result<Value, HostCapabilityError> {
         let mut writes = self.lock()?;
-        discard_expired(&mut writes);
         owned_write(&writes, snapshot_id, plugin_id)?;
         writes.remove(snapshot_id);
         Ok(json!({"snapshot_id": snapshot_id, "status": "aborted"}))
@@ -352,10 +346,6 @@ fn owned_write_mut<'a>(
         .get_mut(snapshot_id)
         .filter(|write| write.plugin_id == plugin_id)
         .ok_or_else(|| snapshot_not_found(snapshot_id, plugin_id))
-}
-
-fn discard_expired(writes: &mut HashMap<String, StagedSemanticSnapshot>) {
-    writes.retain(|_, write| write.created_at.elapsed() < WRITE_TTL);
 }
 
 fn snapshot_not_found(snapshot_id: &str, plugin_id: &str) -> HostCapabilityError {

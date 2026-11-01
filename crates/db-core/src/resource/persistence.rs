@@ -456,6 +456,7 @@ fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
         SemanticOperation::ProjectElementCounts { .. } => "ProjectElementCounts",
         SemanticOperation::ImportPzSnapshot { .. } => "ImportPzSnapshot",
         SemanticOperation::ProjectSnapshot { .. } => "ProjectSnapshot",
+        SemanticOperation::SearchProjectStructure { .. } => "SearchProjectStructure",
         SemanticOperation::SelectiveSubgraph { .. } => "SelectiveSubgraph",
         SemanticOperation::ProjectRendererGraph(_) => "ProjectRendererGraph",
         SemanticOperation::ChangesSinceRevision { .. } => "ChangesSinceRevision",

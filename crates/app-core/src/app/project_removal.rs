@@ -65,6 +65,15 @@ fn removal_input(body: &[u8]) -> Result<ProjectRemovalInput, String> {
 }
 
 fn remove_project_graph(app: &AppCore, project_root: &str) -> Result<ProjectRemovalResult, String> {
+    app.plugin_host_services
+        .project_import_service()
+        .with_project_imports_stopped(project_root, || remove_stopped_project(app, project_root))
+}
+
+fn remove_stopped_project(
+    app: &AppCore,
+    project_root: &str,
+) -> Result<ProjectRemovalResult, String> {
     let mut sessions = app
         .project_import_sessions
         .lock()

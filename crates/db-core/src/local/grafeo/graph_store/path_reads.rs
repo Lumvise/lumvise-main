@@ -39,11 +39,11 @@ impl GraphState {
         &self,
         transaction: GraphTransaction<'_>,
         write_result: Result<R>,
-    ) -> Result<R> {
+    ) -> GraphTransactionCompletion<R> {
         let touched = transaction.path_mutations.take();
         let deleted = transaction.path_deletions.take();
         let result = transaction.finish(write_result);
-        if result.is_ok() {
+        if matches!(&result, GraphTransactionCompletion::Committed(_)) {
             for index in [&self.path_index, &self.revision_path_index] {
                 index
                     .lock()

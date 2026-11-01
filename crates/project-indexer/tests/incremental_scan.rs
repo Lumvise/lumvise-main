@@ -12,6 +12,7 @@ struct SourceState {
     reads: Vec<String>,
     requested_scopes: Vec<ScanScope>,
     fail_inventory: bool,
+    fail_read: Option<String>,
 }
 #[derive(Clone, Default)]
 struct FakeProjectSource(Rc<RefCell<SourceState>>);
@@ -58,12 +59,114 @@ impl ProjectSource for FakeProjectSource {
     fn read_file(&self, path: &str) -> Result<FileRead, ScanError> {
         let mut state = self.0.borrow_mut();
         state.reads.push(path.into());
+        if state.fail_read.as_deref() == Some(path) {
+            return Err(ScanError {
+                path: path.into(),
+                reason: "expected readable file".into(),
+            });
+        }
         let (stamp, bytes) = &state.files[path];
         Ok(FileRead {
             bytes: bytes.clone(),
             stamp: Some(FileStamp(vec![*stamp])),
         })
     }
+}
+
+#[test]
+fn resilient_updates_keep_failed_content_and_retry_it_after_healthy_changes_commit() {
+    let source = FakeProjectSource::default();
+    source.put("bad.rs", 1, "old_bad");
+    source.put("good.rs", 1, "old_good");
+    let mut indexer = ProjectIndexer::new(source.clone(), FakeLanguageParser::default());
+    let initial = indexer.prepare(ScanScope::Full).unwrap();
+    indexer.commit(initial).unwrap();
+    source.put("bad.rs", 2, "parse-error");
+    source.put("good.rs", 2, "new_good");
+    let update = indexer
+        .prepare_resilient(ScanScope::Full, |_| Ok(()))
+        .unwrap();
+    assert_eq!(update.failures().len(), 1);
+    assert_eq!(update.failures()[0].path, "bad.rs");
+    assert_eq!(
+        update
+            .changed_files()
+            .map(|file| file.entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["good.rs"]
+    );
+    indexer.commit(update).unwrap();
+    source.put("bad.rs", 3, "repaired");
+    let retry = indexer
+        .prepare_resilient(ScanScope::Full, |_| Ok(()))
+        .unwrap();
+    assert!(retry.failures().is_empty());
+    assert_eq!(
+        retry
+            .changed_files()
+            .map(|file| file.entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["bad.rs"]
+    );
+}
+
+#[test]
+fn resilient_initial_scan_reports_read_and_parse_failures_without_inventing_empty_files() {
+    let source = FakeProjectSource::default();
+    source.put("bad.rs", 1, "parse-error");
+    source.put("good.rs", 1, "healthy");
+    source.put("unreadable.rs", 1, "unreadable");
+    source.0.borrow_mut().fail_read = Some("unreadable.rs".into());
+    let mut indexer = ProjectIndexer::new(source, FakeLanguageParser::default());
+    let scan = indexer
+        .prepare_resilient(ScanScope::Full, |_| Ok(()))
+        .unwrap();
+    assert_eq!(scan.failures().len(), 2);
+    assert_eq!(
+        scan.changed_files()
+            .map(|file| file.entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["good.rs"]
+    );
+}
+
+#[test]
+fn acknowledged_unparsed_paths_still_publish_later_deletions() {
+    for scope in [ScanScope::Full, ScanScope::Paths(vec!["bad.rs".into()])] {
+        let source = FakeProjectSource::default();
+        source.put("bad.rs", 1, "parse-error");
+        source.put("good.rs", 1, "healthy");
+        let mut indexer = ProjectIndexer::new(source.clone(), FakeLanguageParser::default());
+        assert!(!indexer.has_inventory_baseline());
+        let initial = indexer
+            .prepare_resilient(ScanScope::Full, |_| Ok(()))
+            .unwrap();
+        indexer.commit(initial).unwrap();
+        assert!(indexer.has_inventory_baseline());
+        source.remove("bad.rs");
+        let deletion = indexer.prepare_resilient(scope, |_| Ok(())).unwrap();
+        assert_eq!(deletion.removed_paths().collect::<Vec<_>>(), ["bad.rs"]);
+        assert!(deletion.needs_publication());
+        indexer.commit(deletion).unwrap();
+        assert!(
+            !indexer
+                .prepare(ScanScope::Full)
+                .unwrap()
+                .needs_publication()
+        );
+    }
+}
+
+#[test]
+fn resilient_inventory_failure_still_aborts_instead_of_deleting_unseen_paths() {
+    let source = FakeProjectSource::default();
+    source.0.borrow_mut().fail_inventory = true;
+    let mut indexer = ProjectIndexer::new(source, FakeLanguageParser::default());
+    assert!(
+        indexer
+            .prepare_resilient(ScanScope::Full, |_| Ok(()))
+            .is_err()
+    );
 }
 
 #[derive(Clone, Default)]

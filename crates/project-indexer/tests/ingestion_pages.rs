@@ -144,3 +144,21 @@ fn an_empty_authoritative_replacement_still_has_one_page_and_exact_iterator_leng
     assert!(pages.next().is_none());
     assert!(pages.next().is_none());
 }
+
+#[test]
+fn continuation_nth_preserves_exact_page_content_and_exhaustion() {
+    let batch = batch(2501, 10001);
+    let expected = values(&batch, false);
+    let mut pages = SemanticIndexPages::new(&batch, "frozen-operation", false);
+    assert_eq!(
+        serde_json::to_value(pages.nth(1).unwrap()).unwrap(),
+        expected[1]
+    );
+    assert_eq!(pages.len(), 1);
+    assert_eq!(
+        serde_json::to_value(pages.nth(0).unwrap()).unwrap(),
+        expected[2]
+    );
+    assert!(pages.nth(usize::MAX).is_none());
+    assert_eq!(pages.len(), 0);
+}

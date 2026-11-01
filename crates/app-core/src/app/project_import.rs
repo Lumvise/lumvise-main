@@ -1,14 +1,12 @@
-//! App-owned project import for the Knowledge Canvas UI.
+//! Shared project-indexing lifecycle behind Semantic and native UI adapters.
 //!
 //! UI/background and authorized compiled callers share `ProjectFolderImportService`.
 //! The service reads source in the app process; compiled callers receive no
 //! filesystem handles or broader sandbox access. Semantic still owns ingestion.
 //!
-//! Threading: every app-owned route handler already runs inside
-//! `tokio::task::spawn_blocking` (`mcp_http.rs`), so the scan — which can
-//! take seconds — blocks a dedicated worker thread, never an async runtime
-//! worker. Each ingestion page stays far below the plugin invocation
-//! deadline (1000 elements / 5000 relationships per page).
+//! Preparation runs on a dedicated worker. Status requests schedule bounded
+//! publication steps, each using fresh controlled Semantic invocations.
+//! The final receipt is required before acknowledging the scanner.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -28,6 +26,8 @@ use serde_json::{Value, json};
 use super::mcp_http::{HttpRequest, HttpResponse, error_response, json_response};
 use crate::{AppCore, PluginInvocationRequest, PluginInvocationStatus};
 mod publication;
+pub(crate) use publication::{ImportAuthorization, ImportPublicationPort, ProjectImportPublisher};
+mod jobs;
 mod revisions;
 mod service;
 pub(crate) use service::ProjectFolderImportService;
@@ -40,12 +40,10 @@ pub(crate) const PROJECT_IMPORT_ENDPOINT: &str = "/api/project-import";
 const SEMANTIC_PLUGIN_ID: &str = "builtin.semantic";
 const INGEST_EXPORT_ID: &str = "ingest_index_batch";
 const RECORD_INDEX_LOG_EXPORT_ID: &str = "record_index_log";
-/// Projection identity: the same provider instance the plugin import writes,
-/// so scoped reads and `list_projects` see one project regardless of which
-/// importer ran.
+/// Preserve the existing producer/checkpoint namespace when moving the API
+/// from Canvas to Semantic; a new namespace would create a second source.
 const PROVIDER_INSTANCE_ID: &str = "builtin-canvas";
-/// Names the app-owned importer in index-log rows (the plugin import writes
-/// `builtin.canvas`).
+/// Identity of app-owned publication calls, shared by Semantic and native UI.
 const IMPORTER_PLUGIN_ID: &str = "app.project-import";
 /// Names the app-owned PZ snapshot importer in index-log rows; the refresh
 /// poller skips projects whose latest import came from this importer.
@@ -130,26 +128,20 @@ impl RefreshRetry {
 
 /// Polls local indexed projects through the same serialized importer as the UI.
 pub(super) fn refresh_local_projects(app: &AppCore) -> Result<(), String> {
-    let response = app
-        .plugin_endpoints()
-        .invoke_plugin_mcp_tool(PluginInvocationRequest {
-            tool_name: "app_plugin.builtin.canvas.list_projects".into(),
-            arguments: json!({}),
-        })
-        .map_err(|error| error.to_string())?;
-    let projects = response.output["projects"].as_array().ok_or_else(|| {
-        format!(
-            "invalid project catalog `{}`; expected projects array",
-            response.output
+    let roots = app
+        .semantic
+        .execute(
+            SemanticOperation::ProjectRoots,
+            &InvocationControl::sixty_seconds(),
         )
-    })?;
-    for project in projects {
-        let Some(root) = project["projectRoot"]
-            .as_str()
-            .filter(|root| Path::new(root).is_dir())
-        else {
+        .map_err(|error| error.to_string())?;
+    let SemanticResult::ProjectRoots(projects) = roots else {
+        return Err(format!("project catalog {roots:?}; expected ProjectRoots"));
+    };
+    for root in projects {
+        if !Path::new(&root).is_dir() {
             continue;
-        };
+        }
         if let Ok(log) = semantic(app, "latest_index_log", json!({"project_root": root})) {
             // A PZ import restores the structure from the archive; demo trees
             // hold only `.lv/graph.pz` on disk, so a rescan would wipe it.
@@ -161,8 +153,8 @@ pub(super) fn refresh_local_projects(app: &AppCore) -> Result<(), String> {
         if let Err(response) = import_project(
             app,
             ImportInput {
-                folder_path: root.into(),
-                project_root: Some(root.into()),
+                folder_path: root.clone(),
+                project_root: Some(root.clone()),
                 replace_paths: None,
                 source: None,
             },
@@ -194,7 +186,13 @@ pub(crate) fn project_import_response(app: &AppCore, request: &HttpRequest) -> H
         }
     };
     match input.source.as_deref() {
-        None | Some("folder") => match import(app, input) {
+        None | Some("folder") => match app
+            .plugin_host_services
+            .project_import_service()
+            .import_native_request(
+                serde_json::from_slice(&request.body).unwrap_or(Value::Null),
+                app,
+            ) {
             Ok(response) => json_response("200 OK", response),
             Err(response) => response,
         },
@@ -207,11 +205,6 @@ pub(crate) fn project_import_response(app: &AppCore, request: &HttpRequest) -> H
             format!("invalid import source `{other}`; expected \"folder\" or \"pz\""),
         ),
     }
-}
-
-/// Scans one folder into the semantic database and reports the import result.
-fn import(app: &AppCore, input: ImportInput) -> Result<Value, HttpResponse> {
-    import_project(app, input, false)
 }
 
 fn import_project(
@@ -229,6 +222,18 @@ fn import_project(
 /// structure through `ImportPzSnapshot` instead of a disk scan; the refresh
 /// poller skips these projects (see [`refresh_local_projects`]).
 fn import_pz(app: &AppCore, input: ImportInput) -> Result<Value, HttpResponse> {
+    let folder = canonical_root(&input.folder_path)?;
+    let root = input
+        .project_root
+        .clone()
+        .unwrap_or_else(|| folder.to_string_lossy().into_owned());
+    app.plugin_host_services
+        .project_import_service()
+        .with_project_imports_stopped(&root, || Ok(import_stopped_pz(app, input)))
+        .map_err(|error| error_response("500 Internal Server Error", error))?
+}
+
+fn import_stopped_pz(app: &AppCore, input: ImportInput) -> Result<Value, HttpResponse> {
     let started_at = Utc::now().to_rfc3339();
     let root = canonical_root(&input.folder_path)?;
     let project_root = input
@@ -376,21 +381,11 @@ fn semantic(app: &AppCore, export_id: &str, input: Value) -> Result<Value, Strin
     }
 }
 
+#[cfg(test)]
 fn project_is_indexed(app: &AppCore, project_root: &str) -> Result<bool, HttpResponse> {
-    let result = app
-        .semantic
-        .execute(
-            SemanticOperation::ProjectRoots,
-            &InvocationControl::sixty_seconds(),
-        )
-        .map_err(|error| error_response("500 Internal Server Error", error.to_string()))?;
-    match result {
-        SemanticResult::ProjectRoots(roots) => Ok(roots.iter().any(|root| root == project_root)),
-        other => Err(error_response(
-            "500 Internal Server Error",
-            format!("invalid project catalog `{other:?}`; expected ProjectRoots"),
-        )),
-    }
+    app.plugin_host_services
+        .project_import_service()
+        .project_is_indexed(project_root, &InvocationControl::sixty_seconds())
 }
 
 fn record_index_log(app: &AppCore, entry: Value) -> Result<Value, String> {

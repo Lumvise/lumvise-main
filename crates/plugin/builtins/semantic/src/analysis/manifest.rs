@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 const TOOLS: &[(&str, &str, &[&str])] = &[
     (
         "search_graph",
-        "Ranked symbol search with regex name/path filters and stable offset pagination.",
+        "Ranked symbol search with regex name/path filters and offset pagination.",
         &[
             "query",
             "name_pattern",

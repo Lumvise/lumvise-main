@@ -1,4 +1,5 @@
-//! Shared importer state is composed before plugin restore; no AppCore/runtime back-reference.
+//! Shared importer state is composed before plugin restore. Publication receives
+//! a weak runtime port after composition, so background jobs never retain AppCore.
 use super::*;
 use crate::app::project_import::{ProjectFolderImportService, ProjectImportSessions};
 use lumvise_db_core::RelationalPersistence;

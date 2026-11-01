@@ -49,6 +49,7 @@ pub struct PreparedProjectScan {
     metrics: ScanMetrics,
     reference_updates: BTreeMap<String, ReferenceFileUpdate>,
     full_snapshot: bool,
+    failures: Vec<ScanError>,
 }
 
 impl PreparedProjectScan {
@@ -63,6 +64,7 @@ impl PreparedProjectScan {
             owner: Arc::clone(owner),
             generation,
             full_snapshot,
+            failures: Vec::new(),
             removed,
             replacements: BTreeMap::new(),
             reference_updates: BTreeMap::new(),
@@ -106,6 +108,12 @@ impl PreparedProjectScan {
     pub fn metrics(&self) -> &ScanMetrics {
         &self.metrics
     }
+
+    /// File failures whose previous acknowledged content was retained.
+    /// Example: show `scan.failures()` alongside an otherwise accepted import.
+    pub fn failures(&self) -> &[ScanError] {
+        &self.failures
+    }
     /// Indicates whether semantic publication is necessary; metadata-only changes
     /// may still be acknowledged to avoid rereading unchanged content next time.
     pub fn needs_publication(&self) -> bool {
@@ -121,6 +129,7 @@ pub struct ProjectIndexer<S, P> {
     parser: P,
     generation: u64,
     files: BTreeMap<String, Arc<ScannedFile>>,
+    unparsed_paths: BTreeSet<String>,
     references: ReferenceIndex,
     snapshot_acknowledged: bool,
 }
@@ -134,6 +143,7 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
             parser,
             generation: 0,
             files: BTreeMap::new(),
+            unparsed_paths: BTreeSet::new(),
             references: ReferenceIndex::default(),
             snapshot_acknowledged: false,
         }
@@ -142,6 +152,32 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
     /// Prepares a delta without acknowledging it. Explicit paths avoid inventory
     /// of unrelated files; callers publish and then call `commit` on success.
     pub fn prepare(&mut self, scope: ScanScope) -> Result<PreparedProjectScan, ScanError> {
+        self.prepare_scan(scope, false, |_| Ok(()))
+    }
+
+    /// Whether a complete inventory was acknowledged, including observed file failures.
+    /// Example: use a full scan until `indexer.has_inventory_baseline()` is true.
+    pub fn has_inventory_baseline(&self) -> bool {
+        self.snapshot_acknowledged
+    }
+
+    /// Prepares healthy files while retaining failed files' acknowledged content.
+    /// Inventory failures still abort because an incomplete listing cannot prove deletions.
+    /// Example: `indexer.prepare_resilient(scope, |_| Ok(()))?`.
+    pub fn prepare_resilient(
+        &mut self,
+        scope: ScanScope,
+        progress: impl Fn(&ScanMetrics) -> Result<(), ScanError>,
+    ) -> Result<PreparedProjectScan, ScanError> {
+        self.prepare_scan(scope, true, progress)
+    }
+
+    fn prepare_scan(
+        &mut self,
+        scope: ScanScope,
+        resilient: bool,
+        progress: impl Fn(&ScanMetrics) -> Result<(), ScanError>,
+    ) -> Result<PreparedProjectScan, ScanError> {
         validate_scope(&scope)?;
         let scope = expand_ignore_changes(scope);
         let entries = self.source.inventory(&scope)?;
@@ -156,8 +192,10 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
             full_snapshot,
         );
         for entries in entries.chunks(self.parser.batch_size().get()) {
-            self.prepare_batch(entries, &mut scan)?;
+            progress(&scan.metrics)?;
+            self.prepare_batch(entries, &mut scan, resilient)?;
         }
+        progress(&scan.metrics)?;
         scan.reference_updates = self.references.prepare(
             &self.files,
             &scan.replacements,
@@ -179,12 +217,25 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
             )
         })?;
         self.commit_references(&scan);
+        self.commit_unparsed_paths(&scan);
         self.snapshot_acknowledged |= scan.full_snapshot;
         for path in scan.removed {
             self.files.remove(&path);
         }
         self.files.extend(scan.replacements);
         Ok(())
+    }
+
+    fn commit_unparsed_paths(&mut self, scan: &PreparedProjectScan) {
+        for path in scan.replacements.keys().chain(&scan.removed) {
+            self.unparsed_paths.remove(path);
+        }
+        // Cold failures have no parsed cache entry, but later deletion must still be published.
+        for failure in &scan.failures {
+            if !self.files.contains_key(&failure.path) {
+                self.unparsed_paths.insert(failure.path.clone());
+            }
+        }
     }
 
     fn commit_references(&mut self, scan: &PreparedProjectScan) {
@@ -216,10 +267,15 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
 
     fn removed_in_scope(&self, scope: &ScanScope, present: &BTreeSet<String>) -> BTreeSet<String> {
         let candidates: BTreeSet<&String> = match scope {
-            ScanScope::Full => self.files.keys().collect(),
+            ScanScope::Full => self.files.keys().chain(&self.unparsed_paths).collect(),
             ScanScope::Paths(paths) => paths
                 .iter()
                 .flat_map(|path| self.cached_paths_under(path))
+                .chain(
+                    self.unparsed_paths
+                        .iter()
+                        .filter(|path| paths.iter().any(|prefix| under(path, prefix))),
+                )
                 .collect(),
         };
         candidates

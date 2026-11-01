@@ -94,6 +94,51 @@ impl SourceCheckoutFixture {
 }
 
 #[test]
+fn only_background_checkouts_outlive_the_preceding_step_deadline() {
+    let fixture = SourceCheckoutFixture::new();
+    let checkout = fixture.checkout(fixture.root.path(), "A");
+    let before = checkout.before_scan(&control()).unwrap();
+    let batch = fixture.projected_batch(&checkout, fixture.root.path());
+    let expired = InvocationControl::with_deadline(std::time::Duration::ZERO);
+    assert!(
+        checkout
+            .freeze_batch(batch.clone(), true, before, &expired)
+            .is_err()
+    );
+    let checkout = checkout.for_background_job();
+    let before = checkout.before_scan(&expired).unwrap();
+    let frozen = checkout
+        .freeze_batch(batch, true, before, &expired)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        checkout.pending(&expired).unwrap().unwrap().operation_id,
+        frozen.operation_id
+    );
+    fixture.publish(&checkout);
+}
+
+#[test]
+fn an_unaccepted_failed_path_does_not_expand_a_full_import_into_path_scopes() {
+    let fixture = SourceCheckoutFixture::new();
+    let checkout = fixture.checkout(fixture.root.path(), "A");
+    let before = checkout.before_scan(&control()).unwrap();
+    let batch = fixture.projected_batch(&checkout, fixture.root.path());
+    let frozen = checkout
+        .freeze_batch_with_failures(
+            batch,
+            true,
+            before,
+            &["never-accepted.pdf".into()],
+            &control(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(frozen.batch.replace_paths.is_empty());
+    fixture.publish(&checkout);
+}
+
+#[test]
 fn a_restarted_full_scan_does_not_publish_unchanged_stale_files() {
     let fixture = SourceCheckoutFixture::new();
     let initial = fixture.checkout(fixture.root.path(), "A");

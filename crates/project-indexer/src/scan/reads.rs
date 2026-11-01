@@ -13,14 +13,17 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
         &mut self,
         entries: &[SourceEntry],
         scan: &mut PreparedProjectScan,
+        resilient: bool,
     ) -> Result<(), ScanError> {
-        let pending: Vec<_> = entries
-            .iter()
-            .map(|entry| self.prepare_entry(entry.clone(), scan))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut pending = Vec::new();
+        for entry in entries {
+            match self.prepare_entry(entry.clone(), scan) {
+                Ok(Some(file)) => pending.push(file),
+                Ok(None) => {}
+                Err(error) if resilient => self.retain_failed(&entry.path, error, scan),
+                Err(error) => return Err(error),
+            }
+        }
         let inputs: Vec<_> = pending
             .iter()
             .filter_map(|pending| {
@@ -30,23 +33,61 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
                 })
             })
             .collect();
-        let parsed = self.parser.parse_batch(&inputs)?;
+        let parsed = if resilient {
+            self.parser.parse_batch_results(&inputs)
+        } else {
+            self.parser
+                .parse_batch(&inputs)?
+                .into_iter()
+                .map(Ok)
+                .collect()
+        };
         if parsed.len() != inputs.len() {
             return Err(invalid(
                 parsed.len().to_string(),
                 format!("expected {} ordered parser results", inputs.len()),
             ));
         }
-        scan.metrics.files_parsed += parsed.len();
+        scan.metrics.files_parsed += parsed
+            .iter()
+            .filter(|result| {
+                result
+                    .as_ref()
+                    .is_ok_and(|file| !resilient || file.conversion_error.is_none())
+            })
+            .count();
         let mut parsed = parsed.into_iter();
         for mut pending in pending {
             if pending.bytes.is_some() {
-                pending.file.parsed =
-                    Arc::new(parsed.next().expect("validated parser result count"));
+                match parsed.next().expect("validated parser result count") {
+                    Ok(file) if resilient && file.conversion_error.is_some() => {
+                        let error = ScanError {
+                            path: pending.file.entry.path.clone(),
+                            reason: file.conversion_error.unwrap_or_default(),
+                        };
+                        self.retain_failed(&pending.file.entry.path, error, scan);
+                        continue;
+                    }
+                    Ok(file) => pending.file.parsed = Arc::new(file),
+                    Err(error) => {
+                        self.retain_failed(&pending.file.entry.path, error, scan);
+                        continue;
+                    }
+                }
             }
             scan.retain(Arc::new(pending.file), pending.changed);
         }
         Ok(())
+    }
+
+    fn retain_failed(&self, path: &str, error: ScanError, scan: &mut PreparedProjectScan) {
+        scan.failures.push(ScanError {
+            path: path.into(),
+            reason: error.to_string(),
+        });
+        if let Some(previous) = self.files.get(path) {
+            scan.retain(Arc::clone(previous), false);
+        }
     }
 
     fn prepare_entry(

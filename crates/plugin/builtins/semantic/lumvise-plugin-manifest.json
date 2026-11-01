@@ -936,7 +936,7 @@
       }
     },
     {
-      "description": "Find indexed owners by semantic or lexical search with explicit project_root. Inspect mode/index_state and use returned IDs for focused tree, dependency, or source reads; an empty or stale index does not prove the code is absent.",
+      "description": "Find indexed owners by semantic or lexical search with explicit project_root. Live graph reads permit mixed old/new entries during indexing without waiting for the publication gate. Inspect mode/index_state; use revision observations for writes. An empty or stale index does not prove the code is absent. Treat missing matches as inconclusive while indexing.",
       "execution": "foreground",
       "id": "search_semantic_elements",
       "input_schema": {
@@ -3451,6 +3451,210 @@
       "stream_mode": "buffered"
     },
     {
+      "id": "index_project",
+      "name": "Index a project folder",
+      "description": "Start an app-owned folder scan or continue its staged publication. Use a real authorized absolute folderPath. Keep folderPath, projectRoot and replacePaths unchanged when continuing with the returned importId. Calls return promptly while App Core advances the job. Repeat until completed or completed_with_errors; only the terminal result confirms publication. Individual file failures preserve previous accepted records and appear in result.failures. statusOnly observes without advancing. cancel is allowed only while canCancel is true. Each invocation retains its 60-second deadline; CPU preparation continues between calls. This handle is in memory; after restart start again to replay any frozen publication and rescan.",
+      "kind": "mcp_tool",
+      "execution": "foreground",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "folderPath": {
+            "type": "string"
+          },
+          "projectRoot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replacePaths": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "importId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cancel": {
+            "type": "boolean"
+          },
+          "statusOnly": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "folderPath"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "importId": {
+            "type": "string"
+          },
+          "projectRoot": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "preparing",
+              "publishing",
+              "completed",
+              "completed_with_errors",
+              "canceled",
+              "failed"
+            ]
+          },
+          "canCancel": {
+            "type": "boolean"
+          },
+          "filesScanned": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "filesParsed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "entriesInspected": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pagesPublished": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "projectRoot": {
+                    "type": "string"
+                  },
+                  "filesScanned": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "elementsUpserted": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "relationshipsUpserted": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "skipped": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "reason"
+                      ]
+                    }
+                  },
+                  "failures": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "reason"
+                      ]
+                    }
+                  },
+                  "startedAt": {
+                    "type": "string"
+                  },
+                  "finishedAt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "projectRoot",
+                  "filesScanned",
+                  "elementsUpserted",
+                  "relationshipsUpserted",
+                  "skipped",
+                  "failures",
+                  "startedAt",
+                  "finishedAt"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "importId",
+          "projectRoot",
+          "phase",
+          "canCancel",
+          "filesScanned",
+          "filesParsed",
+          "entriesInspected",
+          "pagesPublished",
+          "result",
+          "error"
+        ]
+      }
+    },
+    {
       "delivery": {
         "dead_letter_max_entries": 1000,
         "dead_letter_retention_seconds": 604800,
@@ -3621,7 +3825,7 @@
       }
     },
     {
-      "description": "Ranked symbol search with regex name/path filters and stable offset pagination. Use explicit project_root. Start with this project's indexed symbols, then inspect tree/dependencies, trace_path and get_code_snippet before editing. For pagination retain commit_version as expected_commit_version and restart if it changes.",
+      "description": "Ranked symbol search with regex name/path filters and offset pagination. Use explicit project_root. Search reads the live graph without waiting for an import commit. Live graph reads permit mixed old/new entries; commit_version is the last completed publication watermark, not a frozen result set. Pagination may shift during indexing. Inspect tree/dependencies and source before editing; use revision observations for writes. Treat missing matches as inconclusive while indexing.",
       "execution": "foreground",
       "id": "search_graph",
       "input_schema": {
@@ -3707,7 +3911,7 @@
       }
     },
     {
-      "description": "Ranked text or regex search of indexed files with innermost symbol context. Use explicit project_root. Reads current worktree text within indexed paths; owner ranges remain indexed. Inspect failures/failure_count and source_revision, and restart paginated reads if expected_commit_version is rejected.",
+      "description": "Ranked text or regex search of indexed files with innermost symbol context. Use explicit project_root. Search reads live graph ownership and current worktree text without waiting for an import commit. Live graph reads permit mixed old/new entries and shifting pages during indexing. commit_version fences completed publications only. Inspect failures/failure_count and source_revision before trusting ownership. Treat missing matches as inconclusive while indexing.",
       "execution": "foreground",
       "id": "search_code",
       "input_schema": {
@@ -4785,6 +4989,10 @@
   ],
   "files": {},
   "host_capabilities": [
+    {
+      "id": "project.import",
+      "version": "^1.0"
+    },
     {
       "id": "project.source",
       "version": "^1.0"

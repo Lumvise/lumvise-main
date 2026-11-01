@@ -10,6 +10,22 @@ mod failures;
 mod frozen_batch;
 mod source_checkout;
 
+#[test]
+fn multiple_checkpoint_scopes_deduplicate_exact_paths_and_ignore_unknown_paths() {
+    let fixture = CheckoutFixture::new();
+    let journal = fixture.bootstrap();
+    let partition = SemanticPartition {
+        project_root: ROOT.into(),
+        provider_instance_id: Some(PROVIDER.into()),
+        replace_paths: vec![source_path("a"), source_path("a"), "unseen".into()],
+    };
+    let observed = journal.observation(&partition, &control()).unwrap();
+    assert_eq!(observed.expected.records.len(), 1);
+    let paths = journal.paths_in_partition(&partition, &control()).unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].digest.path, source_path("a"));
+}
+
 const ROOT: &str = "/shared-index";
 const PROVIDER: &str = "source-index";
 

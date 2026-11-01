@@ -9,8 +9,11 @@ Micrograd screenshots: actual Lumvise app views.
 Repository: https://github.com/karpathy/micrograd
 Source revision: 7bc720e951fe422b8f8814aa5aa1b64121d26b4c
 
-README screenshots: actual Lumvise app views, without presentation-card overlays.
-documents.png: Earth Observatory online viewer, captured 2026-10-08.
+README screenshots: actual Lumvise 0.2.0 views captured 2026-10-29, without presentation-card overlays.
+workspace.png, semantic-context.png: standalone online viewer with the micrograd demo archive.
+documents.png, media-notes.png: standalone online viewer with the Earth Observatory demo archive.
+automations.png: Automations of a desktop debug build on the micrograd demo
+project, with a demo agent and two disabled demo Automations.
 Displayed PDF: Lumvise demo collection, original text and vector artwork,
 dedicated under CC0 1.0 Universal. See demos/earth-observatory/REUSE.md.
 

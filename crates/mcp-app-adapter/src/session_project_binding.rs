@@ -238,7 +238,8 @@ impl SessionProjectBinding {
         let Some(root) = observed_root(arguments) else {
             return;
         };
-        let Ok(mut publication) = self.owner.lock() else {
+        // Presence inference must not queue a tool behind a slow registry heartbeat.
+        let Ok(mut publication) = self.owner.publication.try_lock() else {
             return;
         };
         if !publication.initialized
@@ -811,6 +812,46 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].2, McpInstanceStatus::Starting);
         assert_eq!(records[1].2, McpInstanceStatus::Unavailable);
+    }
+
+    #[test]
+    fn tool_observation_does_not_wait_for_a_registry_heartbeat() {
+        let (registry, entered, release) =
+            FakeBlockedProjectRegistry::new(McpInstanceStatus::Ready);
+        let binding = SessionProjectBinding::with_registry(
+            registry.clone(),
+            Some("/projects/a".into()),
+            None,
+        );
+        binding.initialize().unwrap();
+        registry.block_next.store(true, Ordering::Release);
+        std::thread::scope(|scope| {
+            let heartbeat = scope.spawn(|| binding.select(json!({"project_root":"/projects/a"})));
+            entered.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (finished, observed) = std::sync::mpsc::channel();
+            let observed_binding = &binding;
+            let observation = scope.spawn(move || {
+                observed_binding.observe(&json!({"project_root":"/projects/a"}));
+                finished.send(()).unwrap();
+            });
+            let completed = observed.recv_timeout(Duration::from_millis(200));
+            release.send(()).unwrap();
+            heartbeat.join().unwrap().unwrap();
+            observation.join().unwrap();
+            assert!(
+                completed.is_ok(),
+                "tool observation waited for registry I/O"
+            );
+        });
+        assert!(
+            registry
+                .delegate
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, root, _)| root == "/projects/a")
+        );
     }
 
     #[test]

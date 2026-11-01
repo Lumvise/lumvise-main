@@ -1,3 +1,5 @@
+//! Semantic storage adapters. Reads never initialize logical tables: metadata
+//! writes must not make search wait for an unrelated graph publication.
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -40,6 +42,20 @@ pub(crate) fn project_snapshot<E: DeserializeOwned, R: DeserializeOwned, A: Dese
             false,
         )
     })
+}
+
+pub(crate) fn search_project_structure<E: DeserializeOwned, R: DeserializeOwned>(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+) -> Result<ProjectSnapshot<E, R, Value>, PluginError> {
+    let output = context.host_call(
+        SEMANTIC_CAPABILITY,
+        json!({"operation":"search_project_structure","project_root":project_root}),
+    )?;
+    serde_json::from_value(output).map_err(|error| PluginError::new(
+        "invalid_semantic_storage",
+        format!("invalid search structure for `{project_root}`: {error}; expected project graph records"), false,
+    ))
 }
 
 pub(crate) fn structure_snapshot<E: DeserializeOwned, R: DeserializeOwned>(
@@ -517,7 +533,6 @@ pub(crate) fn get<T: DeserializeOwned>(
     table: &str,
     row_key: &str,
 ) -> Result<Option<T>, PluginError> {
-    ensure(context, table)?;
     let output = context.host_call(
         CAPABILITY,
         json!({
@@ -536,7 +551,6 @@ pub(crate) fn list<T: DeserializeOwned>(
     table: &str,
     key_prefix: Option<&str>,
 ) -> Result<Vec<T>, PluginError> {
-    ensure(context, table)?;
     let mut records = Vec::new();
     let mut after_key: Option<String> = None;
     loop {

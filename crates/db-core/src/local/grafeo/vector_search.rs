@@ -43,7 +43,7 @@ impl<'db> SemanticStorage<'db> {
         model: Option<&str>,
     ) -> Result<Vec<VectorSearchResult>> {
         validate_search_input(project_root, query, k)?;
-        self.graph.stable_read(|graph| {
+        self.graph.read(|graph| {
             let store = graph.graph_store();
             let node_ids = store
                 .nodes_by_label(ARTIFACT_VECTOR_LABEL)
@@ -71,7 +71,7 @@ impl<'db> SemanticStorage<'db> {
         model: Option<&str>,
     ) -> Result<Vec<VectorSearchResult>> {
         validate_search_input(project_root, query, k)?;
-        self.graph.stable_read(|graph| {
+        self.graph.read(|graph| {
             let store = graph.graph_store();
             let node_ids = store
                 .nodes_by_label(ELEMENT_NAME_VECTOR_LABEL)

@@ -2,7 +2,7 @@
 
 use super::schema::{
     array, artifact_dependency, boolean, closed_object, integer, knowledge_kind, knowledge_status,
-    nullable, number, string,
+    nullable, number, outdated_signal, string,
 };
 use super::transfer_schema;
 use super::{ASSISTANT_CREATE_EXPORT_ID, ASSISTANT_UPDATE_EXPORT_ID};
@@ -261,6 +261,7 @@ pub(crate) fn artifact_schema() -> Value {
             "dependencies": array(artifact_dependency()),
             "path": nullable(string()),
             "project_root": nullable(string()),
+            "anchor_fingerprint": nullable(string()), "outdated": outdated_signal(),
             "status": knowledge_status(), "revision": integer(),
             "status_changed_at": nullable(string()), "expires_at": nullable(string()),
             "superseded_by": nullable(string()), "created_at": nullable(string()),
@@ -295,7 +296,7 @@ fn search_output_schema() -> Value {
                 &["artifact_id", "semantic_element_id", "knowledge_type", "title", "status", "score"],
                 json!({"artifact_id": string(), "semantic_element_id": string(),
                     "knowledge_type": knowledge_kind(), "title": string(),
-                    "status": knowledge_status(), "score": number()}))) }),
+                    "status": knowledge_status(), "score": number(), "outdated": outdated_signal()}))) }),
     )
 }
 

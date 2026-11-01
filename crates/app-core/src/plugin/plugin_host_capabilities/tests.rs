@@ -1305,3 +1305,15 @@ fn host_extension_routes_to_the_installed_product_service_and_is_unavailable_oth
         .to_string();
     assert!(unnamed.contains("invalid_host_capability_input"));
 }
+
+#[test]
+fn a_pre_canceled_runtime_context_is_canceled_before_monitor_thread_scheduling() {
+    let context = PluginInvocationContext::new(
+        "canceled-before-admission",
+        "caller",
+        lumvise_plugin_runtime::PluginInvocationClass::Foreground,
+        Instant::now() + Duration::from_secs(60),
+    );
+    context.cancellation().cancel();
+    assert!(invocation_control(&context).control().is_cancelled());
+}

@@ -233,6 +233,48 @@ fn mixed_document_batches_finish_beside_a_shared_preview_converter() {
     });
 }
 
+#[test]
+fn document_workers_preserve_order_and_individual_conversion_failures() {
+    within_deadline(|| {
+        let fixtures: Vec<_> = (0..16)
+            .map(|index| {
+                let bytes: &[u8] = if index == 7 {
+                    b"%PDF-invalid"
+                } else {
+                    REPORT_PDF
+                };
+                (format!("report{index}.pdf"), bytes)
+            })
+            .collect();
+        let inputs: Vec<_> = fixtures
+            .iter()
+            .map(|(path, bytes)| SourceParseInput { path, bytes })
+            .collect();
+        let converter = Arc::new(DocumentConverter::new(DocumentConversionOptions {
+            enhancement_enabled: false,
+        }));
+        let expected = TreeSitterProjectParser::default()
+            .with_document_converter(Arc::clone(&converter))
+            .parse_batch_results(&inputs);
+        assert!(expected[7].as_ref().unwrap().conversion_error.is_some());
+        let actual = ParallelTreeSitterProjectParser::new_with_document_converter(
+            4,
+            BlockSettings::default(),
+            converter,
+        )
+        .unwrap()
+        .parse_batch_results(&inputs);
+        assert_eq!(actual, expected);
+        assert!(
+            actual
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != 7)
+                .all(|(_, parsed)| parsed.as_ref().unwrap().conversion_error.is_none())
+        );
+    });
+}
+
 /// Fails instead of hanging; a deadlocked worker is abandoned to process exit.
 fn within_deadline(work: impl FnOnce() + Send + 'static) {
     let (done, finished) = mpsc::channel();

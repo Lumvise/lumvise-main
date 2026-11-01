@@ -43,12 +43,15 @@ impl HostCallTransport for FakeCodeHost {
         self.calls.push((capability.into(), input.clone()));
         match (capability, input["operation"].as_str().unwrap()) {
             ("storage.semantic", "project_snapshot") => Ok(self.snapshot.clone()),
+            ("storage.semantic", "search_project_structure") => Ok(self.snapshot.clone()),
+            ("storage.semantic", "search_element_candidates") => Ok(json!({"elements":[]})),
             ("storage.semantic", "scoped_read") => {
                 self.scoped_snapshots.pop_front().ok_or_else(|| {
                     PluginError::new("unexpected_scoped_read", "no scoped fixture", false)
                 })
             }
             ("storage.plugin", "ensure_table") => Ok(json!({})),
+            ("storage.plugin", "get_row") => Ok(json!({"row":null})),
             ("storage.plugin", "list_rows") => Ok(
                 json!({"rows":self.rows.iter().map(|(key,value)|json!({"row_key":key,"value":value})).collect::<Vec<_>>(),"next_after_key":null}),
             ),
@@ -76,6 +79,58 @@ impl HostCallTransport for FakeCodeHost {
 fn scoped_graph(project_root: &str, commit_version: i64, elements: Vec<Value>) -> Value {
     json!({"project_root":project_root,"commit_version":commit_version,
         "published_at":"now","elements":elements,"relationships":[]})
+}
+
+#[test]
+fn code_and_graph_search_use_live_structure_without_changing_result_shapes() {
+    for (export, input) in [
+        ("search_graph", json!({})),
+        ("search_code", json!({"query":"alpha"})),
+    ] {
+        let mut host = FakeCodeHost::new();
+        let result = host.invoke(export, input).unwrap();
+        assert!(result.get("read_consistency").is_none());
+        assert!(
+            !host
+                .calls
+                .iter()
+                .any(|(capability, input)| capability == "storage.plugin"
+                    && input["operation"] == "ensure_table"),
+            "search must not write SQL table metadata"
+        );
+        assert!(
+            host.calls
+                .iter()
+                .any(|(capability, input)| capability == "storage.semantic"
+                    && input["operation"] == "search_project_structure")
+        );
+        assert!(
+            !host
+                .calls
+                .iter()
+                .any(|(capability, input)| capability == "storage.semantic"
+                    && input["operation"] == "project_snapshot")
+        );
+    }
+}
+
+#[test]
+fn search_state_and_trace_reads_do_not_write_table_metadata() {
+    for (export, input) in [
+        ("search_semantic_elements", json!({"query":"alpha"})),
+        ("trace_path", json!({"semantic_element_id":"a"})),
+    ] {
+        let mut host = FakeCodeHost::new();
+        host.invoke(export, input).unwrap();
+        assert!(
+            !host
+                .calls
+                .iter()
+                .any(|(capability, input)| capability == "storage.plugin"
+                    && input["operation"] == "ensure_table"),
+            "{export} must read plugin metadata without acquiring the SQL writer"
+        );
+    }
 }
 
 fn queue_snippet_graphs(

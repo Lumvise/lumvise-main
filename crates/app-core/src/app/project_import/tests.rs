@@ -56,7 +56,7 @@ fn rejects_missing_folder_path() {
         json!({"folderPath": "   "}),
         json!({"folderPath": 7}),
     ] {
-        let response = project_import_response(&app, &request(body));
+        let response = settled_import_response(&app, &request(body));
         assert_eq!(response.status, "400 Bad Request");
     }
 }
@@ -66,7 +66,7 @@ fn first_selective_import_establishes_the_complete_checkout_before_publication()
     let app = credentialed_app();
     let directory = fixture_tree();
     let root = directory.path().canonicalize().unwrap();
-    let response = project_import_response(
+    let response = settled_import_response(
         &app,
         &request(json!({
             "folderPath": root, "replacePaths": ["src/main.rs"]
@@ -141,7 +141,7 @@ fn removing_a_project_discards_acknowledged_scans_for_explicit_reimport() {
     assert!(app.project_import_sessions.lock().unwrap().is_empty());
     // A fresh manual import must attempt publication. With no compiled
     // Semantic plugin in this fixture, that produces its explicit error.
-    let response = project_import_response(&app, &request(json!({"folderPath": project_root})));
+    let response = settled_import_response(&app, &request(json!({"folderPath": project_root})));
     assert_eq!(response.status, "500 Internal Server Error");
     assert!(
         response_body(&response)
@@ -156,7 +156,7 @@ fn rejects_file_instead_of_directory() {
     let directory = TempDir::new().unwrap();
     let file = directory.path().join("note.txt");
     fs::write(&file, "x").unwrap();
-    let response = project_import_response(
+    let response = settled_import_response(
         &app,
         &request(json!({"folderPath": file.to_string_lossy()})),
     );
@@ -171,7 +171,7 @@ fn rejects_missing_credential() {
     let mut unauthenticated = request(json!({"folderPath": "/tmp"}));
     unauthenticated.authorization = None;
     assert_eq!(
-        project_import_response(&app, &unauthenticated).status,
+        settled_import_response(&app, &unauthenticated).status,
         "401 Unauthorized"
     );
 }
@@ -264,7 +264,7 @@ fn full_snapshot_pages_carry_no_replace_paths() {
 fn publication_failure_fails_closed_when_semantic_plugin_is_absent() {
     let app = credentialed_app();
     let directory = fixture_tree();
-    let response = project_import_response(
+    let response = settled_import_response(
         &app,
         &request(json!({"folderPath": directory.path().to_string_lossy()})),
     );
@@ -338,7 +338,7 @@ fn failed_refresh_waits_for_backoff_while_manual_import_still_runs() {
     assert_eq!(deferred["elementsUpserted"], json!(0));
     assert_eq!(retry(&app).unwrap().failures, 1, "deferral must not retry");
 
-    let manual = project_import_response(&app, &request(json!({"folderPath": project_root})));
+    let manual = settled_import_response(&app, &request(json!({"folderPath": project_root})));
     assert_eq!(manual.status, "500 Internal Server Error");
     assert_eq!(retry(&app).unwrap().failures, 2);
 
@@ -473,7 +473,7 @@ fn document_setting_change_rebuilds_an_acknowledged_import_session() {
             &lumvise_frontend_core::AppSettingsPatch::DocumentEnhancementEnabled(false),
         )
         .unwrap();
-    let response = project_import_response(
+    let response = settled_import_response(
         &app,
         &request(json!({"folderPath":root,"replacePaths":["README.md"]})),
     );
@@ -499,7 +499,7 @@ fn document_setting_change_rebuilds_an_acknowledged_import_session() {
 fn pz_source_without_snapshot_reports_missing_archive() {
     let app = credentialed_app();
     let directory = fixture_tree();
-    let response = project_import_response(
+    let response = settled_import_response(
         &app,
         &request(json!({
             "folderPath": directory.path().to_string_lossy(),
@@ -518,7 +518,7 @@ fn pz_source_without_snapshot_reports_missing_archive() {
 fn unknown_import_source_is_rejected() {
     let app = credentialed_app();
     let directory = fixture_tree();
-    let response = project_import_response(
+    let response = settled_import_response(
         &app,
         &request(json!({
             "folderPath": directory.path().to_string_lossy(),
@@ -589,7 +589,7 @@ fn pz_import_publishes_snapshot_structure_and_fails_closed_without_index_log() {
         .to_string_lossy()
         .into_owned();
 
-    let response = project_import_response(
+    let response = settled_import_response(
         &app,
         &request(json!({"folderPath": project_root, "source": "pz"})),
     );
@@ -613,4 +613,56 @@ fn pz_import_publishes_snapshot_structure_and_fails_closed_without_index_log() {
         }
         other => panic!("unexpected element counts result: {other:?}"),
     }
+}
+
+/// Exercise the asynchronous public route, preserving the tests' final-result assertions.
+fn settled_import_response(app: &AppCore, initial: &HttpRequest) -> HttpResponse {
+    let mut request = HttpRequest {
+        method: initial.method.clone(),
+        path: initial.path.clone(),
+        query: initial.query.clone(),
+        authorization: initial.authorization.clone(),
+        body: initial.body.clone(),
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(Instant::now() < deadline, "import fixture failed to settle");
+        let response = super::project_import_response(app, &request);
+        if response.status != "200 OK" {
+            return response;
+        }
+        let progress = response_body(&response);
+        match progress["phase"].as_str() {
+            None => return response,
+            Some("completed" | "completed_with_errors") => {
+                return json_response("200 OK", progress["result"].clone());
+            }
+            Some("failed") => {
+                return error_response(
+                    "500 Internal Server Error",
+                    progress["error"].as_str().unwrap_or("import failed"),
+                );
+            }
+            _ => {}
+        }
+        let mut input: Value = serde_json::from_slice(&request.body).unwrap();
+        input["importId"] = progress["importId"].clone();
+        request.body = serde_json::to_vec(&input).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn automatic_refresh_uses_the_semantic_catalog_without_a_canvas_plugin() {
+    let app = credentialed_app();
+    let directory = fixture_tree();
+    let root = directory.path().canonicalize().unwrap();
+    let project_root = root.to_string_lossy().into_owned();
+    index_fixture_project(&app, &project_root);
+    refresh_local_projects(&app).unwrap();
+    let sessions = app.project_import_sessions.lock().unwrap();
+    let session = sessions
+        .get(&(root, project_root))
+        .expect("refresh reached the shared import owner without Canvas");
+    assert_eq!(session.refresh_retry.unwrap().failures, 1);
 }

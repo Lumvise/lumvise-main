@@ -222,9 +222,37 @@ pub struct KnowledgeArtifactV2 {
     /// Optional project filter value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_root: Option<String>,
+    /// Anchor element's `content_fingerprint` when this artifact was last written.
+    /// Knowledge records it on every accepted create and update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_fingerprint: Option<String>,
+    /// Read-time signal, never stored: the anchor code was rewritten by more than 8 of 64
+    /// fingerprint bits or removed since `anchor_fingerprint` was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outdated: Option<KnowledgeOutdatedV2>,
     /// Lifecycle and version state.
     #[serde(flatten)]
     pub lifecycle: KnowledgeArtifactLifecycleV2,
+}
+
+/// Why a Knowledge artifact may no longer describe its anchor code.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct KnowledgeOutdatedV2 {
+    /// Why the anchor no longer matches.
+    pub reason: KnowledgeOutdatedReasonV2,
+    /// SimHash Hamming distance (0-64 bits) between the recorded and the current anchor content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<u32>,
+}
+
+/// Cause of a [`KnowledgeOutdatedV2`] signal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeOutdatedReasonV2 {
+    /// Anchor content moved more than 8 of 64 fingerprint bits from `anchor_fingerprint`.
+    Rewritten,
+    /// Anchor code is no longer in the current index.
+    Removed,
 }
 
 /// Request for creating one durable Knowledge artifact.

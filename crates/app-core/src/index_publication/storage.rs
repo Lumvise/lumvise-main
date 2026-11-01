@@ -14,6 +14,7 @@ const TABLE: &str = "source-publications";
 pub(super) struct CheckpointRows {
     relational: Arc<dyn RelationalPersistence>,
     prefix: String,
+    invocations: IndexPublicationInvocations,
 }
 
 impl CheckpointRows {
@@ -54,7 +55,12 @@ impl CheckpointRows {
         Ok(Self {
             relational,
             prefix: format!("{:x}/", Sha256::digest(bytes)),
+            invocations: IndexPublicationInvocations::Inherited,
         })
+    }
+
+    pub(super) fn use_app_owned_invocations(&mut self) {
+        self.invocations = IndexPublicationInvocations::AppOwned;
     }
 
     pub(super) fn ensure(&self, control: &InvocationControl) -> Result<()> {
@@ -191,7 +197,8 @@ impl CheckpointRows {
         operation: RelationalOperation,
         control: &InvocationControl,
     ) -> Result<RelationalResult> {
-        Ok(self.relational.execute(operation, control)?)
+        let control = self.invocations.operation(control);
+        Ok(self.relational.execute(operation, &control)?)
     }
 
     fn key(&self, suffix: &str) -> String {

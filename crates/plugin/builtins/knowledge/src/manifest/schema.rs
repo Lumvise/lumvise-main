@@ -15,6 +15,12 @@ pub(super) fn knowledge_status() -> Value {
     json!({"type": "string", "enum": ["active", "resolved", "superseded", "archived"]})
 }
 
+pub(super) fn outdated_signal() -> Value {
+    json!({"type": "object", "required": ["reason"], "additionalProperties": false,
+        "properties": {"reason": {"type": "string", "enum": ["rewritten", "removed"]},
+            "distance": {"type": "integer", "minimum": 0, "maximum": 64}}})
+}
+
 pub(super) fn nullable(schema: Value) -> Value {
     json!({"anyOf": [schema, {"type": "null"}]})
 }

@@ -2,8 +2,9 @@
 #[path = "repository_scan/timing.rs"]
 mod timing;
 use lumvise_project_indexer::{
-    FilesystemProjectSource, ParseStatus, ProjectIndexer, ScanScope, SemanticIndexProjection,
-    SourceKind,
+    BlockSettings, DocumentConversionOptions, DocumentConverter, FilesystemProjectSource,
+    ParallelTreeSitterProjectParser, ParseStatus, ProjectFileParser, ProjectIndexer, ProjectSource,
+    ScanScope, SemanticIndexProjection, SourceKind, SourceParseInput,
 };
 use std::{collections::BTreeMap, path::Path, time::Instant};
 
@@ -67,4 +68,61 @@ fn real_repository_scan_reports_coverage_and_warm_inventory() {
     );
     // A live repository may change during the benchmark; report those reads rather
     // than assuming an external editor left every file unchanged.
+}
+
+#[test]
+#[ignore = "set LUMVISE_INDEX_BENCH_ROOT; compares eight real PDFs without database writes"]
+fn real_pdf_batch_compares_worker_counts_with_identical_output() {
+    let root = std::env::var("LUMVISE_INDEX_BENCH_ROOT").expect("expected repository root");
+    let documents = sampled_pdf_inputs(&root);
+    let inputs: Vec<_> = documents
+        .iter()
+        .map(|(path, bytes)| SourceParseInput { path, bytes })
+        .collect();
+    let mut expected = None;
+    for workers in [1, 4] {
+        let converter = std::sync::Arc::new(DocumentConverter::new(DocumentConversionOptions {
+            enhancement_enabled: false,
+        }));
+        let mut parser = ParallelTreeSitterProjectParser::new_with_document_converter(
+            workers,
+            BlockSettings::default(),
+            converter,
+        )
+        .unwrap();
+        let started = Instant::now();
+        let parsed = parser.parse_batch_results(&inputs);
+        let elapsed_us = started.elapsed().as_micros();
+        if let Some(previous) = &expected {
+            assert_eq!(&parsed, previous);
+        }
+        eprintln!(
+            "{}",
+            serde_json::json!({"case":"sampled_pdf_batch","workers":workers,"elapsed_us":elapsed_us,
+            "paths":documents.iter().map(|(path, _)|path).collect::<Vec<_>>(),"identical_output":expected.is_some()})
+        );
+        expected = Some(parsed);
+    }
+}
+
+fn sampled_pdf_inputs(root: &str) -> Vec<(String, Vec<u8>)> {
+    let source = FilesystemProjectSource::open(root).unwrap();
+    let paths: Vec<_> = source
+        .inventory(&ScanScope::Full)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.path.to_ascii_lowercase().ends_with(".pdf"))
+        .collect();
+    assert!(
+        paths.len() >= 8,
+        "{} PDFs; expected at least eight for the benchmark",
+        paths.len()
+    );
+    (0..8)
+        .map(|index| {
+            let path = paths[index * paths.len() / 8].path.clone();
+            let bytes = source.read_file(&path).unwrap().bytes;
+            (path, bytes)
+        })
+        .collect()
 }
