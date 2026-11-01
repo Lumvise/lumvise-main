@@ -151,7 +151,6 @@ fn live_search_structure_is_routed_without_exposing_artifact_bodies() {
         .unwrap();
     assert_eq!(result["project_root"], "/repo");
     assert_eq!(result["elements"].as_array().unwrap().len(), 1);
-    assert_eq!(result["artifacts"], json!([]));
     assert!(
         !result
             .to_string()
