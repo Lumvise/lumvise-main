@@ -259,15 +259,6 @@ mod tests {
     }
 
     #[test]
-    fn small_simhash_drift_is_not_marked() {
-        let anchor = element(Some("fp1:00000000000000ff:b"), "active");
-        assert_eq!(
-            classify(Some("fp1:0000000000000000:a"), Some(&anchor)),
-            None
-        );
-    }
-
-    #[test]
     fn drift_at_the_threshold_is_not_marked_and_one_bit_more_is_rewritten() {
         let at_threshold = element(Some("fp1:00000000000000ff:b"), "active");
         assert_eq!(

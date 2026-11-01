@@ -97,6 +97,10 @@ fn resilient_updates_keep_failed_content_and_retry_it_after_healthy_changes_comm
         ["good.rs"]
     );
     indexer.commit(update).unwrap();
+    source.put("bad.rs", 1, "old_bad");
+    let retained = indexer.prepare(ScanScope::Full).unwrap();
+    assert_eq!(retained.metrics().files_read, 0);
+    assert_eq!(retained.changed_files().count(), 0);
     source.put("bad.rs", 3, "repaired");
     let retry = indexer
         .prepare_resilient(ScanScope::Full, |_| Ok(()))

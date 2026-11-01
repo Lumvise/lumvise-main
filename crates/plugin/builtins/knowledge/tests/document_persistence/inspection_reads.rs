@@ -77,5 +77,7 @@ fn listing_a_memory_space_reads_each_body_owner_once_however_many_documents_it_h
     let (many_documents, many_reads) = list_reads(&mut host);
 
     assert_eq!((few_documents, many_documents), (3, 12));
+    assert!(few_reads > 0);
+    assert_eq!(few_reads, 1);
     assert_eq!(many_reads, few_reads);
 }

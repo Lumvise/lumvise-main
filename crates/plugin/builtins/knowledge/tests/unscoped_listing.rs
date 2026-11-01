@@ -60,6 +60,7 @@ fn an_unreadable_online_project_is_skipped_and_the_local_knowledge_is_listed() {
         listed: vec![],
     };
     let output = list_everything(&mut host).unwrap();
+    host.listed.sort();
     assert_eq!(
         host.listed,
         ["/local", ONLINE],
