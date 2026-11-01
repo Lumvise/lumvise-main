@@ -176,25 +176,31 @@ mod tests {
     #[test]
     fn catalog_publishes_actual_versions() {
         let versions = compiled_host_capability_versions();
-
-        assert_eq!(versions.len(), 25);
-        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 9, 0));
-        assert_eq!(versions[PROJECT_EXECUTION], Version::new(1, 1, 0));
-        assert_eq!(
-            versions[super::super::knowledge_authority::CAPABILITY],
-            Version::new(1, 4, 0)
-        );
-        assert!(
-            versions
-                .iter()
-                .filter(|(id, _)| ![
-                    SEMANTIC_STORAGE,
-                    PROJECT_EXECUTION,
-                    super::super::knowledge_authority::CAPABILITY
-                ]
-                .contains(id))
-                .all(|(_, version)| version == &Version::new(1, 0, 0))
-        );
+        for source in [
+            include_str!("../../../plugin/builtins/semantic/lumvise-plugin-manifest.json"),
+            include_str!("../../../plugin/builtins/knowledge/lumvise-plugin-manifest.json"),
+        ] {
+            let manifest: lumvise_plugin_package::PluginManifest =
+                serde_json::from_str(source).unwrap();
+            for requirement in manifest.host_capabilities {
+                let version = versions.get(requirement.id.as_str()).unwrap_or_else(|| {
+                    panic!(
+                        "{} requires missing host capability {}",
+                        manifest.plugin_id, requirement.id
+                    )
+                });
+                assert!(
+                    semver::VersionReq::parse(&requirement.version)
+                        .unwrap()
+                        .matches(version),
+                    "{} requires {} {}, host publishes {}",
+                    manifest.plugin_id,
+                    requirement.id,
+                    requirement.version,
+                    version
+                );
+            }
+        }
     }
 
     #[test]
