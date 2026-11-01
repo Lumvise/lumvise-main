@@ -176,14 +176,25 @@ mod tests {
     #[test]
     fn catalog_publishes_actual_versions() {
         let versions = compiled_host_capability_versions();
-        for source in [
-            include_str!("../../../plugin/builtins/semantic/lumvise-plugin-manifest.json"),
-            include_str!("../../../plugin/builtins/knowledge/lumvise-plugin-manifest.json"),
-        ] {
-            let manifest: lumvise_plugin_package::PluginManifest =
-                serde_json::from_str(source).unwrap();
-            assert_bundled_requirements(&manifest, &versions);
+        let manifests = bundled_manifests();
+        assert!(!manifests.is_empty(), "no bundled plugin manifests found");
+        for manifest in &manifests {
+            assert_bundled_requirements(manifest, &versions);
         }
+    }
+
+    fn bundled_manifests() -> Vec<lumvise_plugin_package::PluginManifest> {
+        let builtins = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugin/builtins");
+        let mut paths: Vec<_> = std::fs::read_dir(&builtins)
+            .unwrap_or_else(|error| panic!("{}: {error}", builtins.display()))
+            .map(|entry| entry.unwrap().path().join("lumvise-plugin-manifest.json"))
+            .filter(|path| path.is_file())
+            .collect();
+        paths.sort();
+        paths
+            .iter()
+            .map(|path| serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap())
+            .collect()
     }
 
     fn assert_bundled_requirements(
