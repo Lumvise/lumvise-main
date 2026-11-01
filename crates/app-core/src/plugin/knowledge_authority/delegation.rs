@@ -179,10 +179,27 @@ impl<'a> MemoryDelegationAuthority<'a> {
             .current(self.semantic, self.context, self.control)?;
         let writable = project_access::memory_writable(&scope);
         let id = delegation_id(&scope, document)?;
+        let saved = read_delegation(self.authority, &id, self.control)?;
+        // Agents publishes the executor after Knowledge returned, so an owner read is where its
+        // acceptance is first seen: a hook reads `ready` as soon as its accepted rows exist.
+        let saved = match saved {
+            Some(saved)
+                if saved.enabled
+                    && saved.executor_observations.is_empty()
+                    && saved.executor_preparation.is_some() =>
+            {
+                Some(
+                    self.authority
+                        .reconcile_executor_acceptance(saved.clone(), self.semantic, self.control)
+                        .unwrap_or(saved),
+                )
+            }
+            other => other,
+        };
         Ok(
             json!({"delegation_id":id,"project_root":scope.space.expect("owned space").project_root,
                 "writable":writable,
-                "delegation":read_delegation(self.authority, &id, self.control)?.map(delegation_view)}),
+                "delegation":saved.map(delegation_view)}),
         )
     }
 }
