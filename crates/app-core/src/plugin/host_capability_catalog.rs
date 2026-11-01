@@ -182,24 +182,30 @@ mod tests {
         ] {
             let manifest: lumvise_plugin_package::PluginManifest =
                 serde_json::from_str(source).unwrap();
-            for requirement in manifest.host_capabilities {
-                let version = versions.get(requirement.id.as_str()).unwrap_or_else(|| {
-                    panic!(
-                        "{} requires missing host capability {}",
-                        manifest.plugin_id, requirement.id
-                    )
-                });
-                assert!(
-                    semver::VersionReq::parse(&requirement.version)
-                        .unwrap()
-                        .matches(version),
-                    "{} requires {} {}, host publishes {}",
-                    manifest.plugin_id,
-                    requirement.id,
-                    requirement.version,
-                    version
-                );
-            }
+            assert_bundled_requirements(&manifest, &versions);
+        }
+    }
+
+    fn assert_bundled_requirements(
+        manifest: &lumvise_plugin_package::PluginManifest,
+        versions: &BTreeMap<&str, Version>,
+    ) {
+        for requirement in &manifest.host_capabilities {
+            let version = versions.get(requirement.id.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "{} requires missing host capability {}",
+                    manifest.plugin_id, requirement.id
+                )
+            });
+            let required = semver::VersionReq::parse(&requirement.version).unwrap();
+            assert!(
+                required.matches(version),
+                "{} requires {} {}, host publishes {}",
+                manifest.plugin_id,
+                requirement.id,
+                requirement.version,
+                version
+            );
         }
     }
 
