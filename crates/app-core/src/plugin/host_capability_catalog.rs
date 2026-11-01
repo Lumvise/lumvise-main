@@ -190,21 +190,16 @@ mod tests {
         manifest: &lumvise_plugin_package::PluginManifest,
         versions: &BTreeMap<&str, Version>,
     ) {
+        let plugin = &manifest.plugin_id;
         for requirement in &manifest.host_capabilities {
-            let version = versions.get(requirement.id.as_str()).unwrap_or_else(|| {
-                panic!(
-                    "{} requires missing host capability {}",
-                    manifest.plugin_id, requirement.id
-                )
-            });
+            let id = &requirement.id;
+            let version = versions
+                .get(id.as_str())
+                .unwrap_or_else(|| panic!("{plugin} requires missing host capability {id}"));
             let required = semver::VersionReq::parse(&requirement.version).unwrap();
             assert!(
                 required.matches(version),
-                "{} requires {} {}, host publishes {}",
-                manifest.plugin_id,
-                requirement.id,
-                requirement.version,
-                version
+                "{plugin} requires {id} {required}, host publishes {version}"
             );
         }
     }
