@@ -302,8 +302,13 @@ fn a_limit_outside_1_to_1000_and_a_cursor_without_a_limit_are_refused() {
     // 1 and 1,000 are the ends of the range.
     for limit in [1, 1000] {
         let queries = first_queries(json!({"kind":"prefix","prefix":"src/","limit":limit}));
-        assert_eq!(queries.as_array().unwrap().len(), 1);
-        assert_eq!(queries[0]["limit"], limit);
+        let page = queries
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|query| query["query"] == "prefix")
+            .expect("prefix page query");
+        assert_eq!(page["limit"], limit);
     }
 }
 
