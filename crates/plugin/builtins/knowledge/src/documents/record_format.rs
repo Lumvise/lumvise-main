@@ -145,10 +145,32 @@ pub(super) fn body_artifact(
         "metadata": {"knowledge_document": payload}})
 }
 
+/// The active document roots of one read as `(project_root, anchor id)`, so a body's ownership
+/// is a lookup instead of a scan of every record per document.
+/// Example: ActiveRoots::new(&elements) once, then decode each document against it.
+pub(super) struct ActiveRoots<'a>(std::collections::HashSet<(&'a str, &'a str)>);
+
+impl<'a> ActiveRoots<'a> {
+    pub(super) fn new(records: &'a [Value]) -> Self {
+        Self(
+            records
+                .iter()
+                .filter(|root| is_root(root) && root["lifecycle"] == "active")
+                .filter_map(|root| {
+                    Some((
+                        root["project_root"].as_str()?,
+                        root["semantic_element_id"].as_str()?,
+                    ))
+                })
+                .collect(),
+        )
+    }
+}
+
 pub(super) fn decode(
     element: &Value,
     artifact: &Value,
-    roots: &[Value],
+    roots: &ActiveRoots,
 ) -> Result<KnowledgeDocument, PluginError> {
     let locator = locator(element)?.ok_or_else(|| invalid_body(element, artifact))?;
     validate_body(element, artifact, roots, locator)?;
@@ -167,7 +189,7 @@ pub(super) fn decode(
 fn validate_body(
     element: &Value,
     artifact: &Value,
-    roots: &[Value],
+    roots: &ActiveRoots,
     locator: &Value,
 ) -> Result<(), PluginError> {
     if !body_owned_by_project(element, artifact, roots)
@@ -180,15 +202,14 @@ fn validate_body(
     Ok(())
 }
 
-fn body_owned_by_project(element: &Value, artifact: &Value, roots: &[Value]) -> bool {
-    roots.iter().any(|root| {
-        is_root(root)
-            && root["lifecycle"] == "active"
-            && root["project_root"] == element["project_root"]
-            && root["semantic_element_id"] == artifact["semantic_element_id"]
-    }) && artifact
-        .get("project_root")
-        .is_none_or(|root| root == &element["project_root"])
+fn body_owned_by_project(element: &Value, artifact: &Value, roots: &ActiveRoots) -> bool {
+    element["project_root"]
+        .as_str()
+        .zip(artifact["semantic_element_id"].as_str())
+        .is_some_and(|key| roots.0.contains(&key))
+        && artifact
+            .get("project_root")
+            .is_none_or(|root| root == &element["project_root"])
 }
 
 fn valid_body_payload(artifact: &Value, locator: &Value) -> bool {

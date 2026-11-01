@@ -142,8 +142,13 @@ fn native_failure_closes_descendants_with_redirected_output() {
 fn native_timeout_closes_the_entire_process_tree() {
     run_fixture(async {
         let forest = NativeProcessForest::new();
+        let started = std::time::Instant::now();
         let output =
             capture_native_command(forest.command("wait", false), Duration::from_millis(500)).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout did not promptly close the process tree"
+        );
         assert!(output.unwrap_err().contains("timed out"));
         forest.assert_stopped().await;
     });

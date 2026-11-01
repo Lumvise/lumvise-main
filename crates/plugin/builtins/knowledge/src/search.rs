@@ -161,7 +161,7 @@ pub(crate) fn search(
             .then_with(|| result_order(left, right))
     });
     results.truncate(request.limit.unwrap_or(20));
-    mark_results(context, &artifacts, &mut results)?;
+    mark_results(context, &artifacts, &mut results);
     Ok(json!({"mode": mode, "results": results}))
 }
 
@@ -170,7 +170,7 @@ fn mark_results(
     context: &mut PluginContext<'_>,
     artifacts: &[KnowledgeArtifact],
     results: &mut [Value],
-) -> Result<(), PluginError> {
+) {
     let mut hits = artifacts
         .iter()
         .filter(|item| {
@@ -180,7 +180,7 @@ fn mark_results(
         })
         .cloned()
         .collect::<Vec<_>>();
-    outdated::mark(context, &mut hits)?;
+    outdated::mark(context, &mut hits);
     for hit in hits {
         let Some(signal) = hit.outdated else { continue };
         for result in results
@@ -190,7 +190,6 @@ fn mark_results(
             result["outdated"] = json!(signal);
         }
     }
-    Ok(())
 }
 
 fn artifacts_for_search(

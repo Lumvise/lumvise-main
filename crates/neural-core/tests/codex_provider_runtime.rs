@@ -305,6 +305,61 @@ printf '%s\n' '{{"response":"provider default"}}' > "$output""#,
 }
 #[test]
 fn codex_provider_passes_request_mcp_server_to_persistent_process() {
+    let (response, servers) = persistent_process_mcp_servers(codex_request_with_mcp(false));
+
+    assert_eq!(response, "mcp configured");
+    assert_eq!(servers.as_object().unwrap().len(), 1);
+    assert_eq!(servers["lumvise-assistant"]["enabled"], true);
+    assert_eq!(
+        servers["lumvise-assistant"]["default_tools_approval_mode"],
+        "approve"
+    );
+    assert_eq!(
+        servers["lumvise-assistant"]["url"],
+        "http://127.0.0.1:4180/mcp/messages"
+    );
+}
+
+/// Headless sessions run with `approvalPolicy: never`, so a server left on `auto` has every
+/// tool refused. The app's scoped routes are loopback endpoints and must be approved, including
+/// the Assistant route that carries a session epoch; a remote server must stay on `auto`.
+#[test]
+fn codex_provider_approves_local_servers_and_reviews_remote_ones_in_the_persistent_process() {
+    let mut request = codex_request(false);
+    request.mcp_servers = [
+        (
+            "lumvise-assistant",
+            "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/workspace:thread-1/27",
+        ),
+        (
+            "lumvise-agent",
+            "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/agent_run/builtin.agents/run-1",
+        ),
+        ("remote-docs", "https://example.com/mcp"),
+    ]
+    .map(|(name, url)| LlmMcpServerConfig {
+        name: name.to_string(),
+        url: url.to_string(),
+    })
+    .to_vec();
+
+    let (_, servers) = persistent_process_mcp_servers(request);
+
+    for local in ["lumvise-assistant", "lumvise-agent"] {
+        assert_eq!(
+            servers[local]["default_tools_approval_mode"], "approve",
+            "{local}"
+        );
+    }
+    assert_eq!(
+        servers["remote-docs"]["default_tools_approval_mode"],
+        "auto"
+    );
+}
+
+/// Runs one persistent `codex app-server` turn against a fake that reports the MCP server
+/// tables it finds in the `config.toml` of the `CODEX_HOME` the provider prepared.
+fn persistent_process_mcp_servers(request: LlmRequest) -> (String, Value) {
     let temp = TempDir::new().unwrap();
     let log_path = temp.path().join("mcp-server.log");
     let command = fake_python_script(
@@ -333,21 +388,9 @@ for line in sys.stdin:
     );
     let registry = codex_registry_with_model(command, "provider-default");
 
-    let response = registry
-        .complete("codex", &codex_request_with_mcp(false))
-        .unwrap();
-    let servers: Value = serde_json::from_str(&fs::read_to_string(log_path).unwrap()).unwrap();
-    assert_eq!(response.content, "mcp configured");
-    assert_eq!(servers.as_object().unwrap().len(), 1);
-    assert_eq!(servers["lumvise-assistant"]["enabled"], true);
-    assert_eq!(
-        servers["lumvise-assistant"]["default_tools_approval_mode"],
-        "auto"
-    );
-    assert_eq!(
-        servers["lumvise-assistant"]["url"],
-        "http://127.0.0.1:4180/mcp/messages"
-    );
+    let response = registry.complete("codex", &request).unwrap();
+    let servers = serde_json::from_str(&fs::read_to_string(log_path).unwrap()).unwrap();
+    (response.content, servers)
 }
 
 #[test]

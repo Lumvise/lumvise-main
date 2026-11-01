@@ -8,19 +8,26 @@ pub(super) struct IndexedGatewayStorage {
     rows: Vec<Value>,
     pub(super) requests: Vec<Vec<u8>>,
     pub(super) queries: Vec<Value>,
+    /// The rows the last read fetched, as the gateway would hand them to a later execute call.
+    pub(super) loaded: Vec<Value>,
 }
 
 impl IndexedGatewayStorage {
     pub(super) fn new(state: &SemanticRevisionState) -> Self {
+        Self::with_rows(
+            storage(json!({"action":"rows","state_json":serde_json::to_string(state).unwrap()}))
+                .as_array()
+                .unwrap()
+                .clone(),
+        )
+    }
+    /// Serves rows that already carry attached content, which `rows` regenerated from a state lacks.
+    pub(super) fn with_rows(rows: Vec<Value>) -> Self {
         Self {
-            rows: storage(
-                json!({"action":"rows","state_json":serde_json::to_string(state).unwrap()}),
-            )
-            .as_array()
-            .unwrap()
-            .clone(),
+            rows,
             requests: vec![],
             queries: vec![],
+            loaded: vec![],
         }
     }
     pub(super) fn read(
@@ -36,6 +43,7 @@ impl IndexedGatewayStorage {
             );
             let result = storage(request);
             if let Some(state) = result["state_json"].as_str() {
+                self.loaded = loaded.into_values().collect();
                 return serde_json::from_str(state).unwrap();
             }
             for query in result["queries"].as_array().unwrap() {
@@ -70,6 +78,16 @@ impl IndexedGatewayStorage {
                             .as_str()
                             .unwrap()
                             .starts_with(query["prefix"].as_str().unwrap())
+                }) && self.selected(row, query["selection_id"].as_str().unwrap())
+            }
+            // The page boundary belongs to the SQL adapter; this fake answers with every match, the unpaged answer.
+            "index_page" => {
+                let names = query["names"].as_array().unwrap();
+                let values = query["values"].as_array().unwrap();
+                names.iter().any(|name| {
+                    values.iter().any(|value| {
+                        has_index(row, name.as_str().unwrap(), value.as_str().unwrap())
+                    })
                 }) && self.selected(row, query["selection_id"].as_str().unwrap())
             }
             "all" => true,

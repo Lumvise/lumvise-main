@@ -1,26 +1,30 @@
-//! Codex approval configuration for the app's trusted Assistant session tools.
+//! Codex approval configuration for the MCP servers the app presents to a session.
 //! Both process launch paths call `codex_scoped_tool_approval`; URL rules stay internal.
 
 use crate::llm_providers::LlmMcpServerConfig;
+use url::{Host, Url};
 
+/// Sessions run with `approvalPolicy: never`, so a tool left on `auto` is refused rather than
+/// prompted. A server on this machine's loopback interface is a local endpoint (the app's own
+/// Assistant and Agent routes included) and gets the standing grant; the address decides, never
+/// the server name. Remote and unparsable URLs keep automatic review. The user's own Codex servers
+/// never reach this function: the isolated home strips them and the exec launch disables them.
 pub(super) fn codex_scoped_tool_approval(server: &LlmMcpServerConfig) -> &'static str {
-    if server.name == "lumvise-assistant"
-        && url::Url::parse(&server.url).is_ok_and(|url| is_local_assistant_session(&url))
-    {
-        return "approve";
+    if Url::parse(&server.url).is_ok_and(|url| is_loopback_endpoint(&url)) {
+        "approve"
+    } else {
+        "auto"
     }
-    "auto"
 }
 
-fn is_local_assistant_session(url: &url::Url) -> bool {
-    let session = url
-        .path()
-        .strip_prefix("/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/");
-    url.scheme() == "http"
-        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+fn is_loopback_endpoint(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
         && url.username().is_empty()
         && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && session.is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        && match url.host() {
+            Some(Host::Domain(name)) => name == "localhost",
+            Some(Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        }
 }

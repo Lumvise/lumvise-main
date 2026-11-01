@@ -72,7 +72,14 @@ fn first_selective_import_establishes_the_complete_checkout_before_publication()
             "folderPath": root, "replacePaths": ["src/main.rs"]
         })),
     );
-    assert_eq!(response.status, "500 Internal Server Error");
+    assert_eq!(response.status, "200 OK");
+    assert_eq!(response_body(&response)["phase"], "failed");
+    assert!(
+        response_body(&response)["error"]
+            .as_str()
+            .unwrap()
+            .contains("ingest_index_batch unavailable")
+    );
     let paths = pending_import_paths(&app, &root);
     assert!(paths.contains("src/main.rs"));
     assert!(paths.contains("README.md"));
@@ -142,7 +149,8 @@ fn removing_a_project_discards_acknowledged_scans_for_explicit_reimport() {
     // A fresh manual import must attempt publication. With no compiled
     // Semantic plugin in this fixture, that produces its explicit error.
     let response = settled_import_response(&app, &request(json!({"folderPath": project_root})));
-    assert_eq!(response.status, "500 Internal Server Error");
+    assert_eq!(response.status, "200 OK");
+    assert_eq!(response_body(&response)["phase"], "failed");
     assert!(
         response_body(&response)
             .to_string()
@@ -268,7 +276,8 @@ fn publication_failure_fails_closed_when_semantic_plugin_is_absent() {
         &app,
         &request(json!({"folderPath": directory.path().to_string_lossy()})),
     );
-    assert_eq!(response.status, "500 Internal Server Error");
+    assert_eq!(response.status, "200 OK");
+    assert_eq!(response_body(&response)["phase"], "failed");
     let body = response_body(&response);
     let message = body.to_string();
     assert!(
@@ -339,7 +348,14 @@ fn failed_refresh_waits_for_backoff_while_manual_import_still_runs() {
     assert_eq!(retry(&app).unwrap().failures, 1, "deferral must not retry");
 
     let manual = settled_import_response(&app, &request(json!({"folderPath": project_root})));
-    assert_eq!(manual.status, "500 Internal Server Error");
+    assert_eq!(manual.status, "200 OK");
+    assert_eq!(response_body(&manual)["phase"], "failed");
+    assert!(
+        response_body(&manual)["error"]
+            .as_str()
+            .unwrap()
+            .contains("ingest_index_batch unavailable")
+    );
     assert_eq!(retry(&app).unwrap().failures, 2);
 
     let expire = |app: &AppCore| {
@@ -477,7 +493,9 @@ fn document_setting_change_rebuilds_an_acknowledged_import_session() {
         &app,
         &request(json!({"folderPath":root,"replacePaths":["README.md"]})),
     );
-    assert_eq!(response.status, "500 Internal Server Error"); // No semantic plugin in this fixture.
+    assert_eq!(response.status, "200 OK");
+    assert_eq!(response_body(&response)["phase"], "failed");
+    // No semantic plugin in this fixture.
     assert!(
         response_body(&response)
             .to_string()
@@ -637,12 +655,7 @@ fn settled_import_response(app: &AppCore, initial: &HttpRequest) -> HttpResponse
             Some("completed" | "completed_with_errors") => {
                 return json_response("200 OK", progress["result"].clone());
             }
-            Some("failed") => {
-                return error_response(
-                    "500 Internal Server Error",
-                    progress["error"].as_str().unwrap_or("import failed"),
-                );
-            }
+            Some("failed") => return response,
             _ => {}
         }
         let mut input: Value = serde_json::from_slice(&request.body).unwrap();

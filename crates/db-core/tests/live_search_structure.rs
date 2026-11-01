@@ -25,7 +25,7 @@ fn seed_structure(persistence: &LocalPersistence, root: &str) {
 }
 
 #[test]
-fn live_structure_routes_and_round_trips_on_the_existing_binary_transport() {
+fn live_structure_reads_only_the_selected_project_without_artifact_bodies() {
     let persistence = LocalPersistence::in_memory().unwrap();
     for root in ["/search", "/other"] {
         seed_structure(&persistence, root);
@@ -58,6 +58,7 @@ fn live_structure_routes_and_round_trips_on_the_existing_binary_transport() {
         project_root: "/search".into(),
     };
     assert_eq!(operation.project_root(), Some("/search"));
+
     let encoded = CentralizedPersistence::encode_semantic_operation(operation).unwrap();
     let decoded = CentralizedPersistence::decode_semantic_operation(&encoded).unwrap();
     let result = persistence
@@ -72,7 +73,7 @@ fn live_structure_routes_and_round_trips_on_the_existing_binary_transport() {
     assert_eq!(snapshot.elements.len(), 1);
     assert_eq!(snapshot.elements[0].semantic_element_id, "/search/owner");
     assert!(snapshot.artifacts.is_empty());
-    assert!(snapshot.commit_version > 0);
+    assert_eq!(snapshot.commit_version, strong.commit_version);
 }
 
 #[test]
@@ -97,6 +98,19 @@ fn live_search_watermark_is_restored_from_the_published_database_on_reopen() {
     else {
         panic!("expected live structure")
     };
+    let SemanticResult::ProjectSnapshot(published) = persistence
+        .execute(
+            SemanticOperation::ProjectSnapshot {
+                scope: lumvise_db_core::ProjectSnapshotScope::ProjectRoot("/search".into()),
+                artifact_namespace: None,
+            },
+            &InvocationControl::sixty_seconds(),
+        )
+        .unwrap()
+    else {
+        panic!("expected published snapshot")
+    };
+    assert_eq!(after.commit_version, published.commit_version);
     assert_eq!(before.commit_version, after.commit_version);
     assert_eq!(before.published_at, after.published_at);
 }

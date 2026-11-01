@@ -843,15 +843,9 @@ mod tests {
                 "tool observation waited for registry I/O"
             );
         });
-        assert!(
-            registry
-                .delegate
-                .records
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(_, root, _)| root == "/projects/a")
-        );
+        let records = registry.delegate.records.lock().unwrap();
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|(_, root, _)| root == "/projects/a"));
     }
 
     #[test]

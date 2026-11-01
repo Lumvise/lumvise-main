@@ -113,23 +113,13 @@ done, and reopen it later.
 If the Assistant is busy, your request is queued and started when it is free.
 Agents ask you questions through the same queue.
 
-[![An actual video frame of Lumvise's Assistant whiteboard, comparing three dependency updates and summarizing their validation](assets/readme/assistant-preview.png)](assets/readme/lumvise-assistant.mp4)
+![The Lumvise Assistant dashboard with an editable release-planning whiteboard, drawing tools and a voice conversation panel](assets/readme/assistant-preview.png)
 
-**[Watch the 17-second interaction (MP4, with sound)](assets/readme/lumvise-assistant.mp4)** ·
+*The desktop Assistant dashboard: an editable whiteboard beside the conversation
+and voice controls. This release-planning example was captured before 0.2.0 was
+published. The capture excludes the debug status bar above the dashboard.*
+
 [Media credits](assets/readme/credits.txt)
-
-*An actual frame from the clip. The recording is cropped to the Assistant window;
-the original voice audio and timing are preserved.*
-
-<details>
-<summary>Text description of the clip</summary>
-
-The Assistant's voice explanation plays while its whiteboard is visible. Three
-dependency updates appear as before-and-after version pairs, joined by arrows.
-Notes beside them describe the changes, and a verification summary sits below.
-The canvas toolbar provides drawing, text, color, and zoom controls.
-
-</details>
 
 Things to ask:
 

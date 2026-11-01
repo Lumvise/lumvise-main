@@ -20,9 +20,19 @@ const DRIFT: &str = "fp1:00000000000000ff:b";
 // Complement of DRIFT's simhash: 64 bits from the drifted baseline, well past the identity threshold.
 const REWRITTEN: &str = "fp1:ffffffffffffff00:c";
 
+/// Which anchor lookup of the staleness pass the host makes fail.
+#[derive(Clone, Copy, Debug)]
+enum AnchorFault {
+    /// The probe that opens a project's working selection.
+    Probe,
+    /// The per-path membership read that checks an anchor is still selected.
+    Selection,
+}
+
 struct OutdatedBoundaryHost {
     persistence: Arc<LocalPersistence>,
     broker: AppCoreHostCapabilityBroker,
+    fault: Option<AnchorFault>,
 }
 
 impl OutdatedBoundaryHost {
@@ -33,7 +43,21 @@ impl OutdatedBoundaryHost {
         Self {
             persistence,
             broker: AppCoreHostCapabilityBroker::new(semantic, relational),
+            fault: None,
         }
+    }
+
+    /// Only the staleness pass reads membership without artifact IDs.
+    fn fails(&self, input: &Value) -> bool {
+        let query = &input["query"];
+        let coverage = query["structure_coverage"]["kind"].as_str();
+        input["operation"] == "revision_selection_members"
+            && query["artifact_ids"] == json!([])
+            && match self.fault {
+                Some(AnchorFault::Probe) => coverage == Some("none"),
+                Some(AnchorFault::Selection) => coverage == Some("partition"),
+                None => false,
+            }
     }
 
     /// Seeds the project before any note exists; afterwards only revision publication is valid.
@@ -112,6 +136,13 @@ impl OutdatedBoundaryHost {
 
 impl HostCallTransport for OutdatedBoundaryHost {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
+        if self.fails(&input) {
+            return Err(PluginError::new(
+                "outdated_test_anchor_unreadable",
+                "anchor lookup failed; expected the read to continue unmarked",
+                false,
+            ));
+        }
         self.broker
             .invoke(HostCapabilityRequest {
                 plugin_id: "builtin.knowledge".into(),
@@ -245,4 +276,43 @@ fn a_rename_with_unchanged_content_follows_the_successor_and_is_not_outdated() {
     let note = current_note(&mut host);
     assert!(note.get("outdated").is_none());
     assert_eq!(note["anchor_fingerprint"], BASELINE);
+}
+
+#[test]
+fn reads_return_the_note_unmarked_when_its_anchor_lookup_fails() {
+    let mut host = OutdatedBoundaryHost::new();
+    host.sync_structure(vec![owner(BASELINE)]);
+    create_note(&mut host);
+    let head_id = host
+        .publish_structure(vec![owner(REWRITTEN)])
+        .expect("owner keeps a current revision");
+    // The baseline is still BASELINE here, 56 simhash bits from REWRITTEN.
+    let rewritten = json!({"reason":"rewritten", "distance":56});
+    let note = current_note(&mut host);
+    assert_eq!(note["outdated"], rewritten);
+    let artifact_id = note["artifact_id"].clone();
+
+    for fault in [AnchorFault::Probe, AnchorFault::Selection] {
+        host.fault = Some(fault);
+        let reads = [
+            host.knowledge("get_knowledge", json!({"artifact_id":artifact_id}))["artifact"].clone(),
+            current_note(&mut host),
+            host.knowledge(
+                "list_knowledge_for_element",
+                json!({"semantic_element_id":head_id}),
+            )["artifacts"][0]
+                .clone(),
+            host.knowledge(
+                "search_knowledge",
+                json!({"query":"Owner specification", "project_root":PROJECT}),
+            )["results"][0]
+                .clone(),
+        ];
+        for read in reads {
+            assert_eq!(read["artifact_id"], artifact_id, "{fault:?}");
+            assert!(read.get("outdated").is_none(), "{fault:?}: {read}");
+        }
+    }
+    host.fault = None;
+    assert_eq!(current_note(&mut host)["outdated"], rewritten);
 }

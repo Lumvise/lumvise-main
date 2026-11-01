@@ -39,6 +39,27 @@ pub(in crate::policy_bytes) enum StorageQuery {
     Prefix {
         prefix: String,
         selection_id: String,
+        /// A page is at most `limit` rows after the row the cursor names; unpaged reads carry neither field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// Index entries of several names and values, read together in the order of the rows they point at, one page at a time.
+    IndexPage {
+        names: Vec<String>,
+        values: Vec<String>,
+        selection_id: String,
+        limit: usize,
+        after: Option<String>,
+    },
+    /// Name search: `tokens` and `patterns` are LIKE patterns (`patterns` also holds the escaped whole query).
+    Search {
+        selection_id: String,
+        normalized: String,
+        tokens: Vec<String>,
+        patterns: Vec<String>,
+        limit: usize,
     },
     All,
 }

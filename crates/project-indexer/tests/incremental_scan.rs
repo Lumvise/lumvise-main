@@ -79,7 +79,9 @@ fn resilient_updates_keep_failed_content_and_retry_it_after_healthy_changes_comm
     source.put("bad.rs", 1, "old_bad");
     source.put("good.rs", 1, "old_good");
     let mut indexer = ProjectIndexer::new(source.clone(), FakeLanguageParser::default());
-    let initial = indexer.prepare(ScanScope::Full).unwrap();
+    let initial = indexer
+        .prepare(ScanScope::Paths(vec!["bad.rs".into(), "good.rs".into()]))
+        .unwrap();
     indexer.commit(initial).unwrap();
     source.put("bad.rs", 2, "parse-error");
     source.put("good.rs", 2, "new_good");
@@ -88,14 +90,23 @@ fn resilient_updates_keep_failed_content_and_retry_it_after_healthy_changes_comm
         .unwrap();
     assert_eq!(update.failures().len(), 1);
     assert_eq!(update.failures()[0].path, "bad.rs");
+    assert_eq!(update.failures()[0].reason, "expected valid source");
     assert_eq!(
         update
             .changed_files()
             .map(|file| file.entry.path.as_str())
             .collect::<Vec<_>>(),
-        ["good.rs"]
+        ["bad.rs", "good.rs"]
+    );
+    assert_eq!(
+        update.changed_files().next().unwrap().parsed.definitions[0].name,
+        "old_bad"
     );
     indexer.commit(update).unwrap();
+    source.put("bad.rs", 1, "old_bad");
+    let retained = indexer.prepare(ScanScope::Full).unwrap();
+    assert_eq!(retained.metrics().files_read, 0);
+    assert_eq!(retained.changed_files().count(), 0);
     source.put("bad.rs", 3, "repaired");
     let retry = indexer
         .prepare_resilient(ScanScope::Full, |_| Ok(()))
@@ -122,6 +133,18 @@ fn resilient_initial_scan_reports_read_and_parse_failures_without_inventing_empt
         .prepare_resilient(ScanScope::Full, |_| Ok(()))
         .unwrap();
     assert_eq!(scan.failures().len(), 2);
+    let reasons: BTreeMap<_, _> = scan
+        .failures()
+        .iter()
+        .map(|failure| (failure.path.as_str(), failure.reason.as_str()))
+        .collect();
+    assert_eq!(
+        reasons,
+        BTreeMap::from([
+            ("bad.rs", "expected valid source"),
+            ("unreadable.rs", "expected readable file"),
+        ])
+    );
     assert_eq!(
         scan.changed_files()
             .map(|file| file.entry.path.as_str())

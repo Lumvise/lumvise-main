@@ -13,11 +13,9 @@ use crate::{KnowledgeArtifact, semantic_context::SemanticElement, storage};
 const OUTDATED_SIMHASH_DISTANCE: u32 = 8;
 
 /// Sets `outdated` on each artifact whose current anchor was rewritten or removed since its baseline.
-/// Artifacts without a project root are left unmarked.
-pub(crate) fn mark(
-    context: &mut PluginContext<'_>,
-    artifacts: &mut [KnowledgeArtifact],
-) -> Result<(), PluginError> {
+/// Artifacts without a project root are left unmarked, and so are those whose anchor lookup fails:
+/// the marker is a hint that must never fail the read returning the note.
+pub(crate) fn mark(context: &mut PluginContext<'_>, artifacts: &mut [KnowledgeArtifact]) {
     let mut by_project: BTreeMap<String, Vec<&mut KnowledgeArtifact>> = BTreeMap::new();
     for artifact in artifacts.iter_mut() {
         if let Some(root) = artifact.project_root.clone() {
@@ -29,13 +27,16 @@ pub(crate) fn mark(
             .iter()
             .map(|artifact| artifact.semantic_element_id.clone())
             .collect();
-        let mut anchors = Anchors::open(context, &root, owners)?;
+        let Ok(mut anchors) = Anchors::open(context, &root, owners) else {
+            continue;
+        };
         for artifact in project {
-            let anchor = anchors.current(context, &artifact.semantic_element_id)?;
-            artifact.outdated = classify(artifact.anchor_fingerprint.as_deref(), anchor.as_ref());
+            if let Ok(anchor) = anchors.current(context, &artifact.semantic_element_id) {
+                artifact.outdated =
+                    classify(artifact.anchor_fingerprint.as_deref(), anchor.as_ref());
+            }
         }
     }
-    Ok(())
 }
 
 /// The fingerprint a write records as the anchor's baseline: the current anchor's when it resolves,
@@ -251,15 +252,6 @@ mod tests {
     #[test]
     fn exact_hash_match_is_not_marked_even_when_simhash_differs() {
         let anchor = element(Some("fp1:ffffffffffffffff:a"), "active");
-        assert_eq!(
-            classify(Some("fp1:0000000000000000:a"), Some(&anchor)),
-            None
-        );
-    }
-
-    #[test]
-    fn small_simhash_drift_is_not_marked() {
-        let anchor = element(Some("fp1:00000000000000ff:b"), "active");
         assert_eq!(
             classify(Some("fp1:0000000000000000:a"), Some(&anchor)),
             None

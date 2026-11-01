@@ -123,6 +123,25 @@ impl BoundDocumentAction {
     }
 }
 
+/// Reads the selected direct inputs of one hook as their owner, for the setup baseline. The delegated
+/// executor reads the same inputs through `read_input` later; this runs inside the owner's call, where
+/// Agents cannot call back into Knowledge.
+/// Example: read_setup_inputs(context, root, &saved.inputs) yields `[{target, snapshot}]` per input.
+pub(super) fn read_setup_inputs(
+    context: &mut PluginContext<'_>,
+    root: &str,
+    inputs: &[KnowledgeDocumentReference],
+) -> Result<Vec<Value>, PluginError> {
+    inputs
+        .iter()
+        .map(|reference| {
+            let citation = qualify_input(context, root, reference.clone())?;
+            let snapshot = super::citations::resolve(context, &citation, false)?;
+            Ok(json!({"target":reference,"snapshot":snapshot}))
+        })
+        .collect()
+}
+
 fn qualify_input(
     context: &mut PluginContext<'_>,
     root: &str,

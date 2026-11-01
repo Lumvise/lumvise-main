@@ -34,10 +34,15 @@ pub(super) fn configure(
     }
     let document = arm(context, &request, &view, &operation)?;
     let grant = save_document_permission(context, &request, &operation, &document)?;
-    let configured = configure_executor(context, &request, &grant, &operation)?;
-    let active = activate_executor(context, &grant, &configured)?;
+    configure_executor(context, &request, &grant, &operation, &document)?;
+    // Agents finishes the executor after this call, so the host's view is `pending` until its
+    // accepted configuration is observed; the caller reads the hook again until it is `ready`.
+    let saved =
+        permission_view(context, &request.project_root, &request.document_id)?["delegation"]
+            .clone();
+    let settings = request.settings.as_ref().expect("enabled hook settings");
     Ok(
-        json!({"hook":status::configured_hook(&active["delegation"], &configured),"document":document}),
+        json!({"hook":status::configured_hook(&saved, settings, &request.project_root),"document":document}),
     )
 }
 
@@ -51,7 +56,7 @@ pub(super) fn get(input: Value, context: &mut PluginContext<'_>) -> Result<Value
     }
     let mut hook = hook_view(saved, status::setup_status(saved));
     if view["writable"] == true {
-        status::inspect_executor(context, saved, &mut hook);
+        status::inspect_executor(context, saved, &identity.project_root, &mut hook);
     }
     Ok(json!({"hook":hook,"document":document}))
 }
@@ -77,18 +82,6 @@ fn save_document_permission(
     )
 }
 
-fn activate_executor(
-    context: &mut PluginContext<'_>,
-    grant: &Value,
-    configured: &Value,
-) -> Result<Value, PluginError> {
-    permission(
-        context,
-        json!({"operation":"activate", "delegation_id":grant["delegation_id"],
-        "revision":grant["revision"],"observations":configured["executor_observations"]}),
-    )
-}
-
 fn hook_view(saved: &Value, status: &str) -> Value {
     json!({"delegation_id":saved["delegation_id"],"revision":saved["revision"],"enabled":saved["enabled"],
         "executor_agent_id":saved["executor_agent_id"],"inputs":saved["inputs"],"status":status})
@@ -104,7 +97,9 @@ fn permission_view(
         return Err(invalid(
             "memory_hook_scope",
             root,
-            "the host-authorized owning memory space",
+            "the host-authorized owning memory space: pass the project_root from resolve_document_space \
+             (MCP callers use purpose current_project, Assistant callers self). Reports under a source \
+             project are hooked from the Hooks tab or Agents automation watches (configure_automation_watch)",
         ));
     }
     Ok(view)
@@ -237,12 +232,19 @@ fn disable(
     Ok(json!({"hook":hook_view(&saved, "disabled")}))
 }
 
+/// Hands Agents the owner's baseline with the setup request: Agents runs inside this call, so it
+/// cannot read the destination or the inputs through Knowledge itself.
 fn configure_executor(
     context: &mut PluginContext<'_>,
     request: &ConfigureDocumentHook,
     grant: &Value,
     operation: &str,
+    document: &KnowledgeDocument,
 ) -> Result<Value, PluginError> {
+    let inputs: Vec<lumvise_contracts::KnowledgeDocumentReference> =
+        crate::parse(grant["inputs"].clone(), "the saved delegated inputs")?;
+    let baseline = json!({"destination":document,
+        "inputs":super::delegation::read_setup_inputs(context, &document.project_root, &inputs)?});
     permission(
         context,
         json!({"operation":"prepare_executor", "delegation_id":grant["delegation_id"],"revision":grant["revision"]}),
@@ -252,7 +254,8 @@ fn configure_executor(
         "configure_memory_executor",
         json!({"operation_id":operation,"agent_id":grant["executor_agent_id"],
         "delegation":{"delegation_id":grant["delegation_id"],"revision":grant["revision"],
-            "project_root":request.project_root,"document_id":request.document_id},"enabled":true,"settings":request.settings}),
+            "project_root":request.project_root,"document_id":request.document_id},"enabled":true,
+            "settings":request.settings,"baseline":baseline}),
     )
 }
 
@@ -289,5 +292,27 @@ impl ConfigureDocumentHook {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The example closing the tool description is the first call an agent copies, so it must
+    /// satisfy the request type and every field the signed input schema requires.
+    #[test]
+    fn the_described_enable_example_is_a_complete_valid_request() {
+        let description = crate::documents::description("configure_document_hook").unwrap();
+        let (_, example) = description.split_once("Example: ").expect("example");
+        let example: Value = serde_json::from_str(example).expect("example is JSON");
+
+        let request: ConfigureDocumentHook =
+            crate::parse(example.clone(), "described example").unwrap();
+        request.require_enabled_fields().unwrap();
+        let schema = schema::input_schema("configure_document_hook").unwrap();
+        for field in schema["required"].as_array().unwrap() {
+            assert!(example.get(field.as_str().unwrap()).is_some(), "{field}");
+        }
     }
 }

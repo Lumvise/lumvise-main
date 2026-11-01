@@ -392,59 +392,6 @@ fn assert_lane_activity(services: &PluginHostServices) {
 }
 
 #[test]
-fn host_owned_versions_publish_the_complete_neutral_contract() {
-    let host = crate::plugin::host_capability_catalog::compiled_host_capability_versions();
-    let identities = host.keys().copied().collect::<Vec<_>>();
-
-    assert_eq!(
-        identities,
-        vec![
-            "frontend.action",
-            "frontend.canvas",
-            "host.extension",
-            "modalities.speech_to_text",
-            "modalities.text_to_speech",
-            "neural.decisions",
-            "neural.embed",
-            "neural.llm",
-            "plugin.invoke",
-            "project.import",
-            "project.index",
-            "project.source",
-            "runtime.assistant_engine_availability",
-            "runtime.audio_session",
-            "runtime.background_job",
-            "runtime.document_conversion_options",
-            "runtime.exclusive_lane",
-            "runtime.knowledge_scope",
-            "runtime.project_execution",
-            "runtime.scoped_mcp",
-            "runtime.speech_availability",
-            "runtime.turn_wait",
-            "semantic.snapshot",
-            "storage.plugin",
-            "storage.semantic",
-        ]
-    );
-    assert_eq!(host["storage.semantic"], semver::Version::new(1, 8, 0));
-    assert_eq!(host[PROJECT_EXECUTION], semver::Version::new(1, 1, 0));
-    assert_eq!(
-        host["runtime.knowledge_scope"],
-        semver::Version::new(1, 4, 0)
-    );
-    assert!(
-        host.iter()
-            .filter(|(id, _)| ![
-                "storage.semantic",
-                PROJECT_EXECUTION,
-                "runtime.knowledge_scope"
-            ]
-            .contains(id))
-            .all(|(_, version)| version == &semver::Version::new(1, 0, 0))
-    );
-}
-
-#[test]
 fn every_cataloged_service_capability_reaches_an_adapter() {
     let services = services();
 

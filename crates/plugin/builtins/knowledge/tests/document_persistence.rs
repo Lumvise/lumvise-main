@@ -23,6 +23,8 @@ mod delegation;
 mod generation;
 #[path = "document_persistence/inspection.rs"]
 mod inspection;
+#[path = "document_persistence/inspection_reads.rs"]
+mod inspection_reads;
 #[path = "document_persistence/md_seed.rs"]
 mod md_seed;
 #[path = "document_persistence/qualified_citations.rs"]

@@ -15,7 +15,7 @@ pub(super) fn permitted(caller: &str, target: &str, export: &ExportDescriptor) -
         ) | (
             "builtin.knowledge",
             "builtin.agents",
-            "prepare_memory_hook_inputs" | "configure_memory_executor"
+            "prepare_memory_hook_inputs" | "configure_memory_executor" | "read_memory_executor"
         )
     )
 }
@@ -50,12 +50,17 @@ mod tests {
             assert!(!permitted("other.caller", "builtin.knowledge", &export));
             assert!(!permitted("builtin.agents", "other.target", &export));
         }
-        for id in ["prepare_memory_hook_inputs", "configure_memory_executor"] {
-            assert!(permitted(
-                "builtin.knowledge",
-                "builtin.agents",
-                &command(id)
-            ));
+        for id in [
+            "prepare_memory_hook_inputs",
+            "configure_memory_executor",
+            "read_memory_executor",
+        ] {
+            let export = command(id);
+            assert!(permitted("builtin.knowledge", "builtin.agents", &export));
+            // The route is one-way: Agents never reaches these through the Knowledge pair.
+            assert!(!permitted("builtin.agents", "builtin.knowledge", &export));
+            assert!(!permitted("other.caller", "builtin.agents", &export));
+            assert!(!permitted("builtin.knowledge", "other.target", &export));
         }
     }
 

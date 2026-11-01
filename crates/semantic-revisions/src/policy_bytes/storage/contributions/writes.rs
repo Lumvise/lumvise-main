@@ -214,9 +214,10 @@ fn publish_if_approved(
     }
     if status == Some("approved") {
         records.insert(accepted.clone());
-    }
-    if let Some(changes) = artifact.metadata.get("changes").and_then(Value::as_str) {
-        records.remove(&SemanticRecordRef::artifact(changes));
+        // Only an approved replacement takes the replaced version's place; a rejected one leaves it public.
+        if let Some(changes) = artifact.metadata.get("changes").and_then(Value::as_str) {
+            records.remove(&SemanticRecordRef::artifact(changes));
+        }
     }
     let context = public.selection.source_context.clone();
     let update = selection_update(

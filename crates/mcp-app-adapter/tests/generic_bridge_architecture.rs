@@ -4,6 +4,7 @@ use std::process::Command;
 const ALLOWED_DEPENDENCIES: &[&str] = &[
     "lumvise-app-core",
     "lumvise-contracts",
+    "libc",
     "lumvise-mcp-core",
     "prost",
     "serde",
@@ -12,6 +13,7 @@ const ALLOWED_DEPENDENCIES: &[&str] = &[
     "thiserror",
     "tokio",
     "tracing",
+    "windows-sys",
 ];
 
 #[test]
@@ -22,23 +24,22 @@ fn adapter_dependency_graph_is_transport_only() {
 }
 
 #[test]
-fn runtime_launch_and_mcp_wire_contracts_are_allowed() {
-    let dependencies = vec![
-        "lumvise-app-core".to_string(),
-        "lumvise-contracts".to_string(),
-    ];
-    assert_allowed_dependencies(&dependencies).unwrap();
-}
-
-#[test]
 fn mcp_wire_contracts_do_not_admit_domain_implementations() {
-    for dependency in [
-        "lumvise-db-core",
-        "lumvise-neural-core",
-        "lumvise-plugin-semantic",
-    ] {
-        let error = assert_allowed_dependencies(&[dependency.to_string()]).unwrap_err();
-        assert!(error.contains(dependency));
+    let metadata = cargo_metadata();
+    for package in ["lumvise-contracts", "lumvise-mcp-core"] {
+        let dependencies = package_dependencies(&metadata, package);
+        for forbidden in [
+            "lumvise-db-core",
+            "lumvise-neural-core",
+            "lumvise-plugin-semantic",
+        ] {
+            assert!(
+                !dependencies
+                    .iter()
+                    .any(|dependency| dependency == forbidden),
+                "{package} must not depend on domain implementation {forbidden}"
+            );
+        }
     }
 }
 

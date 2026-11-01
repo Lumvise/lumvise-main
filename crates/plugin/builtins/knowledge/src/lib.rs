@@ -117,7 +117,7 @@ fn delete(input: Value, context: &mut PluginContext<'_>) -> Result<Value, Plugin
 fn get(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let artifact_id = required_input(&input, "artifact_id")?;
     let mut artifact = required_artifact(context, &artifact_id)?;
-    outdated::mark(context, std::slice::from_mut(&mut artifact))?;
+    outdated::mark(context, std::slice::from_mut(&mut artifact));
     Ok(json!({"artifact": artifact}))
 }
 
@@ -134,7 +134,7 @@ fn list(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginEr
     })?;
     artifacts.retain(|artifact| artifact::is_discoverable(artifact, include_inactive));
     artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
-    outdated::mark(context, &mut artifacts)?;
+    outdated::mark(context, &mut artifacts);
     Ok(json!({"artifacts": artifacts}))
 }
 
@@ -157,7 +157,7 @@ fn list_all(input: Value, context: &mut PluginContext<'_>) -> Result<Value, Plug
         list_requested_artifacts(context, &request)
     })?;
     let mut artifacts = artifact::filter_artifacts(records, &request);
-    outdated::mark(context, &mut artifacts)?;
+    outdated::mark(context, &mut artifacts);
     Ok(json!({"artifacts": artifacts}))
 }
 
@@ -187,7 +187,7 @@ fn list_dependents(input: Value, context: &mut PluginContext<'_>) -> Result<Valu
         ));
     }
     let mut artifacts = storage::list_knowledge_dependents(context, &target_kind, &target_id)?;
-    outdated::mark(context, &mut artifacts)?;
+    outdated::mark(context, &mut artifacts);
     Ok(json!({"artifacts": artifacts}))
 }
 

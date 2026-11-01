@@ -392,11 +392,22 @@ fn families(
     plan: &mut ReadPlan,
     query: &SemanticRevisionFamilyQuery,
 ) -> SemanticRevisionResult<()> {
-    plan.selection(&query.selection_id, false);
-    if let Some(context) = context(plan, &query.selection_id) {
-        plan.families(&context, &query.selection_id, query.records.clone())?;
+    plan.resolve_in(&query.selection_id, query.records.clone())
+}
+
+impl ReadPlan {
+    /// Loads the facts that resolve each record to the member its revision family reached in `selection`.
+    pub(in crate::policy_bytes::storage) fn resolve_in(
+        &mut self,
+        selection: &str,
+        records: Vec<SemanticRecordRef>,
+    ) -> SemanticRevisionResult<()> {
+        self.selection(selection, false);
+        if let Some(context) = context(self, selection) {
+            self.families(&context, selection, records)?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn context(plan: &ReadPlan, selection: &str) -> Option<String> {

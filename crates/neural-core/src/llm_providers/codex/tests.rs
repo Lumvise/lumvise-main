@@ -105,16 +105,13 @@ model = "gpt-5.4"
 fn isolated_codex_config_writes_requested_assistant_mcp_server_tables() {
     let mut request = test_request();
     request.mcp_servers[0].name = "lumvise-assistant".to_string();
-    request.mcp_servers[0].url =
-        "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/session-a".to_string();
+    request.mcp_servers[0].url = ASSISTANT_ROUTE.to_string();
 
     let config = codex_mcp_config_toml(&request);
 
     assert!(config.contains("[mcp_servers.lumvise-assistant]"));
     assert!(config.contains("enabled = true"));
-    assert!(
-        config.contains("url = \"http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/session-a\"")
-    );
+    assert!(config.contains(&format!("url = \"{ASSISTANT_ROUTE}\"")));
     // Server-level approval covers each tool in the trusted session scope;
     // an incomplete per-tool list previously stranded headless callers.
     assert!(config.contains("default_tools_approval_mode = \"approve\""));
@@ -178,59 +175,72 @@ impl FakeCodexApprovalProbe {
     }
 }
 
-#[test]
-fn public_provider_approves_only_the_trusted_assistant_scope() {
+/// The route the Assistant plugin hands Codex: scope, owner, session, then the session epoch.
+const ASSISTANT_ROUTE: &str = "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/workspace:thread-1/27";
+const AGENT_ROUTE: &str =
+    "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/agent_run/builtin.agents/run-1";
+
+/// The approval each launch path gives one server: the exec `-c` override and the
+/// app-server `config.toml` table.
+fn approval_in_both_launch_paths(name: &str, url: &str) -> (String, String) {
     let mut request = test_request();
     request.mcp_servers = vec![LlmMcpServerConfig {
-        name: "lumvise-assistant".into(),
-        url: "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/session-a".into(),
+        name: name.into(),
+        url: url.into(),
     }];
-    let response = FakeCodexApprovalProbe::provider()
+    let exec_override = FakeCodexApprovalProbe::provider()
         .complete(&request)
-        .expect("completion");
-    assert_eq!(
-        response.content,
-        "mcp_servers.lumvise-assistant.default_tools_approval_mode=\"approve\""
-    );
+        .expect("completion")
+        .content;
+    let table_mode = codex_mcp_config_toml(&request)
+        .lines()
+        .find_map(|line| line.strip_prefix("default_tools_approval_mode = "))
+        .expect("approval mode line")
+        .to_owned();
+    (exec_override, table_mode)
 }
 
 #[test]
-fn assistant_endpoint_with_an_unrelated_server_name_keeps_automatic_review() {
-    let mut request = test_request();
-    request.mcp_servers[0].url = "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/session-a".into();
-    let response = FakeCodexApprovalProbe::provider()
-        .complete(&request)
-        .expect("completion");
-    assert!(response.content.ends_with("=\"auto\""));
-    assert!(codex_mcp_config_toml(&request).contains("default_tools_approval_mode = \"auto\""));
+fn loopback_endpoints_are_approved_in_both_launch_paths_whatever_their_name() {
+    for (name, url) in [
+        ("lumvise-assistant", ASSISTANT_ROUTE),
+        ("lumvise-agent", AGENT_ROUTE),
+        ("local-tools", "http://127.0.0.1:4180/mcp"),
+        ("local-tools", "http://localhost:4180/mcp"),
+        ("local-tools", "http://[::1]:4180/mcp"),
+        ("local-tools", "https://127.0.0.1:4180/mcp"),
+    ] {
+        let (exec_override, table_mode) = approval_in_both_launch_paths(name, url);
+        assert_eq!(
+            exec_override,
+            format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\""),
+            "{url}"
+        );
+        assert_eq!(table_mode, "\"approve\"", "{url}");
+    }
 }
 
 #[test]
-fn unrelated_mcp_endpoints_keep_automatic_review_in_both_launch_paths() {
-    let endpoints = [
-        "https://example.com/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/session-a",
-        "http://127.0.0.1:4180/mcp",
-        "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/",
+fn remote_look_alike_and_invalid_endpoints_keep_automatic_review_in_both_launch_paths() {
+    for url in [
+        "https://example.com/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/session-a/27",
+        "http://127.0.0.1.example.com:4180/mcp",
+        "http://localhost.example.com/mcp",
+        "http://127.0.0.1@example.com/mcp",
+        "http://127.0.0.1:4180@example.com/mcp",
+        "http://example.com/127.0.0.1",
+        "http://192.168.2.100:4180/mcp",
+        "http://[::ffff:10.0.0.1]/mcp",
+        "ftp://127.0.0.1/mcp",
         "invalid-url",
-    ];
-    for endpoint in endpoints {
-        let mut request = test_request();
-        request.mcp_servers[0] = LlmMcpServerConfig {
-            name: "lumvise-assistant".into(),
-            url: endpoint.into(),
-        };
-        let response = FakeCodexApprovalProbe::provider()
-            .complete(&request)
-            .expect("completion");
+    ] {
+        // The name that used to earn approval must not matter any more.
+        let (exec_override, table_mode) = approval_in_both_launch_paths("lumvise-assistant", url);
         assert!(
-            response.content.ends_with("=\"auto\""),
-            "{endpoint}: {}",
-            response.content
+            exec_override.ends_with("=\"auto\""),
+            "{url}: {exec_override}"
         );
-        assert!(
-            codex_mcp_config_toml(&request).contains("default_tools_approval_mode = \"auto\""),
-            "{endpoint}"
-        );
+        assert_eq!(table_mode, "\"auto\"", "{url}");
     }
 }
 

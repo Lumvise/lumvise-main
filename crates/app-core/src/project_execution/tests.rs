@@ -165,6 +165,15 @@ fn lease_expiry_and_cancellation_are_terminal_against_late_results() {
         ProjectExecutionStatus::Failed
     );
 
+    assert!(
+        service
+            .record_result("provider", &expired.job_id, Ok(Value::Null))
+            .is_err()
+    );
+    assert_eq!(
+        service.status("caller", &expired.job_id).unwrap().status,
+        ProjectExecutionStatus::Failed
+    );
     let (sender, _receiver) = mpsc::sync_channel(4);
     service
         .register_provider("provider-2", "/project", ["run".into()], sender)

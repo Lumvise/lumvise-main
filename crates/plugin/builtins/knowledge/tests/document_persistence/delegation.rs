@@ -239,3 +239,40 @@ fn stale_delegated_proposal_never_refreshes_its_editing_base() {
         "First"
     );
 }
+
+#[test]
+fn hooking_a_source_project_report_points_to_the_memory_space_and_the_other_hook_routes() {
+    let mut host = DocumentBoundaryHost::new();
+    host.knowledge("create_document", super::report()).unwrap();
+    host.invocation_context = PluginInvocationContext::new(
+        "memory-owner",
+        "builtin.assistant",
+        PluginInvocationClass::Foreground,
+        Instant::now() + Duration::from_secs(60),
+    )
+    .with_route_identity("owner", Some("assistant_session".into()))
+    .with_scope_epoch(Some(1));
+    bind_owner(&mut host, true);
+
+    let read = host
+        .knowledge("get_document_hook", super::identity())
+        .unwrap_err();
+    let disable = host
+        .knowledge(
+            "configure_document_hook",
+            json!({"operation_id":"disable","project_root":"/project","document_id":"report:architecture",
+            "expected_hook_revision":null,"enabled":false}),
+        )
+        .unwrap_err();
+
+    for error in [read, disable] {
+        assert_eq!(error.code, "memory_hook_scope");
+        for route in [
+            "resolve_document_space",
+            "Hooks tab",
+            "configure_automation_watch",
+        ] {
+            assert!(error.message.contains(route), "{route}: {}", error.message);
+        }
+    }
+}

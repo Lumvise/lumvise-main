@@ -1,4 +1,5 @@
 //! Real shared scanner -> Semantic -> public native persistence; only publication faults are faked.
+use super::jobs::RETAINED_FINISHED_JOBS;
 use super::*;
 use lumvise_db_core::{
     LocalPersistence, PersistenceResult, RelationalOperation, RelationalPersistence,
@@ -24,6 +25,8 @@ struct SemanticImportBoundary {
     broker: crate::AppCoreHostCapabilityBroker,
     client: String,
     batches: Vec<Value>,
+    /// Every `record_index_log` entry the importer asked Semantic to write.
+    logs: Vec<Value>,
     lose_next_commit_reply: bool,
 }
 
@@ -64,6 +67,9 @@ impl HostPluginInvoker for SemanticImportPublisher {
         let ingestion = request.export_id == INGEST_EXPORT_ID;
         if ingestion {
             boundary.batches.push(request.input.clone());
+        }
+        if request.export_id == RECORD_INDEX_LOG_EXPORT_ID {
+            boundary.logs.push(request.input.clone());
         }
         let output = SemanticPlugin
             .dispatch(
@@ -123,6 +129,7 @@ impl SharedImportHost {
                 .unwrap(),
             client: client.into(),
             batches: vec![],
+            logs: vec![],
             lose_next_commit_reply: false,
         };
         Self {
@@ -389,17 +396,20 @@ fn shared_folder_import_rejects_expired_or_cancelled_lifecycle_before_scanning()
         PluginInvocationClass::Foreground,
         Instant::now() - Duration::from_secs(1),
     );
+    let root = checkout();
     for context in [cancelled, expired] {
         assert!(
             host.app
                 .plugin_host_services
                 .project_import_service()
                 .import_folder(
-                    json!({"folderPath":"/missing"}),
+                    json!({"folderPath":root.path()}),
                     &context,
                     host.publisher.clone()
                 )
-                .is_err()
+                .unwrap_err()
+                .to_string()
+                .contains("folder import cancelled or deadline expired; expected active inherited invocation")
         );
     }
     assert!(host.app.project_import_sessions.lock().unwrap().is_empty());
@@ -740,4 +750,148 @@ fn prepared_job_survives_its_original_call_and_requires_fresh_control_to_continu
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(!host.selected().elements.is_empty());
+}
+
+fn refresh_input(root: &Path, project_root: &str) -> ImportInput {
+    ImportInput {
+        folder_path: root.to_string_lossy().into_owned(),
+        project_root: Some(project_root.into()),
+        replace_paths: None,
+        source: None,
+    }
+}
+
+/// `(import id, status)` of every index-log entry written so far, in order.
+fn index_log_entries(host: &SharedImportHost) -> Vec<(String, String)> {
+    let boundary = host.publisher.boundary.lock().unwrap();
+    boundary
+        .logs
+        .iter()
+        .map(|log| {
+            let text = |key: &str| log[key].as_str().unwrap().to_owned();
+            (text("index_log_id"), text("status"))
+        })
+        .collect()
+}
+
+fn latest_index_log(host: &SharedImportHost) -> Value {
+    host.publisher
+        .invoke_plugin(HostPluginInvocation {
+            plugin_id: "builtin.semantic".into(),
+            export_id: "latest_index_log".into(),
+            input: json!({"project_root":PROJECT}),
+        })
+        .unwrap()["index_log"]
+        .clone()
+}
+
+#[test]
+fn idle_refresh_rounds_write_no_index_log_rows_and_keep_a_bounded_job_registry() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    let service = host.app.plugin_host_services.project_import_service();
+    let mut input = json!({"folderPath":root.path(),"projectRoot":PROJECT,"statusOnly":true});
+    let first = service
+        .import_folder(input.clone(), &import_context(), host.publisher.clone())
+        .unwrap();
+    input["importId"] = first["importId"].clone();
+    input["statusOnly"] = json!(false);
+    drive_import_input(&host, input.clone(), host.publisher.clone()).unwrap();
+    let logged = index_log_entries(&host);
+    let statuses: Vec<_> = logged.iter().map(|(_, status)| status.as_str()).collect();
+    assert_eq!(statuses, ["running", "completed"]);
+    let latest = latest_index_log(&host);
+    host.publisher.boundary.lock().unwrap().batches.clear();
+
+    for round in 0..RETAINED_FINISHED_JOBS + 3 {
+        let refreshed = service
+            .import_native_via(
+                host.publisher.clone(),
+                refresh_input(root.path(), PROJECT),
+                true,
+            )
+            .ok()
+            .expect("an idle refresh succeeds");
+        assert_eq!(refreshed["elementsUpserted"], 0, "round {round}");
+        assert!(
+            service.jobs.len() <= RETAINED_FINISHED_JOBS,
+            "round {round}"
+        );
+        if round == 0 {
+            // The previous caller can still read its completion after a refresh started.
+            input["statusOnly"] = json!(true);
+            let handle = service
+                .import_folder(input.clone(), &import_context(), host.publisher.clone())
+                .unwrap();
+            assert_eq!(handle["phase"], "completed");
+        }
+    }
+
+    assert_eq!(
+        index_log_entries(&host),
+        logged,
+        "idle refresh rounds must not write index-log rows"
+    );
+    assert_eq!(latest_index_log(&host), latest);
+    assert!(host.publisher.boundary.lock().unwrap().batches.is_empty());
+    assert_eq!(service.jobs.len(), RETAINED_FINISHED_JOBS);
+    // Long-finished handles are dropped instead of accumulating until restart.
+    assert!(
+        service
+            .import_folder(input, &import_context(), host.publisher.clone())
+            .is_err()
+    );
+}
+
+#[test]
+fn a_changed_file_refresh_still_logs_running_then_completed_under_one_import() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    host.import(root.path()).unwrap();
+    host.publisher.boundary.lock().unwrap().logs.clear();
+    std::fs::write(root.path().join("a.rs"), "fn a() { let value = 2; }\n").unwrap();
+
+    let refreshed = host
+        .app
+        .plugin_host_services
+        .project_import_service()
+        .import_native_via(
+            host.publisher.clone(),
+            refresh_input(root.path(), PROJECT),
+            true,
+        )
+        .ok()
+        .expect("refresh publishes the edit");
+
+    assert!(refreshed["elementsUpserted"].as_u64().unwrap() > 0);
+    let logged = index_log_entries(&host);
+    let statuses: Vec<_> = logged.iter().map(|(_, status)| status.as_str()).collect();
+    assert_eq!(statuses, ["running", "completed"]);
+    assert_eq!(logged[0].0, logged[1].0);
+    assert_eq!(latest_index_log(&host)["status"], "completed");
+}
+
+#[test]
+fn background_refresh_rounds_keep_a_bounded_job_registry() {
+    let host = SharedImportHost::new(Arc::new(LocalPersistence::in_memory().unwrap()), "client");
+    let root = checkout();
+    let project = root.path().canonicalize().unwrap();
+    let project_root = project.to_string_lossy().into_owned();
+    drive_import_input(
+        &host,
+        json!({"folderPath":project,"projectRoot":project_root}),
+        host.publisher.clone(),
+    )
+    .unwrap();
+    let service = host.app.plugin_host_services.project_import_service();
+
+    // The driver's own entry point: every round starts a job for the unchanged project.
+    for round in 0..RETAINED_FINISHED_JOBS + 3 {
+        refresh_local_projects(&host.app).unwrap();
+        assert!(
+            service.jobs.len() <= RETAINED_FINISHED_JOBS,
+            "round {round}"
+        );
+    }
+    assert_eq!(service.jobs.len(), RETAINED_FINISHED_JOBS);
 }

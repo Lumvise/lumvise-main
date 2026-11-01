@@ -1,6 +1,9 @@
 //! Current-selection reads fetch only indexed matches and their exact dependency closure.
 use super::*;
 
+/// The most rows one page of a paged read may hold.
+const MAX_PAGE: usize = 1_000;
+
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(in crate::policy_bytes::storage) enum SelectedQuery {
@@ -12,6 +15,10 @@ pub(in crate::policy_bytes::storage) enum SelectedQuery {
     },
     Prefix {
         prefix: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
     },
     Owners {
         element_ids: Vec<String>,
@@ -19,6 +26,25 @@ pub(in crate::policy_bytes::storage) enum SelectedQuery {
     Connections {
         element_ids: Vec<String>,
         incoming: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// The selection's artifacts that hold an object under this metadata key, such as `knowledge`.
+    ArtifactsByNamespace {
+        artifact_namespace: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// The selection's active elements that have no parent: what a project's tree starts from.
+    ElementRoots {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
     },
     Dependents {
         record: SemanticRecordRef,
@@ -26,6 +52,48 @@ pub(in crate::policy_bytes::storage) enum SelectedQuery {
     Content {
         content_ref: String,
     },
+}
+
+/// A page limit from 1 to 1,000, and the cursor of the previous page, which only a limit may accompany.
+fn page(
+    limit: &Option<usize>,
+    after: &Option<String>,
+) -> SemanticRevisionResult<Option<(usize, Option<String>)>> {
+    match (limit, after) {
+        (None, None) => Ok(None),
+        (None, Some(cursor)) => Err(SemanticRevisionError::invalid_value(
+            cursor,
+            "a page limit together with the cursor",
+        )),
+        (Some(limit), after) if (1..=MAX_PAGE).contains(limit) => Ok(Some((*limit, after.clone()))),
+        (Some(limit), _) => Err(SemanticRevisionError::invalid_value(
+            limit.to_string(),
+            "a page limit from 1 to 1,000",
+        )),
+    }
+}
+
+/// The selection's rows that carry one index entry, all of them or a page at a time when a limit is given.
+fn index_entry(
+    plan: &mut ReadPlan,
+    selection: &str,
+    (name, value): (&str, &str),
+    limit: &Option<usize>,
+    after: &Option<String>,
+) -> SemanticRevisionResult<()> {
+    match page(limit, after)? {
+        Some((limit, after)) => {
+            plan.requested.insert(StorageQuery::IndexPage {
+                names: vec![name.into()],
+                values: vec![value.into()],
+                selection_id: selection.into(),
+                limit,
+                after,
+            });
+        }
+        None => plan.index(name, value, Some(selection)),
+    }
+    Ok(())
 }
 
 impl SelectedQuery {
@@ -44,16 +112,23 @@ impl SelectedQuery {
                 }
             }
             Self::Path { path } => plan.index("record_path", path, Some(selection)),
-            Self::Prefix { prefix } => {
+            Self::Prefix {
+                prefix,
+                limit,
+                after,
+            } => {
                 if prefix.is_empty() {
                     return Err(SemanticRevisionError::invalid_value(
                         prefix,
                         "a nonempty stored path prefix",
                     ));
                 }
+                let paged = page(limit, after)?;
                 plan.requested.insert(StorageQuery::Prefix {
                     prefix: prefix.clone(),
                     selection_id: selection.into(),
+                    limit: paged.as_ref().map(|(limit, _)| *limit),
+                    after: paged.and_then(|(_, after)| after),
                 });
             }
             Self::Owners { element_ids } => {
@@ -70,14 +145,51 @@ impl SelectedQuery {
             Self::Connections {
                 element_ids,
                 incoming,
+                limit,
+                after,
             } => {
-                for id in element_ids {
-                    plan.index("connection_source", id, Some(selection));
-                    if *incoming {
-                        plan.index("connection_target", id, Some(selection));
+                if let Some((limit, after)) = page(limit, after)? {
+                    // One ordered stream over every element and both directions, so one cursor covers them all.
+                    if !element_ids.is_empty() {
+                        let mut names = vec!["connection_source".to_string()];
+                        if *incoming {
+                            names.push("connection_target".into());
+                        }
+                        plan.requested.insert(StorageQuery::IndexPage {
+                            names,
+                            values: element_ids.clone(),
+                            selection_id: selection.into(),
+                            limit,
+                            after,
+                        });
+                    }
+                } else {
+                    for id in element_ids {
+                        plan.index("connection_source", id, Some(selection));
+                        if *incoming {
+                            plan.index("connection_target", id, Some(selection));
+                        }
                     }
                 }
             }
+            Self::ArtifactsByNamespace {
+                artifact_namespace,
+                limit,
+                after,
+            } => index_entry(
+                plan,
+                selection,
+                ("artifact_namespace", artifact_namespace),
+                limit,
+                after,
+            )?,
+            Self::ElementRoots { limit, after } => index_entry(
+                plan,
+                selection,
+                ("element_root", super::super::indexes::ELEMENT_ROOT),
+                limit,
+                after,
+            )?,
             Self::Dependents { record } => plan.index(
                 "artifact_dependency",
                 &serde_json::to_string(record)?,

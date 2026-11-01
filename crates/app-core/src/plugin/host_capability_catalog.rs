@@ -126,7 +126,7 @@ const fn semantic_capability() -> HostCapabilityDefinition {
         id: SEMANTIC_STORAGE,
         route: HostCapabilityRoute::SemanticStorage,
         major: 1,
-        minor: 8,
+        minor: 9,
         patch: 0,
     }
 }
@@ -176,25 +176,43 @@ mod tests {
     #[test]
     fn catalog_publishes_actual_versions() {
         let versions = compiled_host_capability_versions();
+        let manifests = bundled_manifests();
+        assert!(!manifests.is_empty(), "no bundled plugin manifests found");
+        for manifest in &manifests {
+            assert_bundled_requirements(manifest, &versions);
+        }
+    }
 
-        assert_eq!(versions.len(), 25);
-        assert_eq!(versions[SEMANTIC_STORAGE], Version::new(1, 8, 0));
-        assert_eq!(versions[PROJECT_EXECUTION], Version::new(1, 1, 0));
-        assert_eq!(
-            versions[super::super::knowledge_authority::CAPABILITY],
-            Version::new(1, 4, 0)
-        );
-        assert!(
-            versions
-                .iter()
-                .filter(|(id, _)| ![
-                    SEMANTIC_STORAGE,
-                    PROJECT_EXECUTION,
-                    super::super::knowledge_authority::CAPABILITY
-                ]
-                .contains(id))
-                .all(|(_, version)| version == &Version::new(1, 0, 0))
-        );
+    fn bundled_manifests() -> Vec<lumvise_plugin_package::PluginManifest> {
+        let builtins = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugin/builtins");
+        let mut paths: Vec<_> = std::fs::read_dir(&builtins)
+            .unwrap_or_else(|error| panic!("{}: {error}", builtins.display()))
+            .map(|entry| entry.unwrap().path().join("lumvise-plugin-manifest.json"))
+            .filter(|path| path.is_file())
+            .collect();
+        paths.sort();
+        paths
+            .iter()
+            .map(|path| serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap())
+            .collect()
+    }
+
+    fn assert_bundled_requirements(
+        manifest: &lumvise_plugin_package::PluginManifest,
+        versions: &BTreeMap<&str, Version>,
+    ) {
+        let plugin = &manifest.plugin_id;
+        for requirement in &manifest.host_capabilities {
+            let id = &requirement.id;
+            let version = versions
+                .get(id.as_str())
+                .unwrap_or_else(|| panic!("{plugin} requires missing host capability {id}"));
+            let required = semver::VersionReq::parse(&requirement.version).unwrap();
+            assert!(
+                required.matches(version),
+                "{plugin} requires {id} {required}, host publishes {version}"
+            );
+        }
     }
 
     #[test]
@@ -209,16 +227,6 @@ mod tests {
         let definition = host_capability_definition(id).expect("catalog capability");
 
         assert_eq!(definition.route, expected);
-        let expected_version = if id == SEMANTIC_STORAGE {
-            Version::new(1, 8, 0)
-        } else if id == super::super::knowledge_authority::CAPABILITY {
-            Version::new(1, 4, 0)
-        } else if id == PROJECT_EXECUTION {
-            Version::new(1, 1, 0)
-        } else {
-            Version::new(1, 0, 0)
-        };
-        assert_eq!(definition.version(), expected_version);
     }
 
     fn expected_identities() -> BTreeSet<&'static str> {
