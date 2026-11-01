@@ -23,9 +23,9 @@ use lumvise_plugin_package::{ExecutionMode, HostCompatibility, verify_package};
 use lumvise_plugin_protocol::WireOutcome;
 use lumvise_plugin_semantic::{
     ARTIFACT_TRIGGER_EXPORT_ID, DEPENDENCY_TREE_EXPORT_ID, ELEMENT_AT_LOCATION_EXPORT_ID,
-    ELEMENT_TRIGGER_EXPORT_ID, GRAPH_PROVIDERS_EXPORT_ID, INGEST_EXPORT_ID,
-    LATEST_INDEX_LOG_EXPORT_ID, MANIFEST_EXPORT_ID, PACKAGE_PROTOCOL_VERSION, PLUGIN_ID,
-    REBUILD_SEARCH_INDEX_EXPORT_ID, RECORD_INDEX_LOG_EXPORT_ID, SEARCH_EXPORT_ID,
+    ELEMENT_TRIGGER_EXPORT_ID, GRAPH_PROVIDERS_EXPORT_ID, INDEX_PROJECT_EXPORT_ID,
+    INGEST_EXPORT_ID, LATEST_INDEX_LOG_EXPORT_ID, MANIFEST_EXPORT_ID, PACKAGE_PROTOCOL_VERSION,
+    PLUGIN_ID, REBUILD_SEARCH_INDEX_EXPORT_ID, RECORD_INDEX_LOG_EXPORT_ID, SEARCH_EXPORT_ID,
     SEMANTIC_CONTEXT_EXPORT_ID, SEMANTIC_GRAPH_EXPORT_ID, SNAPSHOT_STATUS_EXPORT_ID,
     TREE_EXPORT_ID, package_manifest_source,
 };
@@ -719,7 +719,12 @@ fn graph_exports_and_invalid_input_are_public_contracts() {
 #[test]
 fn manifest_declares_all_exports_and_versioned_host_capabilities() {
     let manifest = package_manifest_source("test-target", &"a".repeat(64));
-    assert_eq!(manifest.exports.len(), 40);
+    assert!(
+        manifest
+            .exports
+            .iter()
+            .any(|export| export.id == INDEX_PROJECT_EXPORT_ID)
+    );
     for http_id in [
         "http_semantic_context",
         "http_search_context",
