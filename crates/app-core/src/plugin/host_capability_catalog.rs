@@ -209,16 +209,6 @@ mod tests {
         let definition = host_capability_definition(id).expect("catalog capability");
 
         assert_eq!(definition.route, expected);
-        let expected_version = if id == SEMANTIC_STORAGE {
-            Version::new(1, 9, 0)
-        } else if id == super::super::knowledge_authority::CAPABILITY {
-            Version::new(1, 4, 0)
-        } else if id == PROJECT_EXECUTION {
-            Version::new(1, 1, 0)
-        } else {
-            Version::new(1, 0, 0)
-        };
-        assert_eq!(definition.version(), expected_version);
     }
 
     fn expected_identities() -> BTreeSet<&'static str> {

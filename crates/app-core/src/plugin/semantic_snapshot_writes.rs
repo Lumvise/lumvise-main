@@ -459,14 +459,13 @@ mod tests {
 
     #[test]
     fn staging_a_page_keeps_a_long_import_alive() {
-        let writes = SemanticSnapshotWrites::new();
-        let touched =
-            |writes: &SemanticSnapshotWrites| writes.writes.lock().unwrap()["import"].touched_at;
+        let mut writes = SemanticSnapshotWrites::new();
+        writes.idle_ttl = Duration::from_secs(2);
         begin_two_pages(&writes, "import").unwrap();
-        let begun = touched(&writes);
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(1200));
         stage_page(&writes, "import", 0).unwrap();
-        assert!(touched(&writes) > begun);
+        std::thread::sleep(Duration::from_millis(1200));
+        stage_page(&writes, "import", 1).unwrap();
     }
 
     #[test]

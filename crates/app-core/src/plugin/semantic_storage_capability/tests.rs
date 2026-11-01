@@ -140,6 +140,9 @@ fn unrelated_plugin_cannot_write_semantic_structure() {
 fn live_search_structure_is_routed_without_exposing_artifact_bodies() {
     let broker = broker_for(persistence());
     broker.invoke(request(SEMANTIC_PLUGIN_ID, json!({"operation":"sync_structure", "project_root":"/repo", "elements":[element()], "relationships":[]}))).unwrap();
+    broker.invoke(request(KNOWLEDGE_PLUGIN_ID, json!({"operation":"upsert_artifact", "artifact":{
+        "artifact_id":"private-note", "semantic_element_id":"element-1", "artifact_kind":"specification", "title":"Private",
+        "content":"private artifact body must not enter live search", "metadata":{}}}))).unwrap();
     let result = broker
         .invoke(request(
             SEMANTIC_PLUGIN_ID,
@@ -149,6 +152,11 @@ fn live_search_structure_is_routed_without_exposing_artifact_bodies() {
     assert_eq!(result["project_root"], "/repo");
     assert_eq!(result["elements"].as_array().unwrap().len(), 1);
     assert_eq!(result["artifacts"], json!([]));
+    assert!(
+        !result
+            .to_string()
+            .contains("private artifact body must not enter live search")
+    );
     assert!(
         broker
             .invoke(request(
