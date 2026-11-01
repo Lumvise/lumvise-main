@@ -151,7 +151,6 @@ fn removing_a_project_discards_acknowledged_scans_for_explicit_reimport() {
     let response = settled_import_response(&app, &request(json!({"folderPath": project_root})));
     assert_eq!(response.status, "200 OK");
     assert_eq!(response_body(&response)["phase"], "failed");
-
     assert!(
         response_body(&response)
             .to_string()
@@ -279,7 +278,6 @@ fn publication_failure_fails_closed_when_semantic_plugin_is_absent() {
     );
     assert_eq!(response.status, "200 OK");
     assert_eq!(response_body(&response)["phase"], "failed");
-
     let body = response_body(&response);
     let message = body.to_string();
     assert!(
