@@ -375,14 +375,29 @@ impl AppRuntimeCoordinator {
         })
     }
 
+    fn published_owner_before(
+        &self,
+        deadline: Instant,
+    ) -> Result<(RuntimeDiscovery, String), RuntimeCoordinatorError> {
+        // The owner holds the lease before its generation-bound files are published.
+        while Instant::now() < deadline {
+            if let Some(record) = discovery::read(&discovery_path(self.runtime_root()))
+                && let Some(credential) =
+                    read_owner_credential(self.runtime_root(), &record.generation_nonce)
+            {
+                return Ok((record, credential));
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+        Err(RuntimeCoordinatorError::DeadlineElapsed)
+    }
+
     fn forward_activation(
         &self,
         request: ActivationRequest,
     ) -> Result<RuntimeConnection, RuntimeCoordinatorError> {
-        let record = discovery::read(&discovery_path(self.runtime_root()))
-            .ok_or(RuntimeCoordinatorError::InvalidDiscovery)?;
-        let owner_credential = read_owner_credential(self.runtime_root(), &record.generation_nonce)
-            .ok_or(RuntimeCoordinatorError::InvalidDiscovery)?;
+        let activation_deadline = Instant::now() + Duration::from_secs(60);
+        let (record, owner_credential) = self.published_owner_before(activation_deadline)?;
         let mut handshake_stream = control::connect(&record.control_endpoint)
             .map_err(|error| RuntimeCoordinatorError::Control(error.to_string()))?;
         let handshake = send_control(
@@ -397,7 +412,6 @@ impl AppRuntimeCoordinator {
         if !handshake.accepted {
             return Err(RuntimeCoordinatorError::Control(handshake.message));
         }
-        let activation_deadline = Instant::now() + Duration::from_secs(60);
         if !request.background {
             let mut stream = control::connect(&record.control_endpoint)
                 .map_err(|error| RuntimeCoordinatorError::Control(error.to_string()))?;

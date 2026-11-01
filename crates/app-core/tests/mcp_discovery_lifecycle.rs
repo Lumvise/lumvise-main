@@ -8,6 +8,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+#[path = "mcp_discovery_lifecycle/unpublished_owner.rs"]
+mod unpublished_owner;
+
 #[derive(Default)]
 struct RecordingControlPort {
     activations: Mutex<Vec<Vec<String>>>,
