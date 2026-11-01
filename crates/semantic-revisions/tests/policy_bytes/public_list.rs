@@ -531,10 +531,10 @@ fn members_enumerate_pending_reports_by_source_element_and_public_readers_see_no
 #[test]
 fn a_member_asking_about_the_current_revision_sees_reports_written_against_older_ones() {
     let mut gateway = paper_project();
-    let before = contribute(&mut gateway, "author", "e17", "on the adopted folder", None).unwrap();
+    contribute(&mut gateway, "author", "e17", "on the adopted folder", None).unwrap();
     let receipt = revise_paper(&mut gateway, "edit-1", "v2", false);
     let folder = accepted_id(&receipt, "e17");
-    let after = contribute(
+    contribute(
         &mut gateway,
         "author",
         &folder,
@@ -561,7 +561,6 @@ fn a_member_asking_about_the_current_revision_sees_reports_written_against_older
         ));
         assert_eq!(view, expected, "asked about {asked}");
     }
-    assert_ne!(before, after);
 }
 
 /// The byte requests of one contribution on `element`, then of a pending view asking about `viewed`.

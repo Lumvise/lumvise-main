@@ -25,7 +25,13 @@ fn selected_facts(
                 "follow_context",
                 "history_selection",
             ]
-            .contains(&query["name"].as_str().unwrap_or(""))
+            .iter()
+            .any(|forbidden| {
+                query["name"] == *forbidden
+                    || query["names"]
+                        .as_array()
+                        .is_some_and(|names| names.iter().any(|name| name == forbidden))
+            })
     }));
     assert!(
         facts
@@ -270,8 +276,8 @@ fn a_limit_outside_1_to_1000_and_a_cursor_without_a_limit_are_refused() {
             "a page limit from 1 to 1,000",
         ),
         (
-            json!({"kind":"artifacts_by_namespace","artifact_namespace":"knowledge","limit":-1}),
-            "invalid value",
+            json!({"kind":"artifacts_by_namespace","artifact_namespace":"knowledge","limit":1001}),
+            "a page limit from 1 to 1,000",
         ),
         (
             json!({"kind":"prefix","prefix":"src/","after":"cursor"}),
@@ -296,7 +302,8 @@ fn a_limit_outside_1_to_1000_and_a_cursor_without_a_limit_are_refused() {
     // 1 and 1,000 are the ends of the range.
     for limit in [1, 1000] {
         let queries = first_queries(json!({"kind":"prefix","prefix":"src/","limit":limit}));
-        assert!(queries.to_string().contains(&format!("\"limit\":{limit}")));
+        assert_eq!(queries.as_array().unwrap().len(), 1);
+        assert_eq!(queries[0]["limit"], limit);
     }
 }
 

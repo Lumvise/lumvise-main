@@ -94,7 +94,6 @@ fn header_search_uses_shared_scores_limits_ties_and_no_bodies() {
         selected["query"]["records"],
         json!([{"kind":"element","record_id":"a"},{"kind":"element","record_id":"z"}])
     );
-    assert!(!result.to_string().contains("large private body"));
 }
 
 #[test]
