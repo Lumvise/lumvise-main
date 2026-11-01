@@ -396,17 +396,20 @@ fn shared_folder_import_rejects_expired_or_cancelled_lifecycle_before_scanning()
         PluginInvocationClass::Foreground,
         Instant::now() - Duration::from_secs(1),
     );
+    let root = checkout();
     for context in [cancelled, expired] {
         assert!(
             host.app
                 .plugin_host_services
                 .project_import_service()
                 .import_folder(
-                    json!({"folderPath":"/missing"}),
+                    json!({"folderPath":root.path()}),
                     &context,
                     host.publisher.clone()
                 )
-                .is_err()
+                .unwrap_err()
+                .to_string()
+                .contains("folder import cancelled or deadline expired; expected active inherited invocation")
         );
     }
     assert!(host.app.project_import_sessions.lock().unwrap().is_empty());
