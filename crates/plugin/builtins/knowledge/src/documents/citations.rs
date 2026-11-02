@@ -104,6 +104,9 @@ fn read_record(
     let exact = KnowledgeRevisionCitationSelection::Exact { source_context };
     match &revision.body {
         SemanticRevisionBody::Pruned => read.state = KnowledgeCitationReadState::Pruned,
+        SemanticRevisionBody::Unavailable(_) => {
+            read.state = KnowledgeCitationReadState::Unavailable
+        }
         SemanticRevisionBody::Element(element) => {
             read.reference.target = KnowledgeCitationTarget::SemanticElement {
                 semantic_element_id: element.semantic_element_id.clone(),
@@ -224,6 +227,10 @@ fn document_locator(
         None => Ok(None),
         Some(SemanticRevisionBody::Pruned) => {
             *state = KnowledgeCitationReadState::Pruned;
+            Ok(None)
+        }
+        Some(SemanticRevisionBody::Unavailable(_)) => {
+            *state = KnowledgeCitationReadState::Unavailable;
             Ok(None)
         }
         Some(SemanticRevisionBody::Element(element)) => Ok(Some(json!(element))),

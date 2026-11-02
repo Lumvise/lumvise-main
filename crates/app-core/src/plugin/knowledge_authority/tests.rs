@@ -6,6 +6,7 @@ mod citations;
 mod delegation;
 mod inspection;
 mod project_access;
+mod recovery;
 
 struct AuthorityFixture {
     persistence: Arc<LocalPersistence>,

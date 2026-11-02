@@ -18,7 +18,7 @@ pub(in crate::documents) fn read_output() -> Value {
     object(
         &["reference", "state", "body"],
         json!({"reference":KnowledgeQualifiedCitation::input_schema(),
-        "state":{"enum":["available", "missing", "pruned"]}, "body":{"anyOf":[
+        "state":{"enum":["available", "missing", "pruned", "unavailable"]}, "body":{"anyOf":[
             {"type":"null"},
             object(&["target_kind", "element"], json!({"target_kind":{"const":"semantic_element"}, "element":crate::manifest::element_schema()})),
             object(&["target_kind", "artifact"], json!({"target_kind":{"const":"artifact"}, "artifact":crate::manifest::artifact_schema()})),

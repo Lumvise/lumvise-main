@@ -37,6 +37,13 @@ enum SemanticStorageRequest {
         project_root: String,
         selection_id: String,
     },
+    InspectRevisionIntegrity {
+        project_root: String,
+        publication_operation_id: Option<String>,
+    },
+    RecoverRevisionIntegrity {
+        request: lumvise_db_core::SemanticRevisionRecoveryRequest,
+    },
     SelectRevisions {
         update: lumvise_db_core::SemanticRevisionSelectionUpdate,
     },
@@ -225,6 +232,16 @@ pub(super) fn invoke(
     plugin_id: &str,
     input: Value,
 ) -> Result<Value, HostCapabilityError> {
+    controlled::require_recovery_context(&input)?;
+    invoke_admitted(semantic, snapshot_writes, plugin_id, input)
+}
+
+fn invoke_admitted(
+    semantic: &dyn SemanticPersistence,
+    snapshot_writes: &SemanticSnapshotWrites,
+    plugin_id: &str,
+    input: Value,
+) -> Result<Value, HostCapabilityError> {
     let request = serde_json::from_value(input.clone())
         .map_err(|error| invalid_input(&input, &error.to_string()))?;
     authorize(plugin_id, &request)?;
@@ -305,6 +322,30 @@ fn dispatch(
             )? {
                 SemanticResult::RevisionSelection(selection) => Ok(json!({"selection": selection})),
                 result => unexpected_result("RevisionSelection", result),
+            }
+        }
+        SemanticStorageRequest::InspectRevisionIntegrity {
+            project_root,
+            publication_operation_id,
+        } => {
+            match execute(
+                semantic,
+                SemanticOperation::InspectRevisionIntegrity {
+                    project_root,
+                    publication_operation_id,
+                },
+            )? {
+                SemanticResult::RevisionIntegrity(report) => Ok(json!(report)),
+                result => unexpected_result("RevisionIntegrity", result),
+            }
+        }
+        SemanticStorageRequest::RecoverRevisionIntegrity { request } => {
+            match execute(
+                semantic,
+                SemanticOperation::RecoverRevisionIntegrity(request),
+            )? {
+                SemanticResult::RevisionRecovery(receipt) => Ok(json!(receipt)),
+                result => unexpected_result("RevisionRecovery", result),
             }
         }
         SemanticStorageRequest::SelectRevisions { update } => {
@@ -850,6 +891,8 @@ fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), Ho
     let allowed = match request {
         SemanticStorageRequest::RevisionSelection { .. }
         | SemanticStorageRequest::SelectRevisions { .. }
+        | SemanticStorageRequest::InspectRevisionIntegrity { .. }
+        | SemanticStorageRequest::RecoverRevisionIntegrity { .. }
         | SemanticStorageRequest::PlanRevisionRetention { .. }
         | SemanticStorageRequest::CollectRevisionRetention { .. } => {
             plugin_id == SEMANTIC_PLUGIN_ID

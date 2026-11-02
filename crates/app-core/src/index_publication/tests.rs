@@ -9,6 +9,7 @@ mod acknowledgement;
 mod failures;
 mod frozen_batch;
 mod source_checkout;
+mod supersession;
 
 #[test]
 fn multiple_checkpoint_scopes_deduplicate_exact_paths_and_ignore_unknown_paths() {

@@ -71,21 +71,38 @@ pub(in crate::policy_bytes::storage) enum ReadIntent {
     SourceAnchor {
         selection_id: String,
     },
+    Unavailable {
+        selection_id: String,
+    },
     All,
 }
 
 impl ReadIntent {
+    pub fn validate(&self) -> SemanticRevisionResult<()> {
+        if let Self::Unavailable { selection_id } = self
+            && selection_id.trim().is_empty()
+        {
+            return Err(SemanticRevisionError::invalid_value(
+                selection_id,
+                "a nonempty unavailable-revision selection ID",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn request(&self, plan: &mut ReadPlan) -> SemanticRevisionResult<()> {
+        self.validate()?;
         if let Self::Challenge { request } = self {
             return super::super::contributions::context::request(plan, request);
         }
         if let Some(id) = self.operation_id() {
             plan.key("operation", id);
             plan.key("retention", id);
+            plan.key("recovery", id);
             if self.replay_available(plan)? {
                 return Ok(());
             }
-            if !["operation", "retention"].iter().all(|kind| {
+            if !["operation", "retention", "recovery"].iter().all(|kind| {
                 plan.completed.contains(&StorageQuery::Key {
                     key: StorageRowKey {
                         kind: (*kind).into(),
@@ -135,6 +152,7 @@ impl ReadIntent {
                 model,
             } => {
                 plan.selection(selection_id, false);
+                plan.index("record_unavailable", "unavailable", Some(selection_id));
                 plan.index(
                     if *artifact {
                         "artifact_vector"
@@ -184,6 +202,10 @@ impl ReadIntent {
             Self::Selection { request } => selection(plan, request)?,
             Self::Membership { query } => membership(plan, query)?,
             Self::Snapshot { selection_id } => plan.selection(selection_id, true),
+            Self::Unavailable { selection_id } => {
+                plan.selection(selection_id, false);
+                plan.index("record_unavailable", "unavailable", Some(selection_id));
+            }
             Self::Selected {
                 selection_id,
                 query,
@@ -265,6 +287,9 @@ impl ReadIntent {
                     operation.receipt.operation_id == id
                 }
                 SemanticRevisionMetadata::Retention(operation) => {
+                    operation.receipt.operation_id == id
+                }
+                SemanticRevisionMetadata::Recovery(operation) => {
                     operation.receipt.operation_id == id
                 }
                 _ => false,

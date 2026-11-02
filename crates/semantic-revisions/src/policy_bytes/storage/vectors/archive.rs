@@ -7,20 +7,20 @@ pub(in crate::policy_bytes::storage) fn import(
     artifacts: &[StoredArtifactTextVector],
     loaded: &[StorageRow],
 ) -> SemanticRevisionResult<Vec<StorageRow>> {
-    let mut selected = state.snapshot("working", "")?.ok_or_else(|| {
-        SemanticRevisionError::invalid_value("working", "an available archive selection")
+    state.selection("working").ok_or_else(|| {
+        SemanticRevisionError::invalid_value("working", "an existing archive selection")
     })?;
-    selected.elements.clear();
-    selected.artifacts.clear();
+    let mut eligible_elements = Vec::new();
+    let mut eligible_artifacts = Vec::new();
     for stored in &state.records {
         match &stored.body {
             SemanticRevisionBody::Element(element) => {
                 let mut element = element.clone();
                 element.lifecycle = "active".into();
-                selected.elements.push(element);
+                eligible_elements.push(element);
             }
-            SemanticRevisionBody::Artifact(artifact) => selected.artifacts.push(artifact.clone()),
-            SemanticRevisionBody::Pruned => {}
+            SemanticRevisionBody::Artifact(artifact) => eligible_artifacts.push(artifact.clone()),
+            SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {}
         }
     }
     let mut names = names.to_vec();
@@ -38,7 +38,7 @@ pub(in crate::policy_bytes::storage) fn import(
             vectors: artifacts.to_vec(),
         },
     ] {
-        let (_, groups, _) = validated_groups(&selected, request)?;
+        let (_, groups, _) = validated_groups(&eligible_elements, &eligible_artifacts, request)?;
         rows.extend(merge::rows(groups, loaded)?);
     }
     Ok(rows)
@@ -55,9 +55,10 @@ pub(in crate::policy_bytes::storage) fn export(
     let mut names = Vec::new();
     for row in rows.iter().filter(|row| is_vector(row)) {
         let record = owner(row)?;
-        if !records.iter().any(|stored| {
-            stored.record == record && !matches!(stored.body, SemanticRevisionBody::Pruned)
-        }) {
+        if !records
+            .iter()
+            .any(|stored| stored.record == record && stored.body.is_available())
+        {
             continue;
         }
         let body = row.body_json.as_deref().ok_or_else(|| {

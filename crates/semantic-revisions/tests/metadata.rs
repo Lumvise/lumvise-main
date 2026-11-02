@@ -9,7 +9,7 @@ fn archive_bodies(state: &SemanticRevisionState) -> (Vec<SemanticElement>, Vec<S
         match &stored.body {
             SemanticRevisionBody::Element(element) => elements.push(element.clone()),
             SemanticRevisionBody::Artifact(artifact) => artifacts.push(artifact.clone()),
-            SemanticRevisionBody::Pruned => {}
+            SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {}
         }
     }
     (elements, artifacts)

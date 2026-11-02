@@ -5,7 +5,12 @@ use lumvise_project_indexer::{
     FilesystemProjectSource, ProjectIndexer, ScanScope, SemanticIndexProjection,
     TreeSitterProjectParser,
 };
-use std::{fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 struct SourceCheckoutFixture {
     store: CheckoutFixture,
@@ -34,6 +39,24 @@ impl SourceCheckoutFixture {
     fn checkout(&self, root: &Path, client: &str) -> IndexSourceCheckout {
         IndexSourceCheckout::open(
             self.store.local.clone(),
+            self.store.local.clone(),
+            client,
+            root,
+            ROOT,
+            PROVIDER,
+            &control(),
+        )
+        .unwrap()
+    }
+
+    fn checkout_with_semantic(
+        &self,
+        root: &Path,
+        client: &str,
+        semantic: Arc<dyn SemanticPersistence>,
+    ) -> IndexSourceCheckout {
+        IndexSourceCheckout::open(
+            semantic,
             self.store.local.clone(),
             client,
             root,
@@ -90,6 +113,84 @@ impl SourceCheckoutFixture {
         let receipt = accepted(outcome);
         checkout.acknowledge(&receipt, &control()).unwrap();
         receipt
+    }
+}
+
+struct UnavailableRevisionsPersistence {
+    local: Arc<LocalPersistence>,
+    producer_headers: Mutex<Vec<SemanticRevisionRecordHeader>>,
+    working_headers: Mutex<Vec<SemanticRevisionRecordHeader>>,
+    selections: Mutex<Vec<String>>,
+}
+
+impl UnavailableRevisionsPersistence {
+    fn new(local: Arc<LocalPersistence>) -> Self {
+        Self {
+            local,
+            producer_headers: Mutex::new(Vec::new()),
+            working_headers: Mutex::new(Vec::new()),
+            selections: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn set_headers(
+        &self,
+        producer: Vec<SemanticRevisionRecordHeader>,
+        working: Vec<SemanticRevisionRecordHeader>,
+    ) {
+        *self.producer_headers.lock().unwrap() = producer;
+        *self.working_headers.lock().unwrap() = working;
+    }
+
+    fn selections(&self) -> Vec<String> {
+        self.selections.lock().unwrap().clone()
+    }
+}
+
+impl SemanticPersistence for UnavailableRevisionsPersistence {
+    fn execute(
+        &self,
+        operation: SemanticOperation,
+        control: &InvocationControl,
+    ) -> PersistenceResult<SemanticResult> {
+        if let SemanticOperation::UnavailableRevisions { selection_id, .. } = &operation {
+            self.selections.lock().unwrap().push(selection_id.clone());
+            let headers = if selection_id == "working" {
+                self.working_headers.lock().unwrap().clone()
+            } else {
+                self.producer_headers.lock().unwrap().clone()
+            };
+            return Ok(SemanticResult::UnavailableRevisions(headers));
+        }
+        SemanticPersistence::execute(&*self.local, operation, control)
+    }
+
+    fn readiness(&self) -> PersistenceResult<SemanticReadiness> {
+        SemanticPersistence::readiness(&*self.local)
+    }
+}
+
+fn unavailable_element_header(
+    record_id: &str,
+    path: &str,
+    provider_instance_id: &str,
+) -> SemanticRevisionRecordHeader {
+    SemanticRevisionRecordHeader {
+        record: SemanticRecordRef::element(record_id),
+        element_scope: Some(SemanticRevisionElementScope {
+            path: path.into(),
+            provider_instance_id: Some(provider_instance_id.into()),
+        }),
+        canonical_lifecycle: Some("active".into()),
+        artifact_state: None,
+        created_at_ms: 1,
+        unselected_at_ms: None,
+        pruned_at_ms: None,
+        unavailable: Some(SemanticRevisionUnavailable {
+            recovery_operation_id: "recovery-1".into(),
+            unavailable_at_ms: 2,
+            canonical_lifecycle: Some("active".into()),
+        }),
     }
 }
 
@@ -494,4 +595,124 @@ fn dense_source_freeze_and_pending_replay_measurement() {
         "serialized_bytes":serde_json::to_vec(&frozen).unwrap().len(),"freeze_us":freeze_us,"pending_replay_us":replay_us,
         "producer_batch_equal":true,"frozen_operation_equal":true,"normal_deadline_seconds":60})
     );
+}
+
+#[test]
+fn unavailable_working_and_producer_members_republish_only_their_owned_paths() {
+    let fixture = SourceCheckoutFixture::new();
+    fs::write(fixture.root.path().join("c.rs"), "fn c() {}\n").unwrap();
+    let initial = fixture.checkout(fixture.root.path(), "A");
+    fixture.prepare(&initial, fixture.root.path()).unwrap();
+    fixture.publish(&initial);
+
+    let semantic = Arc::new(UnavailableRevisionsPersistence::new(
+        fixture.store.local.clone(),
+    ));
+    semantic.set_headers(
+        vec![
+            unavailable_element_header("lost-a", "a.rs", PROVIDER),
+            unavailable_element_header("other-provider", "foreign.rs", "another-provider"),
+        ],
+        vec![
+            unavailable_element_header("lost-a", "a.rs", PROVIDER),
+            unavailable_element_header("lost-b", "b.rs", PROVIDER),
+        ],
+    );
+    let checkout = fixture.checkout_with_semantic(fixture.root.path(), "A", semantic.clone());
+    let before = checkout.before_scan(&control()).unwrap();
+    assert!(before.requires_full_scan);
+    assert_eq!(
+        before.invalidated_paths,
+        BTreeSet::from(["a.rs".to_owned(), "b.rs".to_owned()])
+    );
+
+    let batch = fixture.projected_batch(&checkout, fixture.root.path());
+    let frozen = checkout
+        .freeze_batch(batch, true, before, &control())
+        .unwrap()
+        .unwrap();
+    assert_eq!(frozen.batch.replace_paths, ["a.rs", "b.rs"]);
+    assert!(
+        frozen
+            .batch
+            .semantic_elements
+            .iter()
+            .all(|element| { matches!(element.path.as_str(), "a.rs" | "b.rs") })
+    );
+    let selections = semantic.selections();
+    assert_eq!(selections.len(), 4);
+    assert_eq!(selections.iter().filter(|id| *id == "working").count(), 2);
+    assert_eq!(
+        selections
+            .iter()
+            .filter(|id| id.starts_with("producer:"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn failed_invalidated_path_keeps_its_accepted_inventory_and_is_not_forced_into_publication() {
+    let fixture = SourceCheckoutFixture::new();
+    let initial = fixture.checkout(fixture.root.path(), "A");
+    fixture.prepare(&initial, fixture.root.path()).unwrap();
+    fixture.publish(&initial);
+
+    let semantic = Arc::new(UnavailableRevisionsPersistence::new(
+        fixture.store.local.clone(),
+    ));
+    semantic.set_headers(
+        Vec::new(),
+        vec![unavailable_element_header("lost-a", "a.rs", PROVIDER)],
+    );
+    let checkout = fixture.checkout_with_semantic(fixture.root.path(), "A", semantic);
+    let before = checkout.before_scan(&control()).unwrap();
+    let mut batch = fixture.projected_batch(&checkout, fixture.root.path());
+    let failed_ids = batch
+        .semantic_elements
+        .iter()
+        .filter(|element| element.path == "a.rs")
+        .map(|element| element.semantic_element_id.clone())
+        .collect::<BTreeSet<_>>();
+    batch
+        .semantic_elements
+        .retain(|element| element.path != "a.rs");
+    batch
+        .semantic_relationships
+        .retain(|edge| !failed_ids.contains(&edge.source_element_id));
+
+    let frozen = checkout
+        .freeze_batch_with_failures(batch, true, before, &["a.rs".into()], &control())
+        .unwrap();
+    assert!(frozen.is_none());
+    assert!(checkout.pending(&control()).unwrap().is_none());
+}
+
+#[test]
+fn unavailable_selection_change_during_scan_invalidates_the_source_token() {
+    let fixture = SourceCheckoutFixture::new();
+    let initial = fixture.checkout(fixture.root.path(), "A");
+    fixture.prepare(&initial, fixture.root.path()).unwrap();
+    fixture.publish(&initial);
+
+    let semantic = Arc::new(UnavailableRevisionsPersistence::new(
+        fixture.store.local.clone(),
+    ));
+    semantic.set_headers(
+        vec![unavailable_element_header("lost-a", "a.rs", PROVIDER)],
+        Vec::new(),
+    );
+    let checkout = fixture.checkout_with_semantic(fixture.root.path(), "A", semantic.clone());
+    let before = checkout.before_scan(&control()).unwrap();
+    let batch = fixture.projected_batch(&checkout, fixture.root.path());
+    semantic.set_headers(
+        vec![unavailable_element_header("lost-b", "b.rs", PROVIDER)],
+        Vec::new(),
+    );
+
+    let error = checkout
+        .freeze_batch(batch, true, before, &control())
+        .unwrap_err();
+    assert!(error.to_string().contains("unavailable source records"));
+    assert!(checkout.pending(&control()).unwrap().is_none());
 }

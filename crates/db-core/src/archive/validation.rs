@@ -415,7 +415,7 @@ pub(super) fn validate_public_identity(
     selection: &str,
     version: u32,
 ) -> Result<()> {
-    if version == PZ_FORMAT_VERSION
+    if matches!(version, 2 | PZ_FORMAT_VERSION)
         && uuid::Uuid::parse_str(project).map(|id| id.get_version_num()) == Ok(4)
         && uuid::Uuid::parse_str(snapshot).map(|id| id.get_version_num()) == Ok(7)
         && !selection.trim().is_empty()
@@ -424,7 +424,7 @@ pub(super) fn validate_public_identity(
     }
     Err(DbError::invalid_value(
         format!("version={version}, project={project}, snapshot={snapshot}, selection={selection}"),
-        "PZ format 2, a UUIDv4 project, UUIDv7 snapshot and non-empty selection",
+        "PZ format 2 or 3, a UUIDv4 project, UUIDv7 snapshot and non-empty selection",
     ))
 }
 

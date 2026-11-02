@@ -82,7 +82,7 @@ pub(super) fn archive_body_snapshot(
     state: &SemanticRevisionState,
 ) -> Result<SemanticProjectSnapshot> {
     let selected = state
-        .snapshot(&archive.selection_id, &archive.snapshot.published_at)?
+        .archive_projection(&archive.selection_id)?
         .ok_or_else(|| {
             DbError::invalid_value(&archive.selection_id, "an available selected archive head")
         })?;
@@ -92,7 +92,7 @@ pub(super) fn archive_body_snapshot(
         match &stored.body {
             SemanticRevisionBody::Element(element) => elements.push(element.clone()),
             SemanticRevisionBody::Artifact(artifact) => artifacts.push(artifact.clone()),
-            SemanticRevisionBody::Pruned => {}
+            SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {}
         }
     }
     let ids = elements

@@ -2,6 +2,7 @@
 //! Knowledge. Private bodies flow only through its signed document exports.
 mod disclosure;
 mod publication;
+mod recovery;
 use super::{KnowledgeAuthority, agent, is_memory_root};
 use lumvise_contracts::{KnowledgeAccessContext, KnowledgePrincipalKind};
 use lumvise_db_core::{
@@ -161,6 +162,15 @@ impl KnowledgeSemanticAccess<'_> {
             | RevisionSelectionAt { project_root, .. }
             | RevisionSourceAnchor { project_root, .. } => {
                 self.require_root(project_root, scope, false)
+            }
+            UnavailableRevisions { project_root, .. } => {
+                self.require_root(project_root, scope, false)
+            }
+            InspectRevisionIntegrity { project_root, .. } => {
+                self.authorize_recovery(project_root, scope)
+            }
+            RecoverRevisionIntegrity(request) => {
+                self.authorize_recovery(&request.project_root, scope)
             }
             PublishRevisions(publication) => {
                 self.require_root(&publication.project_root, scope, true)?;

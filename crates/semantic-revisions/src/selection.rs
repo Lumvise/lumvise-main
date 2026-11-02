@@ -197,10 +197,14 @@ impl SemanticRevisionState {
             .retention_operations
             .iter()
             .any(|accepted| accepted.receipt.operation_id == operation_id)
+            || self
+                .recovery_operations
+                .iter()
+                .any(|accepted| accepted.receipt.operation_id == operation_id)
         {
             return Err(SemanticRevisionError::invalid_value(
                 operation_id,
-                "a publication operation ID unused by collection",
+                "a publication operation ID unused by collection or recovery",
             ));
         }
         let Some(previous) = self
@@ -302,10 +306,32 @@ pub(crate) fn validate_selected_records(
     records: &[SemanticRecordRef],
     connection_ids: &[String],
 ) -> SemanticRevisionResult<()> {
-    validate_selection_shape(records, connection_ids)?;
     let index = record_index(state);
+    validate_selected_references(state, records, connection_ids, |reference| {
+        require_body(&index, reference).map(|_| ())
+    })
+}
+
+pub(crate) fn validate_archived_selected_records(
+    state: &SemanticRevisionState,
+    records: &[SemanticRecordRef],
+    connection_ids: &[String],
+) -> SemanticRevisionResult<()> {
+    let index = crate::required_revisions::RevisionDependencyIndex::new(state);
+    validate_selected_references(state, records, connection_ids, |reference| {
+        index.require_retained(reference).map(|_| ())
+    })
+}
+
+fn validate_selected_references(
+    state: &SemanticRevisionState,
+    records: &[SemanticRecordRef],
+    connection_ids: &[String],
+    require: impl Fn(&SemanticRecordRef) -> SemanticRevisionResult<()>,
+) -> SemanticRevisionResult<()> {
+    validate_selection_shape(records, connection_ids)?;
     for record in records {
-        require_body(&index, record)?;
+        require(record)?;
     }
     for id in connection_ids {
         let edge = state
@@ -315,14 +341,12 @@ pub(crate) fn validate_selected_records(
             .ok_or_else(|| {
                 SemanticRevisionError::invalid_value(id, "an existing project connection")
             })?;
-        require_body(
-            &index,
-            &SemanticRecordRef::element(&edge.relationship.source_element_id),
-        )?;
-        require_body(
-            &index,
-            &SemanticRecordRef::element(&edge.relationship.target_element_id),
-        )?;
+        require(&SemanticRecordRef::element(
+            &edge.relationship.source_element_id,
+        ))?;
+        require(&SemanticRecordRef::element(
+            &edge.relationship.target_element_id,
+        ))?;
     }
     Ok(())
 }

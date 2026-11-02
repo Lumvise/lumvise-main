@@ -14,10 +14,11 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
         entries: &[SourceEntry],
         scan: &mut PreparedProjectScan,
         resilient: bool,
+        invalidated_paths: &BTreeSet<String>,
     ) -> Result<(), ScanError> {
         let mut pending = Vec::new();
         for entry in entries {
-            match self.prepare_entry(entry.clone(), scan) {
+            match self.prepare_entry(entry.clone(), scan, invalidated_paths) {
                 Ok(Some(file)) => pending.push(file),
                 Ok(None) => {}
                 Err(error) if resilient => self.retain_failed(&entry.path, error, scan),
@@ -94,17 +95,21 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
         &self,
         entry: SourceEntry,
         scan: &mut PreparedProjectScan,
+        invalidated_paths: &BTreeSet<String>,
     ) -> Result<Option<PendingFile>, ScanError> {
         let old = self.files.get(&entry.path);
-        if let Some(old) = old.filter(|old| freshness_matches(old, &entry)) {
-            if scan.full_snapshot {
-                scan.retain(Arc::clone(old), true);
+        let invalidated = invalidated_paths.contains(&entry.path);
+        if !invalidated {
+            if let Some(old) = old.filter(|old| freshness_matches(old, &entry)) {
+                if scan.full_snapshot {
+                    scan.retain(Arc::clone(old), true);
+                }
+                return Ok(None);
             }
-            return Ok(None);
         }
         let (file, bytes) = self.read_entry(entry, old.map(Arc::as_ref), &mut scan.metrics)?;
-        let changed =
-            old.is_none_or(|old| old.entry.kind != file.entry.kind || old.digest != file.digest);
+        let changed = invalidated
+            || old.is_none_or(|old| old.entry.kind != file.entry.kind || old.digest != file.digest);
         Ok(Some(PendingFile {
             file,
             bytes,

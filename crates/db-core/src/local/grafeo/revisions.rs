@@ -9,6 +9,7 @@ use grafeo::GrafeoDB;
 
 mod citations;
 mod contents;
+mod integrity;
 
 struct PreparedRevisionPublication {
     plan: SemanticRevisionPublicationPlan,
@@ -279,6 +280,12 @@ impl<'db> SemanticStorage<'db> {
                 graph,
                 &request.project_root,
                 "retention",
+                &request.operation_id,
+            )?);
+            nodes.extend(super::revision_rows::revision_row_nodes(
+                graph,
+                &request.project_root,
+                "recovery",
                 &request.operation_id,
             )?);
             if nodes.is_empty() {

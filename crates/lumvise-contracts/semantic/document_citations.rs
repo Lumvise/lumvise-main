@@ -36,6 +36,7 @@ pub enum KnowledgeCitationReadState {
     Available,
     Missing,
     Pruned,
+    Unavailable,
 }
 
 /// Uses the existing public records instead of exposing Knowledge's storage representation.

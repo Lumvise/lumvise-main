@@ -10,7 +10,7 @@ impl SemanticRevisionBody {
         match self {
             Self::Element(element) => element.required_revisions().collect(),
             Self::Artifact(artifact) => artifact.revision_dependencies(),
-            Self::Pruned => vec![],
+            Self::Pruned | Self::Unavailable(_) => vec![],
         }
     }
 }
@@ -70,6 +70,18 @@ impl<'a> RevisionDependencyIndex<'a> {
     ) -> SemanticRevisionResult<&'a SemanticStoredRevision> {
         crate::revision_index::require_body(&self.records, reference)?;
         Ok(self.records[reference])
+    }
+
+    pub(crate) fn require_retained(
+        &self,
+        reference: &SemanticRecordRef,
+    ) -> SemanticRevisionResult<&'a SemanticStoredRevision> {
+        if let Some(stored) = self.records.get(reference) {
+            if matches!(stored.body, SemanticRevisionBody::Unavailable(_)) {
+                return Ok(stored);
+            }
+        }
+        self.require(reference)
     }
 
     pub(crate) fn requirements(

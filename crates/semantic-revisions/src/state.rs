@@ -70,6 +70,8 @@ pub struct SemanticRevisionState {
     pub associations: Vec<SemanticRevisionAssociation>,
     pub accepted_operations: Vec<SemanticRevisionAcceptedOperation>,
     pub retention_operations: Vec<SemanticRevisionAcceptedRetention>,
+    #[serde(default)]
+    pub recovery_operations: Vec<SemanticRevisionAcceptedRecovery>,
 }
 
 /// A stale writer receives the actual head and the exact conflicting scope.

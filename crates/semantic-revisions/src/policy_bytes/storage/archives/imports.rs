@@ -333,15 +333,13 @@ fn outcome(
     let previous = before
         .records
         .iter()
-        .filter(|row| !matches!(row.body, SemanticRevisionBody::Pruned))
+        .filter(|row| row.body.is_available())
         .map(|row| &row.record)
         .collect::<BTreeSet<_>>();
     let added = incoming
         .records
         .iter()
-        .filter(|row| {
-            !matches!(row.body, SemanticRevisionBody::Pruned) && !previous.contains(&row.record)
-        })
+        .filter(|row| row.body.is_available() && !previous.contains(&row.record))
         .collect::<Vec<_>>();
     let artifacts = added
         .iter()

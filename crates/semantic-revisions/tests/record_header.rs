@@ -33,3 +33,21 @@ fn portable_tombstone_cannot_resurrect_a_payload() {
     assert_eq!(pruned.record, stored.record);
     assert_eq!(pruned.pruned_at_ms, Some(10_000));
 }
+
+#[test]
+fn an_unavailable_header_cannot_accept_a_substitute_payload() {
+    let mut project = ProjectFixture::new();
+    project.initial();
+    let stored = project.state.records[0].clone();
+    let mut encoded = serde_json::to_value(SemanticRevisionRecordHeader::from(&stored)).unwrap();
+    encoded["unavailable"] = serde_json::json!({
+        "recovery_operation_id": "acknowledge-missing-body",
+        "unavailable_at_ms": 10_000,
+        "canonical_lifecycle": "active"
+    });
+    let header: SemanticRevisionRecordHeader = serde_json::from_value(encoded).unwrap();
+    assert!(
+        header.restore(stored.body).is_err(),
+        "an unavailable body must never be reconstructed from a caller's substitute"
+    );
+}

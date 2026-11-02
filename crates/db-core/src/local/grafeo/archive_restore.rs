@@ -168,7 +168,7 @@ fn archive_restore_result(
     let available = before
         .records
         .iter()
-        .filter(|row| !matches!(row.body, SemanticRevisionBody::Pruned))
+        .filter(|row| row.body.is_available())
         .map(|row| &row.record)
         .collect::<BTreeSet<_>>();
     let incoming = archive
@@ -178,9 +178,7 @@ fn archive_restore_result(
     let new = incoming
         .records
         .iter()
-        .filter(|row| {
-            !matches!(row.body, SemanticRevisionBody::Pruned) && !available.contains(&row.record)
-        })
+        .filter(|row| row.body.is_available() && !available.contains(&row.record))
         .collect::<Vec<_>>();
     let artifacts_imported = new
         .iter()

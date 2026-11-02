@@ -151,13 +151,32 @@ pub struct SemanticRevisionSelectionUpdate {
     pub source_anchor: Option<SemanticSourceAnchor>,
 }
 
-/// The exact historical payload, or an explicit absence after safe collection.
+/// An exact payload, deliberate collection, or an explicitly acknowledged missing body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "record", rename_all = "snake_case")]
 pub enum SemanticRevisionBody {
     Element(SemanticElement),
     Artifact(SemanticArtifact),
     Pruned,
+    Unavailable(crate::SemanticRevisionUnavailable),
+}
+
+impl SemanticRevisionBody {
+    /// Whether exact payload bytes can be served. Example: `resolved.body.is_available()`.
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Element(_) | Self::Artifact(_))
+    }
+}
+
+/// Available selected bodies and exact evidence for archival transport; membership and absence remain in metadata.
+/// This projection never grants a body read or replaces the strict `snapshot` operation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticRevisionArchiveProjection {
+    pub elements: Vec<SemanticElement>,
+    pub artifacts: Vec<SemanticArtifact>,
+    pub connections: Vec<SemanticRevisionConnection>,
+    /// Available exact dependencies outside primary membership; never substitute successor bodies.
+    pub required_records: Vec<crate::SemanticStoredRevision>,
 }
 
 /// Resolves an old ID without substituting a different record's body.

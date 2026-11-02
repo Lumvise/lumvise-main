@@ -118,6 +118,24 @@ impl SemanticPersistence for LocalPersistence {
             SemanticOperation::RevisionSelectionMembers(query) => Ok(
                 SemanticResult::RevisionObservation(storage.revision_selection_members(&query)?),
             ),
+            SemanticOperation::UnavailableRevisions {
+                project_root,
+                selection_id,
+            } => Ok(SemanticResult::UnavailableRevisions(
+                storage.unavailable_revisions(&project_root, &selection_id)?,
+            )),
+            SemanticOperation::InspectRevisionIntegrity {
+                project_root,
+                publication_operation_id,
+            } => Ok(SemanticResult::RevisionIntegrity(
+                storage.inspect_revision_integrity(
+                    &project_root,
+                    publication_operation_id.as_deref(),
+                )?,
+            )),
+            SemanticOperation::RecoverRevisionIntegrity(request) => Ok(
+                SemanticResult::RevisionRecovery(storage.recover_revision_integrity(&request)?),
+            ),
             SemanticOperation::RevisionSelectionAt {
                 project_root,
                 selection_id,
@@ -889,3 +907,9 @@ mod control_tests;
 
 #[cfg(test)]
 mod live_search_tests;
+
+#[cfg(test)]
+mod integrity_tests;
+
+#[cfg(test)]
+mod membership_copy_tests;

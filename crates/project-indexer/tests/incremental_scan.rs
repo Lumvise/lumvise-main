@@ -3,7 +3,7 @@ use lumvise_project_indexer::{
     ProjectSource, ScanError, ScanScope, SourceEntry, SourceKind,
 };
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 #[derive(Default)]
@@ -275,6 +275,156 @@ fn metadata_only_change_reads_once_and_reuses_exact_content_parse() {
             .metrics()
             .files_read,
         0
+    );
+}
+
+#[test]
+fn invalidated_paths_force_full_inventory_and_fresh_digest_reads_without_reparsing_unchanged_bytes()
+{
+    let source = FakeProjectSource::default();
+    source.put("src/a.rs", 1, "original_a");
+    source.put("src/b.rs", 1, "original_b");
+    let parser = FakeLanguageParser::default();
+    let mut indexer = ProjectIndexer::new(source.clone(), parser.clone());
+    let initial = indexer.prepare(ScanScope::Full).unwrap();
+    indexer.commit(initial).unwrap();
+    source.reset_reads();
+    parser.0.borrow_mut().clear();
+
+    let invalidated = BTreeSet::from(["src/a.rs".to_owned()]);
+    let recovered = indexer
+        .prepare_resilient_invalidating(paths(&["src/a.rs"]), &invalidated, |_| Ok(()))
+        .unwrap();
+
+    assert_eq!(
+        source.0.borrow().requested_scopes.last(),
+        Some(&ScanScope::Full)
+    );
+    assert_eq!(source.0.borrow().reads, ["src/a.rs"]);
+    assert_eq!(recovered.metrics().files_read, 1);
+    assert_eq!(recovered.metrics().files_parsed, 0);
+    assert!(parser.0.borrow().is_empty());
+    assert_eq!(
+        recovered
+            .changed_files()
+            .map(|file| file.entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/a.rs"]
+    );
+    assert_eq!(
+        recovered.changed_files().next().unwrap().parsed.definitions[0].name,
+        "original_a"
+    );
+}
+
+#[test]
+fn invalidated_digest_mismatch_parses_fresh_bytes_when_inventory_stamp_is_unchanged() {
+    let source = FakeProjectSource::default();
+    source.put("src/a.rs", 7, "accepted_bytes");
+    let parser = FakeLanguageParser::default();
+    let mut indexer = ProjectIndexer::new(source.clone(), parser.clone());
+    let initial = indexer.prepare(ScanScope::Full).unwrap();
+    indexer.commit(initial).unwrap();
+    source.reset_reads();
+    parser.0.borrow_mut().clear();
+    source.put("src/a.rs", 7, "fresh_bytes");
+
+    let invalidated = BTreeSet::from(["src/a.rs".to_owned()]);
+    let recovered = indexer
+        .prepare_resilient_invalidating(ScanScope::Full, &invalidated, |_| Ok(()))
+        .unwrap();
+
+    assert_eq!(source.0.borrow().reads, ["src/a.rs"]);
+    assert_eq!(*parser.0.borrow(), ["src/a.rs"]);
+    assert_eq!(recovered.metrics().files_parsed, 1);
+    let emitted = recovered.changed_files().collect::<Vec<_>>();
+    assert_eq!(emitted.len(), 1);
+    let file = emitted[0];
+    assert_eq!(file.entry.path, "src/a.rs");
+    assert_eq!(file.parsed.definitions[0].name, "fresh_bytes");
+}
+
+#[test]
+fn invalidated_parse_failure_retains_accepted_content_and_does_not_emit_the_failed_path() {
+    let source = FakeProjectSource::default();
+    source.put("src/a.rs", 1, "accepted_a");
+    source.put("src/b.rs", 1, "accepted_b");
+    let mut indexer = ProjectIndexer::new(source.clone(), FakeLanguageParser::default());
+    let initial = indexer.prepare(ScanScope::Full).unwrap();
+    indexer.commit(initial).unwrap();
+    source.put("src/a.rs", 2, "parse-error");
+
+    let invalidated = BTreeSet::from(["src/a.rs".to_owned()]);
+    let recovered = indexer
+        .prepare_resilient_invalidating(ScanScope::Full, &invalidated, |_| Ok(()))
+        .unwrap();
+
+    assert_eq!(recovered.failures().len(), 1);
+    assert_eq!(recovered.failures()[0].path, "src/a.rs");
+    assert!(recovered.changed_files().next().is_none());
+    indexer.commit(recovered).unwrap();
+    source.put("src/a.rs", 1, "accepted_a");
+    let unchanged = indexer.prepare(ScanScope::Full).unwrap();
+    assert!(!unchanged.needs_publication());
+    assert_eq!(unchanged.metrics().files_read, 0);
+}
+
+#[test]
+fn invalidated_read_failure_retains_the_accepted_path_for_the_next_scan() {
+    let source = FakeProjectSource::default();
+    source.put("src/a.rs", 1, "accepted_a");
+    source.put("src/b.rs", 1, "accepted_b");
+    let mut indexer = ProjectIndexer::new(source.clone(), FakeLanguageParser::default());
+    let initial = indexer.prepare(ScanScope::Full).unwrap();
+    indexer.commit(initial).unwrap();
+    source.reset_reads();
+    source.0.borrow_mut().fail_read = Some("src/a.rs".into());
+
+    let invalidated = BTreeSet::from(["src/a.rs".to_owned()]);
+    let failed = indexer
+        .prepare_resilient_invalidating(ScanScope::Full, &invalidated, |_| Ok(()))
+        .unwrap();
+
+    assert_eq!(source.0.borrow().reads, ["src/a.rs"]);
+    assert_eq!(failed.failures().len(), 1);
+    assert_eq!(failed.failures()[0].path, "src/a.rs");
+    assert!(failed.changed_files().next().is_none());
+    indexer.commit(failed).unwrap();
+    source.0.borrow_mut().fail_read = None;
+
+    let accepted = indexer.prepare(ScanScope::Full).unwrap();
+    assert!(!accepted.needs_publication());
+    assert_eq!(accepted.metrics().files_read, 0);
+}
+
+#[test]
+fn invalidated_path_absent_from_complete_inventory_is_published_as_removed() {
+    let source = FakeProjectSource::default();
+    source.put("src/a.rs", 1, "accepted_a");
+    source.put("src/b.rs", 1, "accepted_b");
+    let mut indexer = ProjectIndexer::new(source.clone(), FakeLanguageParser::default());
+    let initial = indexer.prepare(ScanScope::Full).unwrap();
+    indexer.commit(initial).unwrap();
+    source.remove("src/a.rs");
+
+    let invalidated = BTreeSet::from(["src/a.rs".to_owned()]);
+    let removed = indexer
+        .prepare_resilient_invalidating(paths(&["src/a.rs"]), &invalidated, |_| Ok(()))
+        .unwrap();
+
+    assert_eq!(
+        source.0.borrow().requested_scopes.last(),
+        Some(&ScanScope::Full)
+    );
+    assert_eq!(removed.removed_paths().collect::<Vec<_>>(), ["src/a.rs"]);
+    assert!(removed.changed_files().next().is_none());
+    assert!(removed.needs_publication());
+    indexer.commit(removed).unwrap();
+    assert!(
+        !indexer
+            .prepare(ScanScope::Full)
+            .unwrap()
+            .needs_publication()
     );
 }
 

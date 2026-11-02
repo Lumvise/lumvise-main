@@ -77,6 +77,7 @@ mod tests {
         let prepared = broker.invoke(prepare_request(root.path())).unwrap();
         assert_eq!(prepared["state"], "scan");
         assert_eq!(prepared["requires_full_scan"], true);
+        assert_eq!(prepared["invalidated_paths"], json!([]));
         assert!(
             prepared["base_token"]
                 .as_str()

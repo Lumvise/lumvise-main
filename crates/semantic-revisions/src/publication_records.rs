@@ -50,10 +50,14 @@ pub(crate) fn prepare_structure(
         timestamp,
         commit_version,
     )?;
-    plan.replaced = existing
-        .iter()
-        .map(|element| SemanticRecordRef::element(&element.semantic_element_id))
-        .collect();
+    // Header scope survives acknowledged loss; replacing only readable bodies leaves broken members selected.
+    plan.replaced = crate::publication_basis::scoped_selected_elements(
+        state,
+        head,
+        &structure_coverage(request),
+    )
+    .into_iter()
+    .collect();
     plan.removed_connections = owned_connection_ids(state, head, &plan.replaced);
     plan.connections = prepare_connections(state, request, head, &plan, &structure.relationships)?;
     Ok(plan)
@@ -169,6 +173,13 @@ fn changed_element_ids(
     incoming
         .iter()
         .filter_map(|(_, element)| {
+            let reference = SemanticRecordRef::element(&element.semantic_element_id);
+            if index
+                .get(&reference)
+                .is_some_and(|stored| !stored.body.is_available())
+            {
+                return Some(element.semantic_element_id.clone());
+            }
             let previous = selected
                 .get(&element.semantic_element_id)
                 .copied()
@@ -419,7 +430,7 @@ fn prepare_connections(
         .records
         .iter()
         .chain(plan.records.iter())
-        .filter(|stored| !matches!(stored.body, SemanticRevisionBody::Pruned))
+        .filter(|stored| stored.body.is_available())
         .map(|stored| stored.record.clone())
         .collect::<BTreeSet<_>>();
     let owned = plan.selected.iter().cloned().collect::<BTreeSet<_>>();
@@ -710,7 +721,7 @@ fn validate_publication_dependencies(
         .iter()
         .chain(structure.records.iter())
         .chain(plan.records.iter())
-        .filter(|stored| !matches!(stored.body, SemanticRevisionBody::Pruned))
+        .filter(|stored| stored.body.is_available())
         .map(|stored| stored.record.clone())
         .collect::<BTreeSet<_>>();
     for stored in structure.records.iter().chain(&plan.records) {

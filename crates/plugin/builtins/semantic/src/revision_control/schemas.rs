@@ -3,6 +3,16 @@ use serde_json::{Value, json};
 
 const CONTROLS: &[(&str, &str, &str)] = &[
     (
+        "inspect_revision_integrity",
+        "Inspect missing source revision bodies",
+        "Inspect exact absent immutable bodies in the current durable source project without changing data. Requires direct owner provenance and source write access. Malformed or duplicate bodies fail inspection. Review project identity, commit and the complete missing list before explicitly approving recovery; no historical bytes can be reconstructed by acknowledgement.",
+    ),
+    (
+        "recover_revision_integrity",
+        "Acknowledge approved missing source bodies",
+        "Apply only an explicitly approved inspection's exact project identity, expected commit, provider and complete missing-record list. Marks missing bodies unavailable and records an audit; preserves documents, selections and history. Does not recreate lost bytes. Direct native owner or bound owner MCP only; Agents and delegated calls are refused. Retry the identical operation ID and request after an uncertain acknowledgement; a changed observation requires a new inspection and approval.",
+    ),
+    (
         "read_revision_selection",
         "Read source selection",
         "Read exact selected records and original artifact edit tokens in an explicit project/selection. This read does not authorize a stale write.",
@@ -15,7 +25,7 @@ const CONTROLS: &[(&str, &str, &str)] = &[
     (
         "resolve_revision",
         "Read exact source revision",
-        "Read one exact record in its project, returning its body or explicit pruned state. Never substitute a selected successor for historical evidence.",
+        "Read one exact record in its project, returning its body or explicit pruned/unavailable state. Never substitute a selected successor for historical evidence.",
     ),
     (
         "preview_revision_retention",
@@ -62,6 +72,15 @@ pub(crate) fn exports() -> Vec<ExportDescriptor> {
 fn input(id: &str) -> Value {
     match id {
         "read_revision_selection" => object(json!({"project_root":text(), "selection_id":text()})),
+        "inspect_revision_integrity" => json!({
+            "type":"object", "required":["project_root"], "additionalProperties":false,
+            "properties":{"project_root":text(), "publication_operation_id":text()}
+        }),
+        "recover_revision_integrity" => object(json!({
+            "operation_id":text(), "project_root":text(), "project_id":text(),
+            "expected_commit_version":integer(0), "provider_instance_id":text(),
+            "missing_records":{"type":"array", "minItems":1, "items":reference()}
+        })),
         "select_revisions" => selection_update(),
         "resolve_revision" => object(json!({"project_root":text(), "record":reference()})),
         "preview_revision_retention" => {

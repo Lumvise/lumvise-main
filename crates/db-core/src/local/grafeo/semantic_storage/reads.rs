@@ -67,13 +67,6 @@ impl<'db> SemanticStorage<'db> {
         self.graph.stable_read(|graph| {
             let commit_version = latest_published_commit_version(&self.conn.read_conn())?;
             let published_at = published_commit_timestamp(&self.conn.read_conn(), commit_version)?;
-            let snapshot = project_snapshot(
-                graph,
-                &ProjectSnapshotScope::ProjectRoot(project_root.to_owned()),
-                None,
-                commit_version,
-                published_at,
-            )?;
             let revision_state = if crate::local::grafeo::revision_rows::revision_project_managed(
                 graph,
                 project_root,
@@ -90,6 +83,16 @@ impl<'db> SemanticStorage<'db> {
                 )
             } else {
                 None
+            };
+            let snapshot = match &revision_state {
+                Some(state) => archive_selected_snapshot(state, project_root, &published_at)?,
+                None => project_snapshot(
+                    graph,
+                    &ProjectSnapshotScope::ProjectRoot(project_root.to_owned()),
+                    None,
+                    commit_version,
+                    published_at,
+                )?,
             };
             let available_elements = match &revision_state {
                 Some(state) => state
@@ -863,4 +866,26 @@ pub(super) fn sort_elements_by_path(elements: &mut [SemanticElement]) {
             .cmp(&right.path)
             .then(left.semantic_element_id.cmp(&right.semantic_element_id))
     });
+}
+
+fn archive_selected_snapshot(
+    state: &crate::SemanticRevisionState,
+    project_root: &str,
+    published_at: &str,
+) -> Result<crate::SemanticProjectSnapshot> {
+    let selected = state.archive_projection("working")?.ok_or_else(|| {
+        crate::DbError::invalid_value(project_root, "an archived working selection")
+    })?;
+    Ok(crate::SemanticProjectSnapshot {
+        project_root: project_root.into(),
+        commit_version: state.commit_version,
+        published_at: published_at.into(),
+        elements: selected.elements,
+        relationships: selected
+            .connections
+            .into_iter()
+            .map(|edge| edge.relationship)
+            .collect(),
+        artifacts: selected.artifacts,
+    })
 }

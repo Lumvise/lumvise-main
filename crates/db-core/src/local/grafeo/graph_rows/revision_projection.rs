@@ -137,16 +137,27 @@ impl RevisionProjection {
         );
         changed.sort();
         changed.dedup();
-        let notification_owners =
-            notifications::artifact_notification_owners(state, &changes, before, after, &changed);
         let records = state
             .records
             .iter()
             .chain(changes.records.iter())
             .map(|stored| (&stored.record, stored))
             .collect::<BTreeMap<_, _>>();
-        let before_edges = selected_connections(state, &[], before);
-        let after_edges = selected_connections(state, &changes.connections, after);
+        // Header retirement must not recreate acknowledged missing native bodies or emit body notifications.
+        changed.retain(|reference| {
+            records
+                .get(reference)
+                .is_none_or(|stored| !matches!(stored.body, SemanticRevisionBody::Unavailable(_)))
+        });
+        let mut notification_owners =
+            notifications::artifact_notification_owners(state, &changes, before, after, &changed);
+        notification_owners.retain(|reference| {
+            records
+                .get(reference)
+                .is_none_or(|stored| !matches!(stored.body, SemanticRevisionBody::Unavailable(_)))
+        });
+        let before_edges = selected_connections(state, &[], before, &records);
+        let after_edges = selected_connections(state, &changes.connections, after, &records);
         let mut needed = changed.clone();
         let working = working::prepare(database, state, &changes)?;
         needed.extend(working.iter().flat_map(|update| update.dependencies()));
@@ -176,7 +187,7 @@ impl RevisionProjection {
             changes
                 .records
                 .iter()
-                .filter(|stored| !matches!(stored.body, SemanticRevisionBody::Pruned))
+                .filter(|stored| stored.body.is_available())
                 .map(|stored| stored.record.clone()),
         );
         if before_edges != after_edges {
@@ -391,6 +402,7 @@ fn selected_connections(
     state: &SemanticRevisionState,
     incoming: &[SemanticRevisionConnection],
     head: Option<&SemanticRevisionSelectionState>,
+    records: &BTreeMap<&SemanticRecordRef, &SemanticStoredRevision>,
 ) -> Vec<SemanticRevisionConnection> {
     let ids = head
         .into_iter()
@@ -401,10 +413,27 @@ fn selected_connections(
         .iter()
         .chain(incoming.iter())
         .filter(|edge| ids.contains(&edge.connection_id))
+        .filter(|edge| !connection_has_unavailable_endpoint(edge, records))
         .map(|edge| (edge.connection_id.clone(), edge.clone()))
         .collect::<BTreeMap<_, _>>()
         .into_values()
         .collect()
+}
+
+fn connection_has_unavailable_endpoint(
+    edge: &SemanticRevisionConnection,
+    records: &BTreeMap<&SemanticRecordRef, &SemanticStoredRevision>,
+) -> bool {
+    [
+        &edge.relationship.source_element_id,
+        &edge.relationship.target_element_id,
+    ]
+    .into_iter()
+    .any(|id| {
+        records
+            .get(&SemanticRecordRef::element(id))
+            .is_some_and(|stored| matches!(stored.body, SemanticRevisionBody::Unavailable(_)))
+    })
 }
 
 type RevisionNodeIndex = BTreeMap<SemanticRecordRef, Option<NodeId>>;
@@ -424,6 +453,9 @@ fn prepare_nodes(
         let stored = records.get(&record).ok_or_else(|| {
             DbError::invalid_value(&record.record_id, "an available canonical revision")
         })?;
+        if matches!(stored.body, SemanticRevisionBody::Unavailable(_)) {
+            continue;
+        }
         let existing = existing_projection_node(database, &record, root)?;
         nodes.insert(record.clone(), existing);
         if existing.is_some() {
@@ -434,7 +466,7 @@ fn prepare_nodes(
             let owner = SemanticRecordRef::element(&artifact.semantic_element_id);
             if records
                 .get(&owner)
-                .is_some_and(|record| !matches!(record.body, SemanticRevisionBody::Pruned))
+                .is_some_and(|record| record.body.is_available())
             {
                 pending.push(owner);
             }
@@ -452,7 +484,7 @@ fn prepare_node_insert(stored: &SemanticStoredRevision, root: &str) -> Result<Re
         SemanticRevisionBody::Artifact(artifact) => {
             (artifact_properties(artifact)?, Some(artifact.clone()))
         }
-        SemanticRevisionBody::Pruned => {
+        SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {
             return Err(DbError::invalid_value(
                 &stored.record.record_id,
                 "an available body before materializing a revision",

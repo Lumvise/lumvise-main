@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) const ROWS_PER_ROW_GROUP: usize = 1024;
-pub const PZ_FORMAT_VERSION: u32 = 2;
+pub const PZ_FORMAT_VERSION: u32 = 3;
 pub const PZ_REQUIRED_ENTRIES: [&str; 12] = [
     "manifest.json",
     "elements.parquet",

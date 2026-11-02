@@ -22,7 +22,22 @@ pub(in crate::plugin) fn invoke_controlled(
         context,
         authority,
     };
-    super::invoke(&scoped, writes, plugin_id, input)
+    super::invoke_admitted(&scoped, writes, plugin_id, input)
+}
+
+pub(super) fn require_recovery_context(input: &Value) -> Result<(), HostCapabilityError> {
+    if matches!(
+        input["operation"].as_str(),
+        Some("inspect_revision_integrity" | "recover_revision_integrity")
+    ) {
+        return Err(HostCapabilityError::new(
+            "storage.semantic",
+            "recovery_context_required",
+            "unscoped integrity request; expected a controlled direct owner or bound MCP invocation",
+            false,
+        ));
+    }
+    Ok(())
 }
 
 // Snapshot staging and ordinary reads both pass through this same adapter.

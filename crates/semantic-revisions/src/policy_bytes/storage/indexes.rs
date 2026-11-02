@@ -17,6 +17,10 @@ pub(super) fn entries(
     body: Option<&SemanticRevisionBody>,
 ) -> SemanticRevisionResult<Vec<StorageIndex>> {
     let mut entries = metadata_entries(metadata)?;
+    if matches!(metadata, SemanticRevisionMetadata::Record(header) if header.unavailable.is_some())
+    {
+        entries.push(entry("record_unavailable", "unavailable"));
+    }
     if let Some(SemanticRevisionBody::Element(element)) = body {
         entries.push(entry("element_header", &super::headers::encode(element)?));
         entries.extend(super::names::indexes(element));

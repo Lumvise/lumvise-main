@@ -79,7 +79,10 @@ const HOST_CAPABILITIES: [HostCapabilityDefinition; 25] = [
     ),
     semantic_capability(),
     capability("project.source", HostCapabilityRoute::ProjectSource),
-    capability(INDEX_PUBLICATION, HostCapabilityRoute::IndexPublication),
+    HostCapabilityDefinition {
+        minor: 1,
+        ..capability(INDEX_PUBLICATION, HostCapabilityRoute::IndexPublication)
+    },
     capability(PROJECT_IMPORT, HostCapabilityRoute::ProjectImport),
     capability(
         SEMANTIC_SNAPSHOT_CAPABILITY,
@@ -126,7 +129,7 @@ const fn semantic_capability() -> HostCapabilityDefinition {
         id: SEMANTIC_STORAGE,
         route: HostCapabilityRoute::SemanticStorage,
         major: 1,
-        minor: 9,
+        minor: 10,
         patch: 0,
     }
 }

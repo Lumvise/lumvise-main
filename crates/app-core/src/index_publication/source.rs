@@ -2,7 +2,8 @@
 use super::*;
 use lumvise_contracts::{IndexBatchRequest, SemanticSourceUpsert};
 use lumvise_db_core::{
-    RelationalPersistence, SemanticPartition, SemanticRevisionPublicationReceipt,
+    RelationalPersistence, SemanticPartition, SemanticRecordKind, SemanticRecordRef,
+    SemanticRevisionPublicationReceipt, SemanticRevisionRecordHeader,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -18,6 +19,8 @@ pub(crate) struct IndexSourceCheckout {
 pub(crate) struct IndexSourceBase {
     generation: Option<i64>,
     inventory: Vec<IndexPathDigest>,
+    invalidated_records: BTreeMap<SemanticRecordRef, String>,
+    pub(crate) invalidated_paths: BTreeSet<String>,
     pub(super) token: String,
     pub(crate) requires_full_scan: bool,
 }
@@ -101,13 +104,21 @@ impl IndexSourceCheckout {
                 "a stable producer base before scanning",
             ));
         }
+        let invalidated_records = self.unavailable_element_records(control)?;
+        let invalidated_paths = invalidated_records
+            .values()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         Ok(IndexSourceBase {
-            token: self.scan_token(header.as_ref())?,
-            requires_full_scan: header
-                .as_ref()
-                .is_none_or(|header| header.producer_generation == 0),
+            token: self.scan_token(header.as_ref(), &invalidated_records)?,
+            requires_full_scan: !invalidated_paths.is_empty()
+                || header
+                    .as_ref()
+                    .is_none_or(|header| header.producer_generation == 0),
             generation: header.map(|header| header.generation),
             inventory,
+            invalidated_records,
+            invalidated_paths,
         })
     }
 
@@ -133,7 +144,20 @@ impl IndexSourceCheckout {
             self.journal.discard_unpublished_draft(control)?;
             return Ok(None);
         }
-        self.journal.pending(control)
+        let Some(publication) = self.journal.pending(control)? else {
+            return Ok(None);
+        };
+        let mut unavailable =
+            self.unavailable_headers(&self.journal.binding.selection_id, control)?;
+        unavailable
+            .extend(self.unavailable_headers(&self.journal.rows.producer_selection_id(), control)?);
+        if self
+            .journal
+            .supersede_recovered_pending(&publication, &unavailable, control)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(publication))
     }
 
     /// Filters unchanged stale files and freezes exact changed input for the Semantic boundary.
@@ -160,27 +184,34 @@ impl IndexSourceCheckout {
     ) -> Result<Option<FrozenIndexPublication>> {
         let protected: BTreeSet<_> = failed_paths.iter().map(String::as_str).collect();
         let mut inventory = source_projection::projected_inventory(&batch)?;
-        let projected: BTreeSet<_> = inventory.iter().map(|entry| entry.path.as_str()).collect();
+        let projected: BTreeSet<_> = inventory.iter().map(|entry| entry.path.clone()).collect();
+        let successfully_projected_invalidations = before
+            .invalidated_paths
+            .intersection(&projected)
+            .filter(|path| !protected.contains(path.as_str()))
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let retained: Vec<_> = before
             .inventory
             .iter()
             .filter(|previous| {
-                protected.contains(previous.path.as_str())
-                    && !projected.contains(previous.path.as_str())
+                protected.contains(previous.path.as_str()) && !projected.contains(&previous.path)
             })
             .cloned()
             .collect();
-        drop(projected);
         inventory.extend(retained);
         inventory.sort_by(|left, right| left.path.cmp(&right.path));
         let current = self
             .journal
             .rows
             .get::<CheckpointHeader>("header", control)?;
-        if self.scan_token(current.as_ref())? != before.token {
+        let invalidated_records = self.unavailable_element_records(control)?;
+        if invalidated_records != before.invalidated_records
+            || self.scan_token(current.as_ref(), &invalidated_records)? != before.token
+        {
             return Err(invalid_checkpoint(
                 &before.token,
-                "the unchanged checkout checkpoint captured before parsing",
+                "the unchanged checkout checkpoint and unavailable source records captured before parsing",
             ));
         }
         self.establish_base(&inventory, full, before.generation, control)?;
@@ -196,6 +227,7 @@ impl IndexSourceCheckout {
         } else {
             changed_paths(&inventory, &before.inventory)
         };
+        changed.extend(successfully_projected_invalidations);
         changed.extend(source_projection::affected_callers(&batch, &changed));
         changed.retain(|path| !protected.contains(path.as_str()));
         let mut removed = removed_paths(&batch, full, &inventory, &before.inventory);
@@ -247,10 +279,91 @@ impl IndexSourceCheckout {
         self.journal.acknowledge(receipt, control)
     }
 
-    fn scan_token(&self, header: Option<&CheckpointHeader>) -> Result<String> {
-        let bytes = serde_json::to_vec(&(&self.journal.binding, header))
+    fn scan_token(
+        &self,
+        header: Option<&CheckpointHeader>,
+        invalidated_records: &BTreeMap<SemanticRecordRef, String>,
+    ) -> Result<String> {
+        let invalidated = invalidated_records.iter().collect::<Vec<_>>();
+        let bytes = serde_json::to_vec(&(&self.journal.binding, header, invalidated))
             .map_err(lumvise_db_core::DbError::from)?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    fn unavailable_element_records(
+        &self,
+        control: &InvocationControl,
+    ) -> Result<BTreeMap<SemanticRecordRef, String>> {
+        let selections = BTreeSet::from([
+            self.journal.rows.producer_selection_id(),
+            self.journal.binding.selection_id.clone(),
+        ]);
+        let mut records = BTreeMap::new();
+        for selection_id in selections {
+            let headers = self.unavailable_headers(&selection_id, control)?;
+            for header in headers {
+                self.retain_unavailable_source_record(&mut records, &header)?;
+            }
+        }
+        Ok(records)
+    }
+
+    fn unavailable_headers(
+        &self,
+        selection_id: &str,
+        control: &InvocationControl,
+    ) -> Result<Vec<SemanticRevisionRecordHeader>> {
+        let result = self.journal.semantic(
+            SemanticOperation::UnavailableRevisions {
+                project_root: self.journal.project_root.clone(),
+                selection_id: selection_id.into(),
+            },
+            control,
+        )?;
+        let SemanticResult::UnavailableRevisions(headers) = result else {
+            return Err(invalid_checkpoint(
+                selection_id,
+                "selected unavailable revision headers",
+            ));
+        };
+        Ok(headers)
+    }
+
+    fn retain_unavailable_source_record(
+        &self,
+        records: &mut BTreeMap<SemanticRecordRef, String>,
+        header: &SemanticRevisionRecordHeader,
+    ) -> Result<()> {
+        let Some((record, path)) = self.unavailable_source_scope(header) else {
+            return Ok(());
+        };
+        if records
+            .get(&record)
+            .is_some_and(|previous| previous != &path)
+        {
+            return Err(invalid_checkpoint(
+                &record.record_id,
+                "one stable source path for an unavailable selected revision",
+            ));
+        }
+        records.insert(record, path);
+        Ok(())
+    }
+
+    fn unavailable_source_scope(
+        &self,
+        header: &SemanticRevisionRecordHeader,
+    ) -> Option<(SemanticRecordRef, String)> {
+        if header.unavailable.is_none() || header.record.kind != SemanticRecordKind::Element {
+            return None;
+        }
+        let scope = header.element_scope.as_ref()?;
+        if scope.provider_instance_id.as_deref()
+            != Some(self.journal.binding.provider_instance_id.as_str())
+        {
+            return None;
+        }
+        Some((header.record.clone(), scope.path.clone()))
     }
 
     fn establish_base(

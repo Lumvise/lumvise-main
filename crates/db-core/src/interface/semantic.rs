@@ -270,6 +270,21 @@ pub enum SemanticOperation {
     SearchProjectStructure {
         project_root: String,
     },
+    /// Reads acknowledged missing bodies still held by one selection, without hydrating payloads.
+    UnavailableRevisions {
+        project_root: String,
+        selection_id: String,
+    },
+    /// Inspects actual immutable body presence without changing project state.
+    /// Example: inspect `/repo` with `publication_operation_id: Some(pending_id)` before replay.
+    InspectRevisionIntegrity {
+        project_root: String,
+        #[serde(default)]
+        publication_operation_id: Option<String>,
+    },
+    /// Acknowledges exactly inspected source-body loss through the existing atomic publisher.
+    /// Example: `SemanticOperation::RecoverRevisionIntegrity(request)` after explicit owner approval.
+    RecoverRevisionIntegrity(crate::SemanticRevisionRecoveryRequest),
 }
 
 /// Stateless graph-derived delta page for transient external consumers.
@@ -359,6 +374,9 @@ pub enum SemanticResult {
     },
     PzImport(crate::PzImportResult),
     ProjectArchive(crate::SemanticArchive),
+    UnavailableRevisions(Vec<crate::SemanticRevisionRecordHeader>),
+    RevisionIntegrity(crate::SemanticRevisionIntegrityReport),
+    RevisionRecovery(crate::SemanticRevisionRecoveryReceipt),
 }
 
 pub trait SemanticPersistence: Send + Sync {

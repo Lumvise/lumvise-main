@@ -1,5 +1,10 @@
 //! Qualified references and retention run through Knowledge's dispatch and the real host/persistence.
 use super::*;
+use lumvise_db_core::{PersistenceResult, SemanticReadiness};
+use lumvise_semantic_revisions::{
+    SemanticRecordRef, SemanticRevisionBody, SemanticRevisionLink, SemanticRevisionUnavailable,
+};
+use std::sync::Mutex;
 
 fn foreign_document(host: &mut DocumentBoundaryHost) -> Value {
     let mut request = report();
@@ -21,6 +26,81 @@ fn destination(reference: &Value) -> Value {
     request["operation_id"] = json!("retain-foreign-evidence");
     request["references"] = json!([reference]);
     request
+}
+
+// Keep source-loss corruption in DB Core; exercise Knowledge's approved-result handling here.
+struct UnavailableCitationSemantic {
+    persistence: Arc<LocalPersistence>,
+    unavailable_record: SemanticRecordRef,
+    successor_record: SemanticRecordRef,
+    source_context: String,
+    resolved_records: Arc<Mutex<Vec<SemanticRecordRef>>>,
+}
+
+impl SemanticPersistence for UnavailableCitationSemantic {
+    fn execute(
+        &self,
+        operation: SemanticOperation,
+        control: &InvocationControl,
+    ) -> PersistenceResult<SemanticResult> {
+        let (project_root, record) = match &operation {
+            SemanticOperation::ResolveRevision {
+                project_root,
+                record,
+            } => (project_root.clone(), record.clone()),
+            _ => {
+                return SemanticPersistence::execute(self.persistence.as_ref(), operation, control);
+            }
+        };
+        self.resolved_records.lock().unwrap().push(record.clone());
+        if record != self.unavailable_record {
+            return SemanticPersistence::execute(self.persistence.as_ref(), operation, control);
+        }
+        let output = SemanticPersistence::execute(self.persistence.as_ref(), operation, control)?;
+        let mut resolution = match output {
+            SemanticResult::RevisionResolution(Some(resolution)) => resolution,
+            other => return Ok(other),
+        };
+        resolution.body = SemanticRevisionBody::Unavailable(SemanticRevisionUnavailable {
+            recovery_operation_id: "approved-source-loss".into(),
+            unavailable_at_ms: 2,
+            canonical_lifecycle: Some("active".into()),
+        });
+        resolution.successors = vec![SemanticRevisionLink {
+            project_root,
+            source_context: self.source_context.clone(),
+            older: record,
+            newer: self.successor_record.clone(),
+            created_at_ms: 3,
+            commit_version: 3,
+        }];
+        Ok(SemanticResult::RevisionResolution(Some(resolution)))
+    }
+
+    fn readiness(&self) -> PersistenceResult<SemanticReadiness> {
+        SemanticPersistence::readiness(self.persistence.as_ref())
+    }
+}
+
+fn install_unavailable_citation_read(
+    host: &mut DocumentBoundaryHost,
+    record_id: &str,
+    source_context: &str,
+) -> Arc<Mutex<Vec<SemanticRecordRef>>> {
+    let resolved_records = Arc::new(Mutex::new(Vec::new()));
+    let semantic = Arc::new(UnavailableCitationSemantic {
+        persistence: host.persistence.clone(),
+        unavailable_record: SemanticRecordRef::element(record_id),
+        successor_record: SemanticRecordRef::element("fresh-successor"),
+        source_context: source_context.into(),
+        resolved_records: resolved_records.clone(),
+    });
+    host.broker = Arc::new(
+        AppCoreHostCapabilityBroker::new(semantic, host.persistence.clone())
+            .with_index_client(host.client_instance_id.clone())
+            .unwrap(),
+    );
+    resolved_records
 }
 
 #[test]
@@ -103,6 +183,79 @@ fn forged_project_identity_and_missing_exact_evidence_never_publish() {
         host.knowledge("create_document", destination(&missing["reference"]))
             .is_err()
     );
+}
+
+#[test]
+fn exact_unavailable_citation_hides_cached_and_successor_bodies_and_cannot_publish() {
+    let mut host = DocumentBoundaryHost::new();
+    let original = foreign_document(&mut host);
+    let semantic_element_id = original["semantic_element_id"].as_str().unwrap();
+    let locator = read_document_citation(&mut host, &original);
+    let source_context = locator["reference"]["target"]["selection"]["source_context"]
+        .as_str()
+        .unwrap();
+    let mut successor = source_batch();
+    successor["project_root"] = json!("/foreign");
+    successor["semantic_sources"][0]["root_path"] = json!("/foreign");
+    successor["semantic_sources"][0]["root_uri"] = json!("file:///foreign");
+    successor["semantic_elements"][0]["semantic_element_id"] = json!("fresh-successor");
+    successor["semantic_elements"][0]["metadata"] = json!({"body":"fresh successor bytes"});
+    host.seed_sources(successor).unwrap();
+
+    let unavailable_record = SemanticRecordRef::element(semantic_element_id);
+    let cached = host.execute(SemanticOperation::ResolveRevision {
+        project_root: "/foreign".into(),
+        record: unavailable_record.clone(),
+    });
+    assert!(matches!(
+        cached,
+        SemanticResult::RevisionResolution(Some(resolution))
+            if matches!(resolution.body, SemanticRevisionBody::Element(_))
+    ));
+    let successor_body = host.execute(SemanticOperation::ResolveRevision {
+        project_root: "/foreign".into(),
+        record: SemanticRecordRef::element("fresh-successor"),
+    });
+    assert!(matches!(
+        successor_body,
+        SemanticResult::RevisionResolution(Some(resolution))
+            if matches!(resolution.body, SemanticRevisionBody::Element(_))
+    ));
+
+    let resolved_records =
+        install_unavailable_citation_read(&mut host, semantic_element_id, source_context);
+    let read = host
+        .knowledge(
+            "resolve_document_reference",
+            json!({"project_root":"/foreign", "target":{
+                "target_kind":"semantic_element",
+                "semantic_element_id":semantic_element_id,
+                "selection":{"mode":"exact", "source_context":source_context}
+            }}),
+        )
+        .unwrap();
+    assert_eq!(read["state"], "unavailable");
+    assert!(read["body"].is_null());
+    assert!(
+        resolved_records
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| record.record_id != "fresh-successor")
+    );
+
+    let error = host
+        .knowledge("create_document", destination(&read["reference"]))
+        .unwrap_err();
+    assert_eq!(error.code, "knowledge_citation_unavailable");
+    assert!(
+        resolved_records
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| record.record_id != "fresh-successor")
+    );
+    assert!(source_claims(&host).is_empty());
 }
 
 fn retention_request() -> Value {

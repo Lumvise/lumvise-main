@@ -12,6 +12,8 @@ pub struct SemanticRevisionRecordHeader {
     pub created_at_ms: i64,
     pub unselected_at_ms: Option<i64>,
     pub pruned_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<SemanticRevisionUnavailable>,
 }
 
 impl From<&SemanticStoredRevision> for SemanticRevisionRecordHeader {
@@ -21,12 +23,17 @@ impl From<&SemanticStoredRevision> for SemanticRevisionRecordHeader {
             element_scope: stored.element_scope.clone(),
             canonical_lifecycle: match &stored.body {
                 SemanticRevisionBody::Element(element) => Some(element.lifecycle.clone()),
+                SemanticRevisionBody::Unavailable(marker) => marker.canonical_lifecycle.clone(),
                 _ => None,
             },
             artifact_state: stored.artifact_state.clone(),
             created_at_ms: stored.created_at_ms,
             unselected_at_ms: stored.unselected_at_ms,
             pruned_at_ms: stored.pruned_at_ms,
+            unavailable: match &stored.body {
+                SemanticRevisionBody::Unavailable(marker) => Some(marker.clone()),
+                _ => None,
+            },
         }
     }
 }
@@ -44,7 +51,32 @@ impl SemanticRevisionRecordHeader {
         self,
         mut body: SemanticRevisionBody,
     ) -> SemanticRevisionResult<SemanticStoredRevision> {
-        let identity = match &mut body {
+        let identity = self.restore_identity(&mut body)?;
+        self.validate_restored_body(&body, identity.as_ref())?;
+        Ok(SemanticStoredRevision {
+            record: self.record,
+            element_scope: self.element_scope,
+            body,
+            artifact_state: self.artifact_state,
+            created_at_ms: self.created_at_ms,
+            unselected_at_ms: self.unselected_at_ms,
+            pruned_at_ms: self.pruned_at_ms,
+        })
+    }
+
+    /// Returns declared absence without inventing payload bytes. Example: `header.payload_absence()`.
+    pub fn payload_absence(&self) -> Option<SemanticRevisionBody> {
+        self.unavailable
+            .as_ref()
+            .map(|marker| SemanticRevisionBody::Unavailable(marker.clone()))
+            .or_else(|| self.pruned_at_ms.map(|_| SemanticRevisionBody::Pruned))
+    }
+
+    fn restore_identity(
+        &self,
+        body: &mut SemanticRevisionBody,
+    ) -> SemanticRevisionResult<Option<SemanticRecordRef>> {
+        Ok(match body {
             SemanticRevisionBody::Element(element) => {
                 element.lifecycle = self.canonical_lifecycle.clone().ok_or_else(|| {
                     SemanticRevisionError::invalid_value(
@@ -57,12 +89,32 @@ impl SemanticRevisionRecordHeader {
             SemanticRevisionBody::Artifact(artifact) => {
                 Some(SemanticRecordRef::artifact(&artifact.artifact_id))
             }
-            SemanticRevisionBody::Pruned => None,
+            SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => None,
+        })
+    }
+
+    fn validate_restored_body(
+        &self,
+        body: &SemanticRevisionBody,
+        identity: Option<&SemanticRecordRef>,
+    ) -> SemanticRevisionResult<()> {
+        if let SemanticRevisionBody::Unavailable(marker) = body {
+            marker.validate(&self.record)?;
+        }
+        let declared = match body {
+            SemanticRevisionBody::Pruned => {
+                self.pruned_at_ms.is_some() && self.unavailable.is_none()
+            }
+            SemanticRevisionBody::Unavailable(marker) => {
+                self.pruned_at_ms.is_none()
+                    && self.unavailable.as_ref() == Some(marker)
+                    && marker.canonical_lifecycle == self.canonical_lifecycle
+            }
+            _ => self.pruned_at_ms.is_none() && self.unavailable.is_none(),
         };
-        if identity
-            .as_ref()
-            .is_some_and(|identity| identity != &self.record)
-            || identity.is_none() != self.pruned_at_ms.is_some()
+        if identity.is_some_and(|identity| identity != &self.record)
+            || self.record.record_id.trim().is_empty()
+            || !declared
             || (self.record.kind == SemanticRecordKind::Artifact) != self.artifact_state.is_some()
             || self
                 .artifact_state
@@ -71,17 +123,9 @@ impl SemanticRevisionRecordHeader {
         {
             return Err(SemanticRevisionError::invalid_value(
                 &self.record.record_id,
-                "the exact canonical body matching its available/pruned revision header",
+                "the exact canonical body matching its available, pruned or unavailable revision header",
             ));
         }
-        Ok(SemanticStoredRevision {
-            record: self.record,
-            element_scope: self.element_scope,
-            body,
-            artifact_state: self.artifact_state,
-            created_at_ms: self.created_at_ms,
-            unselected_at_ms: self.unselected_at_ms,
-            pruned_at_ms: self.pruned_at_ms,
-        })
+        Ok(())
     }
 }

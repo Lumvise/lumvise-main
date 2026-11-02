@@ -144,6 +144,7 @@ fn prepare_source_index(
         source,
         base_token: before.token,
         requires_full_scan: before.requires_full_scan,
+        invalidated_paths: before.invalidated_paths.into_iter().collect(),
     })
 }
 

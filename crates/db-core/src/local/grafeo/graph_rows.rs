@@ -120,6 +120,7 @@ pub(crate) fn configure_semantic_indexes(database: &GrafeoDB) -> Result<()> {
         "revision_history_selection_key",
         "revision_source_anchor",
         "revision_record_provider",
+        "revision_unavailable_project",
         "revision_follow_context",
         "revision_association_element",
         "revision_association_artifact",

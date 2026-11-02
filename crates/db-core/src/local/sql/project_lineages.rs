@@ -15,6 +15,16 @@ impl<'db> ProjectLineageRepository<'db> {
         Self { conn }
     }
 
+    pub(crate) fn get_existing(&self, project_root: &str) -> Result<ProjectIdentity> {
+        let root = normalized_project_root(project_root)?;
+        read_project_lineage(&self.conn.read_conn(), &root)?.ok_or_else(|| {
+            DbError::invalid_value(
+                root,
+                "an existing durable project lineage before integrity inspection",
+            )
+        })
+    }
+
     /// Returns the durable identity for `project_root`, creating it on first use.
     pub(crate) fn get_or_create(&self, project_root: &str) -> Result<ProjectIdentity> {
         let project_root = normalized_project_root(project_root)?;

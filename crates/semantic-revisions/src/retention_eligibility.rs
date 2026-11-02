@@ -37,9 +37,10 @@ pub(crate) fn eligible_history_records(
 fn historical_bodies(
     state: &SemanticRevisionState,
 ) -> impl Iterator<Item = &SemanticStoredRevision> {
-    state.records.iter().filter(|stored| {
-        stored.unselected_at_ms.is_some() && !matches!(stored.body, SemanticRevisionBody::Pruned)
-    })
+    state
+        .records
+        .iter()
+        .filter(|stored| stored.unselected_at_ms.is_some() && stored.body.is_available())
 }
 
 fn history_age_cutoff(seconds: u64, now_ms: i64) -> SemanticRevisionResult<i64> {

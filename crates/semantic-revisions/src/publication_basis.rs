@@ -106,7 +106,7 @@ impl SemanticRevisionState {
     }
 }
 
-fn scoped_selected_elements(
+pub(crate) fn scoped_selected_elements(
     state: &SemanticRevisionState,
     head: &SemanticRevisionSelectionState,
     coverage: &SemanticRevisionStructureCoverage,

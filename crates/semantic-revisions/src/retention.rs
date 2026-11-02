@@ -74,10 +74,14 @@ impl SemanticRevisionState {
             .accepted_operations
             .iter()
             .any(|accepted| accepted.receipt.operation_id == plan.operation_id)
+            || self
+                .recovery_operations
+                .iter()
+                .any(|accepted| accepted.receipt.operation_id == plan.operation_id)
         {
             return Err(SemanticRevisionError::invalid_value(
                 &plan.operation_id,
-                "a collection operation ID unused by publication",
+                "a collection operation ID unused by publication or recovery",
             ));
         }
 
@@ -182,10 +186,7 @@ fn retained_closure(
         state
             .records
             .iter()
-            .filter(|stored| {
-                !eligible.contains(&stored.record)
-                    && !matches!(stored.body, SemanticRevisionBody::Pruned)
-            })
+            .filter(|stored| !eligible.contains(&stored.record) && stored.body.is_available())
             .map(|stored| stored.record.clone()),
     );
     let connections = state
@@ -211,7 +212,7 @@ fn retained_closure(
         if !retained.insert(record.clone()) {
             continue;
         }
-        let stored = index.require(&record)?;
+        let stored = index.require_retained(&record)?;
         pending.extend(index.requirements(stored, expired));
     }
     Ok(retained)

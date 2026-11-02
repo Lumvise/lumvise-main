@@ -139,7 +139,7 @@ impl KnowledgeSemanticAccess<'_> {
             SemanticRevisionBody::Artifact(artifact) => {
                 self.revision_artifact_allowed(artifact, root, scope)?
             }
-            SemanticRevisionBody::Pruned => true,
+            SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => true,
         };
         Ok(SemanticResult::RevisionResolution(
             allowed.then_some(revision),

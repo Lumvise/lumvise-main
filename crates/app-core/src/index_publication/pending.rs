@@ -15,6 +15,7 @@ impl IndexPublicationJournal {
         control: &InvocationControl,
     ) -> Result<()> {
         self.validate_frozen(publication)?;
+        self.require_not_superseded(&publication.operation_id, control)?;
         let original = self.header(control)?;
         let digest = publication_digest(publication)?;
         if let Some(pending) = &original.pending {
@@ -270,7 +271,7 @@ fn metadata_batch(batch: &IndexBatchRequest) -> IndexBatchRequest {
     }
 }
 
-fn publication_digest(publication: &FrozenIndexPublication) -> Result<String> {
+pub(super) fn publication_digest(publication: &FrozenIndexPublication) -> Result<String> {
     let bytes = serde_json::to_vec(publication).map_err(DbError::from)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }

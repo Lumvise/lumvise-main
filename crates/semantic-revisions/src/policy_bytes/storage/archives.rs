@@ -96,26 +96,30 @@ fn capture(
     rows: &[StorageRow],
     published: &str,
 ) -> SemanticRevisionResult<ArchivePayload> {
-    let selected = state
-        .snapshot(&request.selection_id, published)?
-        .ok_or_else(|| {
-            SemanticRevisionError::invalid_value(
-                &request.selection_id,
-                "an available archive selection",
-            )
-        })?;
     let public = request.selection_id == "public";
+    let selection = state.selection(&request.selection_id).ok_or_else(|| {
+        SemanticRevisionError::invalid_value(
+            &request.selection_id,
+            "an available archive selection",
+        )
+    })?;
+    let selected = if public {
+        state.snapshot(&request.selection_id, published)?
+    } else {
+        None
+    };
+    let snapshot = match &selected {
+        Some(selected) => snapshot_records(selected.clone()),
+        None => retained_snapshot(state, &request.selection_id, published)?,
+    };
     let hints = if public {
         origin::Origin::default()
     } else {
         origin::read(rows)?
     };
-    let anchor = selected.selection.source_anchor.clone();
-    if !public {
-        state.validate_archive_state()?;
-    }
-    let available = if public {
-        selected_bodies(state, &selected)
+    let anchor = selection.selection.source_anchor.clone();
+    let available = if let Some(selected) = &selected {
+        selected_bodies(state, selected)
     } else {
         state.records.clone()
     };
@@ -143,11 +147,34 @@ fn capture(
         canonical_remote: anchor
             .and_then(|anchor| anchor.canonical_remote)
             .or(hints.canonical_remote),
-        snapshot: snapshot_records(selected),
+        snapshot,
         artifact_blobs: blobs(&available, rows, published, &attachment_owners)?,
         artifact_text_vectors,
         element_name_vectors,
     })
+}
+
+fn retained_snapshot(
+    state: &SemanticRevisionState,
+    selection: &str,
+    published: &str,
+) -> SemanticRevisionResult<ArchiveSnapshot> {
+    let selected = state.archive_projection(selection)?.ok_or_else(|| {
+        SemanticRevisionError::invalid_value(selection, "an existing archive selection")
+    })?;
+    let snapshot = ArchiveSnapshot {
+        project_root: state.project_root.clone(),
+        commit_version: state.commit_version,
+        published_at: published.into(),
+        elements: selected.elements,
+        artifacts: selected.artifacts,
+        relationships: selected
+            .connections
+            .into_iter()
+            .map(|edge| edge.relationship)
+            .collect(),
+    };
+    Ok(include_required_bodies(snapshot, selected.required_records))
 }
 
 fn selected_bodies(
@@ -165,7 +192,7 @@ fn selected_bodies(
 }
 
 fn snapshot_records(selected: SemanticRevisionSelectionSnapshot) -> ArchiveSnapshot {
-    let mut snapshot = ArchiveSnapshot {
+    let snapshot = ArchiveSnapshot {
         project_root: selected.selection.project_root,
         commit_version: selected.commit_version,
         published_at: selected.published_at,
@@ -177,11 +204,18 @@ fn snapshot_records(selected: SemanticRevisionSelectionSnapshot) -> ArchiveSnaps
             .map(|edge| edge.relationship)
             .collect(),
     };
-    for required in selected.required_records {
+    include_required_bodies(snapshot, selected.required_records)
+}
+
+fn include_required_bodies(
+    mut snapshot: ArchiveSnapshot,
+    required_records: Vec<crate::SemanticStoredRevision>,
+) -> ArchiveSnapshot {
+    for required in required_records {
         match required.body {
             SemanticRevisionBody::Element(element) => snapshot.elements.push(element),
             SemanticRevisionBody::Artifact(artifact) => snapshot.artifacts.push(artifact),
-            SemanticRevisionBody::Pruned => {}
+            SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {}
         }
     }
     snapshot

@@ -17,6 +17,49 @@ fn signed_template_matches_source_controls_and_required_host_version() {
     );
 }
 
+#[test]
+fn integrity_inspection_forwards_only_explicit_owner_inputs() {
+    assert_eq!(
+        request(
+            "inspect_revision_integrity",
+            json!({
+                "project_root":"/source", "publication_operation_id":"frozen-refresh"
+            })
+        )
+        .unwrap(),
+        json!({"operation":"inspect_revision_integrity", "project_root":"/source", "publication_operation_id":"frozen-refresh"})
+    );
+    assert_eq!(
+        request(
+            "inspect_revision_integrity",
+            json!({"project_root":"/source"})
+        )
+        .unwrap(),
+        json!({"operation":"inspect_revision_integrity", "project_root":"/source", "publication_operation_id":null})
+    );
+    let error = request(
+        "inspect_revision_integrity",
+        json!({
+            "project_root":"/source", "human_interaction":true
+        }),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("human_interaction"), "{error:?}");
+}
+
+#[test]
+fn integrity_recovery_preserves_exact_fenced_request() {
+    let approved = json!({
+        "operation_id":"approved-loss", "project_root":"/source", "project_id":"durable-project",
+        "expected_commit_version":42, "provider_instance_id":"source-parser",
+        "missing_records":[{"kind":"element", "record_id":"lost-revision"}]
+    });
+    assert_eq!(
+        request("recover_revision_integrity", approved.clone()).unwrap(),
+        json!({"operation":"recover_revision_integrity", "request":approved})
+    );
+}
+
 struct FakeRevisionControlHost {
     project_id: String,
     rows: std::collections::BTreeMap<String, Value>,

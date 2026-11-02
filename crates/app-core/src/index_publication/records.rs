@@ -135,6 +135,16 @@ pub(super) struct PendingIdentity {
     pub ready: bool,
 }
 
+/// Retains why an intact, unaccepted frozen request was replaced after approved loss recovery.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecoveredSourceSupersession {
+    pub operation_id: String,
+    pub frozen_digest: String,
+    pub inspected_commit_version: i64,
+    pub blocked_headers: Vec<lumvise_db_core::SemanticRevisionRecordHeader>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct FrozenDescriptor {
     pub publication: FrozenIndexPublication,

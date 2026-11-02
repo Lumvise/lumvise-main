@@ -115,6 +115,15 @@ pub(crate) fn require_body<'a>(
     record: &SemanticRecordRef,
 ) -> SemanticRevisionResult<&'a SemanticRevisionBody> {
     match index.get(record).map(|stored| &stored.body) {
+        Some(SemanticRevisionBody::Unavailable(marker)) => {
+            Err(SemanticRevisionError::invalid_value(
+                &record.record_id,
+                format!(
+                    "an available exact body; this revision was acknowledged unavailable by recovery `{}`",
+                    marker.recovery_operation_id
+                ),
+            ))
+        }
         Some(SemanticRevisionBody::Pruned) | None => Err(SemanticRevisionError::invalid_value(
             &record.record_id,
             "an available exact revision body in this project",

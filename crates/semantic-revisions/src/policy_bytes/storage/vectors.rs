@@ -89,7 +89,7 @@ pub(super) fn write(
             "an available current selection for vectors",
         )
     })?;
-    let (root, groups, count) = validated_groups(&selected, request)?;
+    let (root, groups, count) = validated_groups(&selected.elements, &selected.artifacts, request)?;
     crate::revision_index::ensure_root(&root, &state.project_root)?;
     let rows = merge::rows(groups, loaded)?
         .into_iter()
@@ -110,7 +110,8 @@ pub(super) fn write(
 }
 
 fn validated_groups(
-    selected: &SemanticRevisionSelectionSnapshot,
+    eligible_elements: &[SemanticElement],
+    eligible_artifacts: &[SemanticArtifact],
     request: VectorWrite,
 ) -> SemanticRevisionResult<(String, BTreeMap<SemanticRecordRef, VectorPayload>, usize)> {
     let mut groups = BTreeMap::new();
@@ -121,7 +122,7 @@ fn validated_groups(
         } => {
             let count = vectors.len();
             for vector in vectors {
-                validate_element(selected, &project_root, &vector)?;
+                validate_element(eligible_elements, &project_root, &vector)?;
                 let group = groups
                     .entry(SemanticRecordRef::element(&vector.semantic_element_id))
                     .or_insert_with(|| VectorPayload::Element(vec![]));
@@ -137,7 +138,7 @@ fn validated_groups(
         } => {
             let count = vectors.len();
             for vector in vectors {
-                validate_artifact(selected, &vector)?;
+                validate_artifact(eligible_artifacts, &vector)?;
                 let group = groups
                     .entry(SemanticRecordRef::artifact(&vector.artifact_id))
                     .or_insert_with(|| VectorPayload::Artifact(vec![]));
@@ -151,11 +152,11 @@ fn validated_groups(
 }
 
 fn validate_element(
-    selected: &SemanticRevisionSelectionSnapshot,
+    eligible_elements: &[SemanticElement],
     root: &str,
     vector: &StoredSemanticElementNameVector,
 ) -> SemanticRevisionResult<()> {
-    let element = selected.elements.iter().find(|element| {
+    let element = eligible_elements.iter().find(|element| {
         element.semantic_element_id == vector.semantic_element_id && element.lifecycle != "inactive"
     });
     if vector.project_root != root
@@ -174,11 +175,10 @@ fn validate_element(
 }
 
 fn validate_artifact(
-    selected: &SemanticRevisionSelectionSnapshot,
+    eligible_artifacts: &[SemanticArtifact],
     vector: &StoredArtifactTextVector,
 ) -> SemanticRevisionResult<()> {
-    let artifact = selected
-        .artifacts
+    let artifact = eligible_artifacts
         .iter()
         .find(|artifact| artifact.artifact_id == vector.artifact_id);
     let valid = artifact.is_some_and(|artifact| {
@@ -247,7 +247,11 @@ pub(super) fn read(
     let mut artifacts = Vec::new();
     for row in rows.iter().filter(|row| is_vector(row)) {
         let record = owner(row)?;
-        if !selected.records.contains(&record) {
+        let unavailable = state
+            .records
+            .iter()
+            .any(|stored| stored.record == record && !stored.body.is_available());
+        if !selected.records.contains(&record) || unavailable {
             continue;
         }
         let body = row.body_json.as_deref().ok_or_else(|| {

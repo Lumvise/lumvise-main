@@ -20,6 +20,8 @@ fn revision_root(operation: &SemanticOperation) -> Option<&str> {
         | RevisionSourceAnchor { project_root, .. }
         | ResolveRevision { project_root, .. }
         | RevisionHistory { project_root }
+        | UnavailableRevisions { project_root, .. }
+        | InspectRevisionIntegrity { project_root, .. }
         | PlanRevisionRetention { project_root, .. } => Some(project_root),
         RevisionConnections(query) => Some(&query.project_root),
         RevisionFamilies(query) => Some(&query.project_root),
@@ -29,6 +31,7 @@ fn revision_root(operation: &SemanticOperation) -> Option<&str> {
         AcquireCitationRetention(request) => Some(&request.project_root),
         ReleaseCitationRetention(request) => Some(&request.project_root),
         CollectRevisionRetention { plan, .. } => Some(&plan.project_root),
+        RecoverRevisionIntegrity(request) => Some(&request.project_root),
         _ => None,
     }
 }

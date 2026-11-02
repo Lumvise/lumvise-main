@@ -62,6 +62,7 @@ pub(super) fn load_publication_basis(
     }
     rows.row("operation", &request.operation_id)?;
     rows.row("retention", &request.operation_id)?;
+    rows.row("recovery", &request.operation_id)?;
     let context_key = serde_json::to_string(&(&request.project_root, &request.source_context))?;
     rows.indexed("revision_follow_context", &context_key);
     if let Some(structure) = &request.structure {
@@ -81,7 +82,7 @@ pub(super) fn load_publication_basis(
             rows.record(&SemanticRecordRef::element(&connection.source_element_id))?;
             rows.record(&SemanticRecordRef::element(&connection.target_element_id))?;
         }
-        rows.published_connection_definitions(&structure.relationships)?;
+        rows.published_connection_definitions(&structure.relationships, &request.selection_id)?;
     }
     for id in lumvise_semantic_revisions::requested_artifact_ids(request) {
         rows.family(&SemanticRecordRef::artifact(id), &request.selection_id)?;
@@ -260,9 +261,13 @@ impl<'a> RevisionBasisRows<'a> {
             .find_nodes_by_property(property, &Value::from(identity))
             .into_iter()
             .filter(|id| {
-                self.graph
-                    .get_node(*id)
-                    .is_some_and(|node| node.has_label("SemanticRevisionRow"))
+                self.graph.get_node(*id).is_some_and(|node| {
+                    node.has_label("SemanticRevisionRow")
+                        && node
+                            .get_property("revision_project_root")
+                            .and_then(Value::as_str)
+                            == Some(self.root)
+                })
             })
             .collect()
     }
@@ -400,6 +405,7 @@ impl<'a> RevisionBasisRows<'a> {
     fn published_connection_definitions(
         &mut self,
         relationships: &[SemanticRelationship],
+        selection_id: &str,
     ) -> Result<()> {
         let owners = relationships
             .iter()
@@ -408,8 +414,22 @@ impl<'a> RevisionBasisRows<'a> {
         for owner in owners {
             let nodes = self.connection_candidates(&SemanticRecordRef::element(owner))?;
             // Deselected definitions still reserve exact IDs; their bodies need not be hydrated.
-            self.nodes.extend(nodes);
+            for node in nodes {
+                self.include_published_connection(node, selection_id)?;
+            }
         }
+        Ok(())
+    }
+
+    fn include_published_connection(&mut self, node: NodeId, selection_id: &str) -> Result<()> {
+        let connection = self.connection_row(node)?;
+        let member = SemanticRevisionMember::Connection(connection.connection_id.clone());
+        if self.selected(selection_id, member)? {
+            // Projection needs exact endpoint bodies for selected definitions outside the partition.
+            return self.include_connection(node, connection);
+        }
+        self.connections.insert(connection.connection_id);
+        self.nodes.insert(node);
         Ok(())
     }
 
@@ -493,10 +513,11 @@ impl<'a> RevisionBasisRows<'a> {
         match nodes.as_slice() {
             [] => Ok(None),
             [node] => Ok(Some(*node)),
-            _ => Err(DbError::invalid_value(
-                identity,
-                "one exact selection membership",
-            )),
+            _ => {
+                let key = serde_json::to_string(&(self.root, "membership", identity))?;
+                revision_rows::validate_membership_row_copies(self.graph, self.root, &key, &nodes)?;
+                Ok(nodes.into_iter().min())
+            }
         }
     }
 

@@ -16,6 +16,7 @@ pub enum SemanticRevisionMetadata {
     Association(SemanticRevisionAssociation),
     Operation(SemanticRevisionAcceptedOperation),
     Retention(SemanticRevisionAcceptedRetention),
+    Recovery(SemanticRevisionAcceptedRecovery),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,6 +70,7 @@ impl SemanticRevisionMetadata {
             Self::Association(_) => "association",
             Self::Operation(_) => "operation",
             Self::Retention(_) => "retention",
+            Self::Recovery(_) => "recovery",
         }
     }
     /// Supplies a stable metadata identity. Example: `row.identity()?`.
@@ -88,6 +90,7 @@ impl SemanticRevisionMetadata {
             Self::Association(association) => association.association_id.clone(),
             Self::Operation(operation) => operation.receipt.operation_id.clone(),
             Self::Retention(operation) => operation.receipt.operation_id.clone(),
+            Self::Recovery(operation) => operation.receipt.operation_id.clone(),
         })
     }
 }
@@ -129,6 +132,11 @@ impl SemanticRevisionState {
                     self.retention_operations
                         .iter()
                         .map(|row| &row.receipt.operation_id),
+                )
+                .chain(
+                    self.recovery_operations
+                        .iter()
+                        .map(|row| &row.receipt.operation_id),
                 ),
             "unique accepted operation identities",
         )?;
@@ -142,6 +150,7 @@ impl SemanticRevisionState {
                 &self.project_root,
             )?;
         }
+        crate::integrity::validate_recovery_history(self)?;
         validate_restored_heads(self)?;
         validate_restored_requirements(self)
     }
@@ -185,6 +194,10 @@ impl SemanticRevisionState {
             (a.receipt.commit_version, &a.receipt.operation_id)
                 .cmp(&(b.receipt.commit_version, &b.receipt.operation_id))
         });
+        self.recovery_operations.sort_by(|a, b| {
+            (a.receipt.commit_version, &a.receipt.operation_id)
+                .cmp(&(b.receipt.commit_version, &b.receipt.operation_id))
+        });
     }
     /// Preserves attachment ownership through retained artifact ancestry without retaining old bodies.
     /// Example: `state.retained_artifact_owner_ids()` when capturing raw archive blobs.
@@ -204,8 +217,7 @@ impl SemanticRevisionState {
             .records
             .iter()
             .filter(|record| {
-                record.record.kind == SemanticRecordKind::Artifact
-                    && !matches!(record.body, SemanticRevisionBody::Pruned)
+                record.record.kind == SemanticRecordKind::Artifact && record.body.is_available()
             })
             .map(|record| record.record.record_id.as_str())
             .collect::<Vec<_>>();
@@ -281,6 +293,12 @@ impl SemanticRevisionState {
                 .iter()
                 .cloned()
                 .map(SemanticRevisionMetadata::Retention),
+        );
+        rows.extend(
+            self.recovery_operations
+                .iter()
+                .cloned()
+                .map(SemanticRevisionMetadata::Recovery),
         );
         rows
     }
@@ -387,11 +405,15 @@ fn validate_archive_record(
             Some(SemanticRecordRef::artifact(&artifact.artifact_id))
         }
         SemanticRevisionBody::Pruned => None,
+        SemanticRevisionBody::Unavailable(marker) => {
+            marker.validate(&stored.record)?;
+            None
+        }
     };
     if exact
         .as_ref()
         .is_some_and(|reference| reference != &stored.record)
-        || exact.is_none() != stored.pruned_at_ms.is_some()
+        || matches!(stored.body, SemanticRevisionBody::Pruned) != stored.pruned_at_ms.is_some()
         || stored.record.record_id.trim().is_empty()
     {
         return Err(SemanticRevisionError::invalid_value(
@@ -404,13 +426,9 @@ fn validate_archive_record(
 
 fn validate_restored_requirements(state: &SemanticRevisionState) -> SemanticRevisionResult<()> {
     let index = crate::required_revisions::RevisionDependencyIndex::new(state);
-    for stored in state
-        .records
-        .iter()
-        .filter(|row| !matches!(row.body, SemanticRevisionBody::Pruned))
-    {
+    for stored in state.records.iter().filter(|row| row.body.is_available()) {
         for reference in index.requirements(stored, &BTreeSet::new()) {
-            index.require(&reference)?;
+            index.require_retained(&reference)?;
         }
     }
     let versions = state
@@ -427,6 +445,12 @@ fn validate_restored_requirements(state: &SemanticRevisionState) -> SemanticRevi
         .chain(
             state
                 .retention_operations
+                .iter()
+                .map(|row| row.receipt.commit_version),
+        )
+        .chain(
+            state
+                .recovery_operations
                 .iter()
                 .map(|row| row.receipt.commit_version),
         );
@@ -477,7 +501,11 @@ fn body_index(
 
 fn validate_restored_heads(state: &SemanticRevisionState) -> SemanticRevisionResult<()> {
     for head in &state.selections {
-        crate::selection::validate_selected_records(state, &head.records, &head.connection_ids)?;
+        crate::selection::validate_archived_selected_records(
+            state,
+            &head.records,
+            &head.connection_ids,
+        )?;
         crate::selection::require_context_selection(
             state,
             &head.selection.selection_id,
@@ -505,9 +533,11 @@ fn append_metadata(
     match row {
         SemanticRevisionMetadata::Project(project_id) => state.project_id = project_id,
         SemanticRevisionMetadata::Record(header) => {
-            let body = bodies
-                .remove(&header.record)
-                .unwrap_or(SemanticRevisionBody::Pruned);
+            let body = bodies.remove(&header.record).unwrap_or_else(|| {
+                header
+                    .payload_absence()
+                    .unwrap_or(SemanticRevisionBody::Pruned)
+            });
             if let SemanticRevisionBody::Element(element) = &body {
                 if header.canonical_lifecycle.as_deref() != Some(&element.lifecycle)
                     || header.element_scope.as_ref().is_none_or(|scope| {
@@ -541,6 +571,7 @@ fn append_metadata(
         SemanticRevisionMetadata::Association(value) => state.associations.push(value),
         SemanticRevisionMetadata::Operation(value) => state.accepted_operations.push(value),
         SemanticRevisionMetadata::Retention(value) => state.retention_operations.push(value),
+        SemanticRevisionMetadata::Recovery(value) => state.recovery_operations.push(value),
     }
     Ok(())
 }

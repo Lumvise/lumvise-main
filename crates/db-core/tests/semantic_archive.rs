@@ -347,7 +347,11 @@ fn pz_writer_rejects_inconsistent_revision_identity_before_replacing_a_valid_arc
     assert!(std::fs::read(&path).unwrap() == before);
 }
 
-fn rewrite_manifest_identity(input: &std::path::Path, output: &std::path::Path) {
+fn rewrite_manifest(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    edit: impl Fn(&mut serde_json::Value),
+) {
     use std::io::{Read, Write};
     let mut archive = zip::ZipArchive::new(std::fs::File::open(input).unwrap()).unwrap();
     let mut writer = zip::ZipWriter::new(std::fs::File::create(output).unwrap());
@@ -358,7 +362,7 @@ fn rewrite_manifest_identity(input: &std::path::Path, output: &std::path::Path) 
         entry.read_to_end(&mut bytes).unwrap();
         if entry.name() == "manifest.json" {
             let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            manifest["projectId"] = json!(uuid::Uuid::new_v4().to_string());
+            edit(&mut manifest);
             bytes = serde_json::to_vec(&manifest).unwrap();
         }
         writer
@@ -387,9 +391,37 @@ fn archive_project_identity_must_match_revision_metadata_on_write_and_read() {
     let error = archive.write(&path, &control).unwrap_err();
     assert!(error.to_string().contains("archive project identity"));
     assert_eq!(std::fs::read(&path).unwrap(), original);
-    rewrite_manifest_identity(&path, &altered);
+    rewrite_manifest(&path, &altered, |manifest| {
+        manifest["projectId"] = json!(uuid::Uuid::new_v4().to_string())
+    });
     let error = SemanticArchive::read(&altered, "/source", &control).unwrap_err();
     assert!(error.to_string().contains("archive project identity"));
+}
+
+#[test]
+fn format_three_exports_preserve_reads_of_existing_format_two_archives() {
+    let directory = tempfile::tempdir().unwrap();
+    let current = directory.path().join("current.pz");
+    let existing = directory.path().join("format-two.pz");
+    let control = InvocationControl::sixty_seconds();
+    let archive = pz_contents();
+    let project_id = archive.project_id.clone();
+    archive.write(&current, &control).unwrap();
+    rewrite_manifest(&current, &existing, |manifest| {
+        assert_eq!(manifest["formatVersion"], 3);
+        manifest["formatVersion"] = json!(2);
+    });
+    let decoded = SemanticArchive::read(&existing, "/target", &control).unwrap();
+    assert_eq!(
+        decoded
+            .snapshot
+            .elements
+            .iter()
+            .map(|element| element.semantic_element_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    assert_eq!(decoded.project_id, project_id);
 }
 
 #[test]

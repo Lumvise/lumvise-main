@@ -11,6 +11,7 @@ mod source;
 mod source_binding;
 mod source_projection;
 mod storage;
+mod supersession;
 #[cfg(test)]
 mod tests;
 mod validation;

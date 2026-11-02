@@ -100,6 +100,8 @@ pub enum SourceIndexPreparation {
         source: SemanticSourceUpsert,
         base_token: String,
         requires_full_scan: bool,
+        /// Reread these paths and emit successful results even when inventory stamps/digests match.
+        invalidated_paths: Vec<String>,
     },
 }
 

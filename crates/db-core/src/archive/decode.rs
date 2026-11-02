@@ -19,6 +19,11 @@ pub(super) fn read(
     control: &InvocationControl,
 ) -> Result<SemanticArchive> {
     let decoded = DecodedArchive::decode(tables, project_root, control)?;
+    if manifest.format_version == 2 && decoded.revision_metadata.iter().any(|row| {
+        matches!(row, SemanticRevisionMetadata::Recovery(_)) || matches!(row, SemanticRevisionMetadata::Record(header) if header.unavailable.is_some())
+    }) {
+        return Err(DbError::invalid_value("formatVersion=2 with unavailable revisions", "PZ format 3 for explicit loss acknowledgements"));
+    }
     let mut artifact_owners = HashMap::new();
     for artifact in &decoded.artifacts {
         artifact_owners
@@ -50,7 +55,7 @@ pub(super) fn read(
     )?;
     super::revisions::validate_archive_project_identity(&manifest.project_id, &revisions)?;
     let selected = revisions
-        .snapshot(&manifest.selection_id, &manifest.published_at)?
+        .archive_projection(&manifest.selection_id)?
         .ok_or_else(|| {
             DbError::invalid_value(&manifest.selection_id, "an archived current selection")
         })?;
@@ -59,7 +64,20 @@ pub(super) fn read(
     let expected = revisions
         .selection(&manifest.selection_id)
         .expect("validated selection");
-    if decoded.selected_records != expected.records.iter().cloned().collect() {
+    let available = revisions
+        .records
+        .iter()
+        .filter(|record| record.body.is_available())
+        .map(|record| &record.record)
+        .collect::<BTreeSet<_>>();
+    if decoded.selected_records
+        != expected
+            .records
+            .iter()
+            .filter(|record| available.contains(record))
+            .cloned()
+            .collect()
+    {
         return Err(DbError::invalid_value(
             "selected",
             "the exact archived selection's record membership",

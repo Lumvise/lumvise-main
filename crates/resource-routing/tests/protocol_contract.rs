@@ -284,3 +284,27 @@ fn readiness_negotiates_minor_only_with_current_major() {
         })
     );
 }
+
+#[test]
+fn revision_availability_protocol_refuses_major_four_peers() {
+    let previous = ReadinessRequestV1 {
+        supported_majors: vec![4],
+        supported_minors: vec![0],
+        deadline_unix_ms: 1,
+        client_instance_id: "pre-unavailable-state-client".into(),
+        requested_capabilities: vec![],
+    };
+    assert_eq!(
+        negotiate_minor(&previous, &[0]),
+        Err(ReadinessNegotiationError::MajorMismatch { server_major: 5 })
+    );
+    let mut old_frame = start("old-client", 0, Operation::Readiness(previous));
+    old_frame.protocol_major = 4;
+    assert_eq!(
+        SequenceValidator::new("old-client").validate(&old_frame),
+        Err(ProtocolError::UnsupportedMajor {
+            got: 4,
+            supported: 5
+        })
+    );
+}

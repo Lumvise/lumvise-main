@@ -68,7 +68,9 @@ pub(super) fn prepare(input: &str, actor: Option<String>) -> SemanticRevisionRes
             );
             &["operation", "selection_id", "query"]
         }
-        "snapshot" | "selection_at" | "source_anchor" => &["operation", "selection_id"],
+        "snapshot" | "selection_at" | "source_anchor" | "unavailable" => {
+            &["operation", "selection_id"]
+        }
         "resolve" => &["operation", "record"],
         "history" | "retention_plan" | "collect" => {
             request.insert("operation".into(), json!("all"));
@@ -83,6 +85,7 @@ pub(super) fn prepare(input: &str, actor: Option<String>) -> SemanticRevisionRes
     };
     request.retain(|key, _| fields.contains(&key.as_str()));
     let intent: read::ReadIntent = serde_json::from_value(Value::Object(request))?;
+    intent.validate()?;
     encoded("intent", &intent)
 }
 
@@ -96,6 +99,17 @@ pub(super) fn execute(
 ) -> SemanticRevisionResult<StorageResult> {
     let (mut request, operation) = unbound(input)?;
     let state: SemanticRevisionState = serde_json::from_str(state_json)?;
+    if operation == "unavailable" {
+        let intent: read::ReadIntent = serde_json::from_value(Value::Object(request.clone()))?;
+        intent.validate()?;
+        let headers = state
+            .records
+            .iter()
+            .filter(|record| matches!(record.body, SemanticRevisionBody::Unavailable(_)))
+            .map(SemanticRevisionRecordHeader::from)
+            .collect::<Vec<_>>();
+        return encoded("unavailable", &headers);
+    }
     if operation == "blob_put" {
         return content::staged::put(&state, input, rows, actor.as_deref(), timestamp, next);
     }

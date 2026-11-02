@@ -156,6 +156,18 @@ fn relationship(source: &str, target: &str) -> SemanticRelationship {
     }
 }
 
+#[test]
+fn unavailable_headers_refuse_empty_selection_ids_before_storage_reads() {
+    for selection_id in ["", " "] {
+        let response = super::storage_envelopes::response(json!({
+            "action":"prepare", "authenticated_actor":"member",
+            "request_json":json!({"operation":"unavailable", "selection_id":selection_id}).to_string()
+        }));
+        assert_eq!(response["status"], "rejected", "{response}");
+        assert!(response["message"].as_str().unwrap().contains("nonempty"));
+    }
+}
+
 fn connected_project() -> ProjectFixture {
     let mut project = ProjectFixture::new();
     let mut edit = project.edit(
@@ -253,7 +265,7 @@ fn accepted_operation_is_fetched_before_any_mutable_body_or_selection() {
     assert!(facts.records.is_empty());
     assert!(store.queries.iter().all(|query| {
         query["query"] == "key"
-            && ["project", "operation", "retention"]
+            && ["project", "operation", "retention", "recovery"]
                 .contains(&query["key"]["kind"].as_str().unwrap())
     }));
     let basis = SemanticRevisionPublicationBasis {
@@ -310,7 +322,170 @@ pub(super) fn cases() -> Vec<Vec<u8>> {
         &project.state,
         json!({"operation":"publication","request":scoped_edit(&project)}),
     );
-    store.requests
+    let mut cases = store.requests;
+    cases.extend(unavailable_parity_cases());
+    cases
+}
+
+fn unavailable_parity_cases() -> Vec<Vec<u8>> {
+    let mut project = super::citations::acknowledged_loss_fixture();
+    let (before_prepare, before_store, before_facts) = unavailable_read(&project.state);
+    let mut cases = vec![storage_case(before_prepare)];
+    cases.extend(before_store.requests.clone());
+    cases.push(storage_case(unavailable_execute_request(
+        &before_store,
+        &before_facts,
+    )));
+
+    super::citations::publish_unavailable_successor(&mut project);
+    let (after_prepare, after_store, after_facts) = unavailable_read(&project.state);
+    cases.push(storage_case(after_prepare));
+    cases.extend(after_store.requests.clone());
+    cases.push(storage_case(unavailable_execute_request(
+        &after_store,
+        &after_facts,
+    )));
+    cases
+}
+
+fn unavailable_read(
+    state: &SemanticRevisionState,
+) -> (Value, IndexedGatewayStorage, SemanticRevisionState) {
+    let prepare = unavailable_prepare_request();
+    let prepared = storage(prepare.clone());
+    assert_eq!(prepared["kind"], "intent");
+    let intent: Value = serde_json::from_str(prepared["value_json"].as_str().unwrap()).unwrap();
+    let mut store = IndexedGatewayStorage::new(state);
+    let facts = store.read(state, intent);
+    (prepare, store, facts)
+}
+
+fn unavailable_prepare_request() -> Value {
+    json!({
+        "action":"prepare",
+        "request_json":serde_json::to_string(&json!({
+            "operation":"unavailable",
+            "selection_id":"working"
+        })).unwrap(),
+        "authenticated_actor":null
+    })
+}
+
+fn unavailable_execute_request(
+    store: &IndexedGatewayStorage,
+    facts: &SemanticRevisionState,
+) -> Value {
+    let now = timestamp(4000);
+    json!({
+        "action":"execute",
+        "request_json":serde_json::to_string(&json!({
+            "operation":"unavailable",
+            "selection_id":"working"
+        })).unwrap(),
+        "state_json":serde_json::to_string(facts).unwrap(),
+        "rows":store.loaded.clone(),
+        "authenticated_actor":null,
+        "now_ms":now.unix_ms.to_string(),
+        "published_at":now.rfc3339,
+        "next_commit":(facts.commit_version + 1).to_string()
+    })
+}
+
+fn storage_case(request: Value) -> Vec<u8> {
+    serde_json::to_vec(&json!({"operation":"storage","request":request})).unwrap()
+}
+
+fn assert_unavailable_reads_are_metadata_only(store: &IndexedGatewayStorage) {
+    assert!(store.queries.iter().all(|query| {
+        matches!(query["query"].as_str(), Some("key" | "index"))
+            && if query["query"] == "index" {
+                query["name"] == "record_unavailable"
+            } else {
+                ["project", "selection", "record"].contains(&query["key"]["kind"].as_str().unwrap())
+            }
+    }));
+    assert!(
+        store
+            .loaded
+            .iter()
+            .all(|row| { row["key"]["kind"] != "record" || row["body_json"].is_null() })
+    );
+}
+
+#[test]
+fn unavailable_read_fetches_only_selected_headers_and_stops_after_successor() {
+    let mut project = super::citations::acknowledged_loss_fixture();
+    let unavailable = SemanticRecordRef::element("evidence");
+    let selected = project.state.selection("working").unwrap();
+    assert!(selected.records.contains(&unavailable));
+    let expected_header = project
+        .state
+        .records
+        .iter()
+        .find(|record| record.record == unavailable)
+        .map(SemanticRevisionRecordHeader::from)
+        .unwrap();
+
+    let (_, store, facts) = unavailable_read(&project.state);
+    assert_unavailable_reads_are_metadata_only(&store);
+    let unavailable_key = serde_json::to_string(&unavailable).unwrap();
+    assert!(store.loaded.iter().any(|row| {
+        row["key"]["kind"] == "record"
+            && row["key"]["identity"] == unavailable_key
+            && row["body_json"].is_null()
+    }));
+    let healthy_key = serde_json::to_string(&SemanticRecordRef::element("healthy")).unwrap();
+    assert!(
+        store
+            .loaded
+            .iter()
+            .all(|row| row["key"]["identity"] != healthy_key)
+    );
+
+    let encoded = storage(unavailable_execute_request(&store, &facts));
+    assert_eq!(encoded["kind"], "unavailable");
+    let headers: Vec<SemanticRevisionRecordHeader> =
+        serde_json::from_str(encoded["value_json"].as_str().unwrap()).unwrap();
+    assert_eq!(headers, vec![expected_header]);
+    assert_eq!(headers[0].record, unavailable);
+    assert_eq!(
+        headers[0]
+            .unavailable
+            .as_ref()
+            .unwrap()
+            .recovery_operation_id,
+        "acknowledge-loss"
+    );
+
+    let successor_id = super::citations::publish_unavailable_successor(&mut project);
+    let (_, successor_store, successor_facts) = unavailable_read(&project.state);
+    let selected = project.state.selection("working").unwrap();
+    assert!(!selected.records.contains(&unavailable));
+    assert!(
+        selected
+            .records
+            .contains(&SemanticRecordRef::element(&successor_id))
+    );
+    assert_unavailable_reads_are_metadata_only(&successor_store);
+    let headers: Vec<SemanticRevisionRecordHeader> = serde_json::from_str(
+        storage(unavailable_execute_request(
+            &successor_store,
+            &successor_facts,
+        ))["value_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(headers.is_empty());
+    for id in ["healthy", successor_id.as_str()] {
+        let key = serde_json::to_string(&SemanticRecordRef::element(id)).unwrap();
+        assert!(
+            successor_store
+                .loaded
+                .iter()
+                .all(|row| row["key"]["identity"] != key)
+        );
+    }
 }
 
 #[test]

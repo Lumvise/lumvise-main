@@ -33,7 +33,7 @@ pub(super) fn encode(state: &SemanticRevisionState) -> SemanticRevisionResult<Ve
                 SemanticRevisionMetadata::Record(header) => bodies
                     .get(&header.record)
                     .copied()
-                    .filter(|body| !matches!(body, SemanticRevisionBody::Pruned)),
+                    .filter(|body| body.is_available()),
                 _ => None,
             };
             let body_json = if matches!(metadata, SemanticRevisionMetadata::Connection(_)) {
@@ -116,7 +116,11 @@ fn decode_row(
             let body = body
                 .map(|body| super::content::decode(&body).map(|body| body.record))
                 .transpose()?
-                .unwrap_or(SemanticRevisionBody::Pruned);
+                .unwrap_or_else(|| {
+                    header
+                        .payload_absence()
+                        .unwrap_or(SemanticRevisionBody::Pruned)
+                });
             header.clone().restore(body.clone())?;
             append_body(body, elements, artifacts);
         }
@@ -146,7 +150,7 @@ fn append_body(
     match body {
         SemanticRevisionBody::Element(element) => elements.push(element),
         SemanticRevisionBody::Artifact(artifact) => artifacts.push(artifact),
-        SemanticRevisionBody::Pruned => {}
+        SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {}
     }
 }
 

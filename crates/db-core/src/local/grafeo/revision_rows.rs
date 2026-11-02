@@ -7,6 +7,13 @@ use crate::*;
 use grafeo::{GrafeoDB, NodeId, Value};
 use std::collections::BTreeMap;
 
+mod integrity;
+mod membership_copies;
+pub(super) use integrity::{
+    inspect_revision_integrity, prepare_recovery_rows, unavailable_selection_headers,
+};
+pub(super) use membership_copies::validate_membership_row_copies;
+
 pub(super) const DEFAULT_SELECTION: &str = "working";
 pub(super) const DEFAULT_SOURCE_CONTEXT: &str = "local";
 const ROW_LABEL: &str = "SemanticRevisionRow";
@@ -41,19 +48,28 @@ trait GrafeoRevisionRows {
 trait GrafeoRevisionHeader {
     fn into_record(self, graph: &GrafeoDB) -> Result<SemanticStoredRevision>;
     fn read_body(&self, graph: &GrafeoDB) -> Result<SemanticRevisionBody>;
+    fn read_present_body(&self, graph: &GrafeoDB) -> Result<Option<SemanticRevisionBody>>;
 }
 
 impl GrafeoRevisionHeader for SemanticRevisionRecordHeader {
     fn into_record(self, graph: &GrafeoDB) -> Result<SemanticStoredRevision> {
-        let body = if self.pruned_at_ms.is_some() {
-            SemanticRevisionBody::Pruned
-        } else {
-            self.read_body(graph)?
+        let body = match self.payload_absence() {
+            Some(absence) => absence,
+            None => self.read_body(graph)?,
         };
         Ok(self.restore(body)?)
     }
 
     fn read_body(&self, graph: &GrafeoDB) -> Result<SemanticRevisionBody> {
+        self.read_present_body(graph)?.ok_or_else(|| {
+            DbError::invalid_value(
+                &self.record.record_id,
+                "one available immutable semantic body or an explicit pruned or unavailable header",
+            )
+        })
+    }
+
+    fn read_present_body(&self, graph: &GrafeoDB) -> Result<Option<SemanticRevisionBody>> {
         #[cfg(test)]
         REVISION_BODY_READS.with(|reads| reads.set(reads.get() + 1));
         let (label, property) = match self.record.kind {
@@ -68,15 +84,19 @@ impl GrafeoRevisionHeader for SemanticRevisionRecordHeader {
         ).into_iter().filter(|node| {
             matches!(node.get_property(property), Some(Value::String(id)) if id.as_ref() == self.record.record_id)
         }).collect::<Vec<_>>();
+        if nodes.is_empty() {
+            return Ok(None);
+        }
         let [node] = nodes.as_slice() else {
             return Err(DbError::invalid_value(
                 &self.record.record_id,
-                "one available immutable semantic body or an explicit pruned header",
+                "one unique immutable semantic body; duplicate bodies cannot be acknowledged as missing",
             ));
         };
         match self.record.kind {
             SemanticRecordKind::Element => super::graph_rows::semantic_element_from_node(node)
                 .map(SemanticRevisionBody::Element)
+                .map(Some)
                 .ok_or_else(|| {
                     DbError::invalid_value(
                         &self.record.record_id,
@@ -85,6 +105,7 @@ impl GrafeoRevisionHeader for SemanticRevisionRecordHeader {
                 }),
             SemanticRecordKind::Artifact => super::graph_rows::semantic_artifact_from_node(node)
                 .map(SemanticRevisionBody::Artifact)
+                .map(Some)
                 .ok_or_else(|| {
                     DbError::invalid_value(
                         &self.record.record_id,
@@ -98,7 +119,7 @@ impl GrafeoRevisionHeader for SemanticRevisionRecordHeader {
 pub(super) struct LoadedRevisionState {
     pub state: SemanticRevisionState,
     pub adopted: bool,
-    row_ids: BTreeMap<String, NodeId>,
+    row_ids: BTreeMap<String, Vec<NodeId>>,
 }
 
 pub(super) struct PreparedRevisionRows {
@@ -152,7 +173,7 @@ pub(super) fn load_revision_nodes(
         commit_version,
         ..Default::default()
     };
-    let mut row_ids = BTreeMap::new();
+    let mut row_ids: BTreeMap<String, Vec<NodeId>> = BTreeMap::new();
     let mut memberships = BTreeMap::new();
     for id in nodes {
         let Some(node) = graph.get_node(id).filter(|node| node.has_label(ROW_LABEL)) else {
@@ -160,12 +181,12 @@ pub(super) fn load_revision_nodes(
         };
         let key = string_property(&node, ROW_KEY)
             .ok_or_else(|| DbError::invalid_value(id.to_string(), "a revision row key"))?;
-        if row_ids.insert(key.clone(), id).is_some() {
-            return Err(DbError::invalid_value(
-                key,
-                "one stored row per revision key",
-            ));
+        if let Some(copies) = row_ids.get_mut(&key) {
+            copies.push(id);
+            validate_membership_row_copies(graph, root, &key, copies)?;
+            continue;
         }
+        row_ids.insert(key, vec![id]);
         append_row(
             graph,
             &mut state,
@@ -203,6 +224,9 @@ pub(super) fn load_revision_nodes(
         ));
     }
     state.normalize_order();
+    for copies in row_ids.values_mut() {
+        copies.sort_unstable();
+    }
     Ok(LoadedRevisionState {
         state,
         adopted,
@@ -245,6 +269,7 @@ fn append_row(
         RevisionRow::Association(value) => state.associations.push(value),
         RevisionRow::Operation(value) => state.accepted_operations.push(value),
         RevisionRow::Retention(value) => state.retention_operations.push(value),
+        RevisionRow::Recovery(value) => state.recovery_operations.push(value),
     }
     Ok(())
 }
@@ -292,6 +317,7 @@ impl GrafeoRevisionRows for RevisionRow {
                 }
             }
             Self::Retention(operation) => operation.receipt.commit_version = commit_version,
+            Self::Recovery(operation) => operation.receipt.commit_version = commit_version,
             Self::History(delta) => delta.commit_version = commit_version,
             _ => {}
         }
@@ -310,6 +336,14 @@ impl GrafeoRevisionRows for RevisionRow {
                 },
             )),
             Self::Record(header) => {
+                indexes.push((
+                    "revision_unavailable_project",
+                    if header.unavailable.is_some() {
+                        root.into()
+                    } else {
+                        String::new()
+                    },
+                ));
                 if let Some(scope) = &header.element_scope {
                     indexes.push(("revision_record_path", scope.path.clone()));
                     if let Some(provider) = &scope.provider_instance_id {
@@ -558,6 +592,7 @@ impl LoadedRevisionState {
                     RevisionRow::Link(_)
                         | RevisionRow::Operation(_)
                         | RevisionRow::Retention(_)
+                        | RevisionRow::Recovery(_)
                         | RevisionRow::History(_)
                 )
                 .then(|| row.clone());
@@ -582,7 +617,11 @@ impl LoadedRevisionState {
                 };
                 let indexes = row.indexes(&self.state.project_root)?;
                 Ok(PreparedRevisionRow {
-                    node_id: self.row_ids.get(&key).copied(),
+                    node_id: self
+                        .row_ids
+                        .get(&key)
+                        .and_then(|copies| copies.first())
+                        .copied(),
                     key,
                     payload: serde_json::to_string(&row)?,
                     commit_row,
@@ -593,14 +632,21 @@ impl LoadedRevisionState {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let deletions = removed_keys
-            .iter()
-            .filter_map(|key| self.row_ids.get(key).copied())
-            .collect();
+        // Membership is a set: coalesce only validated physical copies in this same commit.
+        let mut deletions = self
+            .row_ids
+            .values()
+            .flat_map(|copies| copies.iter().skip(1).copied())
+            .collect::<std::collections::BTreeSet<_>>();
+        deletions.extend(
+            removed_keys
+                .iter()
+                .flat_map(|key| self.row_ids.get(key).into_iter().flatten().copied()),
+        );
         Ok(PreparedRevisionRows {
             project_root: self.state.project_root.clone(),
             upserts,
-            deletions,
+            deletions: deletions.into_iter().collect(),
         })
     }
 }

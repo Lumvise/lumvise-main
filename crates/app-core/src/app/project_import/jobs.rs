@@ -429,7 +429,15 @@ fn prepare_import_projection(
     cancel: &AtomicBool,
     progress: &Mutex<ScanMetrics>,
 ) -> Result<PreparedImport, FailedPreparation> {
-    let outcome = scan_import_source(&mut session, scope, route, root, cancel, progress);
+    let outcome = scan_import_source(
+        &mut session,
+        scope,
+        &before.invalidated_paths,
+        route,
+        root,
+        cancel,
+        progress,
+    );
     match outcome {
         Ok(scan) => Ok(PreparedImport {
             session,
@@ -454,6 +462,7 @@ struct ScanPreparation {
 fn scan_import_source(
     session: &mut ProjectImportSession,
     scope: ScanScope,
+    invalidated_paths: &std::collections::BTreeSet<String>,
     route: &str,
     root: &Path,
     cancel: &AtomicBool,
@@ -461,7 +470,7 @@ fn scan_import_source(
 ) -> Result<ScanPreparation, String> {
     let scan = session
         .indexer
-        .prepare_resilient(scope, |metrics| {
+        .prepare_resilient_invalidating(scope, invalidated_paths, |metrics| {
             if cancel.load(Ordering::Acquire) {
                 return Err(ScanError {
                     path: route.into(),
@@ -819,5 +828,84 @@ struct PublicationStepLease(Arc<ImportJob>);
 impl Drop for PublicationStepLease {
     fn drop(&mut self) {
         self.0.advancing.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn importer_scan_emits_unchanged_invalidated_file_through_the_real_projection() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("a.rs"), "fn a() {}\n").unwrap();
+        fs::write(root.path().join("b.rs"), "fn b() {}\n").unwrap();
+        let converter = Arc::new(lumvise_project_indexer::DocumentConverter::default());
+        let mut session = super::super::service::import_session(root.path(), converter)
+            .ok()
+            .expect("import session opens for the temporary source root");
+        let initial = session.indexer.prepare(ScanScope::Full).unwrap();
+        session.indexer.commit(initial).unwrap();
+
+        let route = root.path().to_string_lossy().into_owned();
+        let local = Arc::new(lumvise_db_core::LocalPersistence::in_memory().unwrap());
+        let checkout = crate::index_publication::IndexSourceCheckout::open(
+            local.clone(),
+            local,
+            "import-recovery-test",
+            root.path(),
+            &route,
+            PROVIDER_INSTANCE_ID,
+            &InvocationControl::sixty_seconds(),
+        )
+        .unwrap();
+        let mut before = checkout
+            .before_scan(&InvocationControl::sixty_seconds())
+            .unwrap();
+        // Header discovery is covered by source-checkout tests; isolate this importer handoff.
+        before.invalidated_paths.insert("a.rs".into());
+        before.requires_full_scan = true;
+        session.projection = SemanticIndexProjection::with_source(
+            root.path(),
+            PROVIDER_INSTANCE_ID,
+            checkout.source().clone(),
+        )
+        .unwrap();
+        session.source_checkout = Some(checkout);
+        let input = FolderImportInput {
+            folder_path: route.clone(),
+            project_root: Some(route.clone()),
+            replace_paths: Some(vec!["a.rs".into()]),
+            import_id: None,
+            cancel: false,
+            status_only: false,
+            existing_only: false,
+        };
+        let scope = import_scan_scope(&session, &input, &before);
+        assert_eq!(scope, ScanScope::Full);
+        let prepared = prepare_import_projection(
+            session,
+            before,
+            scope,
+            &route,
+            root.path(),
+            &AtomicBool::new(false),
+            &Mutex::new(ScanMetrics::default()),
+        )
+        .ok()
+        .expect("invalidated source path projects successfully");
+        let scan = prepared
+            .scan
+            .expect("successful source preparation retains its scan");
+        assert_eq!(scan.metrics().files_read, 1);
+        assert_eq!(scan.metrics().files_parsed, 0);
+        let batch = prepared.batch.expect("forced scan should produce a batch");
+        let emitted_paths = batch
+            .semantic_elements
+            .iter()
+            .map(|element| element.path.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(emitted_paths, BTreeSet::from(["a.rs".to_owned()]));
     }
 }

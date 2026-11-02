@@ -47,7 +47,8 @@ fn merge_project_identity(
     let has_history = !current.records.is_empty()
         || !current.selection_history.is_empty()
         || !current.accepted_operations.is_empty()
-        || !current.retention_operations.is_empty();
+        || !current.retention_operations.is_empty()
+        || !current.recovery_operations.is_empty();
     if has_history && current.project_id != archived.project_id {
         return Err(archive_conflict(
             &archived.project_id,
@@ -121,9 +122,7 @@ fn merge_record(
             "identical exact revision ownership",
         ));
     }
-    if matches!(previous.body, SemanticRevisionBody::Pruned)
-        && !matches!(incoming.body, SemanticRevisionBody::Pruned)
-    {
+    if matches!(previous.body, SemanticRevisionBody::Pruned) && incoming.body.is_available() {
         previous.body = incoming.body.clone();
         previous.pruned_at_ms = None;
         previous.unselected_at_ms = Some(now_ms);
@@ -201,7 +200,7 @@ fn available_bodies(
         match &stored.body {
             SemanticRevisionBody::Element(element) => elements.push(element.clone()),
             SemanticRevisionBody::Artifact(artifact) => artifacts.push(artifact.clone()),
-            SemanticRevisionBody::Pruned => {}
+            SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {}
         }
     }
     (elements, artifacts)

@@ -107,7 +107,7 @@ pub(super) fn plan(
         plan.expand_selected("working")?;
     } else if !matches!(
         intent,
-        ReadIntent::Content { .. } | ReadIntent::Vectors { .. }
+        ReadIntent::Content { .. } | ReadIntent::Vectors { .. } | ReadIntent::Unavailable { .. }
     ) && !intent.replay_available(&plan)?
     {
         plan.expand(!matches!(

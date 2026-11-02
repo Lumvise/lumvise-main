@@ -7609,7 +7609,8 @@
             "enum": [
               "available",
               "missing",
-              "pruned"
+              "pruned",
+              "unavailable"
             ]
           },
           "body": {
@@ -8798,7 +8799,8 @@
             "enum": [
               "available",
               "missing",
-              "pruned"
+              "pruned",
+              "unavailable"
             ]
           },
           "body": {

@@ -7,8 +7,8 @@ mod tests;
 
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use lumvise_semantic_revisions::{
-    SemanticRecordRef, SemanticRevisionRetentionPlan, SemanticRevisionRetentionPolicy,
-    SemanticRevisionSelectionUpdate,
+    SemanticRecordRef, SemanticRevisionRecoveryRequest, SemanticRevisionRetentionPlan,
+    SemanticRevisionRetentionPolicy, SemanticRevisionSelectionUpdate,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -20,6 +20,13 @@ pub(crate) use schemas::{exports, supports};
 struct SelectionRead {
     project_root: String,
     selection_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntegrityInspection {
+    project_root: String,
+    publication_operation_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +82,19 @@ fn request(export: &str, input: Value) -> Result<Value, PluginError> {
             Ok(json!({"operation":"select_revisions", "update":update}))
         }
         "resolve_revision" => exact_read(input),
+        "inspect_revision_integrity" => {
+            let inspection: IntegrityInspection =
+                crate::parse(input, "an explicit source project root")?;
+            crate::require_non_empty(&inspection.project_root, "project_root")?;
+            Ok(
+                json!({"operation":"inspect_revision_integrity", "project_root":inspection.project_root, "publication_operation_id":inspection.publication_operation_id}),
+            )
+        }
+        "recover_revision_integrity" => {
+            let request: SemanticRevisionRecoveryRequest =
+                crate::parse(input, "an owner-approved exact integrity recovery request")?;
+            Ok(json!({"operation":"recover_revision_integrity", "request":request}))
+        }
         "preview_revision_retention" => retention_preview(input),
         "collect_revision_retention" => {
             let request: RetentionCollection =

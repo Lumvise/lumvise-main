@@ -17,6 +17,12 @@ pub use lumvise_semantic_revisions::{
     SemanticRevisionSelectionObservation, SemanticRevisionSelectionQuery,
     SemanticRevisionSelectionSnapshot, SemanticRevisionSelectionState,
     SemanticRevisionSelectionUpdate, SemanticRevisionState, SemanticRevisionStructure,
-    SemanticRevisionStructureCoverage, SemanticRevisionTimestamp, SemanticSelectionExpectation,
-    SemanticSelectionMode, SemanticSourceAnchor, SemanticStoredRevision, citation_retention_keys,
+    SemanticRevisionStructureCoverage, SemanticRevisionTimestamp, SemanticRevisionUnavailable,
+    SemanticSelectionExpectation, SemanticSelectionMode, SemanticSourceAnchor,
+    SemanticStoredRevision, citation_retention_keys,
+};
+pub use lumvise_semantic_revisions::{
+    SemanticRevisionAcceptedRecovery, SemanticRevisionArchiveProjection,
+    SemanticRevisionIntegrityReport, SemanticRevisionPublicationInspection,
+    SemanticRevisionRecoveryPlan, SemanticRevisionRecoveryReceipt, SemanticRevisionRecoveryRequest,
 };

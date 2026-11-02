@@ -4504,6 +4504,102 @@
       }
     },
     {
+      "description": "Inspect exact absent immutable bodies in the current durable source project without changing data. Requires direct owner provenance and source write access. Malformed or duplicate bodies fail inspection. Review project identity, commit and the complete missing list before explicitly approving recovery; no historical bytes can be reconstructed by acknowledgement.",
+      "execution": "foreground",
+      "id": "inspect_revision_integrity",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "publication_operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Inspect missing source revision bodies",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "Apply only an explicitly approved inspection's exact project identity, expected commit, provider and complete missing-record list. Marks missing bodies unavailable and records an audit; preserves documents, selections and history. Does not recreate lost bytes. Direct native owner or bound owner MCP only; Agents and delegated calls are refused. Retry the identical operation ID and request after an uncertain acknowledgement; a changed observation requires a new inspection and approval.",
+      "execution": "foreground",
+      "id": "recover_revision_integrity",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_commit_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "missing_records": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "element",
+                    "artifact"
+                  ],
+                  "type": "string"
+                },
+                "record_id": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "record_id"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "operation_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "project_root": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "provider_instance_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "project_root",
+          "project_id",
+          "expected_commit_version",
+          "provider_instance_id",
+          "missing_records"
+        ],
+        "type": "object"
+      },
+      "kind": "mcp_tool",
+      "name": "Acknowledge approved missing source bodies",
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
       "description": "Read exact selected records and original artifact edit tokens in an explicit project/selection. This read does not authorize a stale write.",
       "execution": "foreground",
       "id": "read_revision_selection",
@@ -4661,7 +4757,7 @@
       }
     },
     {
-      "description": "Read one exact record in its project, returning its body or explicit pruned state. Never substitute a selected successor for historical evidence.",
+      "description": "Read one exact record in its project, returning its body or explicit pruned/unavailable state. Never substitute a selected successor for historical evidence.",
       "execution": "foreground",
       "id": "resolve_revision",
       "input_schema": {
@@ -5003,7 +5099,7 @@
     },
     {
       "id": "storage.semantic",
-      "version": "^1.9.0"
+      "version": "^1.10.0"
     },
     {
       "id": "semantic.snapshot",

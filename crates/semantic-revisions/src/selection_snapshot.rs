@@ -1,10 +1,21 @@
 //! Owns consistent selection projections and exact evidence closure. Adapters call
-//! `snapshot`; required records never become primary members or publication grants.
+//! `snapshot` or `archive_projection`; required records never become primary members or grants.
 use crate::required_revisions::RevisionDependencyIndex;
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl SemanticRevisionState {
+    /// Projects only available archive bodies while metadata retains acknowledged loss and exact membership.
+    /// Example: `state.archive_projection("working")?` alongside `state.archive_metadata_rows()`.
+    pub fn archive_projection(
+        &self,
+        selection_id: &str,
+    ) -> SemanticRevisionResult<Option<SemanticRevisionArchiveProjection>> {
+        self.validate_archive_state()?;
+        self.selection(selection_id)
+            .map(|head| SelectionReadProjection::new(self, head).archive_projection())
+            .transpose()
+    }
     /// Reads one head, its contextual attachments and exact required evidence.
     /// Example: `state.snapshot("working", "2026-10-24T00:00:00Z")?`.
     pub fn snapshot(
@@ -77,9 +88,9 @@ impl<'a> SelectionReadProjection<'a> {
         &self,
         published_at: &str,
     ) -> SemanticRevisionResult<SemanticRevisionSelectionSnapshot> {
-        let (elements, artifacts) = self.current_bodies()?;
+        let (elements, artifacts) = self.current_bodies(false)?;
         let connections = self.connections()?;
-        let required_records = self.required_records(&connections)?;
+        let required_records = self.required_records(&connections, false)?;
         let associations = self.associations(&required_records);
         Ok(SemanticRevisionSelectionSnapshot {
             selection: self.head.selection.clone(),
@@ -96,44 +107,113 @@ impl<'a> SelectionReadProjection<'a> {
 
     fn current_bodies(
         &self,
+        preserve_unavailable: bool,
     ) -> SemanticRevisionResult<(Vec<SemanticElement>, Vec<SemanticArtifact>)> {
         let (mut elements, mut artifacts) = (vec![], vec![]);
         for record in &self.head.records {
-            match &self.dependencies.require(record)?.body {
+            let stored = if preserve_unavailable {
+                self.dependencies.require_retained(record)?
+            } else {
+                self.dependencies.require(record)?
+            };
+            match &stored.body {
                 SemanticRevisionBody::Element(element) => elements.push(element.clone()),
                 SemanticRevisionBody::Artifact(artifact) => artifacts.push(artifact.clone()),
-                SemanticRevisionBody::Pruned => unreachable!(),
+                SemanticRevisionBody::Unavailable(_) if preserve_unavailable => {}
+                SemanticRevisionBody::Pruned | SemanticRevisionBody::Unavailable(_) => {
+                    unreachable!()
+                }
             }
         }
         Ok((elements, artifacts))
     }
 
+    fn archive_projection(&self) -> SemanticRevisionResult<SemanticRevisionArchiveProjection> {
+        let (elements, artifacts) = self.current_bodies(true)?;
+        let mut connections = vec![];
+        for edge in self.connections()? {
+            let source = self
+                .dependencies
+                .require_retained(&SemanticRecordRef::element(
+                    &edge.relationship.source_element_id,
+                ))?;
+            let target = self
+                .dependencies
+                .require_retained(&SemanticRecordRef::element(
+                    &edge.relationship.target_element_id,
+                ))?;
+            if source.body.is_available() && target.body.is_available() {
+                connections.push(edge);
+            }
+        }
+        Ok(SemanticRevisionArchiveProjection {
+            elements,
+            artifacts,
+            required_records: self.required_records(&connections, true)?,
+            connections,
+        })
+    }
+
     fn required_records(
         &self,
         connections: &[SemanticRevisionConnection],
+        preserve_unavailable: bool,
     ) -> SemanticRevisionResult<Vec<SemanticStoredRevision>> {
-        let mut pending = self.head.records.clone();
-        for connection in connections {
-            pending.extend([
-                SemanticRecordRef::element(&connection.relationship.source_element_id),
-                SemanticRecordRef::element(&connection.relationship.target_element_id),
-            ]);
-        }
+        let visited = self.required_references(connections, preserve_unavailable)?;
+        let mut records = visited
+            .difference(&self.selected)
+            .map(|reference| {
+                self.dependency_record(reference, preserve_unavailable)
+                    .cloned()
+            })
+            .collect::<SemanticRevisionResult<Vec<_>>>()?;
+        records.retain(|record| record.body.is_available());
+        Ok(records)
+    }
+
+    fn required_references(
+        &self,
+        connections: &[SemanticRevisionConnection],
+        preserve_unavailable: bool,
+    ) -> SemanticRevisionResult<BTreeSet<SemanticRecordRef>> {
+        let mut pending = self.pending_dependencies(connections);
         let mut visited = BTreeSet::new();
         while let Some(reference) = pending.pop() {
             if !visited.insert(reference.clone()) {
                 continue;
             }
-            let stored = self.dependencies.require(&reference)?;
+            let stored = self.dependency_record(&reference, preserve_unavailable)?;
             pending.extend(
                 self.dependencies
                     .requirements(stored, &self.hidden_associations),
             );
         }
-        visited
-            .difference(&self.selected)
-            .map(|reference| self.dependencies.require(reference).cloned())
-            .collect()
+        Ok(visited)
+    }
+
+    fn pending_dependencies(
+        &self,
+        connections: &[SemanticRevisionConnection],
+    ) -> Vec<SemanticRecordRef> {
+        let mut pending = self.head.records.clone();
+        pending.extend(connections.iter().flat_map(|connection| {
+            [
+                SemanticRecordRef::element(&connection.relationship.source_element_id),
+                SemanticRecordRef::element(&connection.relationship.target_element_id),
+            ]
+        }));
+        pending
+    }
+
+    fn dependency_record(
+        &self,
+        reference: &SemanticRecordRef,
+        preserve_unavailable: bool,
+    ) -> SemanticRevisionResult<&'a SemanticStoredRevision> {
+        if preserve_unavailable {
+            return self.dependencies.require_retained(reference);
+        }
+        self.dependencies.require(reference)
     }
 
     fn associations(

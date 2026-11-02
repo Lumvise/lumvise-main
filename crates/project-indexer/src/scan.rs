@@ -5,6 +5,7 @@ use crate::{
     ParsedFile, ProjectFileParser, ProjectSource, ScanError, ScanScope, SourceEntry, SourceKind,
 };
 mod reads;
+mod recovery;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -178,24 +179,77 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
         resilient: bool,
         progress: impl Fn(&ScanMetrics) -> Result<(), ScanError>,
     ) -> Result<PreparedProjectScan, ScanError> {
-        validate_scope(&scope)?;
-        let scope = expand_ignore_changes(scope);
+        self.prepare_scan_with_invalidations(scope, &BTreeSet::new(), resilient, progress)
+    }
+
+    fn prepare_scan_invalidating(
+        &mut self,
+        scope: ScanScope,
+        invalidated_paths: &BTreeSet<String>,
+        progress: impl Fn(&ScanMetrics) -> Result<(), ScanError>,
+    ) -> Result<PreparedProjectScan, ScanError> {
+        self.prepare_scan_with_invalidations(scope, invalidated_paths, true, progress)
+    }
+
+    fn prepare_scan_with_invalidations(
+        &mut self,
+        scope: ScanScope,
+        invalidated_paths: &BTreeSet<String>,
+        resilient: bool,
+        progress: impl Fn(&ScanMetrics) -> Result<(), ScanError>,
+    ) -> Result<PreparedProjectScan, ScanError> {
+        let scope = scope_with_invalidations(scope, invalidated_paths)?;
+        self.prepare_inventoried_scope(scope, invalidated_paths, resilient, progress)
+    }
+
+    fn prepare_inventoried_scope(
+        &mut self,
+        scope: ScanScope,
+        invalidated_paths: &BTreeSet<String>,
+        resilient: bool,
+        progress: impl Fn(&ScanMetrics) -> Result<(), ScanError>,
+    ) -> Result<PreparedProjectScan, ScanError> {
         let entries = self.source.inventory(&scope)?;
-        let present = validate_inventory(&entries, &scope)?;
-        let removed = self.removed_in_scope(&scope, &present);
+        let mut scan = self.new_prepared_scan(&entries, &scope)?;
+        self.prepare_entries(&entries, &mut scan, invalidated_paths, resilient, progress)?;
+        self.prepare_references(&mut scan);
+        Ok(scan)
+    }
+
+    fn new_prepared_scan(
+        &self,
+        entries: &[SourceEntry],
+        scope: &ScanScope,
+    ) -> Result<PreparedProjectScan, ScanError> {
+        let present = validate_inventory(entries, scope)?;
+        let removed = self.removed_in_scope(scope, &present);
         let full_snapshot = matches!(scope, ScanScope::Full) && !self.snapshot_acknowledged;
-        let mut scan = PreparedProjectScan::new(
+        Ok(PreparedProjectScan::new(
             &self.owner,
             self.generation,
             removed,
             entries.len(),
             full_snapshot,
-        );
-        for entries in entries.chunks(self.parser.batch_size().get()) {
+        ))
+    }
+
+    fn prepare_entries(
+        &mut self,
+        entries: &[SourceEntry],
+        scan: &mut PreparedProjectScan,
+        invalidated_paths: &BTreeSet<String>,
+        resilient: bool,
+        progress: impl Fn(&ScanMetrics) -> Result<(), ScanError>,
+    ) -> Result<(), ScanError> {
+        for batch in entries.chunks(self.parser.batch_size().get()) {
             progress(&scan.metrics)?;
-            self.prepare_batch(entries, &mut scan, resilient)?;
+            self.prepare_batch(batch, scan, resilient, invalidated_paths)?;
         }
         progress(&scan.metrics)?;
+        Ok(())
+    }
+
+    fn prepare_references(&self, scan: &mut PreparedProjectScan) {
         scan.reference_updates = self.references.prepare(
             &self.files,
             &scan.replacements,
@@ -203,7 +257,6 @@ impl<S: ProjectSource, P: ProjectFileParser> ProjectIndexer<S, P> {
             &scan.removed,
         );
         scan.metrics.reference_files_resolved = scan.reference_updates.len();
-        Ok(scan)
     }
 
     /// Advances only acknowledged source state. A stale preparation cannot overwrite
@@ -322,6 +375,21 @@ fn validate_scope(scope: &ScanScope) -> Result<(), ScanError> {
         }
     }
     Ok(())
+}
+
+fn scope_with_invalidations(
+    scope: ScanScope,
+    invalidated_paths: &BTreeSet<String>,
+) -> Result<ScanScope, ScanError> {
+    validate_scope(&scope)?;
+    for path in invalidated_paths {
+        validate_path(path)?;
+    }
+    Ok(if invalidated_paths.is_empty() {
+        expand_ignore_changes(scope)
+    } else {
+        ScanScope::Full
+    })
 }
 
 fn validate_inventory(
