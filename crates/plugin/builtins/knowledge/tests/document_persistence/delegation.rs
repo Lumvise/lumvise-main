@@ -148,6 +148,62 @@ fn proposal(original: &Value, operation: &str, content: &str) -> Value {
         "expected_semantic_element_id":original["semantic_element_id"],"content":content})
 }
 
+fn inspected_hook(fixture: &mut DelegatedDocumentFixture) -> Value {
+    fixture
+        .host
+        .knowledge(
+            "get_document_hook",
+            json!({"project_root":fixture.original["project_root"],
+                "document_id":fixture.original["document_id"]}),
+        )
+        .unwrap()["hook"]
+        .clone()
+}
+
+#[test]
+fn executor_cycle_inspection_error_preserves_host_ready_status() {
+    let mut fixture = DelegatedDocumentFixture::new();
+    fixture.host.agent_executor_inspection =
+        Some(AgentExecutorInspectionReply::Error(PluginError::new(
+            "plugin_invoke_cycle_denied",
+            "executor detail inspection collided with the active invocation",
+            false,
+        )));
+    let hook = inspected_hook(&mut fixture);
+    assert_eq!(hook["status"], "ready");
+    assert_eq!(
+        hook["error"],
+        "executor detail inspection collided with the active invocation"
+    );
+}
+
+#[test]
+fn noncycle_executor_inspection_error_remains_blocked() {
+    let mut fixture = DelegatedDocumentFixture::new();
+    fixture.host.agent_executor_inspection =
+        Some(AgentExecutorInspectionReply::Error(PluginError::new(
+            "plugin_invoke_target_timeout",
+            "executor inspection timed out",
+            true,
+        )));
+    let hook = inspected_hook(&mut fixture);
+    assert_eq!(hook["status"], "blocked");
+    assert_eq!(hook["error"], "executor inspection timed out");
+}
+
+#[test]
+fn reported_executor_setup_failure_remains_blocked() {
+    let mut fixture = DelegatedDocumentFixture::new();
+    fixture.host.agent_executor_inspection = Some(AgentExecutorInspectionReply::Output(json!({
+        "setup":{"revision":fixture.grant["revision"],"state":"blocked","settings":{},
+            "error":{"message":"executor publication failed"}},
+        "agent":null
+    })));
+    let hook = inspected_hook(&mut fixture);
+    assert_eq!(hook["status"], "blocked");
+    assert_eq!(hook["error"], "executor publication failed");
+}
+
 #[test]
 fn delegated_command_survives_owner_conversation_and_restricts_named_inputs_and_destination() {
     let mut fixture = DelegatedDocumentFixture::new();

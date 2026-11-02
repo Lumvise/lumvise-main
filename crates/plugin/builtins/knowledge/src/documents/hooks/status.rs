@@ -63,7 +63,10 @@ pub(super) fn inspect_executor(
     match details {
         Ok(details) => append_executor_view(hook, saved, root, &details),
         Err(error) => {
-            if saved["enabled"] == true && hook["status"] != "pending" {
+            if error.code != "plugin_invoke_cycle_denied"
+                && saved["enabled"] == true
+                && hook["status"] != "pending"
+            {
                 hook["status"] = json!("blocked");
             }
             hook["error"] = json!(error.message);

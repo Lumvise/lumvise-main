@@ -38,6 +38,11 @@ mod source_publication;
 #[path = "document_persistence/write_receipts.rs"]
 mod write_receipts;
 
+enum AgentExecutorInspectionReply {
+    Output(Value),
+    Error(PluginError),
+}
+
 struct DocumentBoundaryHost {
     broker: Arc<AppCoreHostCapabilityBroker>,
     plugin_id: &'static str,
@@ -54,6 +59,7 @@ struct DocumentBoundaryHost {
     before_list_versions: Option<Value>,
     reported_project_identity: Option<String>,
     missing_body: Option<String>,
+    agent_executor_inspection: Option<AgentExecutorInspectionReply>,
     source_directory: Arc<tempfile::TempDir>,
     client_instance_id: String,
     invocation_context: PluginInvocationContext,
@@ -90,6 +96,7 @@ impl DocumentBoundaryHost {
             before_list_versions: None,
             reported_project_identity: None,
             missing_body: None,
+            agent_executor_inspection: None,
             source_directory: Arc::new(tempfile::tempdir().unwrap()),
             client_instance_id: client.into(),
             invocation_context: PluginInvocationContext::new(
@@ -126,6 +133,7 @@ impl DocumentBoundaryHost {
             before_list_versions: None,
             reported_project_identity: None,
             missing_body: None,
+            agent_executor_inspection: None,
             source_directory: self.source_directory.clone(),
             client_instance_id: self.client_instance_id.clone(),
             invocation_context: self
@@ -192,6 +200,16 @@ impl HostCallTransport for DocumentBoundaryHost {
             && let Some(generation) = self.generation.as_mut()
         {
             return generation.invoke(input);
+        }
+        if capability == "plugin.invoke"
+            && input["plugin_id"] == "builtin.agents"
+            && input["export_id"] == "read_memory_executor"
+            && let Some(reply) = self.agent_executor_inspection.take()
+        {
+            return match reply {
+                AgentExecutorInspectionReply::Output(output) => Ok(json!({"output":output})),
+                AgentExecutorInspectionReply::Error(error) => Err(error),
+            };
         }
         if capability == "plugin.invoke" && input["plugin_id"] == "builtin.semantic" {
             fail_once(&mut self.fail_document_write)?;
