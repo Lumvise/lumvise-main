@@ -116,6 +116,11 @@ impl AppCoreHostCapabilityBroker {
                     .as_ref()
                     .map(|services| services.mcp_session_membership())
                     .unwrap_or_default(),
+            )
+            .with_connector_review_actions(
+                services
+                    .as_ref()
+                    .map(|services| services.frontend_actions()),
             ),
             semantic,
             relational,
@@ -198,6 +203,12 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
         let capability_id = request.capability_id.clone();
         let definition = host_capability_definition(&capability_id)
             .ok_or_else(|| unknown_capability(&capability_id))?;
+        let connector_control = super::plugin_host_capabilities::invocation_control(context);
+        self.knowledge_authority.authorize_connector_call(
+            self.semantic.as_ref(),
+            context,
+            &connector_control.control(),
+        )?;
         let output = match definition.route {
             HostCapabilityRoute::ProjectImport => {
                 return Err(source_import::requires_nested_context());
@@ -209,6 +220,8 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
                 context,
             )?,
             HostCapabilityRoute::IndexPublication => {
+                self.knowledge_authority
+                    .authorize_connector_index(context)?;
                 let bridge = super::plugin_host_capabilities::invocation_control(context);
                 let root = request.input["project_root"]
                     .as_str()
@@ -258,6 +271,17 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
             )?,
             HostCapabilityRoute::SemanticSnapshot => {
                 self.invoke_semantic_snapshot_controlled(request.input, context)?
+            }
+            HostCapabilityRoute::PluginInvokeAuthorization => {
+                self.knowledge_authority.authorize_connector_request(
+                    self.semantic.as_ref(),
+                    context,
+                    request.input["plugin_id"].as_str().unwrap_or_default(),
+                    request.input["export_id"].as_str().unwrap_or_default(),
+                    &request.input["input"],
+                    &connector_control.control(),
+                )?;
+                authorize_plugin_invoke(request.input)?
             }
             HostCapabilityRoute::Services => self.services.as_ref().map_or_else(
                 || Err(unknown_capability(&capability_id)),

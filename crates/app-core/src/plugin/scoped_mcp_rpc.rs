@@ -10,6 +10,8 @@ use super::{PluginInvocationLifecycle, PluginInvocationStatus, scoped_mcp_channe
 const SCOPED_CLI_PROVIDER_ID: &str = "scoped-cli-mcp";
 #[derive(Debug, Clone)]
 pub(crate) struct ScopedMcpRouteContext {
+    pub mcp_origin: Option<lumvise_plugin_runtime::PluginMcpOrigin>,
+    pub native_interaction: bool,
     pub scope_id: String,
     pub owner_id: String,
     pub session_id: String,
@@ -240,6 +242,17 @@ fn scoped_lifecycle(
     context: &ScopedMcpRouteContext,
 ) -> PluginInvocationLifecycle {
     PluginInvocationLifecycle {
+        mcp_origin: if context.native_interaction {
+            context.mcp_origin.clone()
+        } else {
+            Some({
+                lumvise_plugin_runtime::PluginMcpOrigin {
+                    connector_id: None,
+                    connection_id: context.session_id.clone(),
+                    project_epoch: None,
+                }
+            })
+        },
         request_id: request_key(request_id),
         owner_id: context.owner_id.clone(),
         session_id: context.session_id.clone(),
@@ -273,6 +286,7 @@ fn handle_notification(
         .app
         .plugin_system()
         .cancel_controlled(&PluginInvocationCancellationRequest {
+            mcp_origin: scoped_lifecycle(&request_id, context).mcp_origin,
             plugin_id: None,
             request_id: request_key(&request_id),
             owner_id: context.owner_id.clone(),

@@ -157,8 +157,8 @@ pub(crate) fn invoke(
     vectors: &crate::search::KnowledgeSearchVectors,
 ) -> Result<Value, PluginError> {
     match export_id {
-        "get_document_hook" => hooks::get(input, context),
-        "configure_document_hook" => hooks::configure(input, context),
+        "get_document_hook" | "document.get_hook" => hooks::get(input, context),
+        "configure_document_hook" | "document.configure_hook" => hooks::configure(input, context),
         "create_document" | "document.create" => create(input, context),
         "resolve_document_space" | "document.space" => spaces::resolve(input, context),
         "resolve_document_reference" | "document.reference" => citations::invoke(input, context),

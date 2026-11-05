@@ -1,5 +1,6 @@
 use super::{semantic_element_node_id, semantic_relationship_from_edge};
 use crate::SemanticRevisionConnection;
+use crate::local::grafeo::graph_reads::GrafeoResult;
 use crate::local::grafeo::graph_store::GraphTransaction;
 use crate::{Result, SemanticRelationship};
 use grafeo::{EdgeId, GrafeoDB, NodeId, Value as GrafeoValue};
@@ -46,9 +47,9 @@ pub(crate) fn prepare_relationship_sync(
                 ]
             })),
         known_node_ids,
-    );
+    )?;
     let (existing, redundant_edges) =
-        existing_relationship_edges(database, source_element_ids, &node_ids);
+        existing_relationship_edges(database, source_element_ids, &node_ids)?;
     let desired = relationships
         .iter()
         .map(|relationship| (relationship_key(relationship), relationship))
@@ -130,8 +131,9 @@ pub(crate) fn prepare_relationship_upserts(
             ]
         }),
         known_node_ids,
-    );
-    let (existing, redundant_edges) = existing_relationship_edges(database, &source_ids, &node_ids);
+    )?;
+    let (existing, redundant_edges) =
+        existing_relationship_edges(database, &source_ids, &node_ids)?;
     let desired = relationships
         .iter()
         .map(|relationship| (relationship_key(relationship), relationship))
@@ -215,11 +217,11 @@ pub(crate) fn prepare_revision_connections(
         database,
         changed_element_ids.iter().copied(),
         known_node_ids,
-    );
+    )?;
     let delete_edge_ids = if adopted {
-        super::prepare_project_relationship_reset(database, project_root).relationship_edge_ids
+        super::prepare_project_relationship_reset(database, project_root)?.relationship_edge_ids
     } else {
-        removed_revision_edge_ids(database, &removed, &node_ids)
+        removed_revision_edge_ids(database, &removed, &node_ids)?
     };
     let inserts = inserted
         .iter()
@@ -252,7 +254,7 @@ fn removed_revision_edge_ids(
     database: &GrafeoDB,
     removed: &[&SemanticRevisionConnection],
     nodes: &BTreeMap<String, NodeId>,
-) -> Vec<EdgeId> {
+) -> Result<Vec<EdgeId>> {
     let ids = removed
         .iter()
         .map(|edge| edge.connection_id.as_str())
@@ -261,24 +263,29 @@ fn removed_revision_edge_ids(
         .iter()
         .map(|edge| &edge.relationship.source_element_id)
         .collect::<BTreeSet<_>>();
-    sources
-        .into_iter()
-        .filter_map(|source| nodes.get(source))
-        .flat_map(|source| database.store().edges_from(*source, Direction::Outgoing))
-        .filter_map(|(_, id)| database.get_edge(id))
-        .filter(|edge| {
-            super::edge_string_property(edge, "revision_connection_id")
-                .is_some_and(|id| ids.contains(id.as_str()))
-        })
-        .map(|edge| edge.id)
-        .collect()
+    let mut edge_ids = Vec::new();
+    for source in sources.into_iter().filter_map(|source| nodes.get(source)) {
+        // GRAFEO06-REVIEW(12): planning read of committed adjacency; 0.5 store().edges_from was live.
+        for (_, id) in database
+            .get_node_edges(*source, Direction::Outgoing, &[])
+            .db()?
+        {
+            if let Some(edge) = database.get_edge(id).db()?
+                && super::edge_string_property(&edge, "revision_connection_id")
+                    .is_some_and(|id| ids.contains(id.as_str()))
+            {
+                edge_ids.push(edge.id);
+            }
+        }
+    }
+    Ok(edge_ids)
 }
 pub(crate) fn apply_relationship_write(
     database: &GraphTransaction<'_>,
     plan: RelationshipWritePlan,
 ) -> Result<()> {
     for edge_id in plan.delete_edge_ids {
-        database.delete_edge(edge_id);
+        database.delete_edge(edge_id)?;
     }
     for update in plan.updates {
         for (property, value) in update.properties {
@@ -306,27 +313,27 @@ fn relationship_node_ids<'a>(
     database: &GrafeoDB,
     element_ids: impl Iterator<Item = &'a str>,
     known_node_ids: &BTreeMap<String, NodeId>,
-) -> BTreeMap<String, NodeId> {
+) -> Result<BTreeMap<String, NodeId>> {
     let mut node_ids = known_node_ids.clone();
     for element_id in element_ids.collect::<BTreeSet<_>>() {
         if node_ids.contains_key(element_id) {
             continue;
         }
-        if let Some(node_id) = semantic_element_node_id(database, element_id) {
+        if let Some(node_id) = semantic_element_node_id(database, element_id)? {
             node_ids.insert(element_id.to_string(), node_id);
         }
     }
-    node_ids
+    Ok(node_ids)
 }
 
 fn existing_relationship_edges(
     database: &GrafeoDB,
     source_element_ids: &BTreeSet<String>,
     node_ids: &BTreeMap<String, NodeId>,
-) -> (
+) -> Result<(
     BTreeMap<RelationshipKey, (EdgeId, SemanticRelationship)>,
     Vec<EdgeId>,
-) {
+)> {
     let mut existing = BTreeMap::new();
     let mut redundant_edges = Vec::new();
     let mut seen_edge_ids = BTreeSet::new();
@@ -339,16 +346,21 @@ fn existing_relationship_edges(
             "SemanticElement",
             "semantic_element_id",
             source_element_id,
-        );
-        for (_, edge_id) in source_nodes
-            .iter()
-            .chain(std::iter::once(source_node_id))
-            .flat_map(|node_id| database.store().edges_from(*node_id, Direction::Outgoing))
-        {
+        )?;
+        let mut source_edges = Vec::new();
+        for node_id in source_nodes.iter().chain(std::iter::once(source_node_id)) {
+            // GRAFEO06-REVIEW(13): planning read of committed adjacency; 0.5 store().edges_from was live.
+            source_edges.extend(
+                database
+                    .get_node_edges(*node_id, Direction::Outgoing, &[])
+                    .db()?,
+            );
+        }
+        for (_, edge_id) in source_edges {
             if !seen_edge_ids.insert(edge_id) {
                 continue;
             }
-            let Some(edge) = database.get_edge(edge_id) else {
+            let Some(edge) = database.get_edge(edge_id).db()? else {
                 continue;
             };
             if let Some(relationship) = semantic_relationship_from_edge(&edge) {
@@ -360,7 +372,7 @@ fn existing_relationship_edges(
             }
         }
     }
-    (existing, redundant_edges)
+    Ok((existing, redundant_edges))
 }
 
 fn relationship_edge_insert(

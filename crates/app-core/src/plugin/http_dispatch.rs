@@ -17,7 +17,11 @@ pub(crate) fn plugin_http_response(app: &AppCore, request: &HttpRequest) -> Opti
     };
     match compiled.resolve_http(request) {
         Ok(resolution @ HttpRouteResolution::Matched { .. }) => {
-            return Some(invoke_http_route(app.plugin_system(), resolution));
+            return Some(invoke_http_route(
+                app.plugin_system(),
+                resolution,
+                request.native_interaction,
+            ));
         }
         Ok(HttpRouteResolution::MethodNotAllowed) => {
             return Some(error_response(

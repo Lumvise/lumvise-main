@@ -12,6 +12,8 @@ pub enum McpCapability {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterMcpRequest {
+    #[serde(default)]
+    pub connector_credential: Option<crate::ConnectorCredential>,
     pub instance_id: String,
     pub project_root: String,
     pub display_name: Option<String>,
@@ -35,6 +37,8 @@ pub struct RegisterMcpResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HeartbeatRequest {
+    #[serde(default)]
+    pub connector_credential: Option<crate::ConnectorCredential>,
     pub instance_id: String,
     pub project_root: String,
     pub status: McpInstanceStatus,

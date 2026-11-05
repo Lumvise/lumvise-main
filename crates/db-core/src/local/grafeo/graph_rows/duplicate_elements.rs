@@ -9,7 +9,7 @@ pub(crate) struct DuplicateElementRepair {
 }
 
 impl DuplicateElementRepair {
-    pub(crate) fn prepare(database: &GrafeoDB, plans: &[ElementUpsertPlan]) -> Self {
+    pub(crate) fn prepare(database: &GrafeoDB, plans: &[ElementUpsertPlan]) -> Result<Self> {
         let canonical_nodes = plans
             .iter()
             .flat_map(|plan| {
@@ -20,15 +20,17 @@ impl DuplicateElementRepair {
                     .filter_map(move |duplicate| retained.map(|node| (*duplicate, node)))
             })
             .collect::<BTreeMap<_, _>>();
-        let incident_edge_ids = canonical_nodes
-            .keys()
-            .flat_map(|node| database.store().edges_from(*node, Direction::Both))
-            .map(|(_, edge_id)| edge_id)
-            .collect();
-        Self {
+        let mut incident_edge_ids = BTreeSet::new();
+        for node in canonical_nodes.keys() {
+            // GRAFEO06-REVIEW(14): planning read of committed adjacency; 0.5 store().edges_from was live.
+            for (_, edge_id) in database.get_node_edges(*node, Direction::Both, &[]).db()? {
+                incident_edge_ids.insert(edge_id);
+            }
+        }
+        Ok(Self {
             canonical_nodes,
             incident_edge_ids,
-        }
+        })
     }
 
     pub(crate) fn apply(self, graph: &GraphTransaction<'_>) -> Result<()> {
@@ -36,14 +38,14 @@ impl DuplicateElementRepair {
             self.rebind_edge(graph, *edge_id)?;
         }
         for duplicate in self.canonical_nodes.keys() {
-            graph.delete_node(*duplicate);
+            graph.delete_node(*duplicate)?;
         }
         Ok(())
     }
 
     fn rebind_edge(&self, graph: &GraphTransaction<'_>, edge_id: EdgeId) -> Result<()> {
         // Read transaction state so deleted relationships stay deleted and updates survive.
-        let Some(edge) = graph.get_edge(edge_id) else {
+        let Some(edge) = graph.get_edge(edge_id)? else {
             return Ok(());
         };
         let source = self
@@ -64,7 +66,7 @@ impl DuplicateElementRepair {
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.clone())),
         )?;
-        graph.delete_edge(edge_id);
+        graph.delete_edge(edge_id)?;
         Ok(())
     }
 }

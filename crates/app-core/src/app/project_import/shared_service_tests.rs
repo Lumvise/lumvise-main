@@ -25,9 +25,71 @@ struct SemanticImportBoundary {
     broker: crate::AppCoreHostCapabilityBroker,
     client: String,
     batches: Vec<Value>,
+    lightweight_pages: Option<Vec<IngestionPageEvidence>>,
     /// Every `record_index_log` entry the importer asked Semantic to write.
     logs: Vec<Value>,
     lose_next_commit_reply: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IngestionPageEvidence {
+    operation_id: String,
+    page_index: usize,
+    page_count: usize,
+    element_count: usize,
+    relationship_count: usize,
+    element_paths: BTreeSet<String>,
+    replace_paths: BTreeSet<String>,
+    removed_paths: BTreeSet<String>,
+}
+
+fn ingestion_page_evidence(input: &Value) -> IngestionPageEvidence {
+    let paths = |field: &str| {
+        input[field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item["path"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let strings = |field: &str| {
+        input[field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    let elements = input["semantic_elements"]
+        .as_array()
+        .expect("ingestion page contains semantic_elements");
+    let relationships = input["semantic_relationships"]
+        .as_array()
+        .expect("ingestion page contains semantic_relationships");
+    IngestionPageEvidence {
+        operation_id: input["ingestion_job_id"]
+            .as_str()
+            .expect("ingestion page contains operation ID")
+            .to_owned(),
+        page_index: usize::try_from(
+            input["ingestion_page_index"]
+                .as_u64()
+                .expect("ingestion page index is non-negative"),
+        )
+        .expect("ingestion page index fits usize"),
+        page_count: usize::try_from(
+            input["ingestion_page_count"]
+                .as_u64()
+                .expect("ingestion page count is non-negative"),
+        )
+        .expect("ingestion page count fits usize"),
+        element_count: elements.len(),
+        relationship_count: relationships.len(),
+        element_paths: paths("semantic_elements"),
+        replace_paths: strings("replace_paths"),
+        removed_paths: strings("removed_paths"),
+    }
 }
 
 impl HostCallTransport for SemanticImportBoundary {
@@ -66,7 +128,11 @@ impl HostPluginInvoker for SemanticImportPublisher {
         let mut boundary = self.boundary.lock().unwrap();
         let ingestion = request.export_id == INGEST_EXPORT_ID;
         if ingestion {
-            boundary.batches.push(request.input.clone());
+            if let Some(pages) = &mut boundary.lightweight_pages {
+                pages.push(ingestion_page_evidence(&request.input));
+            } else {
+                boundary.batches.push(request.input.clone());
+            }
         }
         if request.export_id == RECORD_INDEX_LOG_EXPORT_ID {
             boundary.logs.push(request.input.clone());
@@ -129,6 +195,7 @@ impl SharedImportHost {
                 .unwrap(),
             client: client.into(),
             batches: vec![],
+            lightweight_pages: None,
             logs: vec![],
             lose_next_commit_reply: false,
         };
@@ -143,6 +210,10 @@ impl SharedImportHost {
 
     fn import(&self, root: &Path) -> Result<Value, HostCapabilityError> {
         drive_import(self, root, self.publisher.clone())
+    }
+
+    fn capture_lightweight_ingestion(&self) {
+        self.publisher.boundary.lock().unwrap().lightweight_pages = Some(Vec::new());
     }
 
     fn selected(&self) -> SemanticRevisionSelectionSnapshot {

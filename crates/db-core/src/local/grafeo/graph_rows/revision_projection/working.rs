@@ -42,13 +42,20 @@ fn prepare_artifact(
     artifact: &SemanticArtifact,
 ) -> Result<WorkingArtifactProjection> {
     let record = SemanticRecordRef::artifact(&artifact.artifact_id);
-    let dependency_edges = existing_projection_node(database, &record, root)?
-        .into_iter()
-        .flat_map(|node| database.store().edges_from(node, Direction::Outgoing))
-        .filter_map(|(_, edge)| database.get_edge(edge))
-        .filter(|edge| edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE)
-        .map(|edge| edge.id)
-        .collect();
+    let mut dependency_edges = Vec::new();
+    if let Some(node) = existing_projection_node(database, &record, root)? {
+        // GRAFEO06-REVIEW(16): planning read of committed adjacency; 0.5 store().edges_from was live.
+        for (_, edge) in database
+            .get_node_edges(node, Direction::Outgoing, &[])
+            .db()?
+        {
+            if let Some(edge) = database.get_edge(edge).db()?
+                && edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE
+            {
+                dependency_edges.push(edge.id);
+            }
+        }
+    }
     Ok(WorkingArtifactProjection {
         record,
         artifact: artifact.clone(),
@@ -59,7 +66,7 @@ fn prepare_artifact(
             "SemanticArtifactVector",
             ARTIFACT_ID_PROPERTY,
             &artifact.artifact_id,
-        ),
+        )?,
     })
 }
 
@@ -75,10 +82,10 @@ impl WorkingArtifactProjection {
     ) -> Result<()> {
         let source = required_node(nodes, &self.record)?;
         for edge in self.dependency_edges {
-            graph.delete_edge(edge);
+            graph.delete_edge(edge)?;
         }
         for vector in self.vectors {
-            graph.delete_node(vector);
+            graph.delete_node(vector)?;
         }
         for (name, value) in self.properties {
             graph.set_node_property(source, name, value)?;

@@ -1,13 +1,14 @@
 use super::*;
 use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
 struct NodePropertyColumns {
     rows: Vec<HashMap<String, GrafeoValue>>,
 }
 
 impl NodePropertyColumns {
-    fn for_elements(store: &dyn GraphStore, ids: &[NodeId]) -> Self {
+    fn for_elements(snapshot: &Snapshot, ids: &[NodeId]) -> Result<Self> {
         Self::selected(
-            store,
+            snapshot,
             ids,
             &[
                 "semantic_element_id",
@@ -22,9 +23,9 @@ impl NodePropertyColumns {
         )
     }
 
-    fn for_artifacts(store: &dyn GraphStore, ids: &[NodeId]) -> Self {
+    fn for_artifacts(snapshot: &Snapshot, ids: &[NodeId]) -> Result<Self> {
         Self::selected(
-            store,
+            snapshot,
             ids,
             &[
                 "artifact_id",
@@ -40,11 +41,12 @@ impl NodePropertyColumns {
         )
     }
 
-    fn selected(store: &dyn GraphStore, ids: &[NodeId], keys: &[&str]) -> Self {
+    fn selected(snapshot: &Snapshot, ids: &[NodeId], keys: &[&str]) -> Result<Self> {
         let keys = keys.iter().map(|key| (*key).into()).collect::<Vec<_>>();
-        let rows = store
-            .get_nodes_properties_selective_batch(ids, &keys)
-            .committed_nodes(store, ids)
+        let rows = snapshot
+            .node_properties_selective_batch(ids, &keys, snapshot.view())
+            .db()?
+            .committed_nodes(snapshot, ids)?
             .into_iter()
             .map(|row| {
                 row.into_iter()
@@ -52,7 +54,7 @@ impl NodePropertyColumns {
                     .collect()
             })
             .collect();
-        Self { rows }
+        Ok(Self { rows })
     }
 
     fn element_property(&self, row: usize, key: &str) -> Option<&GrafeoValue> {
@@ -63,18 +65,20 @@ impl NodePropertyColumns {
         self.rows.get(row)?.get(key)
     }
 }
-pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> BatchedGraphRows {
-    let store = graph.graph_store();
-    let semantic_label_ids = store.nodes_by_label("SemanticElement");
+pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Result<BatchedGraphRows> {
+    let snapshot = graph.committed_snapshot()?;
+    let view = snapshot.view();
+    let semantic_label_ids = snapshot.nodes_by_label("SemanticElement", view).db()?;
     let semantic_node_ids = semantic_label_ids.iter().copied().collect::<HashSet<_>>();
     let semantic_id_key = "semantic_element_id".into();
     let semantic_ids_by_node_all = semantic_label_ids
         .iter()
         .copied()
         .zip(
-            store
-                .get_node_property_batch(&semantic_label_ids, &semantic_id_key)
-                .committed_nodes(&*store, &semantic_label_ids),
+            snapshot
+                .node_property_batch(&semantic_label_ids, &semantic_id_key, view)
+                .db()?
+                .committed_nodes(&snapshot, &semantic_label_ids)?,
         )
         .filter_map(|(node_id, value)| {
             value
@@ -83,15 +87,19 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
                 .map(|id| (node_id, id))
         })
         .collect::<HashMap<_, _>>();
-    let candidate_ids = store
-        .find_nodes_by_properties(&[
-            ("project_root", GrafeoValue::from(project_root)),
-            ("active", GrafeoValue::from(true)),
-        ])
+    let candidate_ids = snapshot
+        .find_nodes_by_properties(
+            &[
+                ("project_root", GrafeoValue::from(project_root)),
+                ("active", GrafeoValue::from(true)),
+            ],
+            view,
+        )
+        .db()?
         .into_iter()
         .filter(|node_id| semantic_node_ids.contains(node_id))
         .collect::<Vec<_>>();
-    let element_columns = NodePropertyColumns::for_elements(&*store, &candidate_ids);
+    let element_columns = NodePropertyColumns::for_elements(&snapshot, &candidate_ids)?;
     let mut all = Vec::with_capacity(candidate_ids.len());
     let mut node_ids = HashMap::with_capacity(candidate_ids.len());
     let mut semantic_ids_by_node = HashMap::with_capacity(candidate_ids.len());
@@ -114,7 +122,11 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
     let mut adjacency = Vec::<(NodeId, NodeId, EdgeId)>::new();
     let mut seen_edges = HashSet::new();
     for source_id in node_ids.values().copied() {
-        for (target_id, edge_id) in store.edges_from(source_id, Direction::Outgoing) {
+        // GRAFEO06-REVIEW(24): committed adjacency; 0.5 edges_from read the live store.
+        for (target_id, edge_id) in snapshot
+            .edges(source_id, Direction::Outgoing, &[], view)
+            .db()?
+        {
             if seen_edges.insert(edge_id) {
                 adjacency.push((source_id, target_id, edge_id));
             }
@@ -128,9 +140,10 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
         .iter()
         .map(|key| (*key).into())
         .collect::<Vec<_>>();
-    let edge_properties = store
-        .get_edges_properties_selective_batch(&edge_ids, &edge_keys)
-        .committed_edges(&*store, &edge_ids);
+    let edge_properties = snapshot
+        .edge_properties_selective_batch(&edge_ids, &edge_keys, view)
+        .db()?
+        .committed_edges(&snapshot, &edge_ids)?;
     let mut relationships = Vec::new();
     let mut artifact_nodes = HashMap::<NodeId, String>::new();
     for ((source_node, target_node, _), properties) in adjacency.into_iter().zip(edge_properties) {
@@ -168,7 +181,7 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
     let artifact_node_ids = artifact_nodes.keys().copied().collect::<Vec<_>>();
     if !artifact_node_ids.is_empty() {
         let mut seen_artifacts = HashSet::<(String, String)>::new();
-        let artifact_columns = NodePropertyColumns::for_artifacts(&*store, &artifact_node_ids);
+        let artifact_columns = NodePropertyColumns::for_artifacts(&snapshot, &artifact_node_ids)?;
         for (row, node_id) in artifact_node_ids.iter().copied().enumerate() {
             let artifact = projection_artifact_from_properties(|key| {
                 artifact_columns.artifact_property(row, key)
@@ -193,12 +206,12 @@ pub(super) fn read_batched_rows(graph: &GrafeoDB, project_root: &str) -> Batched
                 .push(artifact);
         }
     }
-    BatchedGraphRows {
+    Ok(BatchedGraphRows {
         all,
         all_by_id,
         relationships,
         artifacts_by_element,
-    }
+    })
 }
 
 pub(super) fn projection_element_from_properties<'a>(

@@ -16,7 +16,7 @@ use lumvise_resource_routing::InvocationControl;
 use serde_json::Value;
 
 mod membership;
-pub(crate) use membership::McpSessionMembership;
+pub(crate) use membership::{McpSessionMembership, ScopedMcpTicket};
 
 /// Routes MCP session registry HTTP requests.
 pub(super) fn mcp_session_registry_response(
@@ -49,6 +49,30 @@ fn register(app: &AppCore, request: &HttpRequest) -> HttpResponse {
             "instance_id and project_root must be non-empty",
         );
     }
+    let connector = match register_request
+        .connector_credential
+        .as_ref()
+        .map(|proof| {
+            app.connector_authority().register_connector(
+                proof,
+                register_request
+                    .display_name
+                    .as_deref()
+                    .unwrap_or("MCP connector"),
+                &InvocationControl::sixty_seconds(),
+            )
+        })
+        .transpose()
+    {
+        Ok(connector) => connector,
+        Err(error) => return error_response("403 Forbidden", error.to_string()),
+    };
+    if let Err(error) = app.mcp_session_membership.check_connector_registration(
+        &register_request.instance_id,
+        connector.as_ref().map(|id| id.connector_id.as_str()),
+    ) {
+        return error_response("403 Forbidden", error);
+    }
     let capabilities_json = match serde_json::to_string(&register_request.capabilities) {
         Ok(json) => json,
         Err(error) => return error_response("400 Bad Request", error.to_string()),
@@ -73,7 +97,11 @@ fn register(app: &AppCore, request: &HttpRequest) -> HttpResponse {
         &InvocationControl::sixty_seconds(),
     );
     match stored {
-        Ok(RelationalResult::McpInstance(instance)) => remember_registration(app, instance),
+        Ok(RelationalResult::McpInstance(instance)) => remember_registration(
+            app,
+            instance,
+            connector.as_ref().map(|id| id.connector_id.as_str()),
+        ),
         Ok(other) => error_response(
             "500 Internal Server Error",
             format!("register MCP returned unexpected persistence result: {other:?}"),
@@ -95,6 +123,19 @@ fn heartbeat(app: &AppCore, request: &HttpRequest) -> HttpResponse {
             );
         }
     };
+    let connector = match app.connector_authority().connector_proof_identity(
+        heartbeat_request.connector_credential.as_ref(),
+        &InvocationControl::sixty_seconds(),
+    ) {
+        Ok(connector) => connector,
+        Err(error) => return error_response("403 Forbidden", error.to_string()),
+    };
+    if let Err(error) = app
+        .mcp_session_membership
+        .require_connector(&heartbeat_request.instance_id, connector.as_deref())
+    {
+        return error_response("403 Forbidden", error);
+    }
     let status = status_to_string(&heartbeat_request.status);
     let stored = app.relational.execute(
         RelationalOperation::HeartbeatMcpInstance {
@@ -117,11 +158,16 @@ fn heartbeat(app: &AppCore, request: &HttpRequest) -> HttpResponse {
     }
 }
 
-fn remember_registration(app: &AppCore, instance: McpInstance) -> HttpResponse {
-    if let Err(error) = app
-        .mcp_session_membership
-        .register(&instance.instance_id, &instance.project_root)
-    {
+fn remember_registration(
+    app: &AppCore,
+    instance: McpInstance,
+    connector: Option<&str>,
+) -> HttpResponse {
+    if let Err(error) = app.mcp_session_membership.register_connector(
+        &instance.instance_id,
+        &instance.project_root,
+        connector,
+    ) {
         return error_response("500 Internal Server Error", error);
     }
     accepted_response(instance)
@@ -479,6 +525,7 @@ mod tests {
 
     fn post(path: &str, body: Value) -> HttpRequest {
         HttpRequest {
+            native_interaction: false,
             method: "POST".to_string(),
             path: path.to_string(),
             query: Default::default(),

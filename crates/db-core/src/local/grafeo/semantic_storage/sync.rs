@@ -193,13 +193,13 @@ impl<'db> SemanticStorage<'db> {
         self.require_element_exists(&relationship.target_element_id)?;
         self.commit_preplanned_graph_write(
             |database| {
-                if semantic_element_by_id(database, &relationship.source_element_id).is_none() {
+                if semantic_element_by_id(database, &relationship.source_element_id)?.is_none() {
                     return Err(DbError::invalid_value(
                         &relationship.source_element_id,
                         "existing semantic relationship source",
                     ));
                 }
-                if semantic_element_by_id(database, &relationship.target_element_id).is_none() {
+                if semantic_element_by_id(database, &relationship.target_element_id)?.is_none() {
                     return Err(DbError::invalid_value(
                         &relationship.target_element_id,
                         "existing semantic relationship target",
@@ -216,7 +216,7 @@ impl<'db> SemanticStorage<'db> {
                 apply_relationship_write(graph, plan)?;
                 for node_id in changed_node_ids.values() {
                     if let Some(element) = graph
-                        .get_node(*node_id)
+                        .get_node(*node_id)?
                         .filter(|node| node.has_label("SemanticElement"))
                         .and_then(|node| semantic_element_from_node(&node))
                     {
@@ -313,7 +313,7 @@ pub(super) fn prepare_snapshot_write(
         .collect::<Result<Vec<_>>>()?;
     let known_node_ids = planned_upsert_node_ids(elements.iter().copied(), &element_plans);
     Ok(PreparedSnapshot {
-        relationship_reset: prepare_project_relationship_reset(database, project_root),
+        relationship_reset: prepare_project_relationship_reset(database, project_root)?,
         element_plans,
         relationship_plan: prepare_relationship_upserts(database, relationships, &known_node_ids)?,
     })
@@ -329,7 +329,7 @@ pub(super) fn apply_prepared_snapshot(
     let relationship_changes = plan.relationship_plan.changed_element_node_ids().clone();
     // Rebuild only semantic relationships: native element identities anchor
     // artifact ownership/dependencies, and vectors follow delta-sync semantics.
-    apply_project_relationship_reset(graph, plan.relationship_reset);
+    apply_project_relationship_reset(graph, plan.relationship_reset)?;
     for (element, element_plan) in active_elements
         .iter()
         .chain(inactive_elements.iter())
@@ -352,10 +352,10 @@ pub(super) fn prepare_full_structure_sync(
     crate::local::persistence::verify_control(control)?;
     crate::local::grafeo::revision_rows::require_unmanaged_project(database, project_root)?;
     validate_unique_element_ids(elements)?;
-    let existing = semantic_elements_for_project_including_inactive(database, project_root);
+    let existing = semantic_elements_for_project_including_inactive(database, project_root)?;
     crate::local::persistence::verify_control(control)?;
     validate_duplicate_repair_inputs(&existing, elements)?;
-    let existing_relationships = semantic_relationships_for_project_edges(database, project_root);
+    let existing_relationships = semantic_relationships_for_project_edges(database, project_root)?;
     crate::local::persistence::verify_control(control)?;
     let reconciled = SemanticStructureReconciliation::between(&existing, elements, matched_at);
     let relationships = normalized_relationships(
@@ -457,7 +457,7 @@ pub(super) fn prepare_partition_structure_sync(
     let owned_sources = owned_partition_source_ids(&plan.reconciled, &plan.inactive_elements);
     let relationships = relationships_owned_by_sources(&plan.relationships, &owned_sources);
     let existing_relationships =
-        semantic_relationships_for_sources(database, &partition.project_root, &owned_sources);
+        semantic_relationships_for_sources(database, &partition.project_root, &owned_sources)?;
     let mut changed_relationship_sources =
         changed_relationship_source_ids(&existing_relationships, &relationships);
     changed_relationship_sources.extend(
@@ -512,7 +512,7 @@ pub(super) fn apply_prepared_structure_sync(
             )?;
             record_element_upserts(collector, &active_elements)?;
             record_element_upserts(collector, &inactive_elements)?;
-            record_relationship_endpoints(graph, collector, &relationship_changes);
+            record_relationship_endpoints(graph, collector, &relationship_changes)?;
             record_sync_changes(collector, project_root, &prepared.remaps)
         }
         PreparedStructureMutation::Delta {
@@ -522,7 +522,7 @@ pub(super) fn apply_prepared_structure_sync(
             let relationship_changes =
                 apply_prepared_delta(graph, &element_changes, commit_version, plan)?;
             record_element_upserts(collector, &element_changes)?;
-            record_relationship_endpoints(graph, collector, &relationship_changes);
+            record_relationship_endpoints(graph, collector, &relationship_changes)?;
             record_sync_changes(collector, project_root, &prepared.remaps)
         }
     }
@@ -554,10 +554,10 @@ pub(super) fn record_relationship_endpoints(
     graph: &GraphTransaction<'_>,
     collector: &mut ChangeCollector,
     changed_element_node_ids: &BTreeMap<String, NodeId>,
-) {
+) -> Result<()> {
     for node_id in changed_element_node_ids.values() {
         let element = graph
-            .get_node(*node_id)
+            .get_node(*node_id)?
             .filter(|node| node.has_label("SemanticElement"))
             .and_then(|node| semantic_element_from_node(&node))
             .filter(|element| element.lifecycle != "inactive");
@@ -565,6 +565,7 @@ pub(super) fn record_relationship_endpoints(
             collector.record_element(&element, ChangeDisposition::Upserted);
         }
     }
+    Ok(())
 }
 
 pub(super) fn prepare_delta_write(
@@ -578,7 +579,7 @@ pub(super) fn prepare_delta_write(
         .map(|element| prepare_element_upsert(database, element))
         .collect::<Result<Vec<_>>>()?;
     let known_node_ids = planned_upsert_node_ids(elements.iter(), &element_plans);
-    let duplicate_repair = DuplicateElementRepair::prepare(database, &element_plans);
+    let duplicate_repair = DuplicateElementRepair::prepare(database, &element_plans)?;
     let relationship_plan = prepare_relationship_sync(
         database,
         changed_relationship_sources,
@@ -682,6 +683,7 @@ pub(super) fn relationships_for_sources(
 #[cfg(test)]
 mod snapshot_rollback_tests {
     use super::*;
+    use crate::local::grafeo::graph_reads::CommittedGraph;
     use crate::{LocalPersistence, SemanticOperation, SemanticPersistence, SemanticResult};
     use lumvise_resource_routing::InvocationControl;
 
@@ -746,7 +748,7 @@ mod snapshot_rollback_tests {
             |graph, revision, _collector, plan| {
                 apply_prepared_snapshot(graph, &elements, &[], revision, plan)?;
                 assert!(
-                    graph.get_node(before.0).is_some(),
+                    graph.get_node(before.0)?.is_some(),
                     "bulk sync must retain the native owner node"
                 );
                 // Cancel after native writes, so the enclosing commit must roll back.
@@ -772,15 +774,19 @@ mod snapshot_rollback_tests {
         storage.graph.read(|database| {
             let owner = database
                 .find_nodes_by_property("semantic_element_id", &grafeo::Value::from("owner"))
+                .unwrap()
                 .into_iter()
                 .find(|node_id| {
                     database
                         .get_node(*node_id)
+                        .unwrap()
                         .is_some_and(|node| node.has_label("SemanticElement"))
                 })
                 .unwrap();
             let edges = database
-                .iter_edges()
+                .all_edges()
+                .unwrap()
+                .into_iter()
                 .map(|edge| (edge.src, edge.dst, edge.edge_type.to_string()))
                 .collect();
             (owner, edges)

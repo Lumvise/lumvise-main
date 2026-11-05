@@ -33,7 +33,7 @@ impl IndexPublicationJournal {
     ) -> Result<bool> {
         let blocked_headers = self.blocked_recovery_headers(publication, unavailable)?;
         if blocked_headers.is_empty() {
-            return Ok(false);
+            return self.supersede_stale_recovered_pending(publication, unavailable, control);
         }
         let Some(commit) = self.unaccepted_recovery_commit(&publication.operation_id, control)?
         else {
@@ -44,6 +44,7 @@ impl IndexPublicationJournal {
             frozen_digest: pending::publication_digest(publication)?,
             inspected_commit_version: commit,
             blocked_headers,
+            scoped_conflict: None,
         };
         self.commit_source_supersession(publication, audit, control)?;
         Ok(true)
@@ -66,7 +67,7 @@ impl IndexPublicationJournal {
         Ok(blocked.into_values().collect())
     }
 
-    fn unaccepted_recovery_commit(
+    pub(super) fn unaccepted_recovery_commit(
         &self,
         operation: &str,
         control: &InvocationControl,
@@ -111,7 +112,7 @@ impl IndexPublicationJournal {
         Ok(Some(report))
     }
 
-    fn commit_source_supersession(
+    pub(super) fn commit_source_supersession(
         &self,
         publication: &FrozenIndexPublication,
         audit: RecoveredSourceSupersession,
@@ -301,6 +302,7 @@ fn verify_existing_supersession(
     if previous.operation_id != requested.operation_id
         || previous.frozen_digest != requested.frozen_digest
         || previous.blocked_headers != requested.blocked_headers
+        || previous.scoped_conflict != requested.scoped_conflict
         || header.pending.is_some()
     {
         return Err(invalid_checkpoint(

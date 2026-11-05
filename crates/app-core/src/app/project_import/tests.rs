@@ -18,6 +18,7 @@ fn credentialed_app() -> AppCore {
 
 fn request(body: Value) -> HttpRequest {
     HttpRequest {
+        native_interaction: false,
         method: "POST".to_string(),
         path: PROJECT_IMPORT_ENDPOINT.to_string(),
         query: std::collections::BTreeMap::new(),
@@ -636,6 +637,7 @@ fn pz_import_publishes_snapshot_structure_and_fails_closed_without_index_log() {
 /// Exercise the asynchronous public route, preserving the tests' final-result assertions.
 fn settled_import_response(app: &AppCore, initial: &HttpRequest) -> HttpResponse {
     let mut request = HttpRequest {
+        native_interaction: false,
         method: initial.method.clone(),
         path: initial.path.clone(),
         query: initial.query.clone(),

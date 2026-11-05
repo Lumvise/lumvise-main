@@ -1,6 +1,9 @@
 use crate::interface::{
     ChangeBatch, ChangeDisposition, ChangeHookRegistration, ChangeHookScope, ChangedElement,
 };
+#[cfg(test)]
+use crate::local::grafeo::graph_reads::CommittedGraph;
+use crate::local::grafeo::graph_reads::GrafeoResult;
 use crate::local::grafeo::graph_row_projection::{
     bool_property, i64_property, semantic_element_from_node,
 };
@@ -258,9 +261,11 @@ impl<'db> ChangeHooks<'db> {
             )?
             .unwrap_or_else(|| lock(&self.db.change_buffer).head_revision)
         };
-        let candidates = self.db.graph.read(|graph| {
-            graph
-                .iter_nodes()
+        // GRAFEO06-REVIEW(20): tombstone scan reads committed nodes; 0.5 iter_nodes read the live store.
+        let candidates = self.db.graph.read(|graph| -> Result<Vec<_>> {
+            Ok(graph
+                .all_nodes()?
+                .into_iter()
                 .filter_map(|node| {
                     if !node.has_label("SemanticElement")
                         || bool_property(&node, ACTIVE_PROPERTY_FOR_HOOKS)
@@ -270,21 +275,21 @@ impl<'db> ChangeHooks<'db> {
                     let deleted_at = i64_property(&node, DELETED_AT_PROPERTY_FOR_HOOKS)?;
                     (deleted_at >= 0 && deleted_at <= floor).then_some(node.id)
                 })
-                .collect::<Vec<_>>()
-        });
+                .collect::<Vec<_>>())
+        })?;
         if candidates.is_empty() {
             return Ok(0);
         }
         self.db.graph.write(|graph| {
             let mut removed = 0;
             for node_id in candidates {
-                let eligible = graph.get_node(node_id).is_some_and(|node| {
+                let eligible = graph.get_node(node_id)?.is_some_and(|node| {
                     !bool_property(&node, ACTIVE_PROPERTY_FOR_HOOKS)
                         && i64_property(&node, DELETED_AT_PROPERTY_FOR_HOOKS)
                             .is_some_and(|deleted_at| deleted_at >= 0 && deleted_at <= floor)
                 });
                 if eligible {
-                    graph.delete_node(node_id);
+                    graph.delete_node(node_id)?;
                     removed += 1;
                 }
             }
@@ -335,17 +340,24 @@ impl<'db> ChangeHooks<'db> {
             .cloned()
             .collect::<Vec<_>>();
         self.db.graph.read(|graph| {
-            Ok(candidates
-                .into_iter()
-                .filter_map(|entry| {
-                    let node = graph
-                        .find_nodes_by_property(
-                            SEMANTIC_ELEMENT_ID_PROPERTY_FOR_HOOKS,
-                            &grafeo::Value::from(entry.element_id.as_str()),
-                        )
-                        .into_iter()
-                        .filter_map(|id| graph.get_node(id))
-                        .find(|node| node.has_label("SemanticElement"));
+            let mut changed = Vec::new();
+            for entry in candidates {
+                let mut node = None;
+                for id in graph
+                    .find_nodes_by_property(
+                        SEMANTIC_ELEMENT_ID_PROPERTY_FOR_HOOKS,
+                        &grafeo::Value::from(entry.element_id.as_str()),
+                    )
+                    .db()?
+                {
+                    if let Some(found) = graph.get_node(id).db()?
+                        && found.has_label("SemanticElement")
+                    {
+                        node = Some(found);
+                        break;
+                    }
+                }
+                changed.extend({
                     match node {
                         Some(node)
                             if i64_property(&node, LAST_CHANGED_REVISION_PROPERTY_FOR_HOOKS)
@@ -368,8 +380,9 @@ impl<'db> ChangeHooks<'db> {
                         }
                         _ => None,
                     }
-                })
-                .collect())
+                });
+            }
+            Ok(changed)
         })
     }
 
@@ -381,7 +394,7 @@ impl<'db> ChangeHooks<'db> {
     ) -> Result<Vec<ChangedElement>> {
         self.db.graph.read(|graph| {
             Ok(
-                projected_changes::project_change_nodes(graph, &scope.project_root)
+                projected_changes::project_change_nodes(graph, &scope.project_root)?
                     .into_iter()
                     .filter_map(|node| {
                         if !node.has_label("SemanticElement") {

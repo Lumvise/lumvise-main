@@ -46,27 +46,40 @@ fn validate_receipt(
     accepted: &SemanticRevisionAcceptedRecovery,
     records: &BTreeMap<&SemanticRecordRef, &SemanticStoredRevision>,
 ) -> SemanticRevisionResult<()> {
+    validate_receipt_shape(&state.project_id, state.commit_version, accepted)?;
+    for reference in &accepted.receipt.unavailable_records {
+        validate_audited_record(
+            &accepted.receipt,
+            reference,
+            records.get(reference).copied(),
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_receipt_shape(
+    project_id: &str,
+    commit_version: i64,
+    accepted: &SemanticRevisionAcceptedRecovery,
+) -> SemanticRevisionResult<()> {
     let receipt = &accepted.receipt;
     let unique = receipt.unavailable_records.iter().collect::<BTreeSet<_>>();
     if receipt.operation_id.trim().is_empty()
         || accepted.request_root.trim().is_empty()
         || accepted.request_digest.trim().is_empty()
-        || receipt.project_id != state.project_id
+        || receipt.project_id != project_id
         || receipt.previous_commit_version < 0
         || receipt.commit_version <= receipt.previous_commit_version
-        || receipt.commit_version > state.commit_version
+        || receipt.commit_version > commit_version
         || unique.is_empty()
         || unique.len() != receipt.unavailable_records.len()
     {
         return Err(missing_audit(&receipt.operation_id));
     }
-    for reference in &receipt.unavailable_records {
-        validate_audited_record(receipt, reference, records.get(reference).copied())?;
-    }
     Ok(())
 }
 
-fn validate_audited_record(
+pub(crate) fn validate_audited_record(
     receipt: &SemanticRevisionRecoveryReceipt,
     reference: &SemanticRecordRef,
     stored: Option<&SemanticStoredRevision>,

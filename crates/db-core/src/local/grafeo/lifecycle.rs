@@ -15,13 +15,13 @@ impl<'db> SemanticStorage<'db> {
         let (removed, artifact) = self.commit_preplanned_graph_write(
             |database| {
                 super::revision_rows::require_unmanaged_artifact(database, artifact_id)?;
-                Ok(prepare_artifact_deletion(database, artifact_id))
+                prepare_artifact_deletion(database, artifact_id)
             },
             |graph, commit_version, collector, plan| {
                 let Some(artifact) = plan.artifact.clone() else {
                     return Ok((false, None));
                 };
-                if let Some(owner) = apply_artifact_deletion(graph, commit_version, plan) {
+                if let Some(owner) = apply_artifact_deletion(graph, commit_version, plan)? {
                     collector.record_element(&owner, ChangeDisposition::Upserted);
                 }
                 Ok((true, Some(artifact)))
@@ -40,7 +40,7 @@ impl<'db> SemanticStorage<'db> {
         let (removed, artifacts) = self.commit_preplanned_graph_write(
             |database| {
                 super::revision_rows::require_unmanaged_element(database, semantic_element_id)?;
-                Ok(prepare_element_deactivation(database, semantic_element_id))
+                prepare_element_deactivation(database, semantic_element_id)
             },
             |graph, commit_version, collector, plan| {
                 if !plan.exists {
@@ -53,7 +53,7 @@ impl<'db> SemanticStorage<'db> {
                     &plan.entity_kind,
                 );
                 Ok((
-                    apply_element_deactivation(graph, commit_version, plan),
+                    apply_element_deactivation(graph, commit_version, plan)?,
                     artifacts,
                 ))
             },

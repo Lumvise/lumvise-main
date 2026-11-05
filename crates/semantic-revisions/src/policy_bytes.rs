@@ -3,6 +3,12 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 mod storage;
 
+/// Encodes a complete native archive into opaque release-two gateway pages without snapshot duplication.
+/// Example: `encode_archive_transfer_pages(&archive_json)?` before staging an upload.
+pub fn encode_archive_transfer_pages(archive_json: &str) -> SemanticRevisionResult<Vec<String>> {
+    storage::archives::transfer::encode(archive_json)
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum RevisionPolicyRequest {

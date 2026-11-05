@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+lumvise-contracts = { workspace = true, optional = true }
 lumvise-resource-routing.workspace = true
 prost.workspace = true
 chrono.workspace = true
@@ -18,4 +19,4 @@ thiserror.workspace = true
 [features]
 default = []
 assistant-e2e = []
-desktop-app = ["dep:lumvise-db-core"]
+desktop-app = ["dep:lumvise-db-core", "dep:lumvise-contracts"]

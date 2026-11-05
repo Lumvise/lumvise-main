@@ -333,14 +333,15 @@ fn validate_selected_references(
     for record in records {
         require(record)?;
     }
+    // One index instead of a scan per id: a large pin selects ~10^5 connections.
+    let mut edges = std::collections::BTreeMap::new();
+    for edge in &state.connections {
+        edges.entry(edge.connection_id.as_str()).or_insert(edge);
+    }
     for id in connection_ids {
-        let edge = state
-            .connections
-            .iter()
-            .find(|edge| &edge.connection_id == id)
-            .ok_or_else(|| {
-                SemanticRevisionError::invalid_value(id, "an existing project connection")
-            })?;
+        let edge = edges.get(id.as_str()).ok_or_else(|| {
+            SemanticRevisionError::invalid_value(id, "an existing project connection")
+        })?;
         require(&SemanticRecordRef::element(
             &edge.relationship.source_element_id,
         ))?;

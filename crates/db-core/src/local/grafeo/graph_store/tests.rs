@@ -1,4 +1,5 @@
 use super::GraphStore;
+use crate::local::grafeo::graph_reads::CommittedGraph;
 use crate::{
     DbError, Result, SemanticGraphGranularity, SemanticGraphProjection,
     SemanticGraphProjectionRequest,
@@ -23,7 +24,7 @@ fn search_cache_revision_ignores_artifact_and_vector_writes_but_tracks_element_e
         store
             .write(|graph| graph.set_node_property(node, "semantic_element_id", "element".into()))
             .unwrap();
-        store.write(|graph| Ok(graph.delete_node(node))).unwrap();
+        store.write(|graph| graph.delete_node(node)).unwrap();
     }
     assert_eq!(store.element_revision.load(Ordering::Acquire), revision);
     store
@@ -31,7 +32,7 @@ fn search_cache_revision_ignores_artifact_and_vector_writes_but_tracks_element_e
         .unwrap();
     assert!(store.element_revision.load(Ordering::Acquire) > revision);
     let renamed = store.element_revision.load(Ordering::Acquire);
-    store.write(|graph| Ok(graph.delete_node(element))).unwrap();
+    store.write(|graph| graph.delete_node(element)).unwrap();
     assert!(store.element_revision.load(Ordering::Acquire) > renamed);
 }
 
@@ -71,7 +72,7 @@ fn automatic_checkpoint_allows_published_reads_with_a_waiting_writer() {
     let reading_store = Arc::clone(&store);
     let (read, read_completed) = mpsc::channel();
     let reader = thread::spawn(move || {
-        read.send(reading_store.stable_read(|graph| Ok(graph.iter_nodes().count())))
+        read.send(reading_store.stable_read(|graph| Ok(graph.all_nodes().unwrap().len())))
             .unwrap();
     });
     let observed = read_completed.recv_timeout(Duration::from_secs(2));
@@ -87,7 +88,7 @@ fn automatic_checkpoint_allows_published_reads_with_a_waiting_writer() {
     );
     assert_eq!(
         store
-            .stable_read(|graph| Ok(graph.iter_nodes().count()))
+            .stable_read(|graph| Ok(graph.all_nodes().unwrap().len()))
             .unwrap(),
         2
     );
@@ -134,7 +135,8 @@ fn failed_post_commit_invalidates_projection_cache_and_blocks_stable_reads() {
         super::GraphPostCommit::RolledBack(_) => panic!("publication had already committed"),
     }
     assert_eq!(store.projection_cache_len(), 0);
-    assert_eq!(store.read(|graph| graph.iter_nodes().count()), 1);
+    assert!(store.checkpoint().is_err());
+    assert_eq!(store.read(|graph| graph.all_nodes().unwrap().len()), 1);
     let read_error = store.stable_read(|_| Ok(())).unwrap_err();
     assert!(
         read_error
@@ -151,9 +153,14 @@ fn failed_post_commit_invalidates_projection_cache_and_blocks_stable_reads() {
             |_| Ok(()),
             |_| 0,
         )
-        .unwrap();
-    assert!(matches!(result, super::GraphPostCommit::Completed(())));
-    store.stable_read(|_| Ok(())).unwrap();
+        .err()
+        .expect("an unrelated publication must not clear the original failure");
+    assert!(
+        result
+            .to_string()
+            .contains("forced SQL publication failure")
+    );
+    assert!(store.stable_read(|_| Ok(())).is_err());
 }
 
 #[test]
@@ -161,7 +168,7 @@ fn failed_graph_transaction_rolls_back_all_changes() {
     let store = GraphStore::new(GrafeoDB::new_in_memory());
     let result = write_then_fail(&store);
     assert!(result.is_err());
-    assert_eq!(store.read(|graph| graph.iter_nodes().count()), 0);
+    assert_eq!(store.read(|graph| graph.all_nodes().unwrap().len()), 0);
     assert!(rolled_back_property_index_is_empty(&store));
 }
 
@@ -171,11 +178,11 @@ fn leased_snapshot_does_not_observe_uncommitted_graph_changes() {
     let snapshot = store.snapshot();
     let (changed_rx, release_tx, writer) = spawn_pending_writer(Arc::clone(&store));
     changed_rx.recv().unwrap();
-    let visible_before_commit = snapshot.iter_nodes().count();
+    let visible_before_commit = snapshot.all_nodes().unwrap().len();
     release_tx.send(()).unwrap();
     writer.join().unwrap();
     assert_eq!(visible_before_commit, 0);
-    assert_eq!(store.read(|graph| graph.iter_nodes().count()), 1);
+    assert_eq!(store.read(|graph| graph.all_nodes().unwrap().len()), 1);
 }
 
 #[test]
@@ -250,7 +257,7 @@ fn stale_plan_retries_without_losing_the_intervening_write() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(store.read(|graph| graph.iter_nodes().count()), 2);
+    assert_eq!(store.read(|graph| graph.all_nodes().unwrap().len()), 2);
 }
 
 #[test]
@@ -266,7 +273,7 @@ fn failed_optimistic_plan_retries_after_an_intervening_write() {
                     "a coherent read",
                 ));
             }
-            Ok(graph.iter_nodes().count())
+            Ok(graph.all_nodes().unwrap().len())
         })
         .unwrap();
     assert_eq!(planned.into_parts().1, 1);
@@ -368,6 +375,7 @@ fn rolled_back_property_index_is_empty(store: &GraphStore) -> bool {
     store.read(|graph| {
         graph
             .find_nodes_by_property("kind", &grafeo::Value::from("uncommitted"))
+            .unwrap()
             .is_empty()
     })
 }
@@ -462,7 +470,7 @@ fn checkpoint_persists_state_across_reopen() {
     }
 
     let reopened = GraphStore::new(GrafeoDB::open(&graph_path).unwrap());
-    let surviving = reopened.read(|graph| graph.iter_nodes().count());
+    let surviving = reopened.read(|graph| graph.all_nodes().unwrap().len());
     assert_eq!(surviving, 1, "written node survives checkpoint and reopen");
 }
 
@@ -482,7 +490,7 @@ fn thousand_logical_entities_checkpoint_once_into_main_graph_file() {
     std::fs::copy(&graph_path, &checkpoint_copy).unwrap();
     let reopened = GrafeoDB::open(checkpoint_copy).unwrap();
     assert_eq!(
-        reopened.iter_nodes().count(),
+        reopened.all_nodes().unwrap().len(),
         2,
         "the threshold checkpoint writes committed nodes into the main container"
     );

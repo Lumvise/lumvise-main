@@ -317,6 +317,7 @@ mod tests {
         query.insert("project_root".to_string(), project_root.to_string());
         query.insert("path".to_string(), path.to_string());
         HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: SOURCE_FILE_ENDPOINT.to_string(),
             query,

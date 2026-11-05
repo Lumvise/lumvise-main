@@ -5,6 +5,7 @@
 
 mod app_bridge;
 mod application;
+mod connector_credential_file;
 mod product;
 mod project_execution;
 mod session_project_binding;

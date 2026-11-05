@@ -3,23 +3,32 @@ use super::*;
 use std::collections::BTreeSet;
 
 impl IndexPublicationJournal {
-    pub(super) fn validate_frozen(&self, publication: &FrozenIndexPublication) -> Result<()> {
+    pub(super) fn validate_frozen(
+        &self,
+        publication: &FrozenIndexPublication,
+        recovery: bool,
+    ) -> Result<()> {
         self.validate_partition(&publication.partition())?;
-        self.validate_observation(publication)?;
+        self.validate_observation(publication, recovery)?;
         self.validate_projected_paths(publication)?;
         self.validate_projected_source(publication)
     }
 
-    fn validate_observation(&self, publication: &FrozenIndexPublication) -> Result<()> {
+    fn validate_observation(
+        &self,
+        publication: &FrozenIndexPublication,
+        recovery: bool,
+    ) -> Result<()> {
         let observed = publication.observation()?;
         if publication.operation_id.trim().is_empty()
             || observed.project_id != self.binding.project_id
             || observed.selection_id != self.binding.selection_id
             || observed.source_context != self.binding.source_context
-            || observed.producer_base.as_ref().is_none_or(|base| {
+            || observed.producer_base.as_ref().map_or(!recovery, |base| {
                 base.selection_id != self.rows.producer_selection_id()
                     || base.expected_generation < 0
             })
+            || (recovery && observed.producer_base.is_some())
         {
             return Err(invalid_checkpoint(
                 &publication.operation_id,

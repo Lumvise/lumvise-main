@@ -84,7 +84,7 @@ fn configure_writer_connection(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;",
+         PRAGMA synchronous = FULL;",
     )?;
     Ok(())
 }
@@ -111,4 +111,28 @@ fn parse_persistent_reader_count(raw: Option<&str>) -> usize {
         None => None,
     };
     count.unwrap_or(DEFAULT_PERSISTENT_READER_COUNT)
+}
+
+#[cfg(test)]
+mod durability_tests {
+    use super::SqlConnections;
+
+    #[test]
+    fn persistent_writer_syncs_each_publication_before_acknowledgement() {
+        let directory = tempfile::tempdir().unwrap();
+        let connections =
+            SqlConnections::open(&directory.path().join("durable.db"), false).unwrap();
+        let writer = connections.write_conn();
+        let mode: String = writer
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let sync: i64 = writer
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        assert_eq!(
+            sync, 2,
+            "SQLite FULL must synchronize both intent and publication commits"
+        );
+    }
 }

@@ -1,7 +1,7 @@
 use crate::session_project_binding::SessionProjectBinding;
 use crate::{app_bridge::AppBridgeRuntime, tool_catalog::tool_catalog};
 use lumvise_mcp_core::{
-    AppBridgeInvocationResponseV2, AppBridgeInvocationStatusV2, LumviseMcpServer, McpApplication,
+    AppBridgeInvocationResponseV3, AppBridgeInvocationStatusV3, LumviseMcpServer, McpApplication,
     McpApplicationError, McpInvocationContext, McpInvocationFailureKind, McpTool,
 };
 use serde_json::Value;
@@ -50,6 +50,18 @@ struct JsonRpcError {
 }
 
 impl McpAppConfig {
+    /// Adds the private proof belonging to this connector installation.
+    /// Example: `.with_connector_credential(proof, "Codex")` after protected-file setup.
+    pub fn with_connector_credential(
+        mut self,
+        credential: lumvise_contracts::ConnectorCredential,
+        display_name: impl Into<String>,
+    ) -> Self {
+        self.app_bridge = self
+            .app_bridge
+            .with_connector_credential(credential, display_name);
+        self
+    }
     /// Uses the canonical discovery marker for the running desktop app.
     ///
     /// # Example
@@ -494,11 +506,11 @@ fn remove_bound_session_fields(tool: &mut Value) {
 }
 
 fn decode_controlled_response(
-    response: AppBridgeInvocationResponseV2,
+    response: AppBridgeInvocationResponseV3,
 ) -> std::result::Result<Value, McpApplicationError> {
-    let status = AppBridgeInvocationStatusV2::try_from(response.status)
-        .unwrap_or(AppBridgeInvocationStatusV2::Internal);
-    if status == AppBridgeInvocationStatusV2::Completed {
+    let status = AppBridgeInvocationStatusV3::try_from(response.status)
+        .unwrap_or(AppBridgeInvocationStatusV3::Internal);
+    if status == AppBridgeInvocationStatusV3::Completed {
         return serde_json::from_slice(&response.output_json)
             .map_err(|error| McpApplicationError::invocation(error.to_string()));
     }
@@ -509,15 +521,15 @@ fn decode_controlled_response(
     ))
 }
 
-fn failure_kind(status: AppBridgeInvocationStatusV2) -> McpInvocationFailureKind {
+fn failure_kind(status: AppBridgeInvocationStatusV3) -> McpInvocationFailureKind {
     match status {
-        AppBridgeInvocationStatusV2::Busy => McpInvocationFailureKind::Busy,
-        AppBridgeInvocationStatusV2::DeadlineExceeded => McpInvocationFailureKind::DeadlineExceeded,
-        AppBridgeInvocationStatusV2::Cancelled => McpInvocationFailureKind::Cancelled,
-        AppBridgeInvocationStatusV2::Unavailable => McpInvocationFailureKind::Unavailable,
-        AppBridgeInvocationStatusV2::Completed
-        | AppBridgeInvocationStatusV2::Failed
-        | AppBridgeInvocationStatusV2::Internal => McpInvocationFailureKind::Failed,
+        AppBridgeInvocationStatusV3::Busy => McpInvocationFailureKind::Busy,
+        AppBridgeInvocationStatusV3::DeadlineExceeded => McpInvocationFailureKind::DeadlineExceeded,
+        AppBridgeInvocationStatusV3::Cancelled => McpInvocationFailureKind::Cancelled,
+        AppBridgeInvocationStatusV3::Unavailable => McpInvocationFailureKind::Unavailable,
+        AppBridgeInvocationStatusV3::Completed
+        | AppBridgeInvocationStatusV3::Failed
+        | AppBridgeInvocationStatusV3::Internal => McpInvocationFailureKind::Failed,
     }
 }
 

@@ -2,6 +2,8 @@
 //! Ingress captures a canonical project; memory authority rechecks that same scope.
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
+mod scoped_authority;
+pub(crate) use scoped_authority::ScopedMcpTicket;
 
 #[derive(Clone)]
 struct Membership {
@@ -19,10 +21,77 @@ pub(crate) struct McpProjectScope {
 
 #[derive(Default)]
 pub(crate) struct McpSessionMembership {
+    incarnation: std::sync::OnceLock<String>,
     connections: Mutex<HashMap<String, Membership>>,
+    connectors: Mutex<HashMap<String, Option<String>>>,
+    scoped_tickets: Mutex<HashMap<String, ScopedMcpTicket>>,
 }
 
 impl McpSessionMembership {
+    pub(crate) fn runtime_incarnation(&self) -> String {
+        self.incarnation
+            .get_or_init(|| uuid::Uuid::new_v4().to_string())
+            .clone()
+    }
+    pub(crate) fn check_connector_registration(
+        &self,
+        connection: &str,
+        connector: Option<&str>,
+    ) -> Result<(), String> {
+        let identities = self
+            .connectors
+            .lock()
+            .map_err(|_| "MCP identity lock unavailable")?;
+        if identities
+            .get(connection)
+            .is_some_and(|id| id.as_deref() != connector)
+        {
+            return Err(format!(
+                "connection {connection:?}; expected its original authenticated connector"
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn register_connector(
+        &self,
+        connection: &str,
+        root: &str,
+        connector: Option<&str>,
+    ) -> Result<(), String> {
+        let mut identities = self
+            .connectors
+            .lock()
+            .map_err(|_| "MCP identity lock unavailable")?;
+        if identities
+            .get(connection)
+            .is_some_and(|id| id.as_deref() != connector)
+        {
+            return Err(format!(
+                "connection {connection:?}; expected its original authenticated connector"
+            ));
+        }
+        self.register(connection, root)?;
+        identities.insert(connection.into(), connector.map(str::to_owned));
+        Ok(())
+    }
+
+    pub(crate) fn require_connector(
+        &self,
+        connection: &str,
+        connector: Option<&str>,
+    ) -> Result<(), String> {
+        let identities = self
+            .connectors
+            .lock()
+            .map_err(|_| "MCP identity lock unavailable")?;
+        if identities.get(connection).and_then(|id| id.as_deref()) == connector {
+            return Ok(());
+        }
+        Err(format!(
+            "connection {connection:?}; expected matching authenticated connector proof"
+        ))
+    }
+
     pub(crate) fn register(&self, connection: &str, root: &str) -> Result<(), String> {
         let mut connections = self.lock()?;
         replace_membership(&mut connections, connection, Some(root))

@@ -6069,7 +6069,7 @@
     {
       "id": "get_document_hook",
       "name": "Read memory document hook",
-      "description": "Read the maintenance hook of a context or report in your memory space. project_root is that space's root from resolve_document_space (MCP: purpose current_project; Assistant: self), not a source project's path; source-project reports use the Hooks tab or Agents automation watches (configure_automation_watch). Returns hook (null when none) with revision (pass it as expected_hook_revision to configure_document_hook), enabled, status (pending, ready, disabled, blocked), settings and watch, plus the document, whose revision and semantic_element_id enabling needs. Ownership comes from the host.",
+      "description": "Read the maintenance hook of a context or report in your memory space. Assistant sessions use document.get_hook and document.configure_hook. project_root is that space's root from resolve_document_space (MCP: purpose current_project; Assistant: self), not a source project's path; source-project reports use the Hooks tab or Agents automation watches (configure_automation_watch). Returns hook (null when none) with revision (pass it as expected_hook_revision to configure_document_hook), enabled, status (pending, ready, disabled, blocked), settings and watch, plus the document, whose revision and semantic_element_id enabling needs. Ownership comes from the host.",
       "kind": "mcp_tool",
       "input_schema": {
         "type": "object",
@@ -6508,9 +6508,460 @@
       "execution": "foreground"
     },
     {
+      "id": "document.get_hook",
+      "name": "Assistant memory document hook read",
+      "description": "Read the maintenance hook of a context or report in your memory space. Assistant sessions use document.get_hook and document.configure_hook. project_root is that space's root from resolve_document_space (MCP: purpose current_project; Assistant: self), not a source project's path; source-project reports use the Hooks tab or Agents automation watches (configure_automation_watch). Returns hook (null when none) with revision (pass it as expected_hook_revision to configure_document_hook), enabled, status (pending, ready, disabled, blocked), settings and watch, plus the document, whose revision and semantic_element_id enabling needs. Ownership comes from the host.",
+      "kind": "scoped_mcp_tool",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "project_root",
+          "document_id"
+        ],
+        "properties": {
+          "project_root": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "hook"
+        ],
+        "properties": {
+          "hook": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "document": {
+            "type": "object",
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "document_kind": {
+                "type": "string",
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "references": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "project",
+                        "target"
+                      ],
+                      "properties": {
+                        "project": {
+                          "type": "object",
+                          "required": [
+                            "project_id",
+                            "project_root",
+                            "storage_authority"
+                          ],
+                          "properties": {
+                            "project_id": {
+                              "type": "string"
+                            },
+                            "project_root": {
+                              "type": "string"
+                            },
+                            "storage_authority": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "target": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "required": [
+                                "target_kind",
+                                "semantic_element_id",
+                                "selection"
+                              ],
+                              "properties": {
+                                "target_kind": {
+                                  "const": "semantic_element"
+                                },
+                                "semantic_element_id": {
+                                  "type": "string"
+                                },
+                                "selection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "selection_id",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "selected"
+                                        },
+                                        "selection_id": {
+                                          "type": "string"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "exact"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "target_kind",
+                                "artifact_id",
+                                "selection"
+                              ],
+                              "properties": {
+                                "target_kind": {
+                                  "const": "artifact"
+                                },
+                                "artifact_id": {
+                                  "type": "string"
+                                },
+                                "edit_version": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 1
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "selection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "selection_id",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "selected"
+                                        },
+                                        "selection_id": {
+                                          "type": "string"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "exact"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "target_kind",
+                                "document_id",
+                                "selection"
+                              ],
+                              "properties": {
+                                "target_kind": {
+                                  "const": "document"
+                                },
+                                "document_id": {
+                                  "type": "string"
+                                },
+                                "selection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "current"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "semantic_element_id",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "exact"
+                                        },
+                                        "semantic_element_id": {
+                                          "type": "string"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "target_kind": {
+                          "const": "qualified"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "properties": {
+                        "target_kind": {
+                          "const": "semantic_element"
+                        },
+                        "semantic_element_id": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "properties": {
+                        "target_kind": {
+                          "const": "artifact"
+                        },
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "edit_version": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "properties": {
+                        "target_kind": {
+                          "const": "document"
+                        },
+                        "document_id": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "metadata": {},
+              "access": {
+                "type": "object",
+                "required": [
+                  "space_id",
+                  "required_projects"
+                ],
+                "properties": {
+                  "space_id": {
+                    "type": "string"
+                  },
+                  "required_projects": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "project_id",
+                        "project_root",
+                        "storage_authority"
+                      ],
+                      "properties": {
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "project_root": {
+                          "type": "string"
+                        },
+                        "storage_authority": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "attachment_owner_id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "execution": "foreground",
+      "scope": "assistant_session"
+    },
+    {
       "id": "configure_document_hook",
       "name": "Configure memory document hook",
-      "description": "Configure or disable maintenance of a context or report in your memory space. project_root is that space's root from resolve_document_space (MCP: purpose current_project; Assistant: self), not a source project's path; source-project reports use the Hooks tab or Agents automation watches. operation_id: stable retry key. expected_hook_revision: null at first setup, else hook.revision from get_document_hook. Enabling needs expected_revision and expected_semantic_element_id from a fresh get_document, and settings: objective; propagation {\"mode\":\"static\",\"after_updates\":N}, {\"mode\":\"dynamic\",\"cause\":text} or {\"mode\":\"scheduled\"}; optional schedule {\"kind\":\"interval\",\"every_seconds\":60+}; optional linked_inputs: some of the document's own references, shaped as in get_document (omitted: all; []: none). Disable needs no source read and fences queued writes. Human edits hold automatic publication. Example: {\"operation_id\":\"h1\",\"project_root\":\"<root>\",\"document_id\":\"doc\",\"expected_hook_revision\":null,\"expected_revision\":3,\"expected_semantic_element_id\":\"<locator>\",\"enabled\":true,\"settings\":{\"objective\":\"Keep this current.\",\"propagation\":{\"mode\":\"static\",\"after_updates\":1}}}",
+      "description": "Configure or disable maintenance of a context/report in your memory space. Assistant sessions use document.get_hook/document.configure_hook. Resolve project_root with resolve_document_space (MCP: current_project; Assistant: self); source-project reports use the Hooks tab or Agents automation watches. Use stable operation_id; expected_hook_revision is null initially, otherwise hook.revision from get_document_hook. Enable with expected_revision and expected_semantic_element_id from fresh get_document, settings.objective and propagation (static after_updates, dynamic cause, or scheduled). Optional interval schedule requires every_seconds >=60. linked_inputs selects direct document references (omitted: all; []: none). Disable needs no source read and fences queued writes; human edits hold publication. Example: {\"operation_id\":\"h1\",\"project_root\":\"<memory root>\",\"document_id\":\"doc\",\"expected_hook_revision\":null,\"expected_revision\":3,\"expected_semantic_element_id\":\"<locator>\",\"enabled\":true,\"settings\":{\"objective\":\"Keep this current.\",\"propagation\":{\"mode\":\"static\",\"after_updates\":1}}}",
       "kind": "mcp_tool",
       "input_schema": {
         "type": "object",
@@ -6974,6 +7425,484 @@
         "additionalProperties": false
       },
       "execution": "foreground"
+    },
+    {
+      "id": "document.configure_hook",
+      "name": "Assistant memory document hook configuration",
+      "description": "Configure or disable maintenance of a context/report in your memory space. Assistant sessions use document.get_hook/document.configure_hook. Resolve project_root with resolve_document_space (MCP: current_project; Assistant: self); source-project reports use the Hooks tab or Agents automation watches. Use stable operation_id; expected_hook_revision is null initially, otherwise hook.revision from get_document_hook. Enable with expected_revision and expected_semantic_element_id from fresh get_document, settings.objective and propagation (static after_updates, dynamic cause, or scheduled). Optional interval schedule requires every_seconds >=60. linked_inputs selects direct document references (omitted: all; []: none). Disable needs no source read and fences queued writes; human edits hold publication. Example: {\"operation_id\":\"h1\",\"project_root\":\"<memory root>\",\"document_id\":\"doc\",\"expected_hook_revision\":null,\"expected_revision\":3,\"expected_semantic_element_id\":\"<locator>\",\"enabled\":true,\"settings\":{\"objective\":\"Keep this current.\",\"propagation\":{\"mode\":\"static\",\"after_updates\":1}}}",
+      "kind": "scoped_mcp_tool",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "project_root",
+          "document_id",
+          "expected_hook_revision",
+          "enabled"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "expected_hook_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected_semantic_element_id": {
+            "type": "string"
+          },
+          "settings": {
+            "type": "object",
+            "description": "Agents settings: objective (text), propagation (existing static/dynamic/scheduled rule), optional schedule, optional linked_inputs. Omitted inputs watches all current direct links; [] watches the destination alone. Required when enabled."
+          },
+          "mcp_owner_id": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "hook"
+        ],
+        "properties": {
+          "hook": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "document": {
+            "type": "object",
+            "required": [
+              "document_id",
+              "semantic_element_id",
+              "project_root",
+              "document_kind",
+              "title",
+              "content",
+              "references",
+              "tags",
+              "metadata",
+              "status",
+              "revision"
+            ],
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "document_kind": {
+                "type": "string",
+                "enum": [
+                  "report",
+                  "canvas",
+                  "ruleset",
+                  "mission_log",
+                  "context"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "references": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "project",
+                        "target"
+                      ],
+                      "properties": {
+                        "project": {
+                          "type": "object",
+                          "required": [
+                            "project_id",
+                            "project_root",
+                            "storage_authority"
+                          ],
+                          "properties": {
+                            "project_id": {
+                              "type": "string"
+                            },
+                            "project_root": {
+                              "type": "string"
+                            },
+                            "storage_authority": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "target": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "required": [
+                                "target_kind",
+                                "semantic_element_id",
+                                "selection"
+                              ],
+                              "properties": {
+                                "target_kind": {
+                                  "const": "semantic_element"
+                                },
+                                "semantic_element_id": {
+                                  "type": "string"
+                                },
+                                "selection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "selection_id",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "selected"
+                                        },
+                                        "selection_id": {
+                                          "type": "string"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "exact"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "target_kind",
+                                "artifact_id",
+                                "selection"
+                              ],
+                              "properties": {
+                                "target_kind": {
+                                  "const": "artifact"
+                                },
+                                "artifact_id": {
+                                  "type": "string"
+                                },
+                                "edit_version": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 1
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "selection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "selection_id",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "selected"
+                                        },
+                                        "selection_id": {
+                                          "type": "string"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "exact"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "target_kind",
+                                "document_id",
+                                "selection"
+                              ],
+                              "properties": {
+                                "target_kind": {
+                                  "const": "document"
+                                },
+                                "document_id": {
+                                  "type": "string"
+                                },
+                                "selection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "current"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "mode",
+                                        "semantic_element_id",
+                                        "source_context"
+                                      ],
+                                      "properties": {
+                                        "mode": {
+                                          "const": "exact"
+                                        },
+                                        "semantic_element_id": {
+                                          "type": "string"
+                                        },
+                                        "source_context": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "target_kind": {
+                          "const": "qualified"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "semantic_element_id"
+                      ],
+                      "properties": {
+                        "target_kind": {
+                          "const": "semantic_element"
+                        },
+                        "semantic_element_id": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "artifact_id"
+                      ],
+                      "properties": {
+                        "target_kind": {
+                          "const": "artifact"
+                        },
+                        "artifact_id": {
+                          "type": "string"
+                        },
+                        "edit_version": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "target_kind",
+                        "document_id"
+                      ],
+                      "properties": {
+                        "target_kind": {
+                          "const": "document"
+                        },
+                        "document_id": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "metadata": {},
+              "access": {
+                "type": "object",
+                "required": [
+                  "space_id",
+                  "required_projects"
+                ],
+                "properties": {
+                  "space_id": {
+                    "type": "string"
+                  },
+                  "required_projects": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "project_id",
+                        "project_root",
+                        "storage_authority"
+                      ],
+                      "properties": {
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "project_root": {
+                          "type": "string"
+                        },
+                        "storage_authority": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "semantic_element_id": {
+                "type": "string"
+              },
+              "attachment_owner_id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "status_changed_at": {
+                "type": "string"
+              },
+              "superseded_by": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "execution": "foreground",
+      "scope": "assistant_session"
     },
     {
       "id": "resolve_document_space",

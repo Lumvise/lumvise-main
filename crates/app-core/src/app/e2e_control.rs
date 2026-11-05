@@ -363,6 +363,7 @@ mod tests {
     fn route_accepts_renderer_action_and_exposes_recorded_events() {
         let app = crate::AppCore::in_memory().unwrap();
         let action = HttpRequest {
+            native_interaction: false,
             method: "POST".to_string(),
             path: E2E_ACTIONS_ENDPOINT.to_string(),
             query: Default::default(),
@@ -387,6 +388,7 @@ mod tests {
         app.record_e2e_event("scenario-7", "renderer.ready", json!({}))
             .unwrap();
         let events = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: E2E_EVENTS_ENDPOINT.to_string(),
             query: [("after".to_string(), "0".to_string())].into(),
@@ -400,6 +402,7 @@ mod tests {
     fn route_rejects_non_renderer_command_and_invalid_cursor() {
         let app = crate::AppCore::in_memory().unwrap();
         let action = HttpRequest {
+            native_interaction: false,
             method: "POST".to_string(),
             path: E2E_ACTIONS_ENDPOINT.to_string(),
             query: Default::default(),
@@ -415,6 +418,7 @@ mod tests {
             "400 Bad Request"
         );
         let events = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: E2E_EVENTS_ENDPOINT.to_string(),
             query: [("after".to_string(), "nope".to_string())].into(),
@@ -431,6 +435,7 @@ mod tests {
     fn runtime_plugin_control_is_generic_and_rejects_absent_identity() {
         let app = crate::AppCore::in_memory().unwrap();
         let missing_id = HttpRequest {
+            native_interaction: false,
             method: "POST".to_string(),
             path: E2E_ACTIONS_ENDPOINT.to_string(),
             query: Default::default(),
@@ -481,6 +486,7 @@ mod tests {
     fn readiness_requires_spawned_frontend_lifecycle() {
         let app = crate::AppCore::in_memory().unwrap();
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: E2E_READY_ENDPOINT.to_string(),
             query: Default::default(),

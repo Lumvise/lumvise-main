@@ -1,4 +1,6 @@
 //! Real source parsing and durable bases, with a controlled normalized-publication boundary.
+mod recovery;
+
 use super::*;
 use crate::index_publication::IndexSourceCheckout;
 use lumvise_project_indexer::{

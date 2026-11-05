@@ -6,7 +6,7 @@ pub(crate) fn insert_relationship_node(
     database: &GraphTransaction<'_>,
     relationship: &SemanticRelationship,
 ) -> Result<()> {
-    let node_ids = semantic_node_id_index(database, &relationship.project_root);
+    let node_ids = semantic_node_id_index(database, &relationship.project_root)?;
     insert_relationship_edge_with_index(database, relationship, &node_ids)
 }
 #[cfg(test)]
@@ -108,70 +108,83 @@ impl ChangeCollector {
 pub(crate) fn semantic_relationships_from_native_edges(
     database: &GrafeoDB,
     semantic_element_id: &str,
-) -> Vec<SemanticRelationship> {
-    let Some(source_id) = semantic_element_node_id(database, semantic_element_id) else {
-        return Vec::new();
+) -> Result<Vec<SemanticRelationship>> {
+    let Some(source_id) = semantic_element_node_id(database, semantic_element_id)? else {
+        return Ok(Vec::new());
     };
-    database
-        .store()
-        .edges_from(source_id, Direction::Outgoing)
-        .filter_map(|(_, edge_id)| database.get_edge(edge_id))
-        .filter_map(|edge| semantic_relationship_from_edge(&edge))
-        .collect()
+    let mut relationships = Vec::new();
+    // GRAFEO06-REVIEW(17): committed adjacency; 0.5 store().edges_from was live.
+    for (_, edge_id) in database
+        .get_node_edges(source_id, Direction::Outgoing, &[])
+        .db()?
+    {
+        if let Some(edge) = database.get_edge(edge_id).db()?
+            && let Some(relationship) = semantic_relationship_from_edge(&edge)
+        {
+            relationships.push(relationship);
+        }
+    }
+    Ok(relationships)
 }
 
 pub(crate) fn semantic_relationships_for_sources(
     database: &GrafeoDB,
     project_root: &str,
     semantic_element_ids: &std::collections::BTreeSet<String>,
-) -> Vec<SemanticRelationship> {
+) -> Result<Vec<SemanticRelationship>> {
     // Duplicate identities can own edges on more than one native node during repair.
-    let nodes = semantic_element_ids
-        .iter()
-        .flat_map(|id| {
-            database.find_nodes_by_property(
-                SEMANTIC_ELEMENT_ID_PROPERTY,
-                &GrafeoValue::from(id.clone()),
-            )
-        })
-        .filter(|id| {
-            database.get_node(*id).is_some_and(|node| {
+    let mut nodes = Vec::new();
+    for id in semantic_element_ids {
+        let owned = database
+            .find_nodes_by_property(SEMANTIC_ELEMENT_ID_PROPERTY, &GrafeoValue::from(id.clone()))
+            .db()?;
+        for node_id in owned {
+            if database.get_node(node_id).db()?.is_some_and(|node| {
                 node.has_label("SemanticElement")
                     && string_property(&node, PROJECT_ROOT_PROPERTY).as_deref()
                         == Some(project_root)
-            })
-        })
-        .collect::<Vec<_>>();
-    selective_adjacency(database, &nodes, project_root)
+            }) {
+                nodes.push(node_id);
+            }
+        }
+    }
+    Ok(selective_adjacency(database, &nodes, project_root)?
         .0
         .into_iter()
         .filter(|edge| semantic_element_ids.contains(&edge.source_element_id))
-        .collect()
+        .collect())
 }
 
 pub(crate) fn semantic_relationships_touching_elements(
     database: &GrafeoDB,
     semantic_element_ids: &HashSet<String>,
-) -> Vec<SemanticRelationship> {
-    let nodes = selected_relationship_nodes(database, semantic_element_ids);
-    let edges = nodes
-        .into_iter()
-        .flat_map(|node| database.graph_store().edges_from(node, Direction::Both))
-        .map(|(_, edge)| edge)
-        .collect::<HashSet<_>>();
+) -> Result<Vec<SemanticRelationship>> {
+    let nodes = selected_relationship_nodes(database, semantic_element_ids)?;
+    let mut edges = HashSet::new();
+    for node in nodes {
+        // GRAFEO06-REVIEW(18): committed adjacency; 0.5 edges_from read the live store.
+        for (_, edge) in database.get_node_edges(node, Direction::Both, &[]).db()? {
+            edges.insert(edge);
+        }
+    }
     let mut relationships = BTreeMap::new();
-    for relationship in selective_relationships(database, &edges.into_iter().collect::<Vec<_>>()) {
+    for relationship in selective_relationships(database, &edges.into_iter().collect::<Vec<_>>())? {
         insert_relationship(&mut relationships, Some(relationship));
     }
-    relationships.into_values().collect()
+    Ok(relationships.into_values().collect())
 }
 
-fn selected_relationship_nodes(database: &GrafeoDB, ids: &HashSet<String>) -> Vec<NodeId> {
-    let nodes = active_element_nodes(database, ids);
-    let identities = database
-        .graph_store()
-        .get_node_property_batch(&nodes, &SEMANTIC_ELEMENT_ID_PROPERTY.into())
-        .committed_nodes(&*database.graph_store(), &nodes);
+fn selected_relationship_nodes(database: &GrafeoDB, ids: &HashSet<String>) -> Result<Vec<NodeId>> {
+    let nodes = active_element_nodes(database, ids)?;
+    let snapshot = database.committed_snapshot()?;
+    let identities = snapshot
+        .node_property_batch(
+            &nodes,
+            &SEMANTIC_ELEMENT_ID_PROPERTY.into(),
+            snapshot.view(),
+        )
+        .db()?
+        .committed_nodes(&snapshot, &nodes)?;
     let mut selected = BTreeMap::new();
     for (node, identity) in nodes.into_iter().zip(identities) {
         let Some(id) = identity.as_ref().and_then(value_string) else {
@@ -183,23 +196,29 @@ fn selected_relationship_nodes(database: &GrafeoDB, ids: &HashSet<String>) -> Ve
             *entry = node;
         }
     }
-    selected.into_values().collect()
+    Ok(selected.into_values().collect())
 }
 
 pub(super) fn insert_native_relationships(
     database: &GrafeoDB,
     semantic_element_id: &str,
     relationships: &mut BTreeMap<(String, String, String, String), SemanticRelationship>,
-) {
-    let Some(node_id) = semantic_element_node_id(database, semantic_element_id) else {
-        return;
+) -> Result<()> {
+    let Some(node_id) = semantic_element_node_id(database, semantic_element_id)? else {
+        return Ok(());
     };
-    for (_, edge_id) in database.store().edges_from(node_id, Direction::Both) {
+    // GRAFEO06-REVIEW(19): committed adjacency; 0.5 store().edges_from was live.
+    for (_, edge_id) in database
+        .get_node_edges(node_id, Direction::Both, &[])
+        .db()?
+    {
         let relationship = database
             .get_edge(edge_id)
+            .db()?
             .and_then(|edge| semantic_relationship_from_edge(&edge));
         insert_relationship(relationships, relationship);
     }
+    Ok(())
 }
 
 pub(super) fn insert_relationship(
@@ -221,12 +240,12 @@ pub(super) fn insert_relationship(
 pub(crate) fn semantic_relationships_for_project_edges(
     database: &GrafeoDB,
     project_root: &str,
-) -> Vec<SemanticRelationship> {
+) -> Result<Vec<SemanticRelationship>> {
     let nodes = node_ids_by_label_and_property(
         database,
         "SemanticElement",
         PROJECT_ROOT_PROPERTY,
         project_root,
-    );
-    selective_adjacency(database, &nodes, project_root).0
+    )?;
+    Ok(selective_adjacency(database, &nodes, project_root)?.0)
 }

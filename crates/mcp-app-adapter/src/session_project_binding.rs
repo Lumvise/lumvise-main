@@ -95,9 +95,10 @@ impl ProjectRegistryPort for AppProjectRegistry {
 
     fn register(&self, connection_id: &str, root: &str) -> Result<(), String> {
         let request = RegisterMcpRequest {
+            connector_credential: self.config.connector_credential.clone(),
             instance_id: connection_id.into(),
             project_root: root.into(),
-            display_name: None,
+            display_name: self.config.connector_display_name.clone(),
             capabilities: vec![],
             control_channel: None,
         };
@@ -117,6 +118,7 @@ impl ProjectRegistryPort for AppProjectRegistry {
         status: McpInstanceStatus,
     ) -> Result<(), String> {
         let request = HeartbeatRequest {
+            connector_credential: self.config.connector_credential.clone(),
             instance_id: connection_id.into(),
             project_root: root.into(),
             status: status.clone(),

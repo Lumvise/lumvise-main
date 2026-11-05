@@ -41,13 +41,7 @@ fn validate_receipts(
 ) -> SemanticRevisionResult<()> {
     for operation in &incoming.accepted_operations {
         let receipt = &operation.receipt;
-        let protected = reserved(&receipt.operation_id)
-            || reserved(&receipt.selection.selection_id)
-            || reserved(&receipt.selection.source_context)
-            || receipt
-                .producer_base
-                .as_ref()
-                .is_some_and(|base| reserved(&base.selection_id));
+        let protected = protected_receipt(receipt);
         if protected && !current.accepted_operations.contains(operation) {
             return Err(archive_conflict(
                 &receipt.operation_id,
@@ -58,6 +52,16 @@ fn validate_receipts(
     Ok(())
 }
 
-fn reserved(id: &str) -> bool {
+pub(crate) fn reserved(id: &str) -> bool {
     id.starts_with("knowledge-citation:") || id.starts_with("challenge-contribution:")
+}
+
+pub(crate) fn protected_receipt(receipt: &SemanticRevisionPublicationReceipt) -> bool {
+    reserved(&receipt.operation_id)
+        || reserved(&receipt.selection.selection_id)
+        || reserved(&receipt.selection.source_context)
+        || receipt
+            .producer_base
+            .as_ref()
+            .is_some_and(|base| reserved(&base.selection_id))
 }

@@ -11,26 +11,31 @@ impl GraphState {
         path: Option<&str>,
         line: i64,
         include_inactive: bool,
-    ) -> Vec<SemanticElement> {
+    ) -> Result<Vec<SemanticElement>> {
         let Some(path) = path else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let mut index = self
             .path_index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !index.is_built() {
-            index.rebuild(graph);
+            index.rebuild(graph)?;
         }
         let ids = index.select_location(project_root, path);
         drop(index);
-        super::super::graph_rows::selective_current_elements(graph, &ids, Some(project_root), true)
-            .into_iter()
-            .filter(|element| {
-                (include_inactive || element.lifecycle == "active")
-                    && crate::domain::graph_views::element_contains_line(element, line)
-            })
-            .collect()
+        Ok(super::super::graph_rows::selective_current_elements(
+            graph,
+            &ids,
+            Some(project_root),
+            true,
+        )?
+        .into_iter()
+        .filter(|element| {
+            (include_inactive || element.lifecycle == "active")
+                && crate::domain::graph_views::element_contains_line(element, line)
+        })
+        .collect())
     }
 
     /// Commits, then folds the committed element changes into the path index before the
@@ -62,13 +67,13 @@ impl GraphState {
         project_root: &str,
         prefix: &str,
         include_inactive: bool,
-    ) -> Vec<SemanticElement> {
+    ) -> Result<Vec<SemanticElement>> {
         let mut index = self
             .path_index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !index.is_built() {
-            index.rebuild(graph);
+            index.rebuild(graph)?;
         }
         let ids = index.select(project_root, prefix);
         drop(index);
@@ -85,14 +90,14 @@ impl GraphState {
         graph: &GrafeoDB,
         root: &str,
         prefix: &str,
-    ) -> Vec<NodeId> {
+    ) -> Result<Vec<NodeId>> {
         let mut index = self
             .revision_path_index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !index.is_built() {
-            index.rebuild(graph);
+            index.rebuild(graph)?;
         }
-        index.select(root, prefix)
+        Ok(index.select(root, prefix))
     }
 }

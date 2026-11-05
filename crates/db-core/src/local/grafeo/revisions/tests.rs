@@ -318,6 +318,7 @@ fn collection_removes_physical_bodies_and_bytes_but_a_lost_ack_retry_cannot_dele
                 "semantic_element_id",
                 "source"
             )
+            .unwrap()
             .is_empty()
         );
         assert!(
@@ -327,6 +328,7 @@ fn collection_removes_physical_bodies_and_bytes_but_a_lost_ack_retry_cannot_dele
                 "artifact_id",
                 "note"
             )
+            .unwrap()
             .is_empty()
         );
     });
@@ -501,6 +503,7 @@ fn explicit_required_evidence_keeps_its_older_physical_body_after_inherited_atta
                 "semantic_element_id",
                 "source"
             )
+            .unwrap()
             .len(),
             1
         )

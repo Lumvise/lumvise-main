@@ -173,6 +173,33 @@ pub struct DesktopPluginViewAsset {
 
 /// Native seam for the canonical indexed semantic graph projection.
 pub trait DesktopSemanticGraphBridge: std::fmt::Debug + Send + Sync {
+    /// Reads one project's connector requests after fresh native maintainer verification.
+    /// Example: Settings passes its native account adapter, never a model-supplied approval flag.
+    fn connector_knowledge_grants(
+        &self,
+        project_root: &str,
+        maintainer: &dyn lumvise_contracts::ConnectorGrantMaintainer,
+    ) -> Result<Vec<lumvise_contracts::ConnectorKnowledgeGrant>, String> {
+        let _ = maintainer;
+        Err(format!(
+            "connector review for {project_root:?}; expected a configured permission bridge"
+        ))
+    }
+
+    /// Applies the exact revision reviewed in native Settings. Example: revoke a granted connector.
+    fn decide_connector_knowledge_grant(
+        &self,
+        project_root: &str,
+        connector_id: &str,
+        expected_revision: u64,
+        state: lumvise_contracts::ConnectorGrantState,
+        maintainer: &dyn lumvise_contracts::ConnectorGrantMaintainer,
+    ) -> Result<lumvise_contracts::ConnectorKnowledgeGrant, String> {
+        let _ = (connector_id, expected_revision, state, maintainer);
+        Err(format!(
+            "connector decision for {project_root:?}; expected a configured permission bridge"
+        ))
+    }
     /// Waits up to 15 seconds for a storage revision wake; an equal result is a
     /// timeout and a lower result means the caller must reset its cursor.
     /// Example: `bridge.wait_for_storage_revision(last_applied_revision)`.

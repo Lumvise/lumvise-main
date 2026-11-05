@@ -1,5 +1,6 @@
 //! Exact, selected and historical reads use indexed revision facts rather than loading every retained body.
 use super::semantic_storage::SemanticStorage;
+use crate::local::grafeo::graph_reads::GrafeoResult;
 use crate::local::sql::commits::{latest_published_commit_version, published_commit_timestamp};
 use crate::local::sql::validation::require_non_empty;
 use crate::*;
@@ -12,7 +13,7 @@ pub(super) fn exact_element_body(
     let Some((_, stored)) =
         super::revision_rows::stored_revision_by_id(graph, &SemanticRecordRef::element(id))?
     else {
-        return Ok(super::graph_rows::semantic_element_by_id(graph, id));
+        return super::graph_rows::semantic_element_by_id(graph, id);
     };
     Ok(match stored.body {
         SemanticRevisionBody::Element(element) => Some(element),
@@ -25,7 +26,7 @@ pub(super) fn exact_project_elements(
     root: &str,
     ids: &HashSet<String>,
 ) -> Result<Vec<SemanticElement>> {
-    let mut records = super::graph_rows::elements_by_ids_selective(graph, root, ids, true)
+    let mut records = super::graph_rows::elements_by_ids_selective(graph, root, ids, true)?
         .into_iter()
         .map(|element| (element.semantic_element_id.clone(), element))
         .collect::<std::collections::BTreeMap<_, _>>();
@@ -113,8 +114,9 @@ impl SemanticStorage<'_> {
             }
             let key = serde_json::to_string(&(project_root, record))?;
             let mut successors = vec![];
-            for node in
-                graph.find_nodes_by_property("revision_link_identity", &grafeo::Value::from(key))
+            for node in graph
+                .find_nodes_by_property("revision_link_identity", &grafeo::Value::from(key))
+                .db()?
             {
                 let super::revision_rows::RevisionRow::Link(link) =
                     super::revision_rows::revision_row_from_node(graph, node)?
@@ -192,8 +194,9 @@ impl SemanticStorage<'_> {
         require_non_empty(root, "non-empty revision project root")?;
         self.graph.stable_read(|graph| {
             let key = serde_json::to_string(&(root, selection, anchor))?;
-            let nodes =
-                graph.find_nodes_by_property("revision_source_anchor", &grafeo::Value::from(key));
+            let nodes = graph
+                .find_nodes_by_property("revision_source_anchor", &grafeo::Value::from(key))
+                .db()?;
             if nodes.is_empty() && !anchor.dirty {
                 return Ok(None);
             }

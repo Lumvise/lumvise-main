@@ -30,7 +30,7 @@ fn current_path_candidates_stay_constant_as_retained_history_grows() {
             .unwrap();
         store.read(|graph| {
             let mut index = ElementPathIndex::default();
-            index.rebuild(graph);
+            index.rebuild(graph).unwrap();
             assert_eq!(
                 index
                     .select("/repo", "src/")
@@ -64,7 +64,7 @@ fn revision_header_paths_keep_navigation_after_body_retirement() {
         .unwrap();
     store.read(|graph| {
         let mut index = ElementPathIndex::revision_headers();
-        index.rebuild(graph);
+        index.rebuild(graph).unwrap();
         assert_eq!(index.select("/repo", "src/").len(), 10);
     });
 }
@@ -74,7 +74,7 @@ fn warm_current_index_follows_retirement_and_reselection() {
     let store = GraphStore::new(GrafeoDB::new_in_memory());
     let node = store.write(|graph| source_node(graph, Some(true))).unwrap();
     let mut index = ElementPathIndex::default();
-    store.read(|graph| index.rebuild(graph));
+    store.read(|graph| index.rebuild(graph)).unwrap();
     for selected in [false, true, false] {
         store
             .write(|graph| graph.set_node_property(node, "revision_selected", selected.into()))

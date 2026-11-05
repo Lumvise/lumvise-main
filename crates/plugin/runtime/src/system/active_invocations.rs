@@ -24,6 +24,7 @@ struct InvocationKey {
 }
 
 struct ActiveInvocation {
+    mcp_origin: Option<crate::PluginMcpOrigin>,
     plugin_id: String,
     session_id: Option<String>,
     scope_id: Option<String>,
@@ -94,6 +95,7 @@ impl InvocationKey {
 impl ActiveInvocation {
     fn new(plugin_id: &str, context: &PluginInvocationContext) -> Self {
         Self {
+            mcp_origin: context.mcp_origin().cloned(),
             plugin_id: plugin_id.to_owned(),
             session_id: context.session_id().map(str::to_owned),
             scope_id: context.scope_id().map(str::to_owned),
@@ -103,9 +105,13 @@ impl ActiveInvocation {
 
     fn matches(&self, request: &PluginInvocationCancellationRequest) -> bool {
         request
-            .plugin_id
+            .mcp_origin
             .as_ref()
-            .is_none_or(|plugin_id| self.plugin_id == *plugin_id)
+            .is_none_or(|origin| self.mcp_origin.as_ref() == Some(origin))
+            && request
+                .plugin_id
+                .as_ref()
+                .is_none_or(|plugin_id| self.plugin_id == *plugin_id)
             && self.session_id == request.session_id
             && self.scope_id == request.scope_id
     }
@@ -116,5 +122,50 @@ impl Drop for ActiveInvocationGuard<'_> {
         if let Ok(mut records) = self.registry.records.lock() {
             records.remove(&self.key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PluginInvocationClass, PluginMcpOrigin};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn cancellation_requires_the_original_connector_connection_and_project_epoch() {
+        let registry = ActivePluginInvocations::new();
+        let context = PluginInvocationContext::new(
+            "request",
+            "owner",
+            PluginInvocationClass::Foreground,
+            Instant::now() + Duration::from_secs(60),
+        )
+        .with_route_identity("session", None)
+        .with_mcp_origin(PluginMcpOrigin {
+            connector_id: Some("connector:one".into()),
+            connection_id: "connection".into(),
+            project_epoch: Some(7),
+        });
+        let _active = registry.register("plugin", &context).unwrap();
+        let mut cancel = PluginInvocationCancellationRequest {
+            plugin_id: Some("plugin".into()),
+            request_id: "request".into(),
+            owner_id: "owner".into(),
+            session_id: Some("session".into()),
+            scope_id: None,
+            mcp_origin: context.mcp_origin().cloned(),
+        };
+        cancel.mcp_origin.as_mut().unwrap().connector_id = Some("connector:other".into());
+        assert!(!registry.cancel(&cancel).unwrap());
+        cancel.mcp_origin = context.mcp_origin().cloned();
+        cancel.mcp_origin.as_mut().unwrap().connection_id = "other-connection".into();
+        assert!(!registry.cancel(&cancel).unwrap());
+        cancel.mcp_origin = context.mcp_origin().cloned();
+        cancel.mcp_origin.as_mut().unwrap().project_epoch = Some(6);
+        assert!(!registry.cancel(&cancel).unwrap());
+        assert!(!context.cancellation().is_cancelled());
+        cancel.mcp_origin = context.mcp_origin().cloned();
+        assert!(registry.cancel(&cancel).unwrap());
+        assert!(context.cancellation().is_cancelled());
     }
 }

@@ -13,7 +13,7 @@ fn element_projection_preserves_exact_requirements_and_rejects_corrupt_dependenc
         .unwrap();
     store.read(|graph| {
         assert_eq!(
-            semantic_element_by_id_selective(graph, "document"),
+            semantic_element_by_id_selective(graph, "document").unwrap(),
             Some(expected.clone())
         );
         let node = graph
@@ -23,15 +23,18 @@ fn element_projection_preserves_exact_requirements_and_rejects_corrupt_dependenc
                     "SemanticElement",
                     "semantic_element_id",
                     "document",
-                )[0],
+                )
+                .unwrap()[0],
             )
+            .unwrap()
             .unwrap();
         assert_eq!(semantic_element_from_node(&node), Some(expected));
     });
     store
         .write(|graph| {
             let node = graph
-                .find_nodes_by_property("semantic_element_id", &GrafeoValue::from("document"))[0];
+                .find_nodes_by_property("semantic_element_id", &GrafeoValue::from("document"))
+                .unwrap()[0];
             graph.set_node_property(
                 node,
                 "revision_dependencies_json",
@@ -47,11 +50,17 @@ fn element_projection_preserves_exact_requirements_and_rejects_corrupt_dependenc
                     "SemanticElement",
                     "semantic_element_id",
                     "document",
-                )[0],
+                )
+                .unwrap()[0],
             )
+            .unwrap()
             .unwrap();
         assert!(semantic_element_from_node(&node).is_none());
-        assert!(semantic_element_by_id_selective(graph, "document").is_none());
+        assert!(
+            semantic_element_by_id_selective(graph, "document")
+                .unwrap()
+                .is_none()
+        );
     });
 }
 
@@ -67,10 +76,12 @@ fn semantic_relationships_are_stored_as_native_edges() {
         .unwrap();
 
     store.read(|database| {
-        assert_eq!(database.iter_edges().count(), 1);
+        assert_eq!(database.all_edges().unwrap().len(), 1);
         assert_eq!(
             database
-                .iter_nodes()
+                .all_nodes()
+                .unwrap()
+                .into_iter()
                 .filter(|node| node.has_label("SemanticRelationship"))
                 .count(),
             0
@@ -105,12 +116,17 @@ fn source_relationship_lookup_includes_duplicate_nodes_and_excludes_other_source
     store.read(|graph| {
         let requested = BTreeSet::from(["source".into()]);
         assert_eq!(
-            semantic_relationships_for_sources(graph, "/repo", &requested),
+            semantic_relationships_for_sources(graph, "/repo", &requested).unwrap(),
             [relationship("source", "target")]
         );
-        assert!(semantic_relationships_for_sources(graph, "/foreign", &requested).is_empty());
+        assert!(
+            semantic_relationships_for_sources(graph, "/foreign", &requested)
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             semantic_relationships_for_sources(graph, "/repo", &BTreeSet::from(["target".into()]))
+                .unwrap()
                 .is_empty()
         );
     });
@@ -127,8 +143,17 @@ fn semantic_element_replacement_keeps_one_resolvable_node() {
         .unwrap();
 
     store.read(|database| {
-        assert!(semantic_element_node_id(database, "stable").is_some());
-        assert_eq!(semantic_elements_for_project(database, "/repo").len(), 1);
+        assert!(
+            semantic_element_node_id(database, "stable")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            semantic_elements_for_project(database, "/repo")
+                .unwrap()
+                .len(),
+            1
+        );
     });
 }
 
@@ -153,7 +178,9 @@ fn touching_relationships_use_one_edge_property_batch() {
             .collect();
         reset_selective_batch_counters();
         assert_eq!(
-            semantic_relationships_touching_elements(graph, &ids).len(),
+            semantic_relationships_touching_elements(graph, &ids)
+                .unwrap()
+                .len(),
             32
         );
         assert_eq!(selective_batch_counters().1, 1);
@@ -178,7 +205,7 @@ fn semantic_element_by_id_ignores_label_conflict_on_same_property() {
         .unwrap();
 
     store.read(|database| {
-        let element = semantic_element_by_id(database, "shared").unwrap();
+        let element = semantic_element_by_id(database, "shared").unwrap().unwrap();
         assert_eq!(element.semantic_element_id, "shared");
         assert_eq!(element.path, "src/shared.rs");
     });
@@ -193,7 +220,9 @@ fn semantic_artifact_alias_mapping_is_graph_properties() {
 
     store.read(|database| {
         let artifact = database
-            .iter_nodes()
+            .all_nodes()
+            .unwrap()
+            .into_iter()
             .find(|node| node.has_label("SemanticArtifact"))
             .unwrap();
         assert_eq!(
@@ -215,11 +244,11 @@ fn semantic_artifacts_are_read_from_native_element_edges() {
         .unwrap();
 
     store.read(|database| {
-        let artifacts = semantic_artifacts_for_element(database, "file:doc.csv");
+        let artifacts = semantic_artifacts_for_element(database, "file:doc.csv").unwrap();
 
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].artifact_id, "artifact");
-        assert_eq!(database.iter_edges().count(), 1);
+        assert_eq!(database.all_edges().unwrap().len(), 1);
     });
 }
 
@@ -237,10 +266,10 @@ fn semantic_artifact_upsert_replaces_native_element_edge() {
         .unwrap();
 
     store.read(|database| {
-        let artifacts = semantic_artifacts_for_element(database, "file:doc.csv");
+        let artifacts = semantic_artifacts_for_element(database, "file:doc.csv").unwrap();
 
         assert_eq!(artifacts.len(), 1);
-        assert_eq!(database.iter_edges().count(), 1);
+        assert_eq!(database.all_edges().unwrap().len(), 1);
     });
 }
 
@@ -253,7 +282,9 @@ fn semantic_element_alias_mapping_is_graph_properties() {
 
     store.read(|database| {
         let element = database
-            .iter_nodes()
+            .all_nodes()
+            .unwrap()
+            .into_iter()
             .find(|node| node.has_label("SemanticElement"))
             .unwrap();
         assert_eq!(
@@ -283,18 +314,20 @@ fn complete_project_rows_use_fixed_selective_column_batches() {
         .unwrap();
     reset_selective_batch_counters();
     store.read(|database| {
-        let rows = complete_project_rows(database, "/repo");
+        let rows = complete_project_rows(database, "/repo").unwrap();
         assert_eq!(rows.elements.len(), 3);
         assert_eq!(rows.relationships.len(), 1);
         assert_eq!(rows.artifacts.len(), 2);
         assert_eq!(selective_batch_counters(), (2, 1));
         reset_selective_batch_counters();
-        let elements = semantic_elements_for_project_including_inactive(database, "/repo");
+        let elements = semantic_elements_for_project_including_inactive(database, "/repo").unwrap();
         assert_eq!(elements.len(), 3);
         assert_eq!(selective_batch_counters(), (1, 0));
         reset_selective_batch_counters();
         assert_eq!(
-            project_artifacts_selective(database, "/repo", None).len(),
+            project_artifacts_selective(database, "/repo", None)
+                .unwrap()
+                .len(),
             2
         );
         assert_eq!(selective_batch_counters(), (2, 0));
@@ -406,6 +439,7 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
                 &HashSet::from(["function\u{1}shared".to_string()]),
                 &HashSet::new(),
             )
+            .unwrap()
             .is_empty()
         );
     });
@@ -419,7 +453,8 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
             &HashSet::new(),
             &HashSet::from(["function\u{1}shared".to_string()]),
             &HashSet::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             kind_name.len(),
             2,
@@ -431,14 +466,16 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::from(["function\u{1}shared.rs".to_string()]),
-        );
+        )
+        .unwrap();
         assert_eq!(kind_file_name.len(), 2, "and via the kind+file-name bucket");
         let fingerprint = candidate_elements_by_identity_keys(
             database,
             &HashSet::from(["fp1:0000000000000001:same-hash".to_string()]),
             &HashSet::new(),
             &HashSet::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             fingerprint.len(),
             2,
@@ -451,6 +488,7 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
                 &HashSet::from(["function\u{1}unrelated".to_string()]),
                 &HashSet::new(),
             )
+            .unwrap()
             .is_empty(),
             "a non-matching key excludes both elements"
         );
@@ -459,8 +497,9 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
                 SEMANTIC_ELEMENT_ID_PROPERTY,
                 &GrafeoValue::from("old-source"),
             )
+            .unwrap()
             .into_iter()
-            .find_map(|node_id| database.get_node(node_id))
+            .find_map(|node_id| database.get_node(node_id).unwrap())
             .expect("backfilled source node");
         (
             i64_property(&source_node, "last_changed_revision"),
@@ -479,7 +518,9 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
     assert_eq!(
         store
             .snapshot()
-            .iter_nodes()
+            .all_nodes()
+            .unwrap()
+            .into_iter()
             .filter(|node| node.has_label(IDENTITY_BACKFILL_MARKER_LABEL))
             .count(),
         1
@@ -495,15 +536,17 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
             &HashSet::new(),
             &HashSet::from(["function\u{1}shared".to_string()]),
             &HashSet::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(kind_name.len(), 2);
         let source_node = database
             .find_nodes_by_property(
                 SEMANTIC_ELEMENT_ID_PROPERTY,
                 &GrafeoValue::from("old-source"),
             )
+            .unwrap()
             .into_iter()
-            .find_map(|node_id| database.get_node(node_id))
+            .find_map(|node_id| database.get_node(node_id).unwrap())
             .expect("backfilled source node");
         assert_eq!(
             i64_property(&source_node, "last_changed_revision"),
@@ -514,7 +557,9 @@ fn identity_backfill_makes_pre_upgrade_elements_candidate_visible_immediately_an
     assert_eq!(
         store
             .snapshot()
-            .iter_nodes()
+            .all_nodes()
+            .unwrap()
+            .into_iter()
             .filter(|node| node.has_label(IDENTITY_BACKFILL_MARKER_LABEL))
             .count(),
         1,

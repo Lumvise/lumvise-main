@@ -1,6 +1,6 @@
 //! Lossless archive reconciliation preserves accepted history and rejects divergent identities.
 use crate::revision_index::ensure_root;
-mod reserved;
+pub(crate) mod reserved;
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -58,7 +58,7 @@ fn merge_project_identity(
     Ok(archived.project_id.clone())
 }
 
-fn merge_heads(
+pub(crate) fn merge_heads(
     current: &[SemanticRevisionSelectionState],
     archived: &[SemanticRevisionSelectionState],
 ) -> SemanticRevisionResult<Vec<SemanticRevisionSelectionState>> {
@@ -110,7 +110,7 @@ fn merge_records(
     Ok(records.into_values().collect())
 }
 
-fn merge_record(
+pub(crate) fn merge_record(
     previous: &mut SemanticStoredRevision,
     incoming: &SemanticStoredRevision,
     now_ms: i64,
@@ -180,10 +180,7 @@ fn merge_history(
         let key = (row.kind(), row.identity()?);
         if let Some(previous) = rows.get(&key) {
             if serde_json::to_vec(previous)? != serde_json::to_vec(&row)? {
-                return Err(archive_conflict(
-                    &key.1,
-                    format!("identical accepted {} history", key.0),
-                ));
+                return Err(history_conflict(&row)?);
             }
         } else {
             rows.insert(key, row);
@@ -204,6 +201,15 @@ fn available_bodies(
         }
     }
     (elements, artifacts)
+}
+
+pub(crate) fn history_conflict(
+    row: &SemanticRevisionMetadata,
+) -> SemanticRevisionResult<SemanticRevisionError> {
+    Ok(archive_conflict(
+        row.identity()?,
+        format!("identical accepted {} history", row.kind()),
+    ))
 }
 
 fn archive_conflict(value: impl Into<String>, expected: impl AsRef<str>) -> SemanticRevisionError {

@@ -212,6 +212,7 @@ mod tests {
         );
         let mut all_ids = db.graph.read(|graph| {
             semantic_elements_for_project_including_inactive(graph, "/repo")
+                .unwrap()
                 .into_iter()
                 .map(|element| element.semantic_element_id)
                 .collect::<Vec<_>>()
@@ -323,8 +324,9 @@ mod tests {
         db.graph.read(|graph| {
             let node = graph
                 .find_nodes_by_property("semantic_element_id", &GrafeoValue::from(element_id))
+                .unwrap()
                 .into_iter()
-                .filter_map(|node_id| graph.get_node(node_id))
+                .filter_map(|node_id| graph.get_node(node_id).unwrap())
                 .find(|node| node.has_label("SemanticElement"))
                 .unwrap();
             (

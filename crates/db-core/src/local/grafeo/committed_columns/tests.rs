@@ -1,5 +1,6 @@
 //! Committed column reads keep positional alignment while hiding rolled-back properties.
 use super::*;
+use crate::local::grafeo::graph_reads::CommittedGraph;
 use crate::local::grafeo::graph_store::{GraphStore as LocalGraphStore, GraphTransaction};
 use crate::{DbError, Result};
 use grafeo::{GrafeoDB, Value};
@@ -35,10 +36,12 @@ fn rollback_columns() -> (LocalGraphStore, [NodeId; 2], EdgeId) {
 fn node_columns_keep_positions_and_hide_rolled_back_properties() {
     let (graph, nodes, _) = rollback_columns();
     graph.read(|database| {
-        let store = database.graph_store();
-        let rows = store
-            .get_nodes_properties_selective_batch(&nodes, &["name".into()])
-            .committed_nodes(&*store, &nodes);
+        let snapshot = database.committed_snapshot().unwrap();
+        let rows = snapshot
+            .node_properties_selective_batch(&nodes, &["name".into()], snapshot.view())
+            .unwrap()
+            .committed_nodes(&snapshot, &nodes)
+            .unwrap();
         assert_eq!(rows[0].get("name"), Some(&Value::from("visible")));
         assert!(rows[1].is_empty());
     });
@@ -48,10 +51,12 @@ fn node_columns_keep_positions_and_hide_rolled_back_properties() {
 fn node_values_keep_positions_and_hide_rolled_back_properties() {
     let (graph, nodes, _) = rollback_columns();
     graph.read(|database| {
-        let store = database.graph_store();
-        let values = store
-            .get_node_property_batch(&nodes, &"name".into())
-            .committed_nodes(&*store, &nodes);
+        let snapshot = database.committed_snapshot().unwrap();
+        let values = snapshot
+            .node_property_batch(&nodes, &"name".into(), snapshot.view())
+            .unwrap()
+            .committed_nodes(&snapshot, &nodes)
+            .unwrap();
         assert_eq!(values, vec![Some(Value::from("visible")), None]);
     });
 }
@@ -60,10 +65,12 @@ fn node_values_keep_positions_and_hide_rolled_back_properties() {
 fn edge_columns_hide_rolled_back_relationship_properties() {
     let (graph, _, edge) = rollback_columns();
     graph.read(|database| {
-        let store = database.graph_store();
-        let rows = store
-            .get_edges_properties_selective_batch(&[edge], &["name".into()])
-            .committed_edges(&*store, &[edge]);
+        let snapshot = database.committed_snapshot().unwrap();
+        let rows = snapshot
+            .edge_properties_selective_batch(&[edge], &["name".into()], snapshot.view())
+            .unwrap()
+            .committed_edges(&snapshot, &[edge])
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].is_empty());
     });

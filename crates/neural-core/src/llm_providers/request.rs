@@ -82,10 +82,20 @@ pub enum LlmResponseFormat {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmMcpServerConfig {
     pub name: String,
     pub url: String,
+}
+
+impl std::fmt::Debug for LlmMcpServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LlmMcpServerConfig")
+            .field("name", &self.name)
+            .field("url", &"[redacted transport authority]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

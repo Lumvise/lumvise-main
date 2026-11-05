@@ -4,8 +4,8 @@ use lumvise_mcp_core::app_bridge_transport::{
     AppBridgeHttpMethod, AppBridgeHttpTransport, AppBridgeRequestError,
 };
 use lumvise_mcp_core::{
-    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV2, AppBridgeCancellationResponseV2,
-    AppBridgeInvocationRequestV2, AppBridgeInvocationResponseV2, AppBridgeInvocationStatusV2,
+    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV3, AppBridgeCancellationResponseV3,
+    AppBridgeInvocationRequestV3, AppBridgeInvocationResponseV3, AppBridgeInvocationStatusV3,
     McpInvocationContext,
 };
 use prost::Message;
@@ -25,6 +25,8 @@ use startup_connection::StartupConnection;
 mod startup_tests;
 #[derive(Clone)]
 pub struct AppBridgeConfig {
+    pub(crate) connector_credential: Option<lumvise_contracts::ConnectorCredential>,
+    pub(crate) connector_display_name: Option<String>,
     discovery_path: PathBuf,
     coordinator: Arc<AppRuntimeCoordinator>,
     terminal: Arc<AtomicBool>,
@@ -95,6 +97,8 @@ impl AppBridgeConfig {
             .runtime_root()
             .to_path_buf();
         Self {
+            connector_credential: None,
+            connector_display_name: None,
             discovery_path: root.join(RUNTIME_DISCOVERY_FILE),
             coordinator: Arc::new(coordinator_for(root)),
             terminal: Arc::new(AtomicBool::new(false)),
@@ -122,6 +126,18 @@ impl AppBridgeConfig {
         self.discovery_path = root.join(RUNTIME_DISCOVERY_FILE);
         self.terminal = Arc::new(AtomicBool::new(false));
         self.coordinator = Arc::new(coordinator_for(root));
+        self
+    }
+
+    /// Associates this configured installation with its private proof, not a process ID.
+    /// Example: load a protected credential file during connector setup, then set its label.
+    pub fn with_connector_credential(
+        mut self,
+        credential: lumvise_contracts::ConnectorCredential,
+        display_name: impl Into<String>,
+    ) -> Self {
+        self.connector_credential = Some(credential);
+        self.connector_display_name = Some(display_name.into());
         self
     }
 
@@ -204,7 +220,7 @@ impl AppBridgeRuntime {
         context: &McpInvocationContext,
         tool_name: &str,
         arguments: Value,
-    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV3, String> {
         let capability = self.capability_for_tool(tool_name)?;
         self.invoke_controlled(context, &capability, invocation_input(arguments))
     }
@@ -213,7 +229,7 @@ impl AppBridgeRuntime {
         &self,
         context: &McpInvocationContext,
         arguments: Value,
-    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV3, String> {
         let (capability, input) = direct_capability(arguments)?;
         self.invoke_controlled(context, &capability, input)
     }
@@ -229,7 +245,7 @@ impl AppBridgeRuntime {
         input: Value,
         interrupt_on_cancel: bool,
         timeout: std::time::Duration,
-    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV3, String> {
         let deadline = std::time::SystemTime::now()
             .checked_add(timeout.min(context.remaining()))
             .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
@@ -266,8 +282,14 @@ impl AppBridgeRuntime {
         let Some(target) = self.active_target(context)? else {
             return Ok(false);
         };
-        let request = AppBridgeCancellationRequestV2 {
+        let request = AppBridgeCancellationRequestV3 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
+            connector_credential: self
+                .config
+                .connector_credential
+                .as_ref()
+                .map(|proof| proof.0.clone()),
+            connector_connection_id: self.project_connection_id.clone(),
             request_id: context.request_id().to_owned(),
             owner_id: target.owner_id.clone(),
             session_id: target.session_id.clone(),
@@ -277,11 +299,11 @@ impl AppBridgeRuntime {
         let cancelled = self
             .post_protobuf(
                 &target.connection,
-                "/api/mcp/plugins/cancel-v2",
+                "/api/mcp/plugins/cancel-v3",
                 request.encode_to_vec(),
             )
             .and_then(|response| {
-                let response = AppBridgeCancellationResponseV2::decode(response.as_slice())
+                let response = AppBridgeCancellationResponseV3::decode(response.as_slice())
                     .map_err(|error| {
                         format!("invalid app bridge cancellation response: {error}")
                     })?;
@@ -309,8 +331,14 @@ impl AppBridgeRuntime {
         target: &ActiveTarget,
     ) -> std::result::Result<(), String> {
         let sequence = self.next_interrupt_request.fetch_add(1, Ordering::Relaxed);
-        let request = AppBridgeInvocationRequestV2 {
+        let request = AppBridgeInvocationRequestV3 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
+            connector_credential: self
+                .config
+                .connector_credential
+                .as_ref()
+                .map(|proof| proof.0.clone()),
+            connector_connection_id: self.project_connection_id.clone(),
             request_id: format!("{}:interrupted:{sequence}", context.request_id()),
             owner_id: context.owner_id().to_owned(),
             session_id: target.session_id.clone(),
@@ -329,16 +357,16 @@ impl AppBridgeRuntime {
         };
         let response = self.post_protobuf_with_timeout(
             &target.connection,
-            "/api/mcp/plugins/invoke-v2",
+            "/api/mcp/plugins/invoke-v3",
             request.encode_to_vec(),
             context.remaining(),
         )?;
-        let response = AppBridgeInvocationResponseV2::decode(response.as_slice())
+        let response = AppBridgeInvocationResponseV3::decode(response.as_slice())
             .map_err(|error| format!("invalid app bridge interruption response: {error}"))?;
         require_protocol(response.protocol_major)?;
-        if AppBridgeInvocationStatusV2::try_from(response.status)
-            .unwrap_or(AppBridgeInvocationStatusV2::Internal)
-            != AppBridgeInvocationStatusV2::Completed
+        if AppBridgeInvocationStatusV3::try_from(response.status)
+            .unwrap_or(AppBridgeInvocationStatusV3::Internal)
+            != AppBridgeInvocationStatusV3::Completed
         {
             return Err(format!(
                 "terminal Assistant interruption failed: {}",
@@ -468,7 +496,7 @@ impl AppBridgeRuntime {
         context: &McpInvocationContext,
         capability: &PluginCapability,
         input: Value,
-    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV3, String> {
         let Some(connection) = &self.project_connection_id else {
             return self
                 .invoke_controlled_with_identity(context, context, capability, input, None, false);
@@ -491,14 +519,20 @@ impl AppBridgeRuntime {
         input: Value,
         scope_epoch: Option<u64>,
         interrupt_on_cancel: bool,
-    ) -> std::result::Result<AppBridgeInvocationResponseV2, String> {
+    ) -> std::result::Result<AppBridgeInvocationResponseV3, String> {
         let cancellation = active_context.cancellation();
         let connection = self.config.current_connection_until(
             std::time::Instant::now() + wire_context.remaining(),
             cancellation.as_atomic(),
         )?;
-        let request = AppBridgeInvocationRequestV2 {
+        let request = AppBridgeInvocationRequestV3 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
+            connector_credential: self
+                .config
+                .connector_credential
+                .as_ref()
+                .map(|proof| proof.0.clone()),
+            connector_connection_id: self.project_connection_id.clone(),
             request_id: wire_context.request_id().to_owned(),
             owner_id: wire_context.owner_id().to_owned(),
             session_id: wire_context.session_id().to_owned(),
@@ -519,13 +553,13 @@ impl AppBridgeRuntime {
         )?;
         let result = self.post_protobuf_with_timeout(
             &connection,
-            "/api/mcp/plugins/invoke-v2",
+            "/api/mcp/plugins/invoke-v3",
             request.encode_to_vec(),
             active_context.remaining(),
         );
         self.remove_target(active_context);
         let response = result?;
-        let response = AppBridgeInvocationResponseV2::decode(response.as_slice())
+        let response = AppBridgeInvocationResponseV3::decode(response.as_slice())
             .map_err(|error| format!("invalid app bridge invocation response: {error}"))?;
         require_protocol(response.protocol_major)?;
         Ok(response)

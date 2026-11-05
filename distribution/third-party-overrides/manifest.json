@@ -101,71 +101,71 @@
     },
     "source_url": "https://static.crates.io/crates/fxhash/fxhash-0.2.1.crate"
   },
-  "cargo:grafeo-adapters@0.5.42": {
+  "cargo:grafeo-adapters@0.6.1": {
     "files": [
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE"
     ],
     "sha256": {
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
     },
-    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/0aa3ff476df3774fd1af77702130c0a545589565"
   },
-  "cargo:grafeo-common@0.5.42": {
+  "cargo:grafeo-common@0.6.1": {
     "files": [
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE"
     ],
     "sha256": {
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
     },
-    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/0aa3ff476df3774fd1af77702130c0a545589565"
   },
-  "cargo:grafeo-core@0.5.42": {
+  "cargo:grafeo-core@0.6.1": {
     "files": [
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE"
     ],
     "sha256": {
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
     },
-    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/0aa3ff476df3774fd1af77702130c0a545589565"
   },
-  "cargo:grafeo-engine@0.5.42": {
+  "cargo:grafeo-engine@0.6.1": {
     "files": [
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE"
     ],
     "sha256": {
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
     },
-    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/0aa3ff476df3774fd1af77702130c0a545589565"
   },
-  "cargo:grafeo-storage@0.5.42": {
+  "cargo:grafeo-storage@0.6.1": {
     "files": [
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE"
     ],
     "sha256": {
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
     },
-    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/0aa3ff476df3774fd1af77702130c0a545589565"
   },
-  "cargo:grafeo@0.5.42": {
+  "cargo:grafeo@0.6.1": {
     "files": [
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE"
     ],
     "sha256": {
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
-      "upstream/cargo/GrafeoDB/grafeo/3bc891129ddec91b97a0613c9032b06d489695c4/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/LICENSE": "2d6bff1af360f595205e8d7c845cacc6d57a2e0e4f3ba6e7476b45bce4da1d1b",
+      "upstream/cargo/GrafeoDB/grafeo/0aa3ff476df3774fd1af77702130c0a545589565/NOTICE": "f5e5d9753b49102269872cb9a34f53fa20309f127b13be1c76c4265861e3f3a7"
     },
-    "source_url": "https://github.com/GrafeoDB/grafeo/tree/3bc891129ddec91b97a0613c9032b06d489695c4"
+    "source_url": "https://github.com/GrafeoDB/grafeo/tree/0aa3ff476df3774fd1af77702130c0a545589565"
   },
   "cargo:hashify@0.2.9": {
     "files": [

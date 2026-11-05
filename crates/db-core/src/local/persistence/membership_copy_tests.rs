@@ -191,10 +191,12 @@ fn revision_row_ids(
         .read(|graph| {
             graph
                 .find_nodes_by_property("revision_project_root", &GrafeoValue::from(ROOT))
+                .unwrap()
                 .into_iter()
                 .filter_map(|id| {
                     let node = graph
                         .get_node(id)
+                        .unwrap()
                         .filter(|node| node.has_label("SemanticRevisionRow"))?;
                     let payload = node.get_property("revision_row_json")?.as_str()?;
                     let row: SemanticRevisionMetadata =
@@ -244,6 +246,7 @@ fn revision_row_property(
         .read(|graph| {
             graph
                 .get_node(id)
+                .unwrap()
                 .expect("source revision row")
                 .get_property(property)
                 .and_then(GrafeoValue::as_str)
@@ -264,6 +267,7 @@ fn revision_row_string_properties(
         .read(|graph| {
             graph
                 .get_node(id)
+                .unwrap()
                 .expect("source revision row")
                 .properties
                 .iter()
@@ -285,10 +289,12 @@ fn revision_rows_with_key(persistence: &LocalPersistence, key: &str) -> Vec<graf
         .read(|graph| {
             graph
                 .find_nodes_by_property("revision_row_key", &GrafeoValue::from(key))
+                .unwrap()
                 .into_iter()
                 .filter(|id| {
                     graph
                         .get_node(*id)
+                        .unwrap()
                         .is_some_and(|node| node.has_label("SemanticRevisionRow"))
                 })
                 .collect()
@@ -306,7 +312,10 @@ fn clone_revision_row(
         .semantic_storage()
         .graph
         .write(|graph| {
-            let source = graph.get_node(source_id).expect("source revision row");
+            let source = graph
+                .get_node(source_id)
+                .unwrap()
+                .expect("source revision row");
             let labels = source
                 .labels
                 .iter()

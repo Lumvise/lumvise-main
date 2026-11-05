@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 mod recovery;
 pub use recovery::*;
-mod history;
+pub(crate) mod history;
 pub(crate) use history::validate_recovery_history;
 
 /// An acknowledged missing payload, distinct from deliberate retention pruning.

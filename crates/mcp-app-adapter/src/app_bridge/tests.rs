@@ -31,6 +31,8 @@ fn cloned_config_observes_terminal_owner_shutdown_without_relaunch() {
         Ok(())
     }));
     let config = AppBridgeConfig {
+        connector_credential: None,
+        connector_display_name: None,
         discovery_path: workspace.path().join(RUNTIME_DISCOVERY_FILE),
         coordinator,
         terminal: Arc::new(AtomicBool::new(false)),
@@ -104,15 +106,15 @@ fn cancellation_uses_logical_scoped_target_then_interrupts_and_cleans_up() {
     let (requests_sender, requests_receiver) = channel();
     let server = thread::spawn(move || {
         for response in [
-            AppBridgeCancellationResponseV2 {
+            AppBridgeCancellationResponseV3 {
                 protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
                 cancelled: true,
             }
             .encode_to_vec(),
-            AppBridgeInvocationResponseV2 {
+            AppBridgeInvocationResponseV3 {
                 protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
                 request_id: "interrupted".into(),
-                status: AppBridgeInvocationStatusV2::Completed as i32,
+                status: AppBridgeInvocationStatusV3::Completed as i32,
                 output_json: br#"{}"#.to_vec(),
                 message: String::new(),
                 retryable: false,
@@ -164,15 +166,15 @@ fn cancellation_uses_logical_scoped_target_then_interrupts_and_cleans_up() {
         requests_receiver.recv().unwrap(),
     ];
     server.join().expect("fake bridge exits");
-    let cancellation = AppBridgeCancellationRequestV2::decode(requests[0].1.as_slice())
+    let cancellation = AppBridgeCancellationRequestV3::decode(requests[0].1.as_slice())
         .expect("decode cancellation");
-    let interrupted = AppBridgeInvocationRequestV2::decode(requests[1].1.as_slice())
+    let interrupted = AppBridgeInvocationRequestV3::decode(requests[1].1.as_slice())
         .expect("decode terminal transition");
 
     assert!(
         requests[0]
             .0
-            .starts_with("POST /api/mcp/plugins/cancel-v2?credential=")
+            .starts_with("POST /api/mcp/plugins/cancel-v3?credential=")
     );
     assert_eq!(cancellation.request_id, "parent-request");
     assert_eq!(cancellation.owner_id, "builtin.assistant");
@@ -182,7 +184,7 @@ fn cancellation_uses_logical_scoped_target_then_interrupts_and_cleans_up() {
     assert!(
         requests[1]
             .0
-            .starts_with("POST /api/mcp/plugins/invoke-v2?credential=")
+            .starts_with("POST /api/mcp/plugins/invoke-v3?credential=")
     );
     assert!(
         interrupted

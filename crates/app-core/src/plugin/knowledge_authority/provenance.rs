@@ -23,6 +23,9 @@ impl KnowledgeAuthority {
             return Ok(());
         }
         let scope = self.current(semantic, context, control)?;
+        if writable {
+            self.require_connector_target(semantic, context, root, &scope, control)?;
+        }
         if !scope
             .project_grants
             .iter()

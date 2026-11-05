@@ -9,6 +9,7 @@ mod element_lookup;
 mod element_vectors;
 #[cfg(test)]
 mod fault_injection;
+mod graph_reads;
 mod graph_row_projection;
 pub(crate) mod graph_rows;
 pub(crate) mod graph_store;

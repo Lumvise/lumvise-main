@@ -21,10 +21,12 @@ fn revision_row_ids(persistence: &LocalPersistence, key: &str) -> Vec<grafeo::No
         .read(|graph| {
             graph
                 .find_nodes_by_property("revision_row_key", &grafeo::Value::from(key))
+                .unwrap()
                 .into_iter()
                 .filter(|id| {
                     graph
                         .get_node(*id)
+                        .unwrap()
                         .is_some_and(|node| node.has_label("SemanticRevisionRow"))
                 })
                 .collect()
@@ -38,7 +40,7 @@ fn revision_row_payload_by_id(persistence: &LocalPersistence, id: grafeo::NodeId
         .semantic_storage()
         .graph
         .read(|graph| {
-            let node = graph.get_node(id).expect("revision metadata row");
+            let node = graph.get_node(id).unwrap().expect("revision metadata row");
             let Some(grafeo::Value::String(payload)) = node.get_property("revision_row_json")
             else {
                 panic!("expected revision metadata payload")
@@ -57,7 +59,7 @@ fn revision_row_snapshot_from_graph(
     graph: &grafeo::GrafeoDB,
     id: grafeo::NodeId,
 ) -> (Vec<String>, Vec<(String, grafeo::Value)>) {
-    let source = graph.get_node(id).expect("source revision row");
+    let source = graph.get_node(id).unwrap().expect("source revision row");
     let labels = source
         .labels
         .iter()
@@ -217,10 +219,12 @@ fn element_body_ids(persistence: &LocalPersistence, record_id: &str) -> Vec<graf
         .read(|graph| {
             graph
                 .find_nodes_by_property("semantic_element_id", &grafeo::Value::from(record_id))
+                .unwrap()
                 .into_iter()
                 .filter(|id| {
                     graph
                         .get_node(*id)
+                        .unwrap()
                         .is_some_and(|node| node.has_label("SemanticElement"))
                 })
                 .collect()
@@ -236,7 +240,7 @@ fn delete_element_body(persistence: &LocalPersistence, record_id: &str) {
         .semantic_storage()
         .graph
         .write(|graph| {
-            assert!(graph.delete_node(bodies[0]));
+            assert!(graph.delete_node(bodies[0]).unwrap());
             Ok(())
         })
         .unwrap();

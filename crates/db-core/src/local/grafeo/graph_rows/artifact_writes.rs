@@ -5,19 +5,21 @@ pub(crate) fn prepare_artifact_upsert(
     artifact: &SemanticArtifact,
     vector: Option<(&str, &ArtifactTextVector)>,
 ) -> Result<ArtifactUpsertPlan> {
-    let owner_node_ids = node_ids_by_label_and_property(
+    let mut owner_node_ids = Vec::new();
+    for node_id in node_ids_by_label_and_property(
         database,
         "SemanticElement",
         SEMANTIC_ELEMENT_ID_PROPERTY,
         &artifact.semantic_element_id,
-    )
-    .into_iter()
-    .filter(|node_id| {
-        database
-            .get_node(*node_id)
+    )? {
+        if database
+            .get_node(node_id)
+            .db()?
             .is_some_and(|node| element_node_is_active(&node))
-    })
-    .collect::<Vec<_>>();
+        {
+            owner_node_ids.push(node_id);
+        }
+    }
     let [owner_node_id] = owner_node_ids.as_slice() else {
         return Err(DbError::invalid_value(
             &artifact.semantic_element_id,
@@ -26,6 +28,7 @@ pub(crate) fn prepare_artifact_upsert(
     };
     let owner_element = database
         .get_node(*owner_node_id)
+        .db()?
         .and_then(|node| semantic_element_from_node(&node))
         .ok_or_else(|| {
             DbError::invalid_value(
@@ -39,7 +42,7 @@ pub(crate) fn prepare_artifact_upsert(
         .dependencies
         .iter()
         .map(|dependency| {
-            dependency_target_node(database, dependency)
+            dependency_target_node(database, dependency)?
                 .map(|(_, node_id)| (dependency.clone(), node_id))
                 .ok_or_else(|| {
                     DbError::invalid_value(
@@ -54,39 +57,60 @@ pub(crate) fn prepare_artifact_upsert(
         "SemanticArtifact",
         ARTIFACT_ID_PROPERTY,
         &artifact.artifact_id,
-    );
+    )?;
     // Artifact updates must scale with their own links, not the whole project's graph.
-    let dependency_edge_ids = artifact_node_ids
-        .iter()
-        .flat_map(|node_id| database.store().edges_from(*node_id, Direction::Outgoing))
-        .filter_map(|(_, edge_id)| database.get_edge(edge_id))
-        .filter(|edge| edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE)
-        .map(|edge| edge.id)
-        .collect::<Vec<_>>();
-    let inbound_dependency_rebinds = artifact_node_ids
-        .iter()
-        .flat_map(|node_id| database.store().edges_from(*node_id, Direction::Incoming))
-        .filter_map(|(_, edge_id)| database.get_edge(edge_id))
-        .filter(|edge| edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE)
-        .filter_map(|edge| {
-            Some(ArtifactDependencyRebind {
-                source_node_id: edge.src,
-                target_kind: edge_string_property(&edge, ARTIFACT_DEPENDENCY_TARGET_KIND_PROPERTY)?,
-                target_id: edge_string_property(&edge, ARTIFACT_DEPENDENCY_TARGET_ID_PROPERTY)?,
-            })
-        })
-        .collect::<Vec<_>>();
-    let artifact_edge_ids = artifact_node_ids
-        .iter()
-        .flat_map(|node_id| database.store().edges_from(*node_id, Direction::Incoming))
-        .filter_map(|(_, edge_id)| database.get_edge(edge_id))
-        .filter(|edge| edge.edge_type == SEMANTIC_ARTIFACT_EDGE_TYPE)
-        .filter(|edge| {
-            edge_string_property(edge, ARTIFACT_ID_PROPERTY).as_deref()
-                == Some(&artifact.artifact_id)
-        })
-        .map(|edge| edge.id)
-        .collect();
+    // GRAFEO06-REVIEW(10): planning reads of committed adjacency; 0.5 store().edges_from was live.
+    let mut dependency_edge_ids = Vec::new();
+    let mut inbound_dependency_rebinds = Vec::new();
+    let mut artifact_edge_ids = Vec::new();
+    for node_id in &artifact_node_ids {
+        for (_, edge_id) in database
+            .get_node_edges(*node_id, Direction::Outgoing, &[])
+            .db()?
+        {
+            if let Some(edge) = database.get_edge(edge_id).db()?
+                && edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE
+            {
+                dependency_edge_ids.push(edge.id);
+            }
+        }
+    }
+    for node_id in &artifact_node_ids {
+        for (_, edge_id) in database
+            .get_node_edges(*node_id, Direction::Incoming, &[])
+            .db()?
+        {
+            let Some(edge) = database.get_edge(edge_id).db()? else {
+                continue;
+            };
+            if edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE
+                && let Some(target_kind) =
+                    edge_string_property(&edge, ARTIFACT_DEPENDENCY_TARGET_KIND_PROPERTY)
+                && let Some(target_id) =
+                    edge_string_property(&edge, ARTIFACT_DEPENDENCY_TARGET_ID_PROPERTY)
+            {
+                inbound_dependency_rebinds.push(ArtifactDependencyRebind {
+                    source_node_id: edge.src,
+                    target_kind,
+                    target_id,
+                });
+            }
+        }
+    }
+    for node_id in &artifact_node_ids {
+        for (_, edge_id) in database
+            .get_node_edges(*node_id, Direction::Incoming, &[])
+            .db()?
+        {
+            if let Some(edge) = database.get_edge(edge_id).db()?
+                && edge.edge_type == SEMANTIC_ARTIFACT_EDGE_TYPE
+                && edge_string_property(&edge, ARTIFACT_ID_PROPERTY).as_deref()
+                    == Some(&artifact.artifact_id)
+            {
+                artifact_edge_ids.push(edge.id);
+            }
+        }
+    }
     Ok(ArtifactUpsertPlan {
         artifact_node_ids,
         artifact_edge_ids,
@@ -98,7 +122,7 @@ pub(crate) fn prepare_artifact_upsert(
             "SemanticArtifactVector",
             ARTIFACT_ID_PROPERTY,
             &artifact.artifact_id,
-        ),
+        )?,
         owner_node_id: *owner_node_id,
         owner_element,
         artifact_properties: artifact_properties(artifact)?,
@@ -123,16 +147,16 @@ pub(crate) fn apply_artifact_upsert(
         )
         .expect("planned semantic artifact owner remains available");
     for edge_id in plan.artifact_edge_ids {
-        database.delete_edge(edge_id);
+        database.delete_edge(edge_id)?;
     }
     for edge_id in plan.dependency_edge_ids {
-        database.delete_edge(edge_id);
+        database.delete_edge(edge_id)?;
     }
     for node_id in plan.artifact_node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
     for node_id in plan.vector_node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
     let artifact_node_id =
         database.create_node_with_props(&["SemanticArtifact"], plan.artifact_properties)?;
@@ -173,13 +197,13 @@ pub(crate) fn upsert_artifact_node(
     database: &GraphTransaction<'_>,
     artifact: &SemanticArtifact,
 ) -> Result<()> {
-    delete_artifact_edges_by_id(database, &artifact.artifact_id);
+    delete_artifact_edges_by_id(database, &artifact.artifact_id)?;
     delete_nodes_by_property(
         database,
         "SemanticArtifact",
         "artifact_id",
         &artifact.artifact_id,
-    );
+    )?;
     insert_artifact_node(database, artifact).map(|_| ())
 }
 
@@ -264,7 +288,7 @@ pub(crate) fn upsert_artifact_vector_node(
         "SemanticArtifactVector",
         "artifact_id",
         &artifact.artifact_id,
-    );
+    )?;
     database.create_node_with_props(
         &["SemanticArtifactVector"],
         artifact_vector_props(artifact, source_text, vector)?,
@@ -284,7 +308,7 @@ pub(crate) fn upsert_element_name_vector_node(
         "SemanticElementNameVector",
         SEMANTIC_ELEMENT_ID_PROPERTY,
         &element.semantic_element_id,
-    );
+    )?;
     database.create_node_with_props(
         &["SemanticElementNameVector"],
         element_name_vector_props(element, source_text, vector)?,
@@ -298,7 +322,7 @@ pub(super) fn link_artifact_to_semantic_element(
     artifact_node_id: NodeId,
 ) -> Result<()> {
     let Some(element_node_id) =
-        transaction_semantic_element_node_id(database, &artifact.semantic_element_id)
+        transaction_semantic_element_node_id(database, &artifact.semantic_element_id)?
     else {
         return Ok(());
     };
@@ -323,40 +347,49 @@ pub(crate) fn artifact_dependents(
     database: &GrafeoDB,
     target_kind: &str,
     target_id: &str,
-) -> Vec<SemanticArtifact> {
+) -> Result<Vec<SemanticArtifact>> {
     let (label, property) = match target_kind {
         "semantic_element" => ("SemanticElement", SEMANTIC_ELEMENT_ID_PROPERTY),
         "artifact" => ("SemanticArtifact", ARTIFACT_ID_PROPERTY),
-        _ => return Vec::new(),
+        _ => return Ok(Vec::new()),
     };
-    let targets = node_ids_by_label_and_property(database, label, property, target_id);
-    let mut artifacts = targets
-        .iter()
-        .flat_map(|node_id| database.store().edges_from(*node_id, Direction::Incoming))
-        .filter_map(|(_, edge_id)| database.get_edge(edge_id))
-        .filter(|edge| edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE)
-        .filter(|edge| {
-            edge_string_property(edge, ARTIFACT_DEPENDENCY_TARGET_KIND_PROPERTY).as_deref()
-                == Some(target_kind)
-                && edge_string_property(edge, ARTIFACT_DEPENDENCY_TARGET_ID_PROPERTY).as_deref()
+    let targets = node_ids_by_label_and_property(database, label, property, target_id)?;
+    let mut artifacts = Vec::new();
+    for node_id in &targets {
+        // GRAFEO06-REVIEW(11): committed incoming adjacency; 0.5 store().edges_from was live.
+        for (_, edge_id) in database
+            .get_node_edges(*node_id, Direction::Incoming, &[])
+            .db()?
+        {
+            let Some(edge) = database.get_edge(edge_id).db()? else {
+                continue;
+            };
+            if edge.edge_type == ARTIFACT_DEPENDENCY_EDGE_TYPE
+                && edge_string_property(&edge, ARTIFACT_DEPENDENCY_TARGET_KIND_PROPERTY).as_deref()
+                    == Some(target_kind)
+                && edge_string_property(&edge, ARTIFACT_DEPENDENCY_TARGET_ID_PROPERTY).as_deref()
                     == Some(target_id)
-        })
-        .filter_map(|edge| database.get_node(edge.src))
-        .filter(|node| node.has_label("SemanticArtifact"))
-        .filter_map(|node| semantic_artifact_from_node(&node))
-        .collect::<Vec<_>>();
+                && let Some(node) = database.get_node(edge.src).db()?
+                && node.has_label("SemanticArtifact")
+                && let Some(artifact) = semantic_artifact_from_node(&node)
+            {
+                artifacts.push(artifact);
+            }
+        }
+    }
     artifacts.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
     artifacts.dedup_by(|left, right| left.artifact_id == right.artifact_id);
-    artifacts
+    Ok(artifacts)
 }
 
 #[cfg(test)]
 pub(crate) fn delete_artifact_edges_by_id(
     database: &GraphTransaction<'_>,
     artifact_id: &str,
-) -> usize {
+) -> Result<usize> {
     let edge_ids = database
         .iter_edges()
+        .into_iter()
         .filter(|edge| edge.edge_type == SEMANTIC_ARTIFACT_EDGE_TYPE)
         .filter(|edge| {
             edge_string_property(edge, ARTIFACT_ID_PROPERTY).as_deref() == Some(artifact_id)
@@ -365,9 +398,9 @@ pub(crate) fn delete_artifact_edges_by_id(
         .collect::<Vec<_>>();
     let count = edge_ids.len();
     for edge_id in edge_ids {
-        database.delete_edge(edge_id);
+        database.delete_edge(edge_id)?;
     }
-    count
+    Ok(count)
 }
 
 /// Physical owner projection shared by current artifact writes and immutable revision publication.

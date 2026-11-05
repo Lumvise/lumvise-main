@@ -56,6 +56,7 @@ impl SemanticStorage<'_> {
                 }
                 begin_semantic_commit(transaction)
             },
+            |_, _| Ok(()),
             |graph, commit, _collector, mut prepared| {
                 if let Some(rows) = prepared.rows {
                     rows.apply(graph, commit)?;

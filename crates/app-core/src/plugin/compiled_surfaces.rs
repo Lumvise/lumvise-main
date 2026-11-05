@@ -159,6 +159,7 @@ impl CompiledSurfaceCatalog {
 pub(crate) fn invoke_http_route(
     system: &PluginSystem,
     resolution: HttpRouteResolution,
+    native_interaction: bool,
 ) -> HttpResponse {
     let HttpRouteResolution::Matched {
         plugin_id,
@@ -176,6 +177,8 @@ pub(crate) fn invoke_http_route(
             return error_response("500 Internal Server Error", "missing signed SSE policy");
         };
         return HttpResponse::compiled_sse(CompiledSseRoute {
+            mcp_origin: (!native_interaction)
+                .then(|| lumvise_plugin_runtime::PluginMcpOrigin::unidentified("compiled-http")),
             plugin_id,
             export_id,
             input,
@@ -188,6 +191,8 @@ pub(crate) fn invoke_http_route(
         input,
         "compiled-http",
         std::time::Instant::now() + std::time::Duration::from_secs(60),
+        (!native_interaction)
+            .then(|| lumvise_plugin_runtime::PluginMcpOrigin::unidentified("compiled-http")),
     );
     match system.invoke_controlled(request) {
         Ok(WireOutcome::Succeeded { value }) => success_response(value, stream_mode, head_request),

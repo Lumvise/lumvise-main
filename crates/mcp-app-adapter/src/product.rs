@@ -77,6 +77,7 @@ fn print_help(edition: ProductEdition) {
          mcp --project-root <path>     Connect an MCP client to a project\n  \
          --help, -h                    Show this help\n\n\
          MCP options: --runtime-root <path>, --instance-id <id>, --native-llm-engine <name>\n\
+         Connector access: --connector-credential-file <private-path>, --connector-name <label>\n\
          Learn more: https://github.com/Lumvise/lumvise-main",
         env!("CARGO_PKG_VERSION")
     );
@@ -94,6 +95,8 @@ enum ProductInvocation {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct McpOptions {
+    connector_credential_file: Option<String>,
+    connector_name: Option<String>,
     runtime_root: Option<String>,
     project_root: Option<String>,
     instance_id: Option<String>,
@@ -131,6 +134,8 @@ impl ProductInvocation {
 impl McpOptions {
     fn parse(args: &[String]) -> Self {
         Self {
+            connector_credential_file: value_after(args, "--connector-credential-file"),
+            connector_name: value_after(args, "--connector-name"),
             runtime_root: value_after(args, "--runtime-root"),
             project_root: value_after(args, "--project-root"),
             instance_id: value_after(args, "--instance-id"),
@@ -176,8 +181,21 @@ impl McpOptions {
 }
 
 fn run_mcp(options: McpOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let app_bridge = options.app_bridge();
+    let mut app_bridge = options.app_bridge();
     let identity = options.identity();
+    if let Some(path) = options.connector_credential_file.as_deref() {
+        let credential = crate::connector_credential_file::load_or_create(
+            std::path::Path::new(path),
+            lumvise_app_core::generate_connector_credential,
+        )?;
+        app_bridge = app_bridge.with_connector_credential(
+            credential,
+            options
+                .connector_name
+                .as_deref()
+                .unwrap_or(&identity.engine),
+        );
+    }
     let _project_provider = options.project_provider(&app_bridge, &identity)?;
     let mut config = McpAppConfig::from_app_bridge(app_bridge)
         .with_native_assistant_caller(identity.engine, identity.instance_id);
@@ -294,6 +312,8 @@ mod tests {
         assert_eq!(
             invocation,
             ProductInvocation::Mcp(McpOptions {
+                connector_credential_file: None,
+                connector_name: None,
                 runtime_root: Some("/runtime".into()),
                 project_root: Some("/project".into()),
                 instance_id: Some("client-1".into()),

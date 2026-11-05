@@ -105,7 +105,7 @@ impl<'db> SemanticStorage<'db> {
     ) -> Result<PreparedRevisionPublication> {
         let projection = RevisionProjection::prepare(graph, &loaded.state, &plan, loaded.adopted)?;
         let rows = loaded.prepare_publication(&plan)?;
-        let released_contents = contents::released_revision_contents(graph, &loaded.state, &plan);
+        let released_contents = contents::released_revision_contents(graph, &loaded.state, &plan)?;
         Ok(PreparedRevisionPublication {
             plan,
             rows,
@@ -126,14 +126,13 @@ impl<'db> SemanticStorage<'db> {
         self.commit_prepared_graph_write_with_sql_start(
             initial,
             prepare,
+            |connection, _| begin_semantic_commit(connection),
             |transaction, prepared| {
-                let version = begin_semantic_commit(transaction)?;
                 contents::stage_revision_contents(
                     transaction,
                     &prepared.contents,
                     &prepared.plan.records,
-                )?;
-                Ok(version)
+                )
             },
             |graph, commit_version, collector, mut prepared| {
                 retarget_publication(&mut prepared.plan, commit_version);
@@ -181,7 +180,7 @@ impl<'db> SemanticStorage<'db> {
                 };
                 prepared.receipt.commit_version = commit_version;
                 for node in prepared.deleted_nodes {
-                    graph.delete_node(node);
+                    graph.delete_node(node)?;
                 }
                 rows.apply(graph, commit_version)?;
                 Ok((prepared.receipt, Some(prepared.released_contents)))

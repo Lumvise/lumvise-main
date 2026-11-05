@@ -380,7 +380,7 @@ fn require_archive_unique<K: Ord + std::fmt::Debug>(
     Ok(())
 }
 
-fn validate_archive_record(
+pub(crate) fn validate_archive_record(
     root: &str,
     stored: &SemanticStoredRevision,
 ) -> SemanticRevisionResult<()> {
@@ -454,13 +454,17 @@ fn validate_restored_requirements(state: &SemanticRevisionState) -> SemanticRevi
                 .iter()
                 .map(|row| row.receipt.commit_version),
         );
-    if state.commit_version < 0
-        || versions
-            .into_iter()
-            .any(|version| version < 0 || version > state.commit_version)
-    {
+    validate_archive_commit(state.commit_version, state.commit_version)?;
+    for version in versions {
+        validate_archive_commit(state.commit_version, version)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_archive_commit(commit: i64, version: i64) -> SemanticRevisionResult<()> {
+    if commit < 0 || version < 0 || version > commit {
         return Err(SemanticRevisionError::invalid_value(
-            state.commit_version.to_string(),
+            commit.to_string(),
             "a nonnegative archive commit no earlier than its accepted history",
         ));
     }
@@ -613,7 +617,7 @@ fn rebind_receipt(receipt: &mut SemanticRevisionPublicationReceipt, root: &str) 
     }
 }
 
-fn set_owned_root(row: &mut SemanticRevisionMetadata, root: &str) {
+pub(crate) fn set_owned_root(row: &mut SemanticRevisionMetadata, root: &str) {
     match row {
         SemanticRevisionMetadata::Connection(value) => {
             value.relationship.project_root = root.into()

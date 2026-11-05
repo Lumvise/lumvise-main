@@ -3,16 +3,19 @@ use crate::DbError;
 #[cfg(test)]
 use crate::domain::graph_views::media_kind;
 use crate::domain::graph_views::{MediaAssociationSource, artifact_inheritance_from_source};
+#[cfg(test)]
+use crate::local::grafeo::graph_reads::GrafeoResult;
 use crate::local::grafeo::graph_rows::{
     nodes_by_label_and_property, semantic_artifacts_for_element, semantic_element_by_id,
     semantic_element_from_node,
 };
-use crate::{Result, SemanticArtifact, SemanticElement};
+use crate::{DbError as MediaReadError, Result, SemanticArtifact, SemanticElement};
 use grafeo::GrafeoDB;
 #[cfg(test)]
 use grafeo::Value as GrafeoValue;
 #[cfg(test)]
 use serde_json::{Value, json};
+use std::cell::RefCell;
 
 #[cfg(test)]
 const PATH_PROPERTY: &str = "path";
@@ -24,11 +27,14 @@ pub(crate) fn active_media_element(
     project_root: &str,
     target_path: &str,
 ) -> Result<SemanticElement> {
-    let candidates = graph
+    let mut candidates = Vec::new();
+    for node_id in graph
         .find_nodes_by_property(PATH_PROPERTY, &GrafeoValue::from(target_path))
-        .into_iter()
-        .filter_map(|node_id| graph.get_node(node_id));
-    active_media_element_from_nodes(candidates, project_root, target_path)
+        .db()?
+    {
+        candidates.extend(graph.get_node(node_id).db()?);
+    }
+    active_media_element_from_nodes(candidates.into_iter(), project_root, target_path)
 }
 
 #[cfg(test)]
@@ -66,25 +72,53 @@ pub(crate) fn annotation_for_media_element(
     artifact
 }
 
-struct GrafeoMediaSource<'graph>(&'graph GrafeoDB);
+/// The domain source contract is infallible; the first failed read is kept
+/// and returned once the traversal ends.
+struct GrafeoMediaSource<'graph> {
+    graph: &'graph GrafeoDB,
+    failure: RefCell<Option<MediaReadError>>,
+}
 pub(crate) fn artifacts_for_element_with_inheritance(
     graph: &GrafeoDB,
     id: &str,
 ) -> Result<Vec<SemanticArtifact>> {
-    artifact_inheritance_from_source(&GrafeoMediaSource(graph), id)
+    let source = GrafeoMediaSource {
+        graph,
+        failure: RefCell::new(None),
+    };
+    let artifacts = artifact_inheritance_from_source(&source, id);
+    match source.failure.take() {
+        Some(error) => Err(error),
+        None => artifacts,
+    }
+}
+impl GrafeoMediaSource<'_> {
+    fn attempt<T: Default>(&self, read: impl FnOnce() -> Result<T>) -> T {
+        read().unwrap_or_else(|error| {
+            self.failure.borrow_mut().get_or_insert(error);
+            T::default()
+        })
+    }
 }
 impl MediaAssociationSource for GrafeoMediaSource<'_> {
     fn element(&self, id: &str) -> Option<SemanticElement> {
-        semantic_element_by_id(self.0, id)
+        self.attempt(|| semantic_element_by_id(self.graph, id))
     }
     fn candidates(&self, root: &str) -> Vec<SemanticElement> {
-        nodes_by_label_and_property(self.0, "SemanticElement", PROJECT_ROOT_PROPERTY, root)
+        self.attempt(|| {
+            Ok(nodes_by_label_and_property(
+                self.graph,
+                "SemanticElement",
+                PROJECT_ROOT_PROPERTY,
+                root,
+            )?
             .iter()
             .filter_map(semantic_element_from_node)
-            .collect()
+            .collect())
+        })
     }
     fn artifacts(&self, id: &str) -> Vec<SemanticArtifact> {
-        semantic_artifacts_for_element(self.0, id)
+        self.attempt(|| semantic_artifacts_for_element(self.graph, id))
     }
 }
 #[cfg(test)]

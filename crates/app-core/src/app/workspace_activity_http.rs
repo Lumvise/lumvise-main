@@ -61,6 +61,7 @@ mod tests {
     fn activity_route_checks_credentials_then_validates_cursor() {
         let app = AppCore::in_memory().unwrap();
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".into(),
             path: ACTIVITY_ENDPOINT.into(),
             query: BTreeMap::new(),

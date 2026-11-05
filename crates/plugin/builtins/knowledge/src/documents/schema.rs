@@ -4,7 +4,12 @@ use serde_json::{Value, json};
 
 pub(crate) const EXPORTS: &[(&str, &str)] = &[
     ("get_document_hook", "Read memory document hook"),
+    ("document.get_hook", "Assistant memory document hook read"),
     ("configure_document_hook", "Configure memory document hook"),
+    (
+        "document.configure_hook",
+        "Assistant memory document hook configuration",
+    ),
     ("resolve_document_space", "Resolve caller document space"),
     ("document.space", "Assistant persistent document space"),
     (
@@ -28,11 +33,11 @@ pub(crate) const EXPORTS: &[(&str, &str)] = &[
 
 pub(crate) fn description(id: &str) -> Option<&'static str> {
     match id {
-        "get_document_hook" => Some(
-            r#"Read the maintenance hook of a context or report in your memory space. project_root is that space's root from resolve_document_space (MCP: purpose current_project; Assistant: self), not a source project's path; source-project reports use the Hooks tab or Agents automation watches (configure_automation_watch). Returns hook (null when none) with revision (pass it as expected_hook_revision to configure_document_hook), enabled, status (pending, ready, disabled, blocked), settings and watch, plus the document, whose revision and semantic_element_id enabling needs. Ownership comes from the host."#,
+        "get_document_hook" | "document.get_hook" => Some(
+            r#"Read the maintenance hook of a context or report in your memory space. Assistant sessions use document.get_hook and document.configure_hook. project_root is that space's root from resolve_document_space (MCP: purpose current_project; Assistant: self), not a source project's path; source-project reports use the Hooks tab or Agents automation watches (configure_automation_watch). Returns hook (null when none) with revision (pass it as expected_hook_revision to configure_document_hook), enabled, status (pending, ready, disabled, blocked), settings and watch, plus the document, whose revision and semantic_element_id enabling needs. Ownership comes from the host."#,
         ),
-        "configure_document_hook" => Some(
-            r#"Configure or disable maintenance of a context or report in your memory space. project_root is that space's root from resolve_document_space (MCP: purpose current_project; Assistant: self), not a source project's path; source-project reports use the Hooks tab or Agents automation watches. operation_id: stable retry key. expected_hook_revision: null at first setup, else hook.revision from get_document_hook. Enabling needs expected_revision and expected_semantic_element_id from a fresh get_document, and settings: objective; propagation {"mode":"static","after_updates":N}, {"mode":"dynamic","cause":text} or {"mode":"scheduled"}; optional schedule {"kind":"interval","every_seconds":60+}; optional linked_inputs: some of the document's own references, shaped as in get_document (omitted: all; []: none). Disable needs no source read and fences queued writes. Human edits hold automatic publication. Example: {"operation_id":"h1","project_root":"<root>","document_id":"doc","expected_hook_revision":null,"expected_revision":3,"expected_semantic_element_id":"<locator>","enabled":true,"settings":{"objective":"Keep this current.","propagation":{"mode":"static","after_updates":1}}}"#,
+        "configure_document_hook" | "document.configure_hook" => Some(
+            r#"Configure or disable maintenance of a context/report in your memory space. Assistant sessions use document.get_hook/document.configure_hook. Resolve project_root with resolve_document_space (MCP: current_project; Assistant: self); source-project reports use the Hooks tab or Agents automation watches. Use stable operation_id; expected_hook_revision is null initially, otherwise hook.revision from get_document_hook. Enable with expected_revision and expected_semantic_element_id from fresh get_document, settings.objective and propagation (static after_updates, dynamic cause, or scheduled). Optional interval schedule requires every_seconds >=60. linked_inputs selects direct document references (omitted: all; []: none). Disable needs no source read and fences queued writes; human edits hold publication. Example: {"operation_id":"h1","project_root":"<memory root>","document_id":"doc","expected_hook_revision":null,"expected_revision":3,"expected_semantic_element_id":"<locator>","enabled":true,"settings":{"objective":"Keep this current.","propagation":{"mode":"static","after_updates":1}}}"#,
         ),
         "resolve_document_reference" | "document.reference" => Some(
             "Read a source element, Knowledge artifact or document through its authorized project. Selected mode follows that named selection; exact mode never substitutes newer content. The returned reference includes canonical authority and lineage plus the exact observed identity/edit version. Copy it into a qualified document reference to retain evidence on save. A read alone does not pin evidence. Missing and pruned remain explicit; never refresh a saved edit token silently.",
@@ -104,13 +109,7 @@ pub(super) fn space_schema() -> Value {
 }
 
 fn reference() -> Value {
-    json!({"oneOf": [
-        super::citations::qualified_schema(),
-        object(&["target_kind", "semantic_element_id"], json!({"target_kind": {"const": "semantic_element"}, "semantic_element_id": {"type": "string"}})),
-        object(&["target_kind", "artifact_id"], json!({"target_kind": {"const": "artifact"}, "artifact_id": {"type": "string"},
-            "edit_version":{"anyOf":[{"type":"integer","minimum":1},{"type":"null"}]}})),
-        object(&["target_kind", "document_id"], json!({"target_kind": {"const": "document"}, "document_id": {"type": "string"}}))
-    ]})
+    lumvise_contracts::KnowledgeDocumentReference::input_schema()
 }
 
 fn fields() -> Value {

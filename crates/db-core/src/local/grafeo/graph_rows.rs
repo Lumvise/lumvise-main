@@ -1,6 +1,7 @@
 use crate::ChangeDisposition;
 use crate::local::grafeo::change_hooks::DirtyElement;
 use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
 #[cfg(test)]
 use crate::local::grafeo::graph_row_projection::bool_property;
 pub(crate) use crate::local::grafeo::graph_row_projection::{
@@ -16,8 +17,8 @@ use crate::{
     ArtifactTextVector, DbError, Result, SemanticArtifact, SemanticElement, SemanticMatchEvidence,
     SemanticRelationship,
 };
-use grafeo::{EdgeId, GrafeoDB, NodeId, Value as GrafeoValue};
-use grafeo_core::graph::{Direction, GraphStore as GrafeoGraphStore};
+use grafeo::{EdgeId, GrafeoDB, NodeId, Snapshot, Value as GrafeoValue};
+use grafeo_core::graph::Direction;
 use lumvise_contracts::{
     ArtifactDependency, ArtifactDependencyTarget, validate_artifact_dependencies,
 };
@@ -108,12 +109,20 @@ const IDENTITY_BACKFILL_VERSION: i64 = 1;
 /// written before they existed so recall is identical immediately after
 /// upgrade - never a temporary gap for already-indexed elements.
 pub(crate) fn configure_semantic_indexes(database: &GrafeoDB) -> Result<()> {
-    database.create_property_index(IDENTITY_BACKFILL_VERSION_PROPERTY);
+    database
+        .create_property_index(IDENTITY_BACKFILL_VERSION_PROPERTY)
+        .db()?;
     backfill_identity_properties(database)?;
-    database.create_property_index("revision_project_root");
-    database.create_property_index("revision_row_key");
-    database.create_property_index("revision_selection_key");
-    database.create_property_index("revision_membership_identity");
+    database
+        .create_property_index("revision_project_root")
+        .db()?;
+    database.create_property_index("revision_row_key").db()?;
+    database
+        .create_property_index("revision_selection_key")
+        .db()?;
+    database
+        .create_property_index("revision_membership_identity")
+        .db()?;
     for property in [
         "revision_link_older",
         "revision_link_identity",
@@ -128,20 +137,32 @@ pub(crate) fn configure_semantic_indexes(database: &GrafeoDB) -> Result<()> {
         "revision_containment_target",
         "revision_membership_connection",
     ] {
-        database.create_property_index(property);
+        database.create_property_index(property).db()?;
     }
-    database.create_property_index("revision_record_identity");
-    database.create_property_index(PROJECT_ROOT_PROPERTY);
-    database.create_property_index(SEMANTIC_ELEMENT_ID_PROPERTY);
-    database.create_property_index(ARTIFACT_ID_PROPERTY);
-    database.create_property_index("content_ref");
-    database.create_property_index(PATH_PROPERTY);
-    database.create_property_index(ACTIVE_PROPERTY);
-    database.create_property_index(ELEMENT_KIND_PROPERTY);
-    database.create_property_index(PARENT_ELEMENT_ID_PROPERTY);
-    database.create_property_index(CONTENT_FINGERPRINT_PROPERTY);
-    database.create_property_index(IDENTITY_KIND_NAME_PROPERTY);
-    database.create_property_index(IDENTITY_KIND_FILE_NAME_PROPERTY);
+    database
+        .create_property_index("revision_record_identity")
+        .db()?;
+    database.create_property_index(PROJECT_ROOT_PROPERTY).db()?;
+    database
+        .create_property_index(SEMANTIC_ELEMENT_ID_PROPERTY)
+        .db()?;
+    database.create_property_index(ARTIFACT_ID_PROPERTY).db()?;
+    database.create_property_index("content_ref").db()?;
+    database.create_property_index(PATH_PROPERTY).db()?;
+    database.create_property_index(ACTIVE_PROPERTY).db()?;
+    database.create_property_index(ELEMENT_KIND_PROPERTY).db()?;
+    database
+        .create_property_index(PARENT_ELEMENT_ID_PROPERTY)
+        .db()?;
+    database
+        .create_property_index(CONTENT_FINGERPRINT_PROPERTY)
+        .db()?;
+    database
+        .create_property_index(IDENTITY_KIND_NAME_PROPERTY)
+        .db()?;
+    database
+        .create_property_index(IDENTITY_KIND_FILE_NAME_PROPERTY)
+        .db()?;
     Ok(())
 }
 
@@ -165,15 +186,23 @@ fn identity_kind_file_name_value(element: &SemanticElement) -> String {
 /// that the identity backfill below already ran. The version property is
 /// indexed before this check runs, so a healthy graph file never repeats the
 /// full-node scan on later opens - this is one indexed point lookup.
-fn identity_backfill_marker_present(database: &GrafeoDB) -> bool {
-    database
+fn identity_backfill_marker_present(database: &GrafeoDB) -> Result<bool> {
+    let node_ids = database
         .find_nodes_by_property(
             IDENTITY_BACKFILL_VERSION_PROPERTY,
             &GrafeoValue::Int64(IDENTITY_BACKFILL_VERSION),
         )
-        .into_iter()
-        .filter_map(|node_id| database.get_node(node_id))
-        .any(|node| node.has_label(IDENTITY_BACKFILL_MARKER_LABEL))
+        .db()?;
+    for node_id in node_ids {
+        if database
+            .get_node(node_id)
+            .db()?
+            .is_some_and(|node| node.has_label(IDENTITY_BACKFILL_MARKER_LABEL))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Writes `identity_kind_name`/`identity_kind_file_name` onto every existing
@@ -184,11 +213,13 @@ fn identity_backfill_marker_present(database: &GrafeoDB) -> bool {
 /// function of already-stored `element_kind`/`name`/`path`, so re-running it
 /// (e.g. after a crash before the marker commits) is idempotent.
 fn backfill_identity_properties(database: &GrafeoDB) -> Result<()> {
-    if identity_backfill_marker_present(database) {
+    if identity_backfill_marker_present(database)? {
         return Ok(());
     }
+    // GRAFEO06-REVIEW(6): startup backfill scans committed nodes; 0.5 iter_nodes read the live store.
     let pending = database
-        .iter_nodes()
+        .all_nodes()?
+        .into_iter()
         .filter(|node| node.has_label("SemanticElement"))
         .filter_map(|node| {
             let element = semantic_element_from_node(&node)?;
@@ -304,8 +335,11 @@ pub(super) fn project_member_ids(
     graph: &GrafeoDB,
     project_root: &str,
     include_inactive: bool,
-) -> HashSet<String> {
-    let ids = graph.find_nodes_by_property("project_root", &GrafeoValue::from(project_root));
+) -> Result<HashSet<String>> {
+    let ids = graph
+        .find_nodes_by_property("project_root", &GrafeoValue::from(project_root))
+        .db()?;
+    let snapshot = graph.committed_snapshot()?;
     let keys = [
         "semantic_element_id",
         "lifecycle",
@@ -316,11 +350,12 @@ pub(super) fn project_member_ids(
         "name",
     ]
     .map(Into::into);
-    let rows = graph
-        .graph_store()
-        .get_nodes_properties_selective_batch(&ids, &keys)
-        .committed_nodes(&*graph.graph_store(), &ids);
-    rows.iter()
+    let rows = snapshot
+        .node_properties_selective_batch(&ids, &keys, snapshot.view())
+        .db()?
+        .committed_nodes(&snapshot, &ids)?;
+    Ok(rows
+        .iter()
         .filter(|row| row.get("revision_selected") != Some(&GrafeoValue::from(false)))
         .filter(|row| {
             include_inactive
@@ -335,5 +370,5 @@ pub(super) fn project_member_ids(
                 .all(|key| row.get(*key).and_then(value_string).is_some())
         })
         .filter_map(|row| row.get("semantic_element_id").and_then(value_string))
-        .collect()
+        .collect())
 }

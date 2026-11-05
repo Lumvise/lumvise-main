@@ -3,8 +3,10 @@
 //! selects its elements without scanning the project and never lags the stable graph.
 
 use super::graph_rows::value_string;
+use crate::Result;
 use crate::domain::graph_views::normalized_path;
 use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
 use grafeo::{GrafeoDB, NodeId, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -52,7 +54,7 @@ impl ElementPathIndex {
     }
 
     /// Requires the caller's graph lease so the rebuilt index matches the readable graph.
-    pub(super) fn rebuild(&mut self, graph: &GrafeoDB) {
+    pub(super) fn rebuild(&mut self, graph: &GrafeoDB) -> Result<()> {
         *self = Self {
             built: true,
             label: self.label,
@@ -61,7 +63,13 @@ impl ElementPathIndex {
             current_only: self.current_only,
             ..Self::default()
         };
-        self.update(graph, graph.graph_store().nodes_by_label(self.label));
+        let snapshot = graph.committed_snapshot()?;
+        let ids = snapshot.nodes_by_label(self.label, snapshot.view()).db()?;
+        let updated = self.update(graph, ids);
+        if updated.is_err() {
+            self.built = false;
+        }
+        updated
     }
 
     /// Requires the writer gate: `touched` were created or changed and `deleted` removed by one commit.
@@ -78,7 +86,10 @@ impl ElementPathIndex {
             self.remove(*id);
         }
         let live = touched.difference(deleted).map(|id| NodeId(*id)).collect();
-        self.update(graph, live);
+        // The commit already happened; a failed refresh forces the next read to rebuild.
+        if self.update(graph, live).is_err() {
+            self.built = false;
+        }
     }
 
     pub(super) fn select(&self, project_root: &str, prefix: &str) -> Vec<NodeId> {
@@ -99,12 +110,14 @@ impl ElementPathIndex {
             .collect()
     }
 
-    fn update(&mut self, graph: &GrafeoDB, ids: Vec<NodeId>) {
+    fn update(&mut self, graph: &GrafeoDB, ids: Vec<NodeId>) -> Result<()> {
         let keys = [self.root_property, self.path_property, "revision_selected"].map(Into::into);
-        let rows = graph
-            .graph_store()
-            .get_nodes_properties_selective_batch(&ids, &keys)
-            .committed_nodes(&*graph.graph_store(), &ids);
+        // GRAFEO06-REVIEW(21): runs after commit under the writer gate; committed view must include that commit.
+        let snapshot = graph.committed_snapshot()?;
+        let rows = snapshot
+            .node_properties_selective_batch(&ids, &keys, snapshot.view())
+            .db()?
+            .committed_nodes(&snapshot, &ids)?;
         for (id, row) in ids.into_iter().zip(rows) {
             self.remove(id.0);
             if self.current_only && row.get("revision_selected") == Some(&Value::from(false)) {
@@ -120,6 +133,7 @@ impl ElementPathIndex {
                 self.by_node.insert(id.0, (root, path));
             }
         }
+        Ok(())
     }
 
     fn remove(&mut self, id: u64) {

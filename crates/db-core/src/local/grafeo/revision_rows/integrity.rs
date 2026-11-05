@@ -129,16 +129,25 @@ fn require_revision_project(graph: &GrafeoDB, root: &str, project_id: &str) -> R
 fn project_integrity_catalog(graph: &GrafeoDB, root: &str) -> Result<InspectedRevisionCatalog> {
     let mut catalog = InspectedRevisionCatalog::default();
     let mut operation_ids = BTreeSet::new();
-    let store = graph.graph_store();
-    let labeled: HashSet<_> = store.nodes_by_label(ROW_LABEL).into_iter().collect();
-    let epoch = store.current_epoch();
-    for node_id in graph.find_nodes_by_property(ROW_PROJECT, &Value::from(root)) {
-        if !labeled.contains(&node_id) || !store.is_node_visible_at_epoch(node_id, epoch) {
+    // GRAFEO06-REVIEW(26): integrity inspection reads one committed snapshot; 0.5 filtered by epoch visibility.
+    let snapshot = graph.committed_snapshot()?;
+    let view = snapshot.view();
+    let labeled: HashSet<_> = snapshot
+        .nodes_by_label(ROW_LABEL, view)
+        .db()?
+        .into_iter()
+        .collect();
+    for node_id in graph
+        .find_nodes_by_property(ROW_PROJECT, &Value::from(root))
+        .db()?
+    {
+        if !labeled.contains(&node_id) || !snapshot.is_node_visible(node_id, view).db()? {
             continue;
         }
         // Ignored history/connection rows may carry large payloads; inspect their key before loading one.
-        let key = store
-            .get_node_property(node_id, &ROW_KEY.into())
+        let key = snapshot
+            .node_property(node_id, ROW_KEY, view)
+            .db()?
             .and_then(|value| value.as_str().map(str::to_owned))
             .ok_or_else(|| {
                 DbError::invalid_value(node_id.to_string(), "a canonical revision metadata key")
@@ -207,7 +216,10 @@ pub(in super::super) fn unavailable_selection_headers(
     selection_id: &str,
 ) -> Result<Vec<SemanticRevisionRecordHeader>> {
     let mut headers = BTreeMap::new();
-    for node in graph.find_nodes_by_property("revision_unavailable_project", &Value::from(root)) {
+    for node in graph
+        .find_nodes_by_property("revision_unavailable_project", &Value::from(root))
+        .db()?
+    {
         let RevisionRow::Record(header) = revision_row_from_node(graph, node)? else {
             return Err(DbError::invalid_value(
                 node.to_string(),

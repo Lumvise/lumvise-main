@@ -519,7 +519,7 @@ pub(crate) fn existing_projection_node(
         SemanticRecordKind::Element => ("SemanticElement", "semantic_element_id"),
         SemanticRecordKind::Artifact => ("SemanticArtifact", "artifact_id"),
     };
-    let nodes = node_ids_by_label_and_property(database, label, property, &record.record_id);
+    let nodes = node_ids_by_label_and_property(database, label, property, &record.record_id)?;
     if nodes.len() > 1 {
         return Err(DbError::invalid_value(
             &record.record_id,
@@ -529,27 +529,31 @@ pub(crate) fn existing_projection_node(
     let Some(id) = nodes.first().copied() else {
         return Ok(None);
     };
-    let node = database.get_node(id).ok_or_else(|| {
+    let node = database.get_node(id).db()?.ok_or_else(|| {
         DbError::invalid_value(&record.record_id, "the prepared native revision node")
     })?;
     let project = if record.kind == SemanticRecordKind::Element {
         string_property(&node, "project_root")
+    } else if let Some(project) = string_property(&node, "project_root") {
+        Some(project)
+    } else if let Some(owner) = string_property(&node, "semantic_element_id") {
+        let owner_node = node_ids_by_label_and_property(
+            database,
+            "SemanticElement",
+            "semantic_element_id",
+            &owner,
+        )?
+        .first()
+        .copied();
+        match owner_node {
+            Some(owner) => database
+                .get_node(owner)
+                .db()?
+                .and_then(|owner| string_property(&owner, "project_root")),
+            None => None,
+        }
     } else {
-        string_property(&node, "project_root").or_else(|| {
-            string_property(&node, "semantic_element_id")
-                .and_then(|owner| {
-                    node_ids_by_label_and_property(
-                        database,
-                        "SemanticElement",
-                        "semantic_element_id",
-                        &owner,
-                    )
-                    .first()
-                    .copied()
-                })
-                .and_then(|owner| database.get_node(owner))
-                .and_then(|owner| string_property(&owner, "project_root"))
-        })
+        None
     };
     let project = match project {
         Some(project) => Some(project),
@@ -582,7 +586,7 @@ pub(crate) fn prepare_revision_body_collection(
             label,
             property,
             &record.record_id,
-        ));
+        )?);
     }
     Ok(nodes.into_iter().collect())
 }

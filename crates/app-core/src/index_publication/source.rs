@@ -20,6 +20,7 @@ pub(crate) struct IndexSourceBase {
     generation: Option<i64>,
     inventory: Vec<IndexPathDigest>,
     invalidated_records: BTreeMap<SemanticRecordRef, String>,
+    recovery_observation: Option<super::recovery_observation::RecoveredSourceObservation>,
     pub(crate) invalidated_paths: BTreeSet<String>,
     pub(super) token: String,
     pub(crate) requires_full_scan: bool,
@@ -109,8 +110,14 @@ impl IndexSourceCheckout {
             .values()
             .cloned()
             .collect::<BTreeSet<_>>();
+        let recovery_observation =
+            self.checkpoint_recovery_observation(header.as_ref(), &invalidated_records, control)?;
         Ok(IndexSourceBase {
-            token: self.scan_token(header.as_ref(), &invalidated_records)?,
+            token: self.scan_token(
+                header.as_ref(),
+                &invalidated_records,
+                recovery_observation.as_ref(),
+            )?,
             requires_full_scan: !invalidated_paths.is_empty()
                 || header
                     .as_ref()
@@ -119,6 +126,7 @@ impl IndexSourceCheckout {
             inventory,
             invalidated_records,
             invalidated_paths,
+            recovery_observation,
         })
     }
 
@@ -182,6 +190,25 @@ impl IndexSourceCheckout {
         failed_paths: &[String],
         control: &InvocationControl,
     ) -> Result<Option<FrozenIndexPublication>> {
+        let recovery = before.recovery_observation.as_ref();
+        if recovery.is_some()
+            && (!full
+                || failed_paths
+                    .iter()
+                    .any(|path| before.invalidated_paths.contains(path)))
+        {
+            return Err(invalid_checkpoint(
+                format!("full={full}, failed={failed_paths:?}"),
+                "a full source scan that parses every path with unavailable records before producer-pin recovery",
+            ));
+        }
+        // A repair republishes the whole source like a first acceptance, so a file that fails
+        // now (an image-only PDF) stays absent until it parses; its old revisions remain history.
+        let failed_paths = if recovery.is_some() {
+            &[][..]
+        } else {
+            failed_paths
+        };
         let protected: BTreeSet<_> = failed_paths.iter().map(String::as_str).collect();
         let mut inventory = source_projection::projected_inventory(&batch)?;
         let projected: BTreeSet<_> = inventory.iter().map(|entry| entry.path.clone()).collect();
@@ -206,8 +233,17 @@ impl IndexSourceCheckout {
             .rows
             .get::<CheckpointHeader>("header", control)?;
         let invalidated_records = self.unavailable_element_records(control)?;
+        let current_recovery = if recovery.is_some() {
+            Some(self.observe_recovery_scope(control)?)
+        } else {
+            None
+        };
         if invalidated_records != before.invalidated_records
-            || self.scan_token(current.as_ref(), &invalidated_records)? != before.token
+            || self.scan_token(
+                current.as_ref(),
+                &invalidated_records,
+                current_recovery.as_ref(),
+            )? != before.token
         {
             return Err(invalid_checkpoint(
                 &before.token,
@@ -222,7 +258,7 @@ impl IndexSourceCheckout {
                 "a complete first acceptance to protect the verified source base",
             ));
         }
-        let mut changed = if initial {
+        let mut changed = if initial || recovery.is_some() {
             inventory.iter().map(|entry| entry.path.clone()).collect()
         } else {
             changed_paths(&inventory, &before.inventory)
@@ -256,7 +292,10 @@ impl IndexSourceCheckout {
         }
         self.rewrite_references(&mut batch, control)?;
         let partition = source_partition(&batch);
-        batch.revision_observation = Some(self.journal.observation(&partition, control)?);
+        batch.revision_observation = Some(match recovery {
+            Some(observed) => observed.publication_observation(&self.journal.binding),
+            None => self.journal.observation(&partition, control)?,
+        });
         let frozen = FrozenIndexPublication {
             operation_id: format!("source-index-{}", uuid::Uuid::new_v4()),
             batch,
@@ -265,7 +304,21 @@ impl IndexSourceCheckout {
                 .filter(|entry| changed.contains(&entry.path))
                 .collect(),
         };
-        self.journal.freeze(&frozen, control)?;
+        if let Some(observed) = recovery {
+            let mut headers =
+                self.unavailable_headers(&self.journal.binding.selection_id, control)?;
+            headers.extend(
+                self.unavailable_headers(&self.journal.rows.producer_selection_id(), control)?,
+            );
+            headers.retain(|header| self.unavailable_source_scope(header).is_some());
+            let recovery =
+                self.journal
+                    .prepare_recovered_publication(&frozen, observed.clone(), headers)?;
+            self.journal
+                .freeze_with_recovery(&frozen, Some(&recovery), control)?;
+        } else {
+            self.journal.freeze(&frozen, control)?;
+        }
         Ok(Some(frozen))
     }
 
@@ -283,11 +336,58 @@ impl IndexSourceCheckout {
         &self,
         header: Option<&CheckpointHeader>,
         invalidated_records: &BTreeMap<SemanticRecordRef, String>,
+        recovery: Option<&super::recovery_observation::RecoveredSourceObservation>,
     ) -> Result<String> {
         let invalidated = invalidated_records.iter().collect::<Vec<_>>();
-        let bytes = serde_json::to_vec(&(&self.journal.binding, header, invalidated))
-            .map_err(lumvise_db_core::DbError::from)?;
+        let recovered_scope = recovery.map(|observed| {
+            (
+                &observed.working.selection.selection_id,
+                &observed.working.selection.source_context,
+                &observed.working.expected.records,
+                &observed.working.expected.connection_ids,
+                &observed.working.expected.artifact_edits,
+                &observed.producer,
+            )
+        });
+        let bytes =
+            serde_json::to_vec(&(&self.journal.binding, header, invalidated, recovered_scope))
+                .map_err(lumvise_db_core::DbError::from)?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    fn observe_recovery_scope(
+        &self,
+        control: &InvocationControl,
+    ) -> Result<super::recovery_observation::RecoveredSourceObservation> {
+        self.journal
+            .observe_recovered_scope(&self.recovery_partition(), control)
+    }
+
+    fn checkpoint_recovery_observation(
+        &self,
+        header: Option<&CheckpointHeader>,
+        invalidated: &BTreeMap<SemanticRecordRef, String>,
+        control: &InvocationControl,
+    ) -> Result<Option<super::recovery_observation::RecoveredSourceObservation>> {
+        if header.is_none() || invalidated.is_empty() {
+            return Ok(None);
+        }
+        let observed = self.observe_recovery_scope(control)?;
+        let previous = self
+            .journal
+            .observation(&self.recovery_partition(), control)?;
+        if observed.matches_frozen(&previous) {
+            return Ok(None);
+        }
+        Ok(Some(observed))
+    }
+
+    fn recovery_partition(&self) -> SemanticPartition {
+        SemanticPartition {
+            project_root: self.journal.project_root.clone(),
+            provider_instance_id: Some(self.journal.binding.provider_instance_id.clone()),
+            replace_paths: vec![],
+        }
     }
 
     fn unavailable_element_records(

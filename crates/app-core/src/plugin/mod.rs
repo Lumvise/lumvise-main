@@ -10,6 +10,9 @@ mod host_capability_catalog;
 pub(crate) mod http_dispatch;
 mod invocation;
 mod knowledge_authority;
+pub use knowledge_authority::connectors::{
+    ConnectorGrantMaintainer, generate_connector_credential,
+};
 mod mcp_catalog;
 pub(crate) mod mcp_http_bridge;
 pub(crate) mod mcp_rpc;
@@ -130,7 +133,15 @@ impl<'app> PluginEndpoints<'app> {
 
     /// Handles one app Plugin MCP JSON-RPC request.
     pub fn handle_plugin_mcp_json_rpc(&self, request: Value) -> crate::Result<Option<Value>> {
-        mcp_rpc::handle_plugin_mcp_json_rpc(self, request)
+        mcp_rpc::handle_plugin_mcp_json_rpc(self, request, true)
+    }
+
+    pub(crate) fn handle_mcp_http_transport(
+        &self,
+        request: Value,
+        native_interaction: bool,
+    ) -> crate::Result<Option<Value>> {
+        mcp_rpc::handle_plugin_mcp_json_rpc(self, request, native_interaction)
     }
 
     pub(crate) fn handle_scoped_mcp_json_rpc(

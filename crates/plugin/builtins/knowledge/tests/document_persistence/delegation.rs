@@ -160,6 +160,33 @@ fn inspected_hook(fixture: &mut DelegatedDocumentFixture) -> Value {
         .clone()
 }
 
+fn ready_executor_inspection_reply(
+    fixture: &DelegatedDocumentFixture,
+) -> AgentExecutorInspectionReply {
+    AgentExecutorInspectionReply::Output(json!({
+        "agent":{"agent_id":fixture.grant["executor_agent_id"],
+            "memory_delegation":{"delegation_id":fixture.grant["delegation_id"],
+                "revision":fixture.grant["revision"],"project_root":fixture.original["project_root"],
+                "document_id":"decision"},
+            "alias":"Decision maintenance","ruleset_document_id":"decision-rules",
+            "provider_id":null,"model":null,"schedule":null,"grants":[],"enabled":true,
+            "created_at":"2026-11-02T00:00:00Z","updated_at":"2026-11-02T00:00:00Z"},
+        "automation":{"automation_id":"decision-maintenance","agent_id":fixture.grant["executor_agent_id"],
+            "revision":fixture.grant["revision"],"title":"Decision maintenance","schedule":null,
+            "enabled":true,"watch_slug":"decision","mission":{"title":"Maintain decision",
+            "objective":"Keep the decision document current"},"actions":[]},
+        "documents":[{"doc_slug":"decision","document_id":"decision","spawn_hook":false,
+            "depends_on":[],"stale":false,"links":[],"stamps":{}}],
+        "state":null,"runs":[],"setup":null
+    }))
+}
+
+fn inspected_ready_hook(fixture: &mut DelegatedDocumentFixture) -> Value {
+    let reply = ready_executor_inspection_reply(fixture);
+    fixture.host.agent_executor_inspection = Some(reply);
+    inspected_hook(fixture)
+}
+
 #[test]
 fn executor_cycle_inspection_error_preserves_host_ready_status() {
     let mut fixture = DelegatedDocumentFixture::new();
@@ -331,4 +358,73 @@ fn hooking_a_source_project_report_points_to_the_memory_space_and_the_other_hook
             assert!(error.message.contains(route), "{route}: {}", error.message);
         }
     }
+}
+
+#[test]
+fn assistant_hook_read_alias_dispatches_through_the_bound_owner() {
+    let mut fixture = DelegatedDocumentFixture::new();
+    let reply = ready_executor_inspection_reply(&fixture);
+    fixture.host.agent_executor_inspection = Some(reply);
+    let read = fixture
+        .host
+        .knowledge(
+            "document.get_hook",
+            json!({"project_root":fixture.original["project_root"],"document_id":"decision"}),
+        )
+        .unwrap();
+    assert_eq!(
+        read["hook"]["delegation_id"],
+        fixture.grant["delegation_id"]
+    );
+    assert_eq!(read["hook"]["status"], "ready");
+    assert_eq!(read["document"]["content"], "Original");
+}
+
+#[test]
+fn assistant_hook_configure_alias_updates_the_original_owner_hook() {
+    let mut fixture = DelegatedDocumentFixture::new();
+    let current = inspected_hook(&mut fixture);
+    let disabled = fixture.host.knowledge("document.configure_hook", json!({
+        "operation_id":"assistant-alias-disable","project_root":fixture.original["project_root"],
+        "document_id":"decision","expected_hook_revision":current["revision"],"enabled":false
+    })).unwrap();
+    assert_eq!(disabled["hook"]["status"], "disabled");
+    let canonical = fixture
+        .host
+        .knowledge(
+            "get_document_hook",
+            json!({"project_root":fixture.original["project_root"],"document_id":"decision"}),
+        )
+        .unwrap()["hook"]
+        .clone();
+    assert_eq!(canonical["delegation_id"], fixture.grant["delegation_id"]);
+    assert_eq!(canonical["revision"], disabled["hook"]["revision"]);
+    assert_eq!(canonical["status"], "disabled");
+}
+
+#[test]
+fn assistant_hook_read_alias_rejects_an_unbound_assistant() {
+    let mut fixture = DelegatedDocumentFixture::new();
+    bind_owner(&mut fixture.host, false);
+    let error = fixture
+        .host
+        .knowledge(
+            "document.get_hook",
+            json!({"project_root":fixture.original["project_root"],"document_id":"decision"}),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "document_test_host_error");
+    assert!(error.message.contains("knowledge_scope_denied"));
+}
+
+#[test]
+fn assistant_hook_configure_alias_rejects_a_different_memory_space() {
+    let mut fixture = DelegatedDocumentFixture::new();
+    let before = inspected_ready_hook(&mut fixture);
+    let error = fixture.host.knowledge("document.configure_hook", json!({
+        "operation_id":"wrong-space","project_root":"/another-memory-space","document_id":"decision",
+        "expected_hook_revision":null,"enabled":false
+    })).unwrap_err();
+    assert_eq!(error.code, "memory_hook_scope");
+    assert_eq!(inspected_ready_hook(&mut fixture), before);
 }

@@ -10,7 +10,7 @@ pub(crate) fn prepare_element_upsert(
             "SemanticElement",
             SEMANTIC_ELEMENT_ID_PROPERTY,
             &element.semantic_element_id,
-        ),
+        )?,
         properties: element_properties(
             element,
             element.match_evidence.as_ref(),
@@ -51,7 +51,7 @@ pub(crate) fn prepare_element_name_vector_replace(
             "SemanticElementNameVector",
             SEMANTIC_ELEMENT_ID_PROPERTY,
             &element.semantic_element_id,
-        ),
+        )?,
         properties: element_name_vector_props(element, source_text, vector)?,
     })
 }
@@ -68,7 +68,7 @@ pub(crate) fn prepare_artifact_vector_replace(
             "SemanticArtifactVector",
             ARTIFACT_ID_PROPERTY,
             &artifact.artifact_id,
-        ),
+        )?,
         properties: artifact_vector_props(artifact, source_text, vector)?,
     })
 }
@@ -93,7 +93,7 @@ pub(super) fn apply_vector_replace(
     plan: VectorReplacePlan,
 ) -> Result<()> {
     for node_id in plan.node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
     database.create_node_with_props(&[label], plan.properties)?;
     Ok(())
@@ -102,8 +102,8 @@ pub(super) fn apply_vector_replace(
 pub(super) fn dependency_target_node(
     database: &GrafeoDB,
     dependency: &ArtifactDependency,
-) -> Option<(String, NodeId)> {
-    match &dependency.target {
+) -> Result<Option<(String, NodeId)>> {
+    Ok(match &dependency.target {
         ArtifactDependencyTarget::SemanticElement {
             semantic_element_id,
         } => node_ids_by_label_and_property(
@@ -111,7 +111,7 @@ pub(super) fn dependency_target_node(
             "SemanticElement",
             SEMANTIC_ELEMENT_ID_PROPERTY,
             semantic_element_id,
-        )
+        )?
         .into_iter()
         .next()
         .map(|node_id| ("semantic_element".into(), node_id)),
@@ -120,11 +120,11 @@ pub(super) fn dependency_target_node(
             "SemanticArtifact",
             ARTIFACT_ID_PROPERTY,
             artifact_id,
-        )
+        )?
         .into_iter()
         .next()
         .map(|node_id| ("artifact".into(), node_id)),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -133,18 +133,18 @@ pub(crate) fn upsert_element_node(
     element: &SemanticElement,
     commit_version: i64,
 ) -> Result<()> {
-    let existing = database
-        .find_nodes_by_property(
-            SEMANTIC_ELEMENT_ID_PROPERTY,
-            &GrafeoValue::from(element.semantic_element_id.as_str()),
-        )
-        .into_iter()
-        .filter(|node_id| {
-            database
-                .get_node(*node_id)
-                .is_some_and(|node| node.has_label("SemanticElement"))
-        })
-        .collect::<Vec<_>>();
+    let mut existing = Vec::new();
+    for node_id in database.find_nodes_by_property(
+        SEMANTIC_ELEMENT_ID_PROPERTY,
+        &GrafeoValue::from(element.semantic_element_id.as_str()),
+    )? {
+        if database
+            .get_node(node_id)?
+            .is_some_and(|node| node.has_label("SemanticElement"))
+        {
+            existing.push(node_id);
+        }
+    }
     if let [node_id] = existing.as_slice() {
         for (property, value) in element_properties(
             element,
@@ -161,7 +161,7 @@ pub(crate) fn upsert_element_node(
         "SemanticElement",
         SEMANTIC_ELEMENT_ID_PROPERTY,
         &element.semantic_element_id,
-    );
+    )?;
     insert_element_node(database, element, commit_version)
 }
 
@@ -324,81 +324,102 @@ pub(super) fn stable_node_hash(value: &str) -> u64 {
 pub(crate) fn prepare_project_relationship_reset(
     database: &GrafeoDB,
     project_root: &str,
-) -> ProjectRelationshipResetPlan {
+) -> Result<ProjectRelationshipResetPlan> {
     let element_node_ids = node_ids_by_label_and_property(
         database,
         "SemanticElement",
         PROJECT_ROOT_PROPERTY,
         project_root,
-    );
-    let relationship_edge_ids = element_node_ids
-        .iter()
-        .flat_map(|node_id| database.store().edges_from(*node_id, Direction::Outgoing))
-        .filter_map(|(_, edge_id)| database.get_edge(edge_id))
-        .filter(|edge| semantic_relationship_from_edge(edge).is_some())
-        .map(|edge| edge.id)
-        .collect();
-    ProjectRelationshipResetPlan {
-        relationship_edge_ids,
+    )?;
+    let mut relationship_edge_ids = Vec::new();
+    for node_id in &element_node_ids {
+        // GRAFEO06-REVIEW(7): planning read of committed adjacency; 0.5 store().edges_from was live.
+        for (_, edge_id) in database
+            .get_node_edges(*node_id, Direction::Outgoing, &[])
+            .db()?
+        {
+            if let Some(edge) = database.get_edge(edge_id).db()?
+                && semantic_relationship_from_edge(&edge).is_some()
+            {
+                relationship_edge_ids.push(edge.id);
+            }
+        }
     }
+    Ok(ProjectRelationshipResetPlan {
+        relationship_edge_ids,
+    })
 }
 
 pub(crate) fn apply_project_relationship_reset(
     database: &GraphTransaction<'_>,
     plan: ProjectRelationshipResetPlan,
-) {
+) -> Result<()> {
     for edge_id in plan.relationship_edge_ids {
-        database.delete_edge(edge_id);
+        database.delete_edge(edge_id)?;
     }
+    Ok(())
 }
 
 pub(crate) fn prepare_artifact_deletion(
     database: &GrafeoDB,
     artifact_id: &str,
-) -> ArtifactDeletionPlan {
+) -> Result<ArtifactDeletionPlan> {
     let artifact_node_ids = node_ids_by_label_and_property(
         database,
         "SemanticArtifact",
         ARTIFACT_ID_PROPERTY,
         artifact_id,
-    );
-    let artifact = artifact_node_ids
-        .iter()
-        .filter_map(|node_id| database.get_node(*node_id))
-        .find_map(|node| semantic_artifact_from_node(&node));
-    let owner_node_id = artifact
-        .as_ref()
-        .and_then(|artifact| semantic_element_node_id(database, &artifact.semantic_element_id));
-    let owner_element = owner_node_id
-        .and_then(|node_id| database.get_node(node_id))
-        .and_then(|node| semantic_element_from_node(&node));
-    ArtifactDeletionPlan {
+    )?;
+    let mut artifact = None;
+    for node_id in &artifact_node_ids {
+        if let Some(node) = database.get_node(*node_id).db()?
+            && let Some(found) = semantic_artifact_from_node(&node)
+        {
+            artifact = Some(found);
+            break;
+        }
+    }
+    let owner_node_id = match &artifact {
+        Some(artifact) => semantic_element_node_id(database, &artifact.semantic_element_id)?,
+        None => None,
+    };
+    let owner_element = match owner_node_id {
+        Some(node_id) => database
+            .get_node(node_id)
+            .db()?
+            .and_then(|node| semantic_element_from_node(&node)),
+        None => None,
+    };
+    // GRAFEO06-REVIEW(8): planning scan of committed edges; 0.5 iter_edges read the live store.
+    let artifact_edge_ids = database
+        .all_edges()?
+        .into_iter()
+        .filter(|edge| edge.edge_type == SEMANTIC_ARTIFACT_EDGE_TYPE)
+        .filter(|edge| {
+            edge_string_property(edge, ARTIFACT_ID_PROPERTY).as_deref() == Some(artifact_id)
+        })
+        .map(|edge| edge.id)
+        .collect();
+    Ok(ArtifactDeletionPlan {
         artifact_node_ids,
         artifact_vector_node_ids: node_ids_by_label_and_property(
             database,
             "SemanticArtifactVector",
             ARTIFACT_ID_PROPERTY,
             artifact_id,
-        ),
-        artifact_edge_ids: database
-            .iter_edges()
-            .filter(|edge| edge.edge_type == SEMANTIC_ARTIFACT_EDGE_TYPE)
-            .filter(|edge| {
-                edge_string_property(edge, ARTIFACT_ID_PROPERTY).as_deref() == Some(artifact_id)
-            })
-            .map(|edge| edge.id)
-            .collect(),
+        )?,
+        artifact_edge_ids,
         owner_node_id,
         owner_element,
         artifact,
-    }
+    })
 }
 
 pub(crate) fn apply_artifact_deletion(
     database: &GraphTransaction<'_>,
     commit_version: i64,
     plan: ArtifactDeletionPlan,
-) -> Option<SemanticElement> {
+) -> Result<Option<SemanticElement>> {
     let owner = plan.owner_element.clone();
     if let Some(owner_node_id) = plan.owner_node_id {
         database
@@ -410,76 +431,83 @@ pub(crate) fn apply_artifact_deletion(
             .expect("planned semantic artifact owner remains available");
     }
     for edge_id in plan.artifact_edge_ids {
-        database.delete_edge(edge_id);
+        database.delete_edge(edge_id)?;
     }
     for node_id in plan.artifact_node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
     for node_id in plan.artifact_vector_node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
-    owner
+    Ok(owner)
 }
 
 pub(crate) fn prepare_element_deactivation(
     database: &GrafeoDB,
     semantic_element_id: &str,
-) -> ElementDeactivationPlan {
+) -> Result<ElementDeactivationPlan> {
     let element_node_ids = node_ids_by_label_and_property(
         database,
         "SemanticElement",
         SEMANTIC_ELEMENT_ID_PROPERTY,
         semantic_element_id,
-    );
-    let active_element_node_ids = element_node_ids
+    )?;
+    let mut active_element_nodes = Vec::new();
+    for node_id in element_node_ids {
+        if let Some(node) = database.get_node(node_id).db()?
+            && element_node_is_active(&node)
+        {
+            active_element_nodes.push(node);
+        }
+    }
+    let active_element_node_ids = active_element_nodes
         .iter()
-        .copied()
-        .filter(|node_id| {
-            database
-                .get_node(*node_id)
-                .is_some_and(|node| element_node_is_active(&node))
-        })
+        .map(|node| node.id)
         .collect::<Vec<_>>();
-    let project_root = active_element_node_ids
+    let project_root = active_element_nodes
         .iter()
-        .filter_map(|node_id| database.get_node(*node_id))
-        .find_map(|node| string_property(&node, PROJECT_ROOT_PROPERTY))
+        .find_map(|node| string_property(node, PROJECT_ROOT_PROPERTY))
         .unwrap_or_default();
-    let entity_kind = active_element_node_ids
+    let entity_kind = active_element_nodes
         .iter()
-        .filter_map(|node_id| database.get_node(*node_id))
-        .find_map(|node| string_property(&node, "element_kind"))
+        .find_map(|node| string_property(node, "element_kind"))
         .unwrap_or_default();
     let artifact_node_ids = node_ids_by_label_and_property(
         database,
         "SemanticArtifact",
         SEMANTIC_ELEMENT_ID_PROPERTY,
         semantic_element_id,
-    );
-    let artifacts = artifact_node_ids
-        .iter()
-        .filter_map(|node_id| database.get_node(*node_id))
-        .filter_map(|node| semantic_artifact_from_node(&node))
-        .map(|artifact| (artifact.artifact_id.clone(), artifact))
-        .collect::<BTreeMap<_, _>>()
-        .into_values()
-        .collect::<Vec<_>>();
+    )?;
+    let mut artifacts_by_id = BTreeMap::new();
+    for node_id in &artifact_node_ids {
+        if let Some(node) = database.get_node(*node_id).db()?
+            && let Some(artifact) = semantic_artifact_from_node(&node)
+        {
+            artifacts_by_id.insert(artifact.artifact_id.clone(), artifact);
+        }
+    }
+    let artifacts = artifacts_by_id.into_values().collect::<Vec<_>>();
     let artifact_ids = artifacts
         .iter()
         .map(|artifact| artifact.artifact_id.as_str())
         .collect::<BTreeSet<_>>();
-    let artifact_vector_node_ids = artifact_ids
-        .iter()
-        .flat_map(|artifact_id| {
-            node_ids_by_label_and_property(
-                database,
-                "SemanticArtifactVector",
-                ARTIFACT_ID_PROPERTY,
-                artifact_id,
-            )
-        })
+    let mut artifact_vector_node_ids = Vec::new();
+    for artifact_id in &artifact_ids {
+        artifact_vector_node_ids.extend(node_ids_by_label_and_property(
+            database,
+            "SemanticArtifactVector",
+            ARTIFACT_ID_PROPERTY,
+            artifact_id,
+        )?);
+    }
+    // GRAFEO06-REVIEW(9): planning scan of committed edges; 0.5 iter_edges read the live store.
+    let relationship_edge_ids = database
+        .all_edges()?
+        .into_iter()
+        .filter(|edge| relationship_edge_touches_element(edge, semantic_element_id))
+        .map(|edge| edge.id)
         .collect();
-    ElementDeactivationPlan {
+    Ok(ElementDeactivationPlan {
         exists: !active_element_node_ids.is_empty(),
         element_node_ids: active_element_node_ids,
         element_vector_node_ids: node_ids_by_label_and_property(
@@ -487,28 +515,24 @@ pub(crate) fn prepare_element_deactivation(
             "SemanticElementNameVector",
             SEMANTIC_ELEMENT_ID_PROPERTY,
             semantic_element_id,
-        ),
-        relationship_edge_ids: database
-            .iter_edges()
-            .filter(|edge| relationship_edge_touches_element(edge, semantic_element_id))
-            .map(|edge| edge.id)
-            .collect(),
+        )?,
+        relationship_edge_ids,
         artifact_node_ids,
         artifact_vector_node_ids,
         artifacts,
         project_root,
         entity_kind,
-    }
+    })
 }
 
 pub(crate) fn apply_element_deactivation(
     database: &GraphTransaction<'_>,
     commit_version: i64,
     plan: ElementDeactivationPlan,
-) -> bool {
+) -> Result<bool> {
     let deactivated = !plan.element_node_ids.is_empty();
     for edge_id in plan.relationship_edge_ids {
-        database.delete_edge(edge_id);
+        database.delete_edge(edge_id)?;
     }
     for node_id in plan.element_node_ids {
         database
@@ -533,13 +557,13 @@ pub(crate) fn apply_element_deactivation(
             .expect("planned semantic element remains available");
     }
     for node_id in plan.element_vector_node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
     for node_id in plan.artifact_node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
     for node_id in plan.artifact_vector_node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
-    deactivated
+    Ok(deactivated)
 }

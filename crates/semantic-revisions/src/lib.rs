@@ -54,6 +54,7 @@ pub use fingerprint::ContentFingerprintParts;
 pub use integrity::*;
 pub use matching::{IdentityRemapIndex, SemanticIdentityRemap, SemanticStructureReconciliation};
 pub use metadata::{SemanticRevisionMember, SemanticRevisionMembership, SemanticRevisionMetadata};
+pub use policy_bytes::encode_archive_transfer_pages;
 pub use policy_bytes::evaluate_revision_policy;
 pub use publication_basis::*;
 pub use record_header::SemanticRevisionRecordHeader;

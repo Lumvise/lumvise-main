@@ -23,7 +23,7 @@ impl HeldSearchPublication {
                     let node = graph.find_nodes_by_property(
                         "semantic_element_id",
                         &grafeo::Value::from("search-owner"),
-                    )[0];
+                    )?[0];
                     graph.set_node_property(node, "name", grafeo::Value::from("shared_during"))?;
                     entered.send(()).unwrap();
                     released.recv().unwrap();

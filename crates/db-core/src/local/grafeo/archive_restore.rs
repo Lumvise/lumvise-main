@@ -40,8 +40,8 @@ impl SemanticStorage<'_> {
         self.commit_prepared_graph_write_with_sql_start(
             initial,
             prepare,
+            |connection, _| begin_semantic_commit_after(connection, incoming.commit_version),
             |transaction, prepared| {
-                let version = begin_semantic_commit_after(transaction, incoming.commit_version)?;
                 crate::local::sql::project_lineages::restore_project_identity(
                     transaction,
                     &incoming.project_root,
@@ -51,7 +51,7 @@ impl SemanticStorage<'_> {
                 for blob in &archive.artifact_blobs {
                     put_archived_blob(transaction, blob)?;
                 }
-                Ok(version)
+                Ok(())
             },
             |graph, version, collector, prepared| {
                 prepared.projection.apply(graph, version, collector)?;

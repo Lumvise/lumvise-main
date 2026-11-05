@@ -45,16 +45,23 @@ struct ToolCallParams {
 pub(crate) fn handle_plugin_mcp_json_rpc(
     plugins: &PluginEndpoints<'_>,
     request: Value,
+    native_interaction: bool,
 ) -> crate::Result<Option<Value>> {
     let request: JsonRpcRequest = decode_rpc_request(request)?;
     if request.id.is_none() {
-        handle_notification(plugins, &request.method, request.params)?;
+        handle_notification(plugins, &request.method, request.params, native_interaction)?;
         return Ok(None);
     }
     let id = request
         .id
         .ok_or_else(|| AppCoreError::missing_value("id", "plugin MCP request id"))?;
-    let result = dispatch_plugin_mcp_method(plugins, &id, &request.method, request.params);
+    let result = dispatch_plugin_mcp_method(
+        plugins,
+        &id,
+        &request.method,
+        request.params,
+        native_interaction,
+    );
     encode_rpc_response(response_from_result(Some(id), result))
 }
 
@@ -63,11 +70,12 @@ fn dispatch_plugin_mcp_method(
     request_id: &Value,
     method: &str,
     params: Option<Value>,
+    native_interaction: bool,
 ) -> std::result::Result<Value, JsonRpcError> {
     match method {
         "initialize" => Ok(initialize_result()),
         "tools/list" => tools_list(plugins),
-        "tools/call" => call_tool(plugins, request_id, params),
+        "tools/call" => call_tool(plugins, request_id, params, native_interaction),
         other => Err(method_not_found(other)),
     }
 }
@@ -92,6 +100,7 @@ fn call_tool(
     plugins: &PluginEndpoints<'_>,
     request_id: &Value,
     params: Option<Value>,
+    native_interaction: bool,
 ) -> std::result::Result<Value, JsonRpcError> {
     let call = parse_tool_call(params)?;
     let response = plugins
@@ -100,7 +109,7 @@ fn call_tool(
                 tool_name: call.name,
                 arguments: call.arguments,
             },
-            global_lifecycle(request_id),
+            global_lifecycle(request_id, native_interaction),
         )
         .map_err(tool_error)?;
     tool_result(
@@ -109,8 +118,13 @@ fn call_tool(
     )
 }
 
-fn global_lifecycle(request_id: &Value) -> PluginInvocationLifecycle {
+fn global_lifecycle(request_id: &Value, native_interaction: bool) -> PluginInvocationLifecycle {
     PluginInvocationLifecycle {
+        mcp_origin: (!native_interaction).then(|| lumvise_plugin_runtime::PluginMcpOrigin {
+            connector_id: None,
+            connection_id: "plugin-mcp-http".into(),
+            project_epoch: None,
+        }),
         request_id: request_key(request_id),
         owner_id: "plugin-mcp-http".into(),
         session_id: "plugin-mcp-http".into(),
@@ -124,6 +138,7 @@ fn handle_notification(
     plugins: &PluginEndpoints<'_>,
     method: &str,
     params: Option<Value>,
+    native_interaction: bool,
 ) -> crate::Result<()> {
     if method != "notifications/cancelled" {
         return Ok(());
@@ -135,6 +150,7 @@ fn handle_notification(
         .app
         .plugin_system()
         .cancel_controlled(&PluginInvocationCancellationRequest {
+            mcp_origin: global_lifecycle(&request_id, native_interaction).mcp_origin,
             plugin_id: None,
             request_id: request_key(&request_id),
             owner_id: "plugin-mcp-http".into(),

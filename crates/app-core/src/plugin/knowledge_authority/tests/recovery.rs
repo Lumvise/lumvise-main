@@ -137,3 +137,47 @@ fn legacy_unscoped_broker_cannot_inspect_or_recover_integrity() {
         );
     }
 }
+
+#[test]
+fn bound_owner_mcp_recovery_reaches_storage_through_the_connector_gate() {
+    let fixture = AuthorityFixture::new();
+    seed_managed_project(&fixture, "/p");
+    // Mounted MCP routes always carry their transport origin; the connector gate keys on it.
+    let bound = fixture.mcp_invocation("repair-owner", "/p");
+    let origin = lumvise_plugin_runtime::PluginMcpOrigin {
+        project_epoch: bound.scope_epoch(),
+        ..lumvise_plugin_runtime::PluginMcpOrigin::unidentified("repair-owner")
+    };
+    let base = bound.with_mcp_origin(origin);
+    let recover = |context: &PluginInvocationContext| {
+        semantic_storage_capability::invoke_controlled(
+            fixture.persistence.as_ref(),
+            &SemanticSnapshotWrites::new(),
+            "builtin.semantic",
+            json!({"operation":"recover_revision_integrity","request":{
+                "operation_id":"recover", "project_root":"/p", "project_id":"not-this-project",
+                "expected_commit_version":1, "provider_instance_id":"parser",
+                "missing_records":[{"kind":"element","record_id":"missing"}]
+            }}),
+            context,
+            &fixture.authority,
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let direct = recover(
+        &base
+            .clone()
+            .enter_plugin("builtin.semantic", "recover_revision_integrity"),
+    );
+    assert!(
+        direct.contains("existing durable project identity"),
+        "{direct}"
+    );
+    let delegated = recover(
+        &base
+            .enter_plugin("builtin.knowledge", "get_document")
+            .enter_plugin("builtin.semantic", "recover_revision_integrity"),
+    );
+    assert!(delegated.contains("direct host-validated"), "{delegated}");
+}

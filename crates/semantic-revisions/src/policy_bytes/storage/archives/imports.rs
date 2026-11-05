@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 #[serde(deny_unknown_fields)]
 pub(super) struct ImportReceipt {
     pub identity: String,
-    request_digest: String,
-    outcome_json: String,
+    pub(super) request_digest: String,
+    pub(super) outcome_json: String,
 }
 
 pub(super) fn decode(input: &str) -> SemanticRevisionResult<(ImportRequest, ArchivePayload)> {
@@ -22,12 +22,7 @@ pub(super) fn decode(input: &str) -> SemanticRevisionResult<(ImportRequest, Arch
     }
     require_non_empty(&request.operation_id, "a frozen import operation ID")?;
     let archive: ArchivePayload = serde_json::from_str(&request.archive_json)?;
-    if archive.selection_id != "working" || archive.revision_state.is_none() {
-        return Err(SemanticRevisionError::invalid_value(
-            &archive.selection_id,
-            "working archive with complete revision metadata",
-        ));
-    }
+    require_working_archive(&archive)?;
     Ok((request, archive))
 }
 
@@ -188,14 +183,11 @@ fn replay(
     }))
 }
 
-fn validated_state(
+pub(super) fn validated_state(
     archive: &ArchivePayload,
     root: &str,
 ) -> SemanticRevisionResult<SemanticRevisionState> {
-    let state = archive
-        .revision_state
-        .as_ref()
-        .expect("decoded revision metadata");
+    let state = require_working_archive(archive)?;
     if state.project_id != archive.project_id || state.project_root != archive.snapshot.project_root
     {
         return Err(SemanticRevisionError::invalid_value(
@@ -228,6 +220,21 @@ fn validated_state(
         elements,
         artifacts,
     )
+}
+
+fn require_working_archive(
+    archive: &ArchivePayload,
+) -> SemanticRevisionResult<&SemanticRevisionState> {
+    archive
+        .revision_state
+        .as_ref()
+        .filter(|_| archive.selection_id == "working")
+        .ok_or_else(|| {
+            SemanticRevisionError::invalid_value(
+                &archive.selection_id,
+                "working archive with complete revision metadata",
+            )
+        })
 }
 
 fn validate_blobs(

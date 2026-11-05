@@ -349,7 +349,10 @@ fn post_mcp_json(client: &Client, provider_id: &str, url: &str, payload: Value) 
         .and_then(|response| response.json::<Value>())
         .map_err(|error| NeuralError::ProviderFailed {
             provider_id: provider_id.to_string(),
-            message: format!("MCP HTTP request to {url:?} failed: {error}"),
+            message: format!(
+                "MCP HTTP request for {provider_id:?} failed: {}",
+                error.without_url()
+            ),
         })
 }
 

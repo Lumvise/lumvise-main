@@ -1,5 +1,6 @@
 //! Grafeo row mapping for the shared revision policy. No publication or retention rules live here.
 use super::committed_columns::CommittedPropertyRows;
+use super::graph_reads::{CommittedGraph, GrafeoResult};
 use super::graph_row_projection::string_property;
 use super::graph_rows::complete_project_rows;
 use super::graph_store::GraphTransaction;
@@ -81,7 +82,7 @@ impl GrafeoRevisionHeader for SemanticRevisionRecordHeader {
             label,
             property,
             &self.record.record_id,
-        ).into_iter().filter(|node| {
+        )?.into_iter().filter(|node| {
             matches!(node.get_property(property), Some(Value::String(id)) if id.as_ref() == self.record.record_id)
         }).collect::<Vec<_>>();
         if nodes.is_empty() {
@@ -146,7 +147,9 @@ pub(super) fn load_revision_state(
     now_ms: i64,
     project_id: Option<&str>,
 ) -> Result<LoadedRevisionState> {
-    let nodes = graph.find_nodes_by_property(ROW_PROJECT, &Value::from(root));
+    let nodes = graph
+        .find_nodes_by_property(ROW_PROJECT, &Value::from(root))
+        .db()?;
     load_revision_nodes(
         graph,
         root,
@@ -176,7 +179,11 @@ pub(super) fn load_revision_nodes(
     let mut row_ids: BTreeMap<String, Vec<NodeId>> = BTreeMap::new();
     let mut memberships = BTreeMap::new();
     for id in nodes {
-        let Some(node) = graph.get_node(id).filter(|node| node.has_label(ROW_LABEL)) else {
+        let Some(node) = graph
+            .get_node(id)
+            .db()?
+            .filter(|node| node.has_label(ROW_LABEL))
+        else {
             continue;
         };
         let key = string_property(&node, ROW_KEY)
@@ -201,7 +208,7 @@ pub(super) fn load_revision_nodes(
         state.project_id = adoption_identity
             .expect("adoption requires its durable identity")
             .into();
-        let rows = complete_project_rows(graph, root);
+        let rows = complete_project_rows(graph, root)?;
         if !rows.elements.is_empty() || !rows.artifacts.is_empty() || !rows.relationships.is_empty()
         {
             state = SemanticRevisionState::adopt(
@@ -673,7 +680,7 @@ fn membership_rows(
 impl PreparedRevisionRows {
     pub(super) fn apply(self, graph: &GraphTransaction<'_>, commit_version: i64) -> Result<()> {
         for node_id in self.deletions {
-            graph.delete_node(node_id);
+            graph.delete_node(node_id)?;
         }
         for row in self.upserts {
             let payload = match row.commit_row {
@@ -721,23 +728,28 @@ pub(super) fn revision_row_nodes(
     identity: &str,
 ) -> Result<Vec<NodeId>> {
     let key = serde_json::to_string(&(root, kind, identity))?;
-    Ok(graph
+    let mut rows = Vec::new();
+    for id in graph
         .find_nodes_by_property(ROW_KEY, &Value::from(key))
-        .into_iter()
-        .filter(|id| {
-            graph
-                .get_node(*id)
-                .is_some_and(|node| node.has_label(ROW_LABEL))
-        })
-        .collect())
+        .db()?
+    {
+        if graph
+            .get_node(id)
+            .db()?
+            .is_some_and(|node| node.has_label(ROW_LABEL))
+        {
+            rows.push(id);
+        }
+    }
+    Ok(rows)
 }
 
 pub(super) fn revision_row_from_node(graph: &GrafeoDB, id: NodeId) -> Result<RevisionRow> {
-    let store = graph.graph_store();
-    let payload = store
-        .is_node_visible_at_epoch(id, store.current_epoch())
-        .then(|| store.get_node_property(id, &ROW_PAYLOAD.into()))
-        .flatten();
+    // GRAFEO06-REVIEW(25): committed single-row payload read; 0.5 checked visibility at the current epoch.
+    let snapshot = graph.committed_snapshot()?;
+    let payload = snapshot
+        .node_property(id, ROW_PAYLOAD, snapshot.view())
+        .db()?;
     decode_revision_payload(id, payload)
 }
 
@@ -745,10 +757,11 @@ pub(super) fn revision_rows_from_nodes(
     graph: &GrafeoDB,
     ids: &[NodeId],
 ) -> Result<Vec<RevisionRow>> {
-    let store = graph.graph_store();
-    let payloads = store
-        .get_node_property_batch(ids, &ROW_PAYLOAD.into())
-        .committed_nodes(&*store, ids);
+    let snapshot = graph.committed_snapshot()?;
+    let payloads = snapshot
+        .node_property_batch(ids, &ROW_PAYLOAD.into(), snapshot.view())
+        .db()?
+        .committed_nodes(&snapshot, ids)?;
     ids.iter()
         .zip(payloads)
         .map(|(id, payload)| decode_revision_payload(*id, payload))
@@ -770,12 +783,17 @@ pub(super) fn stored_revision_by_id(
     record: &SemanticRecordRef,
 ) -> Result<Option<(String, SemanticStoredRevision)>> {
     let identity = serde_json::to_string(record)?;
-    let nodes = graph.find_nodes_by_property(RECORD_IDENTITY, &Value::from(identity));
-    let nodes = nodes
-        .into_iter()
-        .filter_map(|id| graph.get_node(id))
-        .filter(|node| node.has_label(ROW_LABEL))
-        .collect::<Vec<_>>();
+    let mut nodes = Vec::new();
+    for id in graph
+        .find_nodes_by_property(RECORD_IDENTITY, &Value::from(identity))
+        .db()?
+    {
+        if let Some(node) = graph.get_node(id).db()?
+            && node.has_label(ROW_LABEL)
+        {
+            nodes.push(node);
+        }
+    }
     if nodes.len() > 1 {
         return Err(DbError::invalid_value(
             &record.record_id,
@@ -852,7 +870,7 @@ pub(super) fn require_unmanaged_element(graph: &GrafeoDB, element_id: &str) -> R
     {
         return require_unmanaged_project(graph, &root);
     }
-    if let Some(element) = super::graph_rows::semantic_element_by_id(graph, element_id) {
+    if let Some(element) = super::graph_rows::semantic_element_by_id(graph, element_id)? {
         return require_unmanaged_project(graph, &element.project_root);
     }
     Ok(())
@@ -864,7 +882,7 @@ pub(super) fn require_unmanaged_artifact(graph: &GrafeoDB, artifact_id: &str) ->
     {
         return require_unmanaged_project(graph, &root);
     }
-    if let Some(artifact) = super::graph_rows::semantic_artifact_by_id(graph, artifact_id) {
+    if let Some(artifact) = super::graph_rows::semantic_artifact_by_id(graph, artifact_id)? {
         return require_unmanaged_element(graph, &artifact.semantic_element_id);
     }
     Ok(())

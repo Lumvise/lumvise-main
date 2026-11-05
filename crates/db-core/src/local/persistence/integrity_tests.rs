@@ -243,10 +243,10 @@ fn delete_source_body(persistence: &LocalPersistence) {
         .semantic_storage()
         .graph
         .write(|graph| {
-            let nodes =
-                graph.find_nodes_by_property("semantic_element_id", &grafeo::Value::from("source"));
+            let nodes = graph
+                .find_nodes_by_property("semantic_element_id", &grafeo::Value::from("source"))?;
             assert_eq!(nodes.len(), 1);
-            assert!(graph.delete_node(nodes[0]));
+            assert!(graph.delete_node(nodes[0]).unwrap());
             Ok(())
         })
         .unwrap();
@@ -686,8 +686,8 @@ fn malformed_header_identity_fails_inspection_and_recovery_without_a_commit() {
             let nodes = graph.find_nodes_by_property(
                 "revision_record_identity",
                 &grafeo::Value::from(identity.clone()),
-            );
-            let node = graph.get_node(nodes[0]).unwrap();
+            )?;
+            let node = graph.get_node(nodes[0])?.unwrap();
             let Some(grafeo::Value::String(payload)) = node.get_property("revision_row_json")
             else {
                 panic!("expected stored header")
@@ -748,20 +748,22 @@ fn a_missing_prior_recovery_audit_blocks_acknowledging_another_loss() {
                 &grafeo::Value::from(
                     serde_json::to_string(&(ROOT, "recovery", "recover-source")).unwrap(),
                 ),
-            );
+            )?;
             assert_eq!(audits.len(), 1);
-            assert!(graph.delete_node(audits[0]));
+            assert!(graph.delete_node(audits[0]).unwrap());
             let bodies = graph
                 .find_nodes_by_property("semantic_element_id", &grafeo::Value::from("intact"))
+                .unwrap()
                 .into_iter()
                 .filter(|id| {
                     graph
                         .get_node(*id)
+                        .unwrap()
                         .is_some_and(|node| node.has_label("SemanticElement"))
                 })
                 .collect::<Vec<_>>();
             assert_eq!(bodies.len(), 1);
-            assert!(graph.delete_node(bodies[0]));
+            assert!(graph.delete_node(bodies[0]).unwrap());
             Ok(())
         })
         .unwrap();

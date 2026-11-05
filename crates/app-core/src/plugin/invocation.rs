@@ -22,6 +22,7 @@ pub struct PluginInvocationRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PluginInvocationLifecycle {
+    pub(crate) mcp_origin: Option<lumvise_plugin_runtime::PluginMcpOrigin>,
     pub(crate) request_id: String,
     pub(crate) owner_id: String,
     pub(crate) session_id: String,
@@ -36,6 +37,7 @@ pub(crate) fn local_invocation_lifecycle(
 ) -> PluginInvocationLifecycle {
     let sequence = NEXT_SURFACE_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     PluginInvocationLifecycle {
+        mcp_origin: None,
         request_id: format!("local-{}-{sequence}", std::process::id()),
         owner_id: owner_id.to_owned(),
         session_id: format!("local-session-{}", std::process::id()),
@@ -51,8 +53,14 @@ pub(crate) fn surface_invocation_request(
     input: Value,
     owner_id: &str,
     deadline: Instant,
+    origin: Option<lumvise_plugin_runtime::PluginMcpOrigin>,
 ) -> RuntimeInvocationRequest {
     let context = surface_invocation_context(owner_id, deadline);
+    let context = if let Some(origin) = origin {
+        context.with_mcp_origin(origin)
+    } else {
+        context
+    };
     RuntimeInvocationRequest::new(plugin_id, export_id, input, context)
 }
 

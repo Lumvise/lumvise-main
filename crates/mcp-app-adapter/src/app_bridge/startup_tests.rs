@@ -94,6 +94,8 @@ impl StartingAppFixture {
             panic!("expected isolated starting owner");
         };
         let config = AppBridgeConfig {
+            connector_credential: None,
+            connector_display_name: None,
             discovery_path: root.path().join(RUNTIME_DISCOVERY_FILE),
             coordinator,
             terminal: Arc::new(AtomicBool::new(false)),

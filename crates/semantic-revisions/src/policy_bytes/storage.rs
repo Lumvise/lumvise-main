@@ -1,7 +1,7 @@
 //! Private gateway storage envelopes. Only this module decodes domain numbers; SQL sees string keys.
 use crate::*;
 use serde::{Deserialize, Serialize};
-mod archives;
+pub(super) mod archives;
 mod content;
 mod contributions;
 mod headers;
@@ -16,6 +16,16 @@ use rows::{StorageRow, StorageRowKey};
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum StorageRequest {
+    ArchiveImportPage {
+        header_json: String,
+        page_json: String,
+    },
+    ArchiveImportStep {
+        context: archives::transfer::ImportContext,
+        header_json: String,
+        checkpoint_json: Option<String>,
+        facts: Vec<archives::transfer::ImportFact>,
+    },
     ChallengeIdentity {
         project_id: String,
         authenticated_actor: String,
@@ -126,6 +136,16 @@ pub(super) enum StorageResult {
 
 pub(super) fn evaluate(request: StorageRequest) -> SemanticRevisionResult<StorageResult> {
     match request {
+        StorageRequest::ArchiveImportPage {
+            header_json,
+            page_json,
+        } => archives::transfer::page(&header_json, &page_json),
+        StorageRequest::ArchiveImportStep {
+            context,
+            header_json,
+            checkpoint_json,
+            facts,
+        } => archives::transfer::step(context, &header_json, checkpoint_json.as_deref(), facts),
         StorageRequest::ChallengeIdentity {
             project_id,
             authenticated_actor,

@@ -2,13 +2,13 @@
 use crate::domain::vector_search::{SCORE_CALLS, cosine_score};
 use crate::domain::vector_search::{top_k as rank_vectors, validate_search_input};
 use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
 use crate::local::grafeo::graph_rows::{
     artifact_is_current_in_project, semantic_element_by_id_selective,
 };
 use crate::local::grafeo::semantic_storage::SemanticStorage;
 use crate::{Result, VectorSearchResult};
-use grafeo::{NodeId, Value as GrafeoValue};
-use grafeo_core::graph::GraphStore as GrafeoGraphStore;
+use grafeo::{NodeId, Snapshot, Value as GrafeoValue};
 #[cfg(test)]
 use std::cell::Cell;
 use std::sync::Arc;
@@ -44,19 +44,18 @@ impl<'db> SemanticStorage<'db> {
     ) -> Result<Vec<VectorSearchResult>> {
         validate_search_input(project_root, query, k)?;
         self.graph.read(|graph| {
-            let store = graph.graph_store();
-            let node_ids = store
-                .nodes_by_label(ARTIFACT_VECTOR_LABEL)
-                .into_iter()
-                .collect::<Vec<_>>();
+            let snapshot = graph.committed_snapshot()?;
+            let node_ids = snapshot
+                .nodes_by_label(ARTIFACT_VECTOR_LABEL, snapshot.view())
+                .db()?;
             let candidates = vector_candidates_from_properties(
-                &*store,
+                &snapshot,
                 &node_ids,
                 "artifact_id",
                 engine_id,
                 model,
                 |id| artifact_is_current_in_project(graph, project_root, id),
-            );
+            )?;
             Ok(top_k(candidates, query, k))
         })
     }
@@ -72,65 +71,66 @@ impl<'db> SemanticStorage<'db> {
     ) -> Result<Vec<VectorSearchResult>> {
         validate_search_input(project_root, query, k)?;
         self.graph.read(|graph| {
-            let store = graph.graph_store();
-            let node_ids = store
-                .nodes_by_label(ELEMENT_NAME_VECTOR_LABEL)
-                .into_iter()
-                .collect::<Vec<_>>();
+            let snapshot = graph.committed_snapshot()?;
+            let node_ids = snapshot
+                .nodes_by_label(ELEMENT_NAME_VECTOR_LABEL, snapshot.view())
+                .db()?;
             let candidates = vector_candidates_from_properties(
-                &*store,
+                &snapshot,
                 &node_ids,
                 "semantic_element_id",
                 engine_id,
                 model,
                 |id| {
-                    semantic_element_by_id_selective(graph, id)
-                        .is_some_and(|element| element.project_root == project_root)
+                    Ok(semantic_element_by_id_selective(graph, id)?
+                        .is_some_and(|element| element.project_root == project_root))
                 },
-            );
+            )?;
             Ok(top_k(candidates, query, k))
         })
     }
 }
 
 fn vector_candidates_from_properties(
-    store: &dyn GrafeoGraphStore,
+    snapshot: &Snapshot,
     node_ids: &[NodeId],
     id_property: &str,
     engine_id: &str,
     model: Option<&str>,
-    include_record: impl Fn(&str) -> bool,
-) -> Vec<(NodeId, String, Arc<[f32]>)> {
+    include_record: impl Fn(&str) -> Result<bool>,
+) -> Result<Vec<(NodeId, String, Arc<[f32]>)>> {
     let keys = vec![
         id_property.into(),
         "engine_id".into(),
         "model".into(),
         VECTOR_PROPERTY.into(),
     ];
-    let rows = store
-        .get_nodes_properties_selective_batch(node_ids, &keys)
-        .committed_nodes(store, node_ids);
-    node_ids
-        .iter()
-        .enumerate()
-        .filter_map(|(row, node_id)| {
-            let properties = rows.get(row)?;
-            let id = batch_string(properties.get(id_property))?;
-            if batch_string(properties.get("engine_id")).as_deref() != Some(engine_id)
-                || batch_string(properties.get("model")).as_deref() != model.or(Some(""))
-                || !include_record(&id)
-            {
-                return None;
-            }
-            let GrafeoValue::Vector(vector) = properties.get(VECTOR_PROPERTY)? else {
-                return None;
-            };
-            vector
-                .iter()
-                .all(|value| value.is_finite())
-                .then(|| (*node_id, id, Arc::clone(vector)))
-        })
-        .collect()
+    let rows = snapshot
+        .node_properties_selective_batch(node_ids, &keys, snapshot.view())
+        .db()?
+        .committed_nodes(snapshot, node_ids)?;
+    let mut candidates = Vec::new();
+    for (row, node_id) in node_ids.iter().enumerate() {
+        let Some(properties) = rows.get(row) else {
+            continue;
+        };
+        let Some(id) = batch_string(properties.get(id_property)) else {
+            continue;
+        };
+        if batch_string(properties.get("engine_id")).as_deref() != Some(engine_id)
+            || batch_string(properties.get("model")).as_deref() != model.or(Some(""))
+            || !include_record(&id)?
+        {
+            continue;
+        }
+        let Some(GrafeoValue::Vector(vector)) = properties.get(VECTOR_PROPERTY) else {
+            continue;
+        };
+        if vector.iter().all(|value| value.is_finite()) {
+            candidates.push((*node_id, id, Arc::clone(vector)));
+        }
+    }
+    Ok(candidates)
 }
 
 fn batch_string(value: Option<&GrafeoValue>) -> Option<String> {
@@ -143,6 +143,7 @@ fn batch_string(value: Option<&GrafeoValue>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::grafeo::graph_reads::CommittedGraph;
     use crate::local::grafeo::graph_rows::string_property;
     use crate::{ArtifactTextVector, SemanticArtifact, SemanticElement};
     use serde_json::json;
@@ -210,7 +211,9 @@ mod tests {
         assert!((results[1].score - 0.993_883_7).abs() < 1e-5);
         db.graph.read(|graph| {
             let node = graph
-                .iter_nodes()
+                .all_nodes()
+                .unwrap()
+                .into_iter()
                 .find(|node| node.has_label(ELEMENT_NAME_VECTOR_LABEL) && string_property(node, "semantic_element_id").as_deref() == Some("a"))
                 .unwrap();
             assert!(matches!(node.get_property(VECTOR_PROPERTY), Some(GrafeoValue::Vector(vector)) if vector.as_ref() == [1.0, 0.0]));

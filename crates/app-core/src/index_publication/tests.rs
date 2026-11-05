@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 mod acknowledgement;
 mod failures;
 mod frozen_batch;
+mod recovery_observation;
 mod source_checkout;
 mod supersession;
 

@@ -22,38 +22,136 @@ impl IndexPublicationJournal {
         receipt: &SemanticRevisionPublicationReceipt,
         control: &InvocationControl,
     ) -> Result<()> {
-        let original = self.header(control)?;
-        let Some(identity) = &original.pending else {
-            if original.last_acknowledged_operation.as_deref() == Some(&receipt.operation_id) {
-                return Ok(());
-            }
-            return Err(invalid_checkpoint(
-                &receipt.operation_id,
-                "this checkout's pending or last acknowledged operation",
-            ));
+        // Parsing may outlive a host step; acknowledgement must share its caller's one budget.
+        let mut journal = self.clone();
+        journal.invocations = IndexPublicationInvocations::Inherited;
+        journal
+            .rows
+            .use_invocations(IndexPublicationInvocations::Inherited);
+        journal.acknowledge_controlled(receipt, control)
+    }
+
+    fn acknowledge_controlled(
+        &self,
+        receipt: &SemanticRevisionPublicationReceipt,
+        control: &InvocationControl,
+    ) -> Result<()> {
+        if self
+            .recovered_publication(&receipt.operation_id, control)?
+            .is_some()
+        {
+            return self.acknowledge_recovered(receipt, control);
+        }
+        self.acknowledge_normal(receipt, control)
+    }
+
+    fn acknowledge_normal(
+        &self,
+        receipt: &SemanticRevisionPublicationReceipt,
+        control: &InvocationControl,
+    ) -> Result<()> {
+        let Some((original, publication)) = self.acknowledged_pending(receipt, control)? else {
+            return Ok(());
         };
-        let Some(publication) = self.pending(control)? else {
-            return self.already_acknowledged(receipt, control);
-        };
-        validate_receipt(&self.binding, &publication, receipt, original.generation)?;
         let producer_generation =
             accepted_producer_generation(&publication, receipt, original.producer_generation)?;
-        let mut scope = AcknowledgedScope::new(self, &publication, control)?;
-        scope.replace_elements(&publication, receipt)?;
-        scope.remove_connections(&publication.observation()?.expected.connection_ids, control)?;
-        scope.add_connections(receipt, control)?;
-        let mut completed = original.clone();
-        completed.generation = receipt.selection.generation;
-        completed.producer_generation = producer_generation;
-        completed.last_acknowledged_operation = Some(receipt.operation_id.clone());
-        completed.pending = None;
-        let mut changes = scope.mutations()?;
-        changes.extend(self.pending_deletions(identity, &self.descriptor(identity, control)?));
+        let changes = self.prepare_acknowledged_scope(&publication, receipt, control)?;
+        self.acknowledge_ready(&original, changes, receipt, producer_generation, control)
+    }
+
+    pub(super) fn acknowledged_pending(
+        &self,
+        receipt: &SemanticRevisionPublicationReceipt,
+        control: &InvocationControl,
+    ) -> Result<Option<(CheckpointHeader, FrozenIndexPublication)>> {
+        let Some(original) = self.pending_receipt_header(receipt, control)? else {
+            return Ok(None);
+        };
+        let Some(publication) = self.pending(control)? else {
+            self.already_acknowledged(receipt, control)?;
+            return Ok(None);
+        };
+        validate_receipt(&self.binding, &publication, receipt, original.generation)?;
+        Ok(Some((original, publication)))
+    }
+
+    fn pending_receipt_header(
+        &self,
+        receipt: &SemanticRevisionPublicationReceipt,
+        control: &InvocationControl,
+    ) -> Result<Option<CheckpointHeader>> {
+        let original = self.header(control)?;
+        if original.pending.is_some() {
+            return Ok(Some(original));
+        }
+        if original.last_acknowledged_operation.as_deref() == Some(&receipt.operation_id) {
+            return Ok(None);
+        }
+        Err(invalid_checkpoint(
+            &receipt.operation_id,
+            "this checkout's pending or last acknowledged operation",
+        ))
+    }
+
+    pub(super) fn acknowledge_ready(
+        &self,
+        original: &CheckpointHeader,
+        mut changes: Vec<lumvise_db_core::PluginDataMutation>,
+        receipt: &SemanticRevisionPublicationReceipt,
+        producer_generation: i64,
+        control: &InvocationControl,
+    ) -> Result<()> {
+        let completed = acknowledged_header(original, receipt, producer_generation);
+        changes.extend(self.finished_pending_mutations(original, control)?);
+        // The original header CAS also guards the paths prepared before producer reconciliation.
         changes.extend([
-            self.rows.require(Some(&original))?,
+            self.rows.require(Some(original))?,
             self.rows.put("header", &completed)?,
         ]);
         self.rows.apply(changes, control)
+    }
+
+    fn finished_pending_mutations(
+        &self,
+        original: &CheckpointHeader,
+        control: &InvocationControl,
+    ) -> Result<Vec<lumvise_db_core::PluginDataMutation>> {
+        let identity = original.pending.as_ref().ok_or_else(|| {
+            invalid_checkpoint(&self.binding.checkout_id, "a ready source publication")
+        })?;
+        Ok(self.pending_deletions(identity, &self.descriptor(identity, control)?))
+    }
+
+    fn acknowledged_connections(
+        &self,
+        ids: &[String],
+        control: &InvocationControl,
+    ) -> Result<Vec<lumvise_db_core::SemanticRevisionConnection>> {
+        let result = self.semantic(
+            SemanticOperation::RevisionConnections(SemanticRevisionConnectionQuery {
+                project_root: self.project_root.clone(),
+                project_id: self.binding.project_id.clone(),
+                connection_ids: ids.to_vec(),
+            }),
+            control,
+        )?;
+        let SemanticResult::RevisionConnections(edges) = result else {
+            return Err(invalid_checkpoint(
+                format!("{ids:?}"),
+                "exact retained connection definitions",
+            ));
+        };
+        require_exact_connections(ids, &edges)?;
+        Ok(edges)
+    }
+
+    pub(super) fn prepare_acknowledged_scope(
+        &self,
+        publication: &FrozenIndexPublication,
+        receipt: &SemanticRevisionPublicationReceipt,
+        control: &InvocationControl,
+    ) -> Result<Vec<lumvise_db_core::PluginDataMutation>> {
+        AcknowledgedScope::prepare(self, publication, receipt, control)?.mutations()
     }
 
     fn already_acknowledged(
@@ -74,6 +172,19 @@ impl IndexPublicationJournal {
 }
 
 impl<'a> AcknowledgedScope<'a> {
+    fn prepare(
+        journal: &'a IndexPublicationJournal,
+        publication: &FrozenIndexPublication,
+        receipt: &SemanticRevisionPublicationReceipt,
+        control: &InvocationControl,
+    ) -> Result<Self> {
+        let mut scope = Self::new(journal, publication, control)?;
+        scope.replace_elements(publication, receipt)?;
+        scope.remove_connections(&publication.observation()?.expected.connection_ids, control)?;
+        scope.add_connections(receipt, control)?;
+        Ok(scope)
+    }
+
     fn new(
         journal: &'a IndexPublicationJournal,
         publication: &FrozenIndexPublication,
@@ -168,17 +279,10 @@ impl<'a> AcknowledgedScope<'a> {
         removed: &[String],
         control: &InvocationControl,
     ) -> Result<()> {
+        let connections = self.removed_connections(removed, control)?;
         for id in removed {
-            let edge = self
-                .previous
-                .iter()
-                .find_map(|path| path.connections.get(id))
-                .ok_or_else(|| {
-                    invalid_checkpoint(id, "an observed connection in the acknowledged scope")
-                })?
-                .clone();
-            for owner in edge.owners {
-                if let Some(path) = self.owner_path(&owner, control)? {
+            for owner in &connections[id].owners {
+                if let Some(path) = self.owner_path(owner, control)? {
                     self.load_path(&path, control)?;
                     self.paths.get_mut(&path).unwrap().connections.remove(id);
                 }
@@ -187,33 +291,39 @@ impl<'a> AcknowledgedScope<'a> {
         Ok(())
     }
 
+    fn removed_connections(
+        &self,
+        removed: &[String],
+        control: &InvocationControl,
+    ) -> Result<BTreeMap<String, ObservedConnection>> {
+        let mut connections = checkpoint_connection_owners(&self.previous);
+        let missing = removed
+            .iter()
+            .filter(|id| !connections.contains_key(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(connections);
+        }
+        connections.extend(
+            self.journal
+                .acknowledged_connections(&missing, control)?
+                .into_iter()
+                .map(connection_ownership),
+        );
+        Ok(connections)
+    }
+
     fn add_connections(
         &mut self,
         receipt: &SemanticRevisionPublicationReceipt,
         control: &InvocationControl,
     ) -> Result<()> {
-        let result = self.journal.semantic(
-            SemanticOperation::RevisionConnections(SemanticRevisionConnectionQuery {
-                project_root: self.journal.project_root.clone(),
-                project_id: self.journal.binding.project_id.clone(),
-                connection_ids: receipt.accepted_scope.connection_ids.clone(),
-            }),
-            control,
-        )?;
-        let SemanticResult::RevisionConnections(edges) = result else {
-            return Err(invalid_checkpoint(
-                &receipt.operation_id,
-                "exact accepted connection definitions",
-            ));
-        };
+        let edges = self
+            .journal
+            .acknowledged_connections(&receipt.accepted_scope.connection_ids, control)?;
         for edge in edges {
-            let observed = ObservedConnection {
-                owners: edge
-                    .relationship
-                    .owned_element_ids()
-                    .map(str::to_owned)
-                    .collect(),
-            };
+            let (connection_id, observed) = connection_ownership(edge);
             let mut placed = false;
             for owner in &observed.owners {
                 if let Some(path) = self.owner_path(owner, control)? {
@@ -222,13 +332,13 @@ impl<'a> AcknowledgedScope<'a> {
                         .get_mut(&path)
                         .unwrap()
                         .connections
-                        .insert(edge.connection_id.clone(), observed.clone());
+                        .insert(connection_id.clone(), observed.clone());
                     placed = true;
                 }
             }
             if !placed {
                 return Err(invalid_checkpoint(
-                    &edge.connection_id,
+                    &connection_id,
                     "an accepted source connection owner",
                 ));
             }
@@ -299,7 +409,59 @@ impl<'a> AcknowledgedScope<'a> {
     }
 }
 
-fn validate_receipt(
+fn checkpoint_connection_owners(
+    previous: &[CheckpointPath],
+) -> BTreeMap<String, ObservedConnection> {
+    previous
+        .iter()
+        .flat_map(|path| &path.connections)
+        .map(|(id, edge)| (id.clone(), edge.clone()))
+        .collect()
+}
+
+fn connection_ownership(
+    edge: lumvise_db_core::SemanticRevisionConnection,
+) -> (String, ObservedConnection) {
+    let owners = edge
+        .relationship
+        .owned_element_ids()
+        .map(str::to_owned)
+        .collect();
+    (edge.connection_id, ObservedConnection { owners })
+}
+
+fn acknowledged_header(
+    original: &CheckpointHeader,
+    receipt: &SemanticRevisionPublicationReceipt,
+    producer_generation: i64,
+) -> CheckpointHeader {
+    let mut completed = original.clone();
+    completed.generation = receipt.selection.generation;
+    completed.producer_generation = producer_generation;
+    completed.last_acknowledged_operation = Some(receipt.operation_id.clone());
+    completed.pending = None;
+    completed
+}
+
+fn require_exact_connections(
+    ids: &[String],
+    edges: &[lumvise_db_core::SemanticRevisionConnection],
+) -> Result<()> {
+    let expected = ids.iter().collect::<BTreeSet<_>>();
+    let actual = edges
+        .iter()
+        .map(|edge| &edge.connection_id)
+        .collect::<BTreeSet<_>>();
+    if edges.len() != expected.len() || actual != expected {
+        return Err(invalid_checkpoint(
+            format!("requested={ids:?}, received={actual:?}"),
+            "one exact retained connection definition per requested ID",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_receipt(
     binding: &IndexCheckoutBinding,
     publication: &FrozenIndexPublication,
     receipt: &SemanticRevisionPublicationReceipt,

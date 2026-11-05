@@ -143,6 +143,8 @@ pub(super) struct RecoveredSourceSupersession {
     pub frozen_digest: String,
     pub inspected_commit_version: i64,
     pub blocked_headers: Vec<lumvise_db_core::SemanticRevisionRecordHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoped_conflict: Option<super::recovery_observation::RecoveredSourceObservation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

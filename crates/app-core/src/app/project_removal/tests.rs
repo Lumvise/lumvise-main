@@ -50,6 +50,7 @@ fn credentialed_app(
 
 fn request(body: Value) -> HttpRequest {
     HttpRequest {
+        native_interaction: false,
         method: "POST".into(),
         path: PROJECT_REMOVAL_ENDPOINT.into(),
         query: BTreeMap::new(),

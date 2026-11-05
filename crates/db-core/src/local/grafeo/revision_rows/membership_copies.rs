@@ -61,6 +61,7 @@ fn validate_membership_copy_properties(
 ) -> Result<()> {
     let node = graph
         .get_node(id)
+        .db()?
         .filter(|node| node.has_label(ROW_LABEL))
         .ok_or_else(|| {
             DbError::invalid_value(id.to_string(), "a visible revision membership row")
@@ -84,9 +85,10 @@ fn validate_membership_copy_lookups(
     row: &RevisionRow,
 ) -> Result<()> {
     let expected = membership_copy_lookups(root, row)?;
-    let store = graph.graph_store();
+    let snapshot = graph.committed_snapshot()?;
     for (property, expected) in expected {
-        let actual = store.get_node_property(id, &property.into());
+        // GRAFEO06-REVIEW(27): committed property read; 0.5 read the live store column.
+        let actual = snapshot.node_property(id, property, snapshot.view()).db()?;
         if actual.as_ref().and_then(Value::as_str) != expected.as_deref() {
             return Err(DbError::invalid_value(
                 key,

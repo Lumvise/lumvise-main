@@ -24,7 +24,7 @@ pub use error::{PluginRuntimeError, SchemaDirection};
 pub use invocation::{
     PluginInvocationCancellation, PluginInvocationCancellationRequest, PluginInvocationClass,
     PluginInvocationContext, PluginInvocationError, PluginInvocationFailureKind,
-    PluginInvocationFrame, PluginInvocationRequest,
+    PluginInvocationFrame, PluginInvocationRequest, PluginMcpOrigin,
 };
 pub use lumvise_plugin_package::ExportDescriptor;
 pub use repository::{

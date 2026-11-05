@@ -42,6 +42,7 @@ pub use plugin::{
     SCOPED_MCP_MESSAGE_ENDPOINT, SCOPED_MCP_SSE_ENDPOINT, ScopedMcpChannel,
     ScopedMcpMessageRequest, ScopedMcpToolRoute, compiled_host_capability_versions,
 };
+pub use plugin::{ConnectorGrantMaintainer, generate_connector_credential};
 pub use project_execution::{
     PROJECT_EXECUTION_HEARTBEAT_ENDPOINT, PROJECT_EXECUTION_NEXT_ENDPOINT,
     PROJECT_EXECUTION_PROGRESS_ENDPOINT, PROJECT_EXECUTION_REGISTER_ENDPOINT,

@@ -25,6 +25,7 @@ mod link_decisions;
 mod llm;
 mod project_context;
 mod project_execution;
+mod scoped_authority;
 #[cfg(test)]
 use llm::MAX_LLM_MESSAGES;
 use llm::{
@@ -338,6 +339,7 @@ impl PluginHostServices {
         input: Value,
         context: &PluginInvocationContext,
     ) -> Result<Value, HostCapabilityError> {
+        let input = self.secure_provider_channels(plugin_id, capability_id, input, context)?;
         let control = invocation_control(context);
         match capability_id {
             NEURAL_LLM => self.neural_llm(

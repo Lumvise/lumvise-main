@@ -1,4 +1,5 @@
 //! Revision content preparation stays side-effect free; publication stages it in the graph/SQL fence.
+use crate::local::grafeo::graph_reads::GrafeoResult;
 use crate::local::sql::artifact_blobs::ArtifactBlobRepository;
 use crate::local::sql::artifact_blobs::{put_archived_blob, require_stored_blob_references};
 use crate::*;
@@ -21,17 +22,17 @@ impl super::super::semantic_storage::SemanticStorage<'_> {
         let repository = ArtifactBlobRepository::with_clock(self.conn, self.clock.clone());
         let kept = artifact_content_refs(&after.records);
         let replaced = artifact_content_refs(&before.records);
-        Ok(repository
-            .blobs_for_artifacts(&owners)?
-            .into_iter()
-            .filter(|blob| {
-                !kept
-                    .values()
-                    .any(|reference| *reference == Some(blob.content_ref.as_str()))
-                    && !has_retained_content_reference(graph, &blob.content_ref, &replaced)
-            })
-            .map(|blob| blob.content_ref)
-            .collect())
+        let mut released = Vec::new();
+        for blob in repository.blobs_for_artifacts(&owners)? {
+            if !kept
+                .values()
+                .any(|reference| *reference == Some(blob.content_ref.as_str()))
+                && !has_retained_content_reference(graph, &blob.content_ref, &replaced)?
+            {
+                released.push(blob.content_ref);
+            }
+        }
+        Ok(released)
     }
 }
 
@@ -39,22 +40,23 @@ pub(super) fn released_revision_contents(
     graph: &GrafeoDB,
     before: &SemanticRevisionState,
     plan: &SemanticRevisionPublicationPlan,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     let next = artifact_content_refs(&plan.records);
     let candidates = artifact_content_refs(&before.records)
         .into_iter()
         .filter(|(id, reference)| next.get(id).is_some_and(|new| new != reference))
         .filter_map(|(_, reference)| reference)
         .collect::<std::collections::BTreeSet<_>>();
-    candidates
-        .into_iter()
-        .filter(|reference| {
-            reference.starts_with("revision-blob:")
-                && !next.values().any(|new| *new == Some(*reference))
-                && !has_retained_content_reference(graph, reference, &next)
-        })
-        .map(str::to_owned)
-        .collect()
+    let mut released = Vec::new();
+    for reference in candidates {
+        if reference.starts_with("revision-blob:")
+            && !next.values().any(|new| *new == Some(reference))
+            && !has_retained_content_reference(graph, reference, &next)?
+        {
+            released.push(reference.to_owned());
+        }
+    }
+    Ok(released)
 }
 
 fn artifact_content_refs(records: &[SemanticStoredRevision]) -> BTreeMap<&str, Option<&str>> {
@@ -74,16 +76,24 @@ fn has_retained_content_reference(
     graph: &GrafeoDB,
     reference: &str,
     replaced: &BTreeMap<&str, Option<&str>>,
-) -> bool {
-    graph
+) -> Result<bool> {
+    for id in graph
         .find_nodes_by_property("content_ref", &Value::from(reference))
-        .into_iter()
-        .filter_map(|id| graph.get_node(id))
-        .filter(|node| node.has_label("SemanticArtifact"))
-        .any(|node| match node.get_property("artifact_id") {
-            Some(Value::String(id)) => !replaced.contains_key::<str>(id.as_ref()),
-            _ => true,
-        })
+        .db()?
+    {
+        let Some(node) = graph.get_node(id).db()? else {
+            continue;
+        };
+        if node.has_label("SemanticArtifact")
+            && match node.get_property("artifact_id") {
+                Some(Value::String(id)) => !replaced.contains_key::<str>(id.as_ref()),
+                _ => true,
+            }
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn remove_revision_contents(

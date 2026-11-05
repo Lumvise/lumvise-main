@@ -1,3 +1,4 @@
+use crate::local::grafeo::graph_reads::CommittedGraph;
 use crate::local::grafeo::graph_rows::insert_element_node;
 use crate::{
     LocalPersistence, ProjectSnapshotScope, SemanticElement, SemanticOperation, SemanticPartition,
@@ -246,7 +247,7 @@ fn duplicate_fixture() -> LocalPersistence {
 
 fn assert_native_attachments(persistence: &LocalPersistence) {
     persistence.core.graph.read(|graph| {
-        let nodes = graph.iter_nodes().collect::<Vec<_>>();
+        let nodes = graph.all_nodes().unwrap();
         assert_eq!(
             nodes
                 .iter()
@@ -254,11 +255,11 @@ fn assert_native_attachments(persistence: &LocalPersistence) {
                 .count(),
             1
         );
-        let edges = graph.iter_edges().collect::<Vec<_>>();
+        let edges = graph.all_edges().unwrap();
         assert_eq!(edges.len(), 4);
         for edge in edges {
-            assert!(graph.get_node(edge.src).is_some());
-            assert!(graph.get_node(edge.dst).is_some());
+            assert!(graph.get_node(edge.src).unwrap().is_some());
+            assert!(graph.get_node(edge.dst).unwrap().is_some());
         }
     });
 }

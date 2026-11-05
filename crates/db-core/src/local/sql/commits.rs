@@ -40,49 +40,15 @@ pub(crate) fn semantic_recovery_status(
     Ok(status)
 }
 
-pub(crate) fn recover_stale_pending_commits(conn: &Connection) -> Result<usize> {
-    let pending_versions = pending_commit_versions(conn)?;
-    for commit_version in &pending_versions {
-        publish_semantic_commit(conn, *commit_version)?;
-    }
-    Ok(pending_versions.len())
-}
-
-/// Resolves semantic commits stuck in `failed` state.
-///
-/// A failed commit means the graph transaction was rolled back atomically
-/// (the write never landed), but the SQL commit record blocks all new
-/// writes via `reject_unresolved_commit`. This marks such commits as
-pub(crate) fn resolve_failed_commits(conn: &Connection) -> Result<usize> {
-    let failed_versions = failed_commit_versions(conn)?;
-    for commit_version in &failed_versions {
-        conn.execute(
-            "UPDATE semantic_commits SET state = 'resolved'
-             WHERE commit_version = ?1 AND state = 'failed'",
-            [commit_version],
-        )?;
-    }
-    Ok(failed_versions.len())
-}
-
-fn failed_commit_versions(conn: &Connection) -> Result<Vec<i64>> {
-    let mut statement = conn.prepare_cached(
-        "SELECT commit_version FROM semantic_commits WHERE state = 'failed' ORDER BY commit_version",
+/// Clears only a publication whose graph transaction was explicitly rolled back.
+/// For example, a validation failure before graph commit may release its reserved version.
+pub(crate) fn resolve_rolled_back_commit(conn: &Connection, commit_version: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE semantic_commits SET state = 'resolved'
+         WHERE commit_version = ?1 AND state = 'pending'",
+        [commit_version],
     )?;
-    let versions = statement
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(versions)
-}
-
-fn pending_commit_versions(conn: &Connection) -> Result<Vec<i64>> {
-    let mut statement = conn.prepare_cached(
-        "SELECT commit_version FROM semantic_commits WHERE state = 'pending' ORDER BY commit_version",
-    )?;
-    let versions = statement
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(versions)
+    Ok(())
 }
 
 pub(crate) fn begin_semantic_commit(conn: &Connection) -> Result<i64> {
@@ -130,7 +96,7 @@ pub(crate) fn fail_semantic_commit(
     Ok(())
 }
 
-fn reject_unresolved_commit(conn: &Connection) -> Result<()> {
+pub(crate) fn reject_unresolved_commit(conn: &Connection) -> Result<()> {
     let unresolved = conn
         .query_row(
             "SELECT commit_version, state FROM semantic_commits

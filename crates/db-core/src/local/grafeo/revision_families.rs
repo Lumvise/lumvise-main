@@ -3,6 +3,7 @@ use super::{
     revision_rows::{self, RevisionRow},
     semantic_storage::SemanticStorage,
 };
+use crate::local::grafeo::graph_reads::GrafeoResult;
 use crate::local::sql::commits::latest_published_commit_version;
 use crate::*;
 use grafeo::{GrafeoDB, Value};
@@ -145,6 +146,7 @@ fn successor_links(
     let key = serde_json::to_string(&(root, context, record))?;
     graph
         .find_nodes_by_property("revision_link_older", &Value::from(key.as_str()))
+        .db()?
         .into_iter()
         .map(
             |node| match revision_rows::revision_row_from_node(graph, node)? {

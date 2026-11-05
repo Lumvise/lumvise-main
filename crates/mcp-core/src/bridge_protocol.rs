@@ -1,11 +1,12 @@
 use prost::{Enumeration, Message};
 
 /// Current major for the MCP-to-app Protobuf invocation envelope.
-pub const APP_BRIDGE_PROTOCOL_MAJOR: u32 = 2;
+pub const APP_BRIDGE_PROTOCOL_MAJOR: u32 = 3;
 
 /// Versioned MCP invocation sent from the standalone adapter to App Core.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeInvocationRequestV2 {
+#[prost(skip_debug)]
+pub struct AppBridgeInvocationRequestV3 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -36,12 +37,18 @@ pub struct AppBridgeInvocationRequestV2 {
     /// Session generation captured by the trusted scoped-session owner.
     #[prost(uint64, optional, tag = "10")]
     pub scope_epoch: Option<u64>,
+    /// Installation proof; the host never forwards it into plugins.
+    #[prost(string, optional, tag = "11")]
+    pub connector_credential: Option<String>,
+    /// Original project connection, retained when a scoped Assistant route changes session ID.
+    #[prost(string, optional, tag = "12")]
+    pub connector_connection_id: Option<String>,
 }
 
 /// Stable typed outcome returned by the app bridge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Enumeration)]
 #[repr(i32)]
-pub enum AppBridgeInvocationStatusV2 {
+pub enum AppBridgeInvocationStatusV3 {
     /// Plugin completed successfully.
     Completed = 0,
     /// Plugin-local admission is full.
@@ -60,7 +67,7 @@ pub enum AppBridgeInvocationStatusV2 {
 
 /// Versioned typed result returned from App Core.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeInvocationResponseV2 {
+pub struct AppBridgeInvocationResponseV3 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -68,7 +75,7 @@ pub struct AppBridgeInvocationResponseV2 {
     #[prost(string, tag = "2")]
     pub request_id: String,
     /// Stable terminal category.
-    #[prost(enumeration = "AppBridgeInvocationStatusV2", tag = "3")]
+    #[prost(enumeration = "AppBridgeInvocationStatusV3", tag = "3")]
     pub status: i32,
     /// Successful or Plugin-returned JSON payload.
     #[prost(bytes = "vec", tag = "4")]
@@ -83,7 +90,8 @@ pub struct AppBridgeInvocationResponseV2 {
 
 /// Versioned cancellation request for one active bridge invocation.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeCancellationRequestV2 {
+#[prost(skip_debug)]
+pub struct AppBridgeCancellationRequestV3 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -102,11 +110,17 @@ pub struct AppBridgeCancellationRequestV2 {
     /// Target Plugin identity bound to the active invocation.
     #[prost(string, tag = "6")]
     pub plugin_id: String,
+    /// Installation proof for cancellation of the same connector's invocation.
+    #[prost(string, optional, tag = "7")]
+    pub connector_credential: Option<String>,
+    /// Original connection for the scoped invocation being cancelled.
+    #[prost(string, optional, tag = "8")]
+    pub connector_connection_id: Option<String>,
 }
 
 /// Versioned acknowledgement for a bridge cancellation request.
 #[derive(Clone, PartialEq, Message)]
-pub struct AppBridgeCancellationResponseV2 {
+pub struct AppBridgeCancellationResponseV3 {
     /// Wire protocol major.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
@@ -220,8 +234,10 @@ mod tests {
 
     #[test]
     fn invocation_round_trip_preserves_absolute_deadline_and_owner_tuple() {
-        let request = AppBridgeInvocationRequestV2 {
+        let request = AppBridgeInvocationRequestV3 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
+            connector_credential: Some("private-installation-proof".into()),
+            connector_connection_id: Some("original-project-connection".into()),
             request_id: "request-1".into(),
             owner_id: "owner-1".into(),
             session_id: "session-1".into(),
@@ -233,9 +249,10 @@ mod tests {
             input_json: br#"{"value":1}"#.to_vec(),
         };
 
-        let decoded = AppBridgeInvocationRequestV2::decode(request.encode_to_vec().as_slice())
+        let decoded = AppBridgeInvocationRequestV3::decode(request.encode_to_vec().as_slice())
             .expect("decode invocation");
         assert_eq!(decoded, request);
+        assert!(!format!("{decoded:?}").contains("private-installation-proof"));
 
         let request = RuntimeControlRequestV1 {
             protocol_major: APP_RUNTIME_CONTROL_PROTOCOL_MAJOR,
@@ -252,5 +269,25 @@ mod tests {
             decode_runtime_control_frame(&frame).expect("decode runtime control");
 
         assert_eq!(decoded, request);
+    }
+}
+
+impl std::fmt::Debug for AppBridgeInvocationRequestV3 {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output
+            .debug_struct("AppBridgeInvocationRequestV3")
+            .field("request_id", &self.request_id)
+            .field("plugin_id", &self.plugin_id)
+            .field("capability_id", &self.capability_id)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for AppBridgeCancellationRequestV3 {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output
+            .debug_struct("AppBridgeCancellationRequestV3")
+            .field("request_id", &self.request_id)
+            .field("plugin_id", &self.plugin_id)
+            .finish_non_exhaustive()
     }
 }

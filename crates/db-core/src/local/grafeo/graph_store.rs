@@ -1,4 +1,5 @@
 use super::element_lookup::SemanticElementLookup;
+use super::graph_reads::{CommittedGraph, GrafeoResult};
 use super::path_index::ElementPathIndex;
 use crate::{
     DbError, Result, SemanticElement, SemanticGraphProjection, SemanticGraphProjectionRequest,
@@ -41,8 +42,8 @@ pub(crate) struct GraphState {
     path_index: Mutex<ElementPathIndex>,
     revision_path_index: Mutex<ElementPathIndex>,
     /// A Grafeo commit whose SQL publication failed leaves graph bytes ahead
-    /// of the SQL revision; stable reads stay closed until a later publication
-    /// succeeds over the current graph.
+    /// of the SQL revision; stable reads stay closed until recovery establishes
+    /// the original durable outcome.
     semantic_publication_failure: Mutex<Option<String>>,
 }
 
@@ -254,13 +255,8 @@ impl GraphState {
                 .element_lookup
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .select(graph, revision, project_root, query, limit);
-            Ok(super::graph_rows::selective_current_elements(
-                graph,
-                &ids,
-                project_root,
-                false,
-            ))
+                .select(graph, revision, project_root, query, limit)?;
+            super::graph_rows::selective_current_elements(graph, &ids, project_root, false)
         })
     }
 
@@ -270,7 +266,7 @@ impl GraphState {
         graph: &GrafeoDB,
         project_root: &str,
         include_inactive: bool,
-    ) -> usize {
+    ) -> Result<usize> {
         self.element_lookup
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -286,8 +282,7 @@ impl GraphState {
     ///
     /// The callback must return owned data. The graph gate is released before
     /// the result is handed to callers. A failed cross-store publication also
-    /// closes this seam until a later successful publication re-establishes a
-    /// coherent graph/SQL snapshot.
+    /// closes this seam until recovery establishes a coherent graph/SQL snapshot.
     pub(crate) fn stable_read<R>(&self, read: impl FnOnce(&GrafeoDB) -> Result<R>) -> Result<R> {
         let wait_started = Instant::now();
         #[cfg(test)]
@@ -300,6 +295,11 @@ impl GraphState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         metrics::histogram!("lumvise_db_writer_gate_wait_seconds", "gate" => "graph")
             .record(wait_started.elapsed().as_secs_f64());
+        self.require_coherent_publication()?;
+        read(self.database.as_ref())
+    }
+
+    fn require_coherent_publication(&self) -> Result<()> {
         let publication_failure = self
             .semantic_publication_failure
             .lock()
@@ -310,7 +310,7 @@ impl GraphState {
                 "semantic graph publication failed: {message}"
             )));
         }
-        read(self.database.as_ref())
+        Ok(())
     }
 
     pub(crate) fn cached_projection(
@@ -415,6 +415,7 @@ impl GraphState {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let _snapshot = self.graph_gate.read().unwrap_or_else(|p| p.into_inner());
+        self.require_coherent_publication()?;
         if automatic && !self.checkpoint_due() {
             return Ok(());
         }
@@ -445,8 +446,11 @@ impl GraphState {
         );
         result?;
         self.committed_semantic_entities.store(0, Ordering::Release);
+        // GRAFEO06-REVIEW(28): post-checkpoint entity count reads the committed view; 0.5 counted the live store.
+        let counted = self.database.committed_snapshot()?;
+        let view = counted.view();
         self.graph_entities.store(
-            self.database.node_count() + self.database.edge_count(),
+            counted.node_count(view).db()? + counted.edge_count(view).db()?,
             Ordering::Release,
         );
         *self
@@ -658,13 +662,6 @@ impl GraphState {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
     }
 
-    fn clear_semantic_publication_failure_while_writer_gate_held(&self) {
-        *self
-            .semantic_publication_failure
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-    }
-
     #[cfg(test)]
     pub(crate) fn reset_gate_work(&self) {
         self.work
@@ -764,20 +761,26 @@ impl<'graph> GraphTransaction<'graph> {
         Ok(node_id)
     }
 
-    fn note_element_mutation(&self, node_id: NodeId) {
+    fn note_element_mutation(&self, node_id: NodeId) -> Result<()> {
         self.path_mutations.borrow_mut().insert(node_id.0);
-        let semantic = *self
-            .semantic_labels
-            .borrow_mut()
-            .entry(node_id)
-            .or_insert_with(|| {
-                self.session
+        let known = self.semantic_labels.borrow().get(&node_id).copied();
+        let semantic = match known {
+            Some(semantic) => semantic,
+            None => {
+                // GRAFEO06-REVIEW(29): inside the write transaction; session reads include its own uncommitted writes.
+                let semantic = self
+                    .session
                     .get_node(node_id)
-                    .is_some_and(|node| node.has_label("SemanticElement"))
-            });
+                    .db()?
+                    .is_some_and(|node| node.has_label("SemanticElement"));
+                self.semantic_labels.borrow_mut().insert(node_id, semantic);
+                semantic
+            }
+        };
         if semantic {
             self.elements_changed.set(true);
         }
+        Ok(())
     }
 
     pub(crate) fn create_edge_with_props<'a>(
@@ -792,16 +795,18 @@ impl<'graph> GraphTransaction<'graph> {
             .map_err(|error| DbError::Grafeo(error.to_string()))
     }
 
-    pub(crate) fn delete_node(&self, node_id: NodeId) -> bool {
-        self.note_element_mutation(node_id);
+    pub(crate) fn delete_node(&self, node_id: NodeId) -> Result<bool> {
+        self.note_element_mutation(node_id)?;
         if self.path_mutations.borrow().contains(&node_id.0) {
             self.path_deletions.borrow_mut().insert(node_id.0);
         }
-        self.session.delete_node(node_id)
+        // GRAFEO06-DELETE(1): 0.5 deleted the node and left its edges dangling; 0.6 `delete_node`
+        // refuses a node with edges, so detach to keep every existing deletion succeeding.
+        self.session.detach_delete_node(node_id).db()
     }
 
-    pub(crate) fn delete_edge(&self, edge_id: EdgeId) -> bool {
-        self.session.delete_edge(edge_id)
+    pub(crate) fn delete_edge(&self, edge_id: EdgeId) -> Result<bool> {
+        self.session.delete_edge(edge_id).db()
     }
 
     #[cfg(test)]
@@ -809,19 +814,28 @@ impl<'graph> GraphTransaction<'graph> {
         &self,
         property: &str,
         value: &GrafeoValue,
-    ) -> Vec<NodeId> {
+    ) -> Result<Vec<NodeId>> {
         self.work
             .gate_find_nodes_by_property
             .fetch_add(1, Ordering::Relaxed);
-        self._database.find_nodes_by_property(property, value)
+        // GRAFEO06-REVIEW(32): test-only; reads the committed index, not the transaction's own nodes.
+        self._database.find_nodes_by_property(property, value).db()
     }
 
-    pub(crate) fn get_node(&self, node_id: NodeId) -> Option<grafeo_core::graph::lpg::Node> {
-        self.session.get_node(node_id)
+    pub(crate) fn get_node(
+        &self,
+        node_id: NodeId,
+    ) -> Result<Option<grafeo_core::graph::lpg::Node>> {
+        // GRAFEO06-REVIEW(30): inside the write transaction; session reads include its own uncommitted writes.
+        self.session.get_node(node_id).db()
     }
 
-    pub(crate) fn get_edge(&self, edge_id: EdgeId) -> Option<grafeo_core::graph::lpg::Edge> {
-        self.session.get_edge(edge_id)
+    pub(crate) fn get_edge(
+        &self,
+        edge_id: EdgeId,
+    ) -> Result<Option<grafeo_core::graph::lpg::Edge>> {
+        // GRAFEO06-REVIEW(31): inside the write transaction; session reads include its own uncommitted writes.
+        self.session.get_edge(edge_id).db()
     }
 
     pub(crate) fn set_node_property(
@@ -830,7 +844,7 @@ impl<'graph> GraphTransaction<'graph> {
         property: &str,
         value: GrafeoValue,
     ) -> Result<()> {
-        self.note_element_mutation(node_id);
+        self.note_element_mutation(node_id)?;
         self.session
             .set_node_property(node_id, property, value)
             .map_err(|error| DbError::Grafeo(error.to_string()))
@@ -848,8 +862,9 @@ impl<'graph> GraphTransaction<'graph> {
     }
 
     #[cfg(test)]
-    pub(crate) fn iter_edges(&self) -> impl Iterator<Item = grafeo_core::graph::lpg::Edge> + '_ {
-        self._database.iter_edges()
+    pub(crate) fn iter_edges(&self) -> Vec<grafeo_core::graph::lpg::Edge> {
+        // GRAFEO06-REVIEW(33): test-only; committed edges, not the transaction's own.
+        self._database.all_edges().unwrap()
     }
 
     #[cfg(test)]

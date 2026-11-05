@@ -45,8 +45,18 @@ fn require_published_dependencies(
         .iter()
         .find(|record| !selected.contains(&record.record))
     {
+        require_published_reference(&record.record, false)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn require_published_reference(
+    reference: &SemanticRecordRef,
+    selected: bool,
+) -> SemanticRevisionResult<()> {
+    if !selected {
         return Err(SemanticRevisionError::invalid_value(
-            &record.record.record_id,
+            &reference.record_id,
             "explicitly published dependency membership before public disclosure",
         ));
     }

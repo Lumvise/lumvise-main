@@ -170,6 +170,7 @@ mod tests {
     fn plugin_settings_requires_credentials_and_validates_the_request() {
         let app = AppCore::in_memory().unwrap();
         let mut request = HttpRequest {
+            native_interaction: false,
             method: "POST".into(),
             path: PLUGIN_SETTINGS_ENDPOINT.into(),
             query: BTreeMap::new(),

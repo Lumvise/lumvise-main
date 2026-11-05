@@ -6,16 +6,17 @@ use crate::local::grafeo::graph_store::{
 use crate::local::grafeo::semantic_storage::SemanticStorage;
 use crate::local::sql::commits::{
     begin_semantic_commit, fail_semantic_commit, publish_semantic_commit,
-    published_commit_timestamp,
+    published_commit_timestamp, resolve_rolled_back_commit,
 };
 use crate::{DbError, Result};
 use grafeo::GrafeoDB;
-use rusqlite::Transaction;
-use std::cell::RefCell;
+use rusqlite::{Connection, Transaction};
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::Ordering;
 
 #[cfg(test)]
-use std::cell::Cell;
+#[path = "committed_writes/durability_tests.rs"]
+mod durability_tests;
 
 #[cfg(test)]
 thread_local! {
@@ -37,17 +38,24 @@ type PublishedGraphValue<R> = (R, i64, Vec<DirtyElement>);
 #[derive(Default)]
 struct SemanticSqlPublication<'sql> {
     pending: RefCell<Option<(Transaction<'sql>, i64)>>,
+    reserved: Cell<Option<i64>>,
 }
 
 impl<'sql> SemanticSqlPublication<'sql> {
     fn begin<P>(
         &self,
-        transaction: Transaction<'sql>,
+        connection: &'sql mut Connection,
         plan: &P,
-        sql_start: impl FnOnce(&Transaction<'_>, &P) -> Result<i64>,
+        reserve: impl FnOnce(&Connection, &P) -> Result<i64>,
+        stage: impl FnOnce(&Transaction<'_>, &P) -> Result<()>,
     ) -> Result<i64> {
-        let commit_version = sql_start(&transaction, plan)?;
+        // This autocommit fence must survive a crash before graph/SQL publication finishes.
+        let commit_version = reserve(connection, plan)?;
+        self.reserved.set(Some(commit_version));
+        let transaction = connection.transaction()?;
+        let staged = stage(&transaction, plan);
         self.pending.replace(Some((transaction, commit_version)));
+        staged?;
         Ok(commit_version)
     }
 
@@ -76,11 +84,11 @@ impl<'sql> SemanticSqlPublication<'sql> {
         Err(error)
     }
 
-    fn rollback(self) -> Result<()> {
+    fn rollback(self) -> Result<Option<i64>> {
         if let Some((transaction, _)) = self.pending.into_inner() {
             transaction.rollback()?;
         }
-        Ok(())
+        Ok(self.reserved.get())
     }
 }
 
@@ -139,6 +147,7 @@ impl<'db> SemanticStorage<'db> {
             initial,
             prepare,
             |transaction, _| begin_semantic_commit(transaction),
+            |_, _| Ok(()),
             apply,
             sql_finish,
         )
@@ -149,7 +158,8 @@ impl<'db> SemanticStorage<'db> {
         &self,
         initial: VersionedGraphPlan<P>,
         prepare: impl Fn(&GrafeoDB) -> Result<P>,
-        sql_start: impl Fn(&Transaction<'_>, &P) -> Result<i64>,
+        reserve: impl Fn(&Connection, &P) -> Result<i64>,
+        stage: impl Fn(&Transaction<'_>, &P) -> Result<()>,
         apply: impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
         sql_finish: impl Fn(&Transaction<'_>, &R) -> Result<()>,
     ) -> Result<R> {
@@ -161,7 +171,7 @@ impl<'db> SemanticStorage<'db> {
                 .take()
                 .map_or_else(|| self.graph.plan(&prepare), Ok)?;
             let outcome =
-                self.commit_prepared_graph_attempt(plan, &sql_start, &apply, &sql_finish)?;
+                self.commit_prepared_graph_attempt(plan, &reserve, &stage, &apply, &sql_finish)?;
             if let ConditionalGraphWrite::Applied(publication) = outcome {
                 return self.complete_graph_publication(publication);
             }
@@ -174,7 +184,8 @@ impl<'db> SemanticStorage<'db> {
     fn commit_prepared_graph_attempt<P, R>(
         &self,
         plan: VersionedGraphPlan<P>,
-        sql_start: &impl Fn(&Transaction<'_>, &P) -> Result<i64>,
+        reserve: &impl Fn(&Connection, &P) -> Result<i64>,
+        stage: &impl Fn(&Transaction<'_>, &P) -> Result<()>,
         apply: &impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
         sql_finish: &impl Fn(&Transaction<'_>, &R) -> Result<()>,
     ) -> Result<ConditionalGraphWrite<GraphPostCommit<PublishedGraphValue<R>>>> {
@@ -187,10 +198,11 @@ impl<'db> SemanticStorage<'db> {
                 |graph| {
                     self.apply_prepared_publication(
                         graph,
-                        conn.transaction()?,
+                        &mut conn,
                         &publication,
                         plan,
-                        sql_start,
+                        reserve,
+                        stage,
                         apply,
                     )
                 },
@@ -208,7 +220,9 @@ impl<'db> SemanticStorage<'db> {
                 )))
             ) {
                 // Only a verified graph rollback lets us abort SQL without a recovery marker.
-                publication.rollback()?;
+                if let Some(version) = publication.rollback()? {
+                    resolve_rolled_back_commit(&conn, version)?;
+                }
                 return outcome;
             }
             publication.complete(outcome)
@@ -218,14 +232,15 @@ impl<'db> SemanticStorage<'db> {
     fn apply_prepared_publication<'sql, P, R>(
         &self,
         graph: &GraphTransaction<'_>,
-        transaction: Transaction<'sql>,
+        connection: &'sql mut Connection,
         publication: &SemanticSqlPublication<'sql>,
         plan: P,
-        sql_start: &impl Fn(&Transaction<'_>, &P) -> Result<i64>,
+        reserve: &impl Fn(&Connection, &P) -> Result<i64>,
+        stage: &impl Fn(&Transaction<'_>, &P) -> Result<()>,
         apply: &impl Fn(&GraphTransaction<'_>, i64, &mut ChangeCollector, P) -> Result<R>,
     ) -> Result<PublishedGraphValue<R>> {
         self.check_active()?;
-        let commit_version = publication.begin(transaction, &plan, sql_start)?;
+        let commit_version = publication.begin(connection, &plan, reserve, stage)?;
         let mut collector = ChangeCollector::new(commit_version);
         let value = apply(graph, commit_version, &mut collector, plan)?;
         self.check_active()?;
@@ -430,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_publication_uses_one_sql_commit() {
+    fn graph_publication_finishes_with_one_sql_publication() {
         let db = DbCore::in_memory().unwrap();
         let storage = db.storage_manager().semantic_storage();
         super::reset_graph_publication_sql_commits();
@@ -613,11 +628,12 @@ mod tests {
             .unwrap_err();
         assert!(failure.to_string().contains("cancelled invocation"));
         assert!(storage.graph.read(|graph| {
-            graph
-                .graph_store()
-                .nodes_by_label("CancelledWrite")
+            let snapshot = graph.snapshot().unwrap();
+            snapshot
+                .nodes_by_label("CancelledWrite", snapshot.view())
+                .unwrap()
                 .into_iter()
-                .all(|id| graph.get_node(id).is_none())
+                .all(|id| graph.get_node(id).unwrap().is_none())
         }));
     }
 
@@ -638,7 +654,7 @@ mod tests {
     fn assert_cancelled_projection_absent(db: &DbCore) {
         let reader = db.storage_manager().semantic_storage();
         reader.graph.read(|graph| {
-            let rows = super::super::graph_rows::complete_project_rows(graph, "/repo");
+            let rows = super::super::graph_rows::complete_project_rows(graph, "/repo").unwrap();
             assert!(rows.elements.is_empty());
             assert!(
                 reader

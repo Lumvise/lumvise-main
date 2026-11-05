@@ -61,6 +61,7 @@ impl crate::AppCore {
         let response = http_router::route_http_request(
             self,
             mcp_http::HttpRequest {
+                native_interaction: true,
                 method: method.to_string(),
                 path: path.to_string(),
                 query,

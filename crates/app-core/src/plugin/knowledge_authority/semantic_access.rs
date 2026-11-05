@@ -24,6 +24,11 @@ impl KnowledgeSemanticAccess<'_> {
         &self,
         operation: SemanticOperation,
     ) -> lumvise_db_core::Result<SemanticResult> {
+        self.authority
+            .authorize_connector_semantic(self.context, &operation)
+            .map_err(|error| {
+                DbError::invalid_value("connector Semantic operation", error.to_string())
+            })?;
         let scope = self.current()?;
         self.authorize(&operation, scope.as_ref())?;
         let revision_root = match &operation {
@@ -102,6 +107,19 @@ impl KnowledgeSemanticAccess<'_> {
         scope: Option<&KnowledgeAccessContext>,
         write: bool,
     ) -> lumvise_db_core::Result<()> {
+        if write {
+            if let Some(scope) = scope {
+                self.authority
+                    .require_connector_target(
+                        self.semantic,
+                        self.context,
+                        root,
+                        scope,
+                        self.control,
+                    )
+                    .map_err(|error| DbError::invalid_value(root, error.to_string()))?;
+            }
+        }
         if !self.root_allowed(root, scope, write) {
             return Err(denied(root));
         }
@@ -122,7 +140,9 @@ impl KnowledgeSemanticAccess<'_> {
                         | "inspect_document_space"
                         | "execute_document_delegation"
                         | "configure_document_hook"
+                        | "document.configure_hook"
                         | "get_document_hook"
+                        | "document.get_hook"
                         | "document.space"
                         | "resolve_document_reference"
                         | "document.reference"

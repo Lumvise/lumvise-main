@@ -64,7 +64,7 @@ impl GraphPublication<'_> {
     /// Commits Grafeo and runs `after_commit` before making the graph revision
     /// visible to versioned readers. Errors from `after_commit` mean the graph
     /// is already durable; the projection cache is invalidated and stable reads
-    /// remain closed until a later publication catches SQL up to the graph.
+    /// remain closed until recovery establishes the original durable outcome.
     pub(crate) fn commit<R, T>(
         &self,
         expected_revision: Option<u64>,
@@ -72,6 +72,7 @@ impl GraphPublication<'_> {
         after_commit: impl FnOnce(R) -> Result<T>,
         mutation_count: impl FnOnce(&T) -> usize,
     ) -> Result<ConditionalGraphWrite<GraphPostCommit<T>>> {
+        self.store.require_coherent_publication()?;
         if !self.begin_revision(expected_revision) {
             return Ok(ConditionalGraphWrite::Stale);
         }
@@ -111,7 +112,11 @@ impl GraphPublication<'_> {
                 Ok(self.publish_sql(value, after_commit, mutation_count))
             }
             GraphTransactionCompletion::RolledBack(error) => Ok(GraphPostCommit::RolledBack(error)),
-            GraphTransactionCompletion::Uncertain(error) => Err(error),
+            GraphTransactionCompletion::Uncertain(error) => {
+                self.store
+                    .invalidate_projection_cache_after_publication_failure(&error);
+                Err(error)
+            }
         }
     }
 
@@ -129,8 +134,6 @@ impl GraphPublication<'_> {
                 return GraphPostCommit::Failed(error);
             }
         };
-        self.store
-            .clear_semantic_publication_failure_while_writer_gate_held();
         let due = self
             .store
             .record_semantic_publication_while_writer_gate_held(mutation_count(&value));

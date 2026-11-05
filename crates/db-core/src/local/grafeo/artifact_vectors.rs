@@ -127,7 +127,7 @@ impl<'db> SemanticStorage<'db> {
                             database,
                             project_root,
                             &artifact.artifact_id,
-                        ) {
+                        )? {
                             return Err(crate::DbError::invalid_value(
                                 &artifact.artifact_id,
                                 format!("a current semantic artifact in project `{project_root}`"),
@@ -160,11 +160,16 @@ impl<'db> SemanticStorage<'db> {
         artifact_id: &str,
     ) -> Result<Option<StoredArtifactTextVector>> {
         require_non_empty(artifact_id, "non-empty semantic artifact id")?;
-        Ok(self.graph.read(|graph| {
-            nodes_by_label_and_property(graph, "SemanticArtifactVector", "artifact_id", artifact_id)
-                .iter()
-                .find_map(artifact_vector_from_node)
-        }))
+        self.graph.read(|graph| {
+            Ok(nodes_by_label_and_property(
+                graph,
+                "SemanticArtifactVector",
+                "artifact_id",
+                artifact_id,
+            )?
+            .iter()
+            .find_map(artifact_vector_from_node))
+        })
     }
 
     /// Lazily creates or refreshes the stored text vector for one artifact.
@@ -200,7 +205,7 @@ impl<'db> SemanticStorage<'db> {
     #[cfg(test)]
     pub(crate) fn remove_artifact_text_vector(&self, artifact_id: &str) -> Result<()> {
         self.commit_graph_write(|graph, _commit_version, _collector| {
-            delete_nodes_by_property(graph, "SemanticArtifactVector", "artifact_id", artifact_id);
+            delete_nodes_by_property(graph, "SemanticArtifactVector", "artifact_id", artifact_id)?;
             Ok(())
         })
     }

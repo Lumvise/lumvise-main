@@ -32,6 +32,7 @@ pub struct ScopedMcpHttpServer {
 }
 
 pub(crate) struct HttpRequest {
+    pub(crate) native_interaction: bool,
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) query: BTreeMap<String, String>,
@@ -300,14 +301,14 @@ async fn serve_connection(
 
     let method = request.method.clone();
     let route = crate::observability::route_metric_label(&request.path);
-    if request.method == "POST" && request.path == "/api/mcp/plugins/invoke-v2" {
+    if request.method == "POST" && request.path == "/api/mcp/plugins/invoke-v3" {
         serve_controlled_invocation(app, stream, request, permit, method, route).await;
         return;
     }
 
     let started = Instant::now();
     #[cfg(test)]
-    if request.path == "/api/mcp/plugins/invoke-v2" {
+    if request.path == "/api/mcp/plugins/invoke-v3" {
         GENERIC_HTTP_ROUTER_INVOKE_V1_SPAWNS.fetch_add(1, Ordering::AcqRel);
     }
     let response = match tokio::task::spawn_blocking({
@@ -416,6 +417,7 @@ async fn read_http_request(
         .await
         .map_err(|error| error.to_string())?;
     Ok(HttpRequest {
+        native_interaction: false,
         method,
         path,
         query,
@@ -896,7 +898,7 @@ mod tests {
         ));
         client
             .write_all(
-                b"POST /api/mcp/plugins/invoke-v2 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+                b"POST /api/mcp/plugins/invoke-v3 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
             )
             .await
             .unwrap();
@@ -908,12 +910,12 @@ mod tests {
         server.await.unwrap();
         assert!(
             String::from_utf8_lossy(&response).contains("400 Bad Request"),
-            "invoke-v2 validation must run on the dedicated path"
+            "invoke-v3 validation must run on the dedicated path"
         );
         assert_eq!(
             GENERIC_HTTP_ROUTER_INVOKE_V1_SPAWNS.load(Ordering::Acquire),
             baseline,
-            "invoke-v2 must not enter the generic spawn_blocking router"
+            "invoke-v3 must not enter the generic spawn_blocking router"
         );
     }
     #[test]

@@ -502,6 +502,7 @@ mod tests {
             params.insert(key.to_string(), value.to_string());
         }
         HttpRequest {
+            native_interaction: false,
             method: method.to_string(),
             path: CANVAS_FILE_ENDPOINT.to_string(),
             query: params,

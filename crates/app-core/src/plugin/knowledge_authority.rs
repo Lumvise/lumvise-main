@@ -3,6 +3,7 @@
 //! Persistence and session row formats remain private to this module.
 mod agent;
 mod citation_retention;
+pub(crate) mod connectors;
 mod delegation;
 mod inspection;
 mod mcp;
@@ -31,10 +32,11 @@ pub(super) const CAPABILITY: &str = "runtime.knowledge_scope";
 pub(super) use lumvise_contracts::is_knowledge_space_root as is_memory_root;
 const ASSISTANT: &str = "builtin.assistant";
 
-pub(super) struct KnowledgeAuthority {
+pub(crate) struct KnowledgeAuthority {
     relational: Arc<dyn RelationalPersistence>,
     mcp_membership: Arc<crate::app::mcp_session_registry::McpSessionMembership>,
     incarnation: String,
+    connector_review_actions: Option<Arc<Mutex<Vec<Value>>>>,
     binding_write: Mutex<()>,
     agent_bindings: Mutex<std::collections::HashMap<u64, agent::AgentScopeBinding>>,
     inspection_bindings: Mutex<std::collections::HashMap<u64, inspection::HumanInspectionBinding>>,
@@ -79,6 +81,8 @@ enum ScopeRequest {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AssistantScopeBinding {
+    #[serde(default)]
+    connector_origin: Option<lumvise_plugin_runtime::PluginMcpOrigin>,
     incarnation: String,
     session_epoch: u64,
     active: bool,
@@ -91,10 +95,12 @@ impl KnowledgeAuthority {
         relational: Arc<dyn RelationalPersistence>,
         mcp_membership: Arc<crate::app::mcp_session_registry::McpSessionMembership>,
     ) -> Self {
+        let incarnation = mcp_membership.runtime_incarnation();
         Self {
             relational,
             mcp_membership,
-            incarnation: uuid::Uuid::new_v4().to_string(),
+            incarnation,
+            connector_review_actions: None,
             binding_write: Mutex::new(()),
             agent_bindings: Mutex::default(),
             inspection_bindings: Mutex::default(),
@@ -157,6 +163,7 @@ impl KnowledgeAuthority {
                     project_root.as_deref(),
                     semantic,
                     &control,
+                    context.mcp_origin().cloned(),
                 )?;
                 Ok(json!({"bound":active}))
             }
@@ -193,6 +200,7 @@ impl KnowledgeAuthority {
         root: Option<&str>,
         semantic: &dyn SemanticPersistence,
         control: &InvocationControl,
+        connector_origin: Option<lumvise_plugin_runtime::PluginMcpOrigin>,
     ) -> Result<(), HostCapabilityError> {
         if plugin != ASSISTANT || session.trim().is_empty() || epoch == 0 {
             return Err(invalid(
@@ -210,7 +218,13 @@ impl KnowledgeAuthority {
             .lock()
             .map_err(|_| invalid(&json!(session), "available session binding lock"))?;
         let previous = storage::read(self.relational.as_ref(), &key, control)?;
-        let binding = self.next_binding(previous.as_ref(), epoch, active, active_project)?;
+        let binding = self.next_binding(
+            previous.as_ref(),
+            epoch,
+            active,
+            active_project,
+            connector_origin,
+        )?;
         storage::replace(
             self.relational.as_ref(),
             &key,
@@ -226,6 +240,7 @@ impl KnowledgeAuthority {
         epoch: u64,
         active: bool,
         project: Option<KnowledgeProjectIdentity>,
+        connector_origin: Option<lumvise_plugin_runtime::PluginMcpOrigin>,
     ) -> Result<AssistantScopeBinding, HostCapabilityError> {
         let previous = previous.map(decode_binding).transpose()?;
         if previous.as_ref().is_some_and(|old| {
@@ -236,6 +251,10 @@ impl KnowledgeAuthority {
                 "newer session epoch after replacement or termination",
             ));
         }
+        let connector_origin = previous
+            .as_ref()
+            .filter(|old| old.session_epoch == epoch)
+            .map_or(connector_origin, |old| old.connector_origin.clone());
         let mut sources = previous
             .filter(|old| old.session_epoch == epoch)
             .map(|old| old.source_projects)
@@ -246,6 +265,7 @@ impl KnowledgeAuthority {
             }
         }
         Ok(AssistantScopeBinding {
+            connector_origin,
             incarnation: self.incarnation.clone(),
             session_epoch: epoch,
             active,
@@ -295,6 +315,17 @@ impl KnowledgeAuthority {
             || context.scope_epoch() != Some(binding.session_epoch)
         {
             return Err(unbound(context));
+        }
+        if let Some(origin) = context.mcp_origin() {
+            let bound = binding
+                .connector_origin
+                .as_ref()
+                .ok_or_else(|| unbound(context))?;
+            if bound.connector_id != origin.connector_id
+                || (bound.connector_id.is_none() && bound.connection_id != origin.connection_id)
+            {
+                return Err(unbound(context));
+            }
         }
         let authority = self.identity(control)?;
         let grants = project_grants(semantic, &authority, control)?;

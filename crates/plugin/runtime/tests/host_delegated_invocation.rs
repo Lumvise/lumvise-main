@@ -202,6 +202,7 @@ fn cancelling_host_publication_releases_the_nested_target() {
     assert!(
         system
             .cancel_controlled(&PluginInvocationCancellationRequest {
+                mcp_origin: None,
                 plugin_id: Some("host-call-delegating".into()),
                 request_id: "delegated-request".into(),
                 owner_id: "original-owner".into(),

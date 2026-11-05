@@ -1,10 +1,12 @@
 pub mod assistant;
+mod connector;
 pub mod content_fingerprint;
 pub mod control;
 pub mod database;
 pub mod governance;
 pub mod health;
 pub mod mcp;
+pub use connector::*;
 pub mod neural;
 pub mod obsidian;
 pub mod plugins;

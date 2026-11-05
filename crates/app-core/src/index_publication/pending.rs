@@ -14,7 +14,16 @@ impl IndexPublicationJournal {
         publication: &FrozenIndexPublication,
         control: &InvocationControl,
     ) -> Result<()> {
-        self.validate_frozen(publication)?;
+        self.freeze_with_recovery(publication, None, control)
+    }
+
+    pub(super) fn freeze_with_recovery(
+        &self,
+        publication: &FrozenIndexPublication,
+        recovery: Option<&super::recovery_publication::RecoveredSourcePublication>,
+        control: &InvocationControl,
+    ) -> Result<()> {
+        self.validate_frozen(publication, recovery.is_some())?;
         self.require_not_superseded(&publication.operation_id, control)?;
         let original = self.header(control)?;
         let digest = publication_digest(publication)?;
@@ -31,7 +40,9 @@ impl IndexPublicationJournal {
             }
         }
         let partition = publication.partition();
-        if &self.observation(&partition, control)? != publication.observation()? {
+        if let Some(recovery) = recovery {
+            self.require_recovered_observation(publication, recovery, control)?;
+        } else if &self.observation(&partition, control)? != publication.observation()? {
             return Err(invalid_checkpoint(
                 &publication.operation_id,
                 "the checkout's observed scope before indexing",
@@ -44,15 +55,16 @@ impl IndexPublicationJournal {
             ready: false,
         });
         let descriptor = describe(publication);
-        self.rows.apply(
-            vec![
-                self.rows.require(Some(&original))?,
-                self.rows.put("header", &writing)?,
-                self.rows
-                    .put(&storage::pending_key(&digest, "descriptor"), &descriptor)?,
-            ],
-            control,
-        )?;
+        let mut changes = vec![
+            self.rows.require(Some(&original))?,
+            self.rows.put("header", &writing)?,
+            self.rows
+                .put(&storage::pending_key(&digest, "descriptor"), &descriptor)?,
+        ];
+        if let Some(recovery) = recovery {
+            changes.extend(self.recovery_intent_mutations(recovery, control)?);
+        }
+        self.rows.apply(changes, control)?;
         self.write_pages(
             &writing,
             "elements",

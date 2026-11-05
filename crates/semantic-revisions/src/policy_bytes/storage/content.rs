@@ -68,31 +68,39 @@ pub(super) fn attach(
         incoming(request, &mut contents)?;
     }
     for row in changes.iter_mut().filter(|row| row.key.kind == "record") {
-        let Some(encoded) = &row.body_json else {
-            continue;
-        };
-        let mut body = decode(encoded)?;
-        if let SemanticRevisionBody::Artifact(artifact) = &body.record {
-            body.content = artifact
-                .content_ref
-                .as_ref()
-                .map(|reference| {
-                    contents.get(reference).cloned().ok_or_else(|| {
-                        SemanticRevisionError::invalid_value(
-                            reference,
-                            "available exact artifact content before publication",
-                        )
-                    })
-                })
-                .transpose()?;
-        }
-        let encoded = serde_json::to_string(&body)?;
-        decode(&encoded)?;
-        row.body_json = Some(encoded);
+        complete_record(row, &contents)?;
     }
     let claimed = staged::claimed(&delta, rows, request_json)?;
     attachments::finish(&mut delta, rows, request_json, claimed)?;
     Ok(delta)
+}
+
+pub(in crate::policy_bytes::storage) fn complete_record(
+    row: &mut StorageRow,
+    contents: &BTreeMap<String, StoredContent>,
+) -> SemanticRevisionResult<()> {
+    let Some(encoded) = &row.body_json else {
+        return Ok(());
+    };
+    let mut body = decode(encoded)?;
+    if let SemanticRevisionBody::Artifact(artifact) = &body.record {
+        body.content = artifact
+            .content_ref
+            .as_ref()
+            .map(|reference| {
+                contents.get(reference).cloned().ok_or_else(|| {
+                    SemanticRevisionError::invalid_value(
+                        reference,
+                        "available exact artifact content before publication",
+                    )
+                })
+            })
+            .transpose()?;
+    }
+    let encoded = serde_json::to_string(&body)?;
+    decode(&encoded)?;
+    row.body_json = Some(encoded);
+    Ok(())
 }
 
 pub(super) fn available(

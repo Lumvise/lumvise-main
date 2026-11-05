@@ -3,10 +3,6 @@ use super::super::schema::object;
 use lumvise_contracts::{KnowledgeCitationTarget, KnowledgeQualifiedCitation};
 use serde_json::{Value, json};
 
-pub(in crate::documents) fn qualified() -> Value {
-    KnowledgeQualifiedCitation::reference_schema()
-}
-
 pub(in crate::documents) fn read_input() -> Value {
     object(
         &["project_root", "target"],

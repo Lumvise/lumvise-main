@@ -7,6 +7,10 @@ mod host;
 mod invocations;
 mod pending;
 mod records;
+mod recovery_acknowledgement;
+mod recovery_observation;
+mod recovery_publication;
+mod recovery_supersession;
 mod source;
 mod source_binding;
 mod source_projection;
@@ -55,6 +59,7 @@ pub(crate) fn install_index_client(
     Ok(())
 }
 
+#[derive(Clone)]
 pub(crate) struct IndexPublicationJournal {
     binding: IndexCheckoutBinding,
     project_root: String,
@@ -88,7 +93,8 @@ impl IndexPublicationJournal {
 
     fn use_app_owned_invocations(&mut self) {
         self.invocations = IndexPublicationInvocations::AppOwned;
-        self.rows.use_app_owned_invocations();
+        self.rows
+            .use_invocations(IndexPublicationInvocations::AppOwned);
     }
 
     fn semantic(

@@ -138,6 +138,39 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn memory_reference_manifest_covers_each_selected_input_without_extra_fields() {
+        let schema = KnowledgeDocumentReference::input_schema();
+        let variants = schema["oneOf"].as_array().unwrap();
+        let kinds = variants
+            .iter()
+            .map(|variant| {
+                assert_eq!(variant["additionalProperties"], false);
+                variant["properties"]["target_kind"]["const"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            ["qualified", "semantic_element", "artifact", "document"]
+        );
+    }
+
+    #[test]
+    fn memory_reference_manifest_requires_complete_qualified_authority() {
+        let schema = KnowledgeDocumentReference::input_schema();
+        let qualified = &schema["oneOf"][0];
+        assert_eq!(
+            qualified["required"],
+            json!(["target_kind", "project", "target"])
+        );
+        assert_eq!(
+            qualified["properties"]["project"]["required"],
+            json!(["project_id", "project_root", "storage_authority"])
+        );
+    }
+
+    #[test]
     fn shared_manifest_shapes_preserve_closed_qualified_and_selection_variants() {
         let qualified = super::KnowledgeQualifiedCitation::reference_schema();
         assert_eq!(qualified["additionalProperties"], false);

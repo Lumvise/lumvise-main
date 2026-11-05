@@ -231,3 +231,20 @@ fn invoker_classifies_bad_mcp_envelopes_and_http_failures_as_transport_errors() 
         ToolOutcome::Transport(_)
     ));
 }
+
+#[test]
+fn provider_transport_errors_and_debug_output_do_not_disclose_scoped_channel_proofs() {
+    let server = FakeMcpServer::spawn(vec![(403, json!({"error":"denied"}))]);
+    let mut config = server.server_config();
+    config.url.push_str("?proof=private-channel-proof");
+    let error = super::post_mcp_json(
+        &reqwest::blocking::Client::new(),
+        "provider",
+        &config.url,
+        json!({}),
+    )
+    .unwrap_err();
+    assert!(!error.to_string().contains("private-channel-proof"));
+    assert!(!format!("{config:?}").contains("private-channel-proof"));
+    assert_eq!(server.requests.lock().len(), 1);
+}

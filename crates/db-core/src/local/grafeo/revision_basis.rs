@@ -1,5 +1,6 @@
 //! Indexed fact loading for small publications; the shared Rust policy owns every revision decision.
 use super::revision_rows::{self, LoadedRevisionState, RevisionRow};
+use crate::local::grafeo::graph_reads::GrafeoResult;
 use crate::*;
 use grafeo::{GrafeoDB, NodeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,7 +65,7 @@ pub(super) fn load_publication_basis(
     rows.row("retention", &request.operation_id)?;
     rows.row("recovery", &request.operation_id)?;
     let context_key = serde_json::to_string(&(&request.project_root, &request.source_context))?;
-    rows.indexed("revision_follow_context", &context_key);
+    rows.indexed("revision_follow_context", &context_key)?;
     if let Some(structure) = &request.structure {
         if let Some(partition) = &structure.partition {
             rows.structure(store, partition, &request.selection_id)?;
@@ -123,7 +124,7 @@ pub(super) fn load_selected_revision_state(
     let mut rows = RevisionBasisRows::new(graph, root, "");
     rows.row("project", "")?;
     let key = serde_json::to_string(&(root, selection_id))?;
-    let selected = rows.indexed("revision_selection_key", &key);
+    let selected = rows.indexed("revision_selection_key", &key)?;
     for row in revision_rows::revision_rows_from_nodes(graph, &selected)? {
         match row {
             RevisionRow::Membership(member) => rows.member(&member)?,
@@ -213,8 +214,9 @@ pub(super) fn load_selection_history_state(
     commit_version: i64,
 ) -> Result<SemanticRevisionState> {
     let key = serde_json::to_string(&(root, selection_id))?;
-    let mut nodes =
-        graph.find_nodes_by_property("revision_history_selection_key", &Value::from(key));
+    let mut nodes = graph
+        .find_nodes_by_property("revision_history_selection_key", &Value::from(key))
+        .db()?;
     nodes.extend(revision_rows::revision_row_nodes(
         graph, root, "project", "",
     )?);
@@ -250,26 +252,30 @@ impl<'a> RevisionBasisRows<'a> {
         Ok(())
     }
 
-    fn indexed(&mut self, property: &str, identity: &str) -> Vec<NodeId> {
-        let nodes = self.index_candidates(property, identity);
+    fn indexed(&mut self, property: &str, identity: &str) -> Result<Vec<NodeId>> {
+        let nodes = self.index_candidates(property, identity)?;
         self.nodes.extend(nodes.iter().copied());
-        nodes
+        Ok(nodes)
     }
 
-    fn index_candidates(&self, property: &str, identity: &str) -> Vec<NodeId> {
-        self.graph
+    fn index_candidates(&self, property: &str, identity: &str) -> Result<Vec<NodeId>> {
+        let mut candidates = Vec::new();
+        for id in self
+            .graph
             .find_nodes_by_property(property, &Value::from(identity))
-            .into_iter()
-            .filter(|id| {
-                self.graph.get_node(*id).is_some_and(|node| {
-                    node.has_label("SemanticRevisionRow")
-                        && node
-                            .get_property("revision_project_root")
-                            .and_then(Value::as_str)
-                            == Some(self.root)
-                })
-            })
-            .collect()
+            .db()?
+        {
+            if self.graph.get_node(id).db()?.is_some_and(|node| {
+                node.has_label("SemanticRevisionRow")
+                    && node
+                        .get_property("revision_project_root")
+                        .and_then(Value::as_str)
+                        == Some(self.root)
+            }) {
+                candidates.push(id);
+            }
+        }
+        Ok(candidates)
     }
 
     fn record(&mut self, reference: &SemanticRecordRef) -> Result<()> {
@@ -318,7 +324,7 @@ impl<'a> RevisionBasisRows<'a> {
     fn successors(&mut self, reference: &SemanticRecordRef) -> Result<Vec<SemanticRecordRef>> {
         let key = serde_json::to_string(&(self.root, self.context, reference))?;
         let mut successors = Vec::new();
-        for node in self.indexed("revision_link_older", &key) {
+        for node in self.indexed("revision_link_older", &key)? {
             let RevisionRow::Link(link) = revision_rows::revision_row_from_node(self.graph, node)?
             else {
                 return Err(DbError::invalid_value(key, "a scoped successor link"));
@@ -331,7 +337,7 @@ impl<'a> RevisionBasisRows<'a> {
     fn memberships(&mut self) -> Result<()> {
         for reference in self.records.keys().cloned().collect::<Vec<_>>() {
             let identity = serde_json::to_string(&reference)?;
-            for node in self.indexed("revision_membership_identity", &identity) {
+            for node in self.indexed("revision_membership_identity", &identity)? {
                 let row = revision_rows::revision_row_from_node(self.graph, node)?;
                 let selection = row
                     .membership_selection_id()
@@ -340,7 +346,7 @@ impl<'a> RevisionBasisRows<'a> {
             }
         }
         for id in self.connections.iter().cloned().collect::<Vec<_>>() {
-            for node in self.indexed("revision_membership_connection", &id) {
+            for node in self.indexed("revision_membership_connection", &id)? {
                 let row = revision_rows::revision_row_from_node(self.graph, node)?;
                 let selection = row.membership_selection_id().ok_or_else(|| {
                     DbError::invalid_value(&id, "a selected connection membership")
@@ -370,12 +376,12 @@ impl<'a> RevisionBasisRows<'a> {
     ) -> Result<BTreeSet<NodeId>> {
         let mut headers = BTreeSet::new();
         for path in &partition.replace_paths {
-            headers.extend(store.path_prefix_revision_headers(self.graph, self.root, path));
+            headers.extend(store.path_prefix_revision_headers(self.graph, self.root, path)?);
         }
         if partition.replace_paths.is_empty() {
             if let Some(provider) = &partition.provider_instance_id {
                 let key = serde_json::to_string(&(self.root, provider))?;
-                headers.extend(self.index_candidates("revision_record_provider", &key));
+                headers.extend(self.index_candidates("revision_record_provider", &key)?);
             }
         }
         Ok(headers)
@@ -453,12 +459,11 @@ impl<'a> RevisionBasisRows<'a> {
 
     fn connection_candidates(&self, reference: &SemanticRecordRef) -> Result<Vec<NodeId>> {
         let key = serde_json::to_string(&(self.root, &reference.record_id))?;
-        Ok(
-            ["revision_connection_source", "revision_containment_target"]
-                .into_iter()
-                .flat_map(|property| self.index_candidates(property, &key))
-                .collect(),
-        )
+        let mut candidates = Vec::new();
+        for property in ["revision_connection_source", "revision_containment_target"] {
+            candidates.extend(self.index_candidates(property, &key)?);
+        }
+        Ok(candidates)
     }
 
     fn connection_row(&self, node: NodeId) -> Result<SemanticRevisionConnection> {
@@ -523,7 +528,7 @@ impl<'a> RevisionBasisRows<'a> {
 
     fn associations(&mut self, element: &str) -> Result<()> {
         let key = serde_json::to_string(&(self.root, element))?;
-        for node in self.indexed("revision_association_element", &key) {
+        for node in self.indexed("revision_association_element", &key)? {
             let RevisionRow::Association(association) =
                 revision_rows::revision_row_from_node(self.graph, node)?
             else {
@@ -539,7 +544,7 @@ impl<'a> RevisionBasisRows<'a> {
 
     fn artifact_associations(&mut self, artifact: &str) -> Result<()> {
         let key = serde_json::to_string(&(self.root, artifact))?;
-        for node in self.indexed("revision_association_artifact", &key) {
+        for node in self.indexed("revision_association_artifact", &key)? {
             let RevisionRow::Association(association) =
                 revision_rows::revision_row_from_node(self.graph, node)?
             else {

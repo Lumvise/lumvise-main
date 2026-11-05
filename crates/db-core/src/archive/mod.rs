@@ -55,6 +55,13 @@ pub struct SemanticArchive {
 }
 
 impl SemanticArchive {
+    /// Encodes complete retained history into opaque website transfer pages, including recovered records.
+    /// Example: `let pages = archive.transfer_pages()?;` before staging the exact frozen pages.
+    pub fn transfer_pages(&self) -> Result<Vec<String>> {
+        let encoded = serde_json::to_string(self)?;
+        lumvise_semantic_revisions::encode_archive_transfer_pages(&encoded).map_err(DbError::from)
+    }
+
     /// Fully validates an archive and remaps its owned records to a project root.
     /// Foreign references remain archive metadata because their targets belong
     /// to other projects and the archive cannot reconstruct their labels.

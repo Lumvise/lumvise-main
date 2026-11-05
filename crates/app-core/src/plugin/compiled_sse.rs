@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use super::invocation::surface_invocation_request;
 
 pub(crate) struct CompiledSseRoute {
+    pub(crate) mcp_origin: Option<lumvise_plugin_runtime::PluginMcpOrigin>,
     pub(crate) plugin_id: String,
     pub(crate) export_id: String,
     pub(crate) input: Value,
@@ -96,6 +97,7 @@ fn poll_plugin(
         input,
         "compiled-sse",
         Instant::now() + lumvise_plugin_runtime::PLUGIN_INVOCATION_DEADLINE,
+        route.mcp_origin.clone(),
     );
     let outcome = system.invoke_controlled(request);
     poll_envelope(outcome)

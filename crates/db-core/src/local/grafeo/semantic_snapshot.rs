@@ -15,7 +15,7 @@ pub(crate) fn project_snapshot(
 ) -> Result<SemanticProjectSnapshot> {
     let project_root = match scope {
         ProjectSnapshotScope::ProjectRoot(root) => root.clone(),
-        ProjectSnapshotScope::SemanticElement(id) => semantic_element_by_id_selective(graph, id)
+        ProjectSnapshotScope::SemanticElement(id) => semantic_element_by_id_selective(graph, id)?
             .map(|element| element.project_root)
             .ok_or_else(|| DbError::invalid_value(id, "existing semantic element"))?,
     };
@@ -30,7 +30,7 @@ pub(crate) fn project_snapshot(
         });
         return Ok(snapshot);
     }
-    let mut rows = complete_project_rows(graph, &project_root);
+    let mut rows = complete_project_rows(graph, &project_root)?;
     rows.elements
         .sort_by(|left, right| left.semantic_element_id.cmp(&right.semantic_element_id));
     rows.relationships

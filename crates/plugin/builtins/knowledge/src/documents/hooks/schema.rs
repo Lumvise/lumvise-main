@@ -2,13 +2,13 @@ use super::super::schema::object;
 use serde_json::{Value, json};
 
 pub(in crate::documents) fn input_schema(id: &str) -> Option<Value> {
-    if id == "get_document_hook" {
+    if matches!(id, "get_document_hook" | "document.get_hook") {
         return Some(object(
             &["project_root", "document_id"],
             json!({"project_root":{"type":"string"},"document_id":{"type":"string"}}),
         ));
     }
-    if id != "configure_document_hook" {
+    if !matches!(id, "configure_document_hook" | "document.configure_hook") {
         return None;
     }
     Some(object(
@@ -28,7 +28,14 @@ pub(in crate::documents) fn input_schema(id: &str) -> Option<Value> {
 }
 
 pub(in crate::documents) fn output_schema(id: &str) -> Option<Value> {
-    matches!(id, "get_document_hook" | "configure_document_hook").then(|| {
+    matches!(
+        id,
+        "get_document_hook"
+            | "document.get_hook"
+            | "configure_document_hook"
+            | "document.configure_hook"
+    )
+    .then(|| {
         object(
             &["hook"],
             json!({

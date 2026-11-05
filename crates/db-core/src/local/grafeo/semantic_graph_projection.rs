@@ -2,8 +2,7 @@ use crate::domain::graph_views::{BatchedGraphRows, ProjectionArtifact, Projectio
 use crate::{
     Result, SemanticGraphProjection, SemanticGraphProjectionRequest, SemanticRelationship,
 };
-use grafeo::{EdgeId, GrafeoDB, NodeId, Value as GrafeoValue};
-use grafeo_core::graph::{Direction, GraphStore};
+use grafeo::{Direction, EdgeId, GrafeoDB, NodeId, Snapshot, Value as GrafeoValue};
 use std::collections::{HashMap, HashSet};
 const EDGE_PROPERTIES: &[&str] = &["relationship_kind", "label"];
 mod row_decoding;
@@ -16,7 +15,7 @@ pub(crate) fn project(
     published_at: String,
 ) -> Result<SemanticGraphProjection> {
     let started = std::time::Instant::now();
-    let rows = read_batched_rows(graph, &request.project_root);
+    let rows = read_batched_rows(graph, &request.project_root)?;
     if request.granularity != crate::SemanticGraphGranularity::File {
         metrics::histogram!("lumvise_db_renderer_graph_projection_stage_seconds", "stage" => "batched_rows").record(started.elapsed().as_secs_f64());
     }
@@ -66,7 +65,7 @@ mod tests {
         let outside_link = relationship("b", "outside", "references", "references");
         db.graph
             .write(|graph| {
-                let ids = semantic_node_id_index(graph, "/repo");
+                let ids = semantic_node_id_index(graph, "/repo")?;
                 insert_relationship_edge_with_index(graph, &link, &ids)?;
                 insert_relationship_edge_with_index(graph, &link, &ids)?;
                 insert_relationship_edge_with_index(graph, &external_link, &ids)?;

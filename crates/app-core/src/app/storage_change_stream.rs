@@ -341,6 +341,7 @@ mod tests {
             Arc::clone(&app),
             server_socket,
             HttpRequest {
+                native_interaction: false,
                 method: "GET".into(),
                 path: STORAGE_CHANGE_STREAM_ENDPOINT.into(),
                 query: Default::default(),
@@ -380,6 +381,7 @@ mod tests {
     #[test]
     fn subscription_parsing_rejects_invalid_revision_values() {
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".into(),
             path: STORAGE_CHANGE_STREAM_ENDPOINT.into(),
             query: [("after_revision".into(), "7".into())].into(),
@@ -401,6 +403,7 @@ mod tests {
     #[test]
     fn changes_since_request_requires_a_scope_and_valid_limit() {
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".into(),
             path: STORAGE_CHANGES_ENDPOINT.into(),
             query: [("after_revision".into(), "0".into())].into(),

@@ -105,6 +105,25 @@ fn resolved_graph_project_root(request: &DesktopSemanticGraphRequest) -> Result<
 }
 
 impl DesktopSemanticGraphBridge for AppCoreDesktopBridge {
+    fn connector_knowledge_grants(
+        &self,
+        root: &str,
+        maintainer: &dyn lumvise_contracts::ConnectorGrantMaintainer,
+    ) -> Result<Vec<lumvise_contracts::ConnectorKnowledgeGrant>, String> {
+        self.app.connector_knowledge_grants(root, maintainer)
+    }
+
+    fn decide_connector_knowledge_grant(
+        &self,
+        root: &str,
+        connector: &str,
+        revision: u64,
+        decision: lumvise_contracts::ConnectorGrantState,
+        maintainer: &dyn lumvise_contracts::ConnectorGrantMaintainer,
+    ) -> Result<lumvise_contracts::ConnectorKnowledgeGrant, String> {
+        self.app
+            .decide_connector_knowledge_grant(root, connector, revision, decision, maintainer)
+    }
     fn wait_for_storage_revision(&self, after_revision: i64) -> Result<i64, String> {
         storage_revisions::wait_for_revision(self.app.semantic.as_ref(), after_revision)
     }
@@ -351,6 +370,28 @@ impl PendingDesktopBridge {
 }
 
 impl DesktopSemanticGraphBridge for PendingDesktopBridge {
+    fn connector_knowledge_grants(
+        &self,
+        root: &str,
+        maintainer: &dyn lumvise_contracts::ConnectorGrantMaintainer,
+    ) -> Result<Vec<lumvise_contracts::ConnectorKnowledgeGrant>, String> {
+        self.with_ready("connector_knowledge_grants", |bridge| {
+            bridge.connector_knowledge_grants(root, maintainer)
+        })
+    }
+
+    fn decide_connector_knowledge_grant(
+        &self,
+        root: &str,
+        connector: &str,
+        revision: u64,
+        decision: lumvise_contracts::ConnectorGrantState,
+        maintainer: &dyn lumvise_contracts::ConnectorGrantMaintainer,
+    ) -> Result<lumvise_contracts::ConnectorKnowledgeGrant, String> {
+        self.with_ready("decide_connector_knowledge_grant", |bridge| {
+            bridge.decide_connector_knowledge_grant(root, connector, revision, decision, maintainer)
+        })
+    }
     fn wait_for_storage_revision(&self, after_revision: i64) -> Result<i64, String> {
         self.with_ready("wait_for_storage_revision", |delegate| {
             delegate.wait_for_storage_revision(after_revision)

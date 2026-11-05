@@ -221,6 +221,70 @@ fn project_archive_capture_preserves_dependencies_and_all_owned_records_without_
 }
 
 #[test]
+fn native_archive_transfer_pages_preserve_exact_owned_history_and_integer_metadata() {
+    let (persistence, _) = seeded_archive_source();
+    let SemanticResult::ProjectArchive(mut archive) = archive_execute(
+        &persistence,
+        SemanticOperation::ProjectArchive {
+            project_root: "/source".into(),
+        },
+    ) else {
+        panic!("expected project archive");
+    };
+    archive.revision_state = Some(
+        lumvise_db_core::SemanticRevisionState::adopt(
+            &archive.snapshot.project_root,
+            &archive.project_id,
+            "working",
+            "capture",
+            archive.snapshot.elements.clone(),
+            archive.snapshot.artifacts.clone(),
+            archive.snapshot.relationships.clone(),
+            archive.snapshot.commit_version,
+            1000,
+        )
+        .unwrap(),
+    );
+    let pages = archive.transfer_pages().unwrap();
+    let first: serde_json::Value = serde_json::from_str(&pages[0]).unwrap();
+    assert_eq!(first["header"]["format_release"], 2);
+    assert_eq!(first["header"]["project_id"], archive.project_id);
+    assert_eq!(first["header"]["snapshot_id"], archive.snapshot_id);
+    let rows = pages
+        .iter()
+        .flat_map(|page| {
+            let page: serde_json::Value = serde_json::from_str(page).unwrap();
+            assert!(page.get("snapshot").is_none());
+            page["rows"].as_array().unwrap().clone()
+        })
+        .collect::<Vec<_>>();
+    let record = rows
+        .iter()
+        .find(|row| {
+            row["key"]["kind"] == "record"
+                && row["key"]["identity"].as_str().unwrap().contains("guide")
+        })
+        .unwrap();
+    assert!(
+        record["body_json"]
+            .as_str()
+            .unwrap()
+            .contains("9223372036854775807")
+    );
+    assert!(rows.iter().any(|row| row["key"]["kind"] == "history"));
+}
+
+#[test]
+fn native_archive_transfer_refuses_missing_retained_revision_metadata() {
+    let error = pz_contents().transfer_pages().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("working archive with complete revision metadata")
+    );
+}
+
+#[test]
 fn project_archive_operation_round_trips_and_rejects_expired_or_cancelled_captures() {
     let operation = SemanticOperation::ProjectArchive {
         project_root: "/source".into(),

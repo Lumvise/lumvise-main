@@ -2,8 +2,9 @@
 //! cache lifetime; callers hydrate only selected semantic records.
 
 use super::graph_rows::value_string;
-use crate::SemanticElementNameQuery;
 use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
+use crate::{Result, SemanticElementNameQuery};
 use grafeo::{GrafeoDB, NodeId, Value};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -23,13 +24,14 @@ impl SemanticElementLookup {
         project_root: Option<&str>,
         query: &str,
         limit: usize,
-    ) -> Vec<NodeId> {
+    ) -> Result<Vec<NodeId>> {
         if limit == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        self.ensure_current(graph, revision);
-        self.index
-            .search(project_root, &SemanticElementNameQuery::new(query), limit)
+        self.ensure_current(graph, revision)?;
+        Ok(self
+            .index
+            .search(project_root, &SemanticElementNameQuery::new(query), limit))
     }
 }
 
@@ -40,7 +42,7 @@ impl SemanticElementLookup {
         revision: u64,
         project_root: &str,
         include_inactive: bool,
-    ) -> usize {
+    ) -> Result<usize> {
         let key = (project_root.to_owned(), include_inactive);
         if let Some((cached_revision, count)) = self
             .scope_counts
@@ -48,20 +50,21 @@ impl SemanticElementLookup {
             .filter(|(cached_revision, _)| *cached_revision == revision)
         {
             debug_assert_eq!(*cached_revision, revision);
-            return *count;
+            return Ok(*count);
         }
         let count =
-            super::graph_rows::project_member_ids(graph, project_root, include_inactive).len();
+            super::graph_rows::project_member_ids(graph, project_root, include_inactive)?.len();
         self.scope_counts.insert(key, (revision, count));
-        count
+        Ok(count)
     }
 
-    fn ensure_current(&mut self, graph: &GrafeoDB, revision: u64) {
+    fn ensure_current(&mut self, graph: &GrafeoDB, revision: u64) -> Result<()> {
         if self.revision == Some(revision) {
-            return;
+            return Ok(());
         }
-        self.index = SemanticElementIndex::from_graph(graph);
+        self.index = SemanticElementIndex::from_graph(graph)?;
         self.revision = Some(revision);
+        Ok(())
     }
 }
 
@@ -83,17 +86,22 @@ struct IndexedSemanticElement {
 }
 
 impl SemanticElementIndex {
-    fn from_graph(graph: &GrafeoDB) -> Self {
-        let ids = graph.graph_store().nodes_by_label("SemanticElement");
+    fn from_graph(graph: &GrafeoDB) -> Result<Self> {
+        let snapshot = graph.committed_snapshot()?;
+        let ids = snapshot
+            .nodes_by_label("SemanticElement", snapshot.view())
+            .db()?;
         let mut index = Self::default();
-        for entry in Self::read_entries(graph, ids) {
+        for entry in Self::read_entries(&snapshot, ids)? {
             index.insert(entry);
         }
-        index
+        Ok(index)
     }
 
-    fn read_entries(graph: &GrafeoDB, ids: Vec<NodeId>) -> Vec<IndexedSemanticElement> {
-        let store = graph.graph_store();
+    fn read_entries(
+        snapshot: &grafeo::Snapshot,
+        ids: Vec<NodeId>,
+    ) -> Result<Vec<IndexedSemanticElement>> {
         let keys = [
             "project_root",
             "semantic_element_id",
@@ -104,15 +112,17 @@ impl SemanticElementIndex {
             "element_kind",
         ]
         .map(Into::into);
-        let rows = store
-            .get_nodes_properties_selective_batch(&ids, &keys)
-            .committed_nodes(&*store, &ids);
-        ids.into_iter()
+        let rows = snapshot
+            .node_properties_selective_batch(&ids, &keys, snapshot.view())
+            .db()?
+            .committed_nodes(snapshot, &ids)?;
+        Ok(ids
+            .into_iter()
             .zip(rows)
             .filter_map(|(node_id, row)| {
                 IndexedSemanticElement::from_properties(node_id, |key| row.get(key))
             })
-            .collect()
+            .collect())
     }
 
     fn insert(&mut self, entry: IndexedSemanticElement) {

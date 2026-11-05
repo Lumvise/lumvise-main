@@ -117,6 +117,7 @@ async fn exact_controlled_cancellation_only_completes_the_registered_handle() {
     assert!(
         system
             .cancel_controlled(&PluginInvocationCancellationRequest {
+                mcp_origin: None,
                 plugin_id: Some("missing-plugin".to_owned()),
                 request_id: "disconnect-request".to_owned(),
                 owner_id: "disconnect-owner".to_owned(),
@@ -921,6 +922,7 @@ fn full_owner_tuple_cancels_queued_invocation_without_cross_owner_access() {
     wait_for_plugin_queue(&system, "host-call-allowed", 1);
 
     let mut cancellation = PluginInvocationCancellationRequest {
+        mcp_origin: None,
         plugin_id: Some("host-call-allowed".into()),
         request_id: "queued-request".into(),
         owner_id: "owner-b".into(),
@@ -978,6 +980,7 @@ fn running_cancellation_uses_protocol_control_and_plugin_restarts_cleanly() {
     assert!(
         system
             .cancel_controlled(&PluginInvocationCancellationRequest {
+                mcp_origin: None,
                 plugin_id: Some("timeout".into()),
                 request_id: "running-request".into(),
                 owner_id: "owner-a".into(),
@@ -1033,6 +1036,7 @@ fn blocked_host_capability_cancels_and_plugin_restarts() {
     assert!(
         system
             .cancel_controlled(&PluginInvocationCancellationRequest {
+                mcp_origin: None,
                 plugin_id: Some("host-call-allowed".into()),
                 request_id: "host-request".into(),
                 owner_id: "owner-a".into(),

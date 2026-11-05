@@ -81,6 +81,9 @@ pub(crate) fn invoke_compiled_controlled(
     )
     .with_route_identity(lifecycle.session_id, lifecycle.scope_id)
     .with_scope_epoch(lifecycle.scope_epoch);
+    let context = lifecycle
+        .mcp_origin
+        .map_or(context.clone(), |origin| context.with_mcp_origin(origin));
     let request = RuntimeInvocationRequest::new(plugin_id, export_id, arguments, context);
     let outcome = endpoints.app.plugin_system().invoke_controlled(request)?;
     Ok(invocation_response(outcome))

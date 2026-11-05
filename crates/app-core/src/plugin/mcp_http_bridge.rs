@@ -2,8 +2,8 @@ use crate::AppCore;
 use crate::PluginMcpTool;
 use crate::app::mcp_http::{HttpRequest, HttpResponse, error_response, json_response};
 use lumvise_mcp_core::{
-    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV2, AppBridgeCancellationResponseV2,
-    AppBridgeInvocationRequestV2, AppBridgeInvocationResponseV2, AppBridgeInvocationStatusV2,
+    APP_BRIDGE_PROTOCOL_MAJOR, AppBridgeCancellationRequestV3, AppBridgeCancellationResponseV3,
+    AppBridgeInvocationRequestV3, AppBridgeInvocationResponseV3, AppBridgeInvocationStatusV3,
 };
 use lumvise_plugin_protocol::WireOutcome;
 use lumvise_plugin_runtime::{
@@ -48,8 +48,8 @@ pub(crate) fn plugin_mcp_bridge_response(
         ("GET", "/api/mcp/plugins/scoped-surface") => {
             Some(scoped_plugin_surface_response(app, request))
         }
-        ("POST", "/api/mcp/plugins/invoke-v2") => Some(controlled_invoke_response(app, request)),
-        ("POST", "/api/mcp/plugins/cancel-v2") => Some(controlled_cancel_response(app, request)),
+        ("POST", "/api/mcp/plugins/invoke-v3") => Some(controlled_invoke_response(app, request)),
+        ("POST", "/api/mcp/plugins/cancel-v3") => Some(controlled_cancel_response(app, request)),
         _ => None,
     }
 }
@@ -93,19 +93,20 @@ pub(crate) fn start_controlled_invoke<'app>(
     app: &'app AppCore,
     request: &HttpRequest,
 ) -> Result<(String, PluginInvocationHandle<'app>), HttpResponse> {
-    let payload = AppBridgeInvocationRequestV2::decode(request.body.as_slice())
+    let payload = AppBridgeInvocationRequestV3::decode(request.body.as_slice())
         .map_err(|error| error_response("400 Bad Request", error))?;
     validate_controlled_request(&payload)
         .map_err(|error| error_response("400 Bad Request", error))?;
     let request_id = payload.request_id.clone();
-    let runtime_request = controlled_runtime_request(app, &payload).map_err(|message| {
-        protobuf_response(bridge_failure(
-            request_id.clone(),
-            AppBridgeInvocationStatusV2::Internal,
-            message,
-            false,
-        ))
-    })?;
+    let runtime_request = controlled_runtime_request(app, &payload, request.native_interaction)
+        .map_err(|message| {
+            protobuf_response(bridge_failure(
+                request_id.clone(),
+                AppBridgeInvocationStatusV3::Internal,
+                message,
+                false,
+            ))
+        })?;
     let handle = app
         .plugin_system()
         .start_controlled_invocation(runtime_request)
@@ -126,7 +127,8 @@ pub(crate) fn controlled_invoke_result(
 
 fn controlled_runtime_request(
     app: &AppCore,
-    payload: &AppBridgeInvocationRequestV2,
+    payload: &AppBridgeInvocationRequestV3,
+    native_interaction: bool,
 ) -> Result<RuntimeInvocationRequest, String> {
     let (plugin_id, export_id) = match payload.scope_id.as_deref() {
         Some(scope_id) => scoped_mcp_route(
@@ -142,12 +144,69 @@ fn controlled_runtime_request(
     let input = serde_json::from_slice(&payload.input_json).map_err(|error| error.to_string())?;
     let context = bridge_invocation_context(payload);
     let context = capture_mcp_project(app, context)?;
+    let context = if native_interaction {
+        context
+    } else {
+        let origin = authenticated_mcp_origin(
+            app,
+            payload.connector_credential.as_deref(),
+            payload
+                .connector_connection_id
+                .as_deref()
+                .unwrap_or(&payload.session_id),
+        )?;
+        context.with_mcp_origin(origin)
+    };
+    let control = super::plugin_host_capabilities::invocation_control(&context);
+    app.connector_authority()
+        .authorize_connector_request(
+            app.semantic.as_ref(),
+            &context,
+            &plugin_id,
+            &export_id,
+            &input,
+            &control.control(),
+        )
+        .map_err(|error| error.to_string())?;
     Ok(RuntimeInvocationRequest::new(
         plugin_id, export_id, input, context,
     ))
 }
 
-fn bridge_invocation_context(payload: &AppBridgeInvocationRequestV2) -> RuntimeInvocationContext {
+fn authenticated_mcp_origin(
+    app: &AppCore,
+    proof: Option<&str>,
+    connection: &str,
+) -> Result<lumvise_plugin_runtime::PluginMcpOrigin, String> {
+    let proof = proof.map(|value| lumvise_contracts::ConnectorCredential(value.into()));
+    let connector_id = app
+        .connector_authority()
+        .connector_proof_identity(
+            proof.as_ref(),
+            &lumvise_resource_routing::InvocationControl::sixty_seconds(),
+        )
+        .map_err(|error| error.to_string())?;
+    app.mcp_session_membership
+        .require_connector(connection, connector_id.as_deref())?;
+    let context = RuntimeInvocationContext::new(
+        "connector-scope",
+        "mcp",
+        RuntimeInvocationClass::Foreground,
+        Instant::now() + Duration::from_secs(60),
+    )
+    .with_route_identity(
+        connection,
+        Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE.into()),
+    );
+    let captured = capture_mcp_project(app, context)?;
+    Ok(lumvise_plugin_runtime::PluginMcpOrigin {
+        connector_id,
+        connection_id: connection.into(),
+        project_epoch: captured.scope_epoch(),
+    })
+}
+
+fn bridge_invocation_context(payload: &AppBridgeInvocationRequestV3) -> RuntimeInvocationContext {
     RuntimeInvocationContext::new(
         &payload.request_id,
         &payload.owner_id,
@@ -208,7 +267,7 @@ fn capture_mcp_project(
 
 fn global_mcp_route(
     app: &AppCore,
-    payload: &AppBridgeInvocationRequestV2,
+    payload: &AppBridgeInvocationRequestV3,
 ) -> crate::Result<(String, String)> {
     let tool_name = tool_name(&payload.plugin_id, &payload.capability_id);
     let route = McpCatalog::load(&app.plugin_endpoints())?.route(&tool_name)?;
@@ -222,16 +281,32 @@ fn global_mcp_route(
 }
 
 fn controlled_cancel_response(app: &AppCore, request: &HttpRequest) -> HttpResponse {
-    let payload = match AppBridgeCancellationRequestV2::decode(request.body.as_slice()) {
+    let payload = match AppBridgeCancellationRequestV3::decode(request.body.as_slice()) {
         Ok(payload) => payload,
         Err(error) => return error_response("400 Bad Request", error),
     };
     if payload.protocol_major != APP_BRIDGE_PROTOCOL_MAJOR {
         return error_response("400 Bad Request", "unsupported app bridge protocol major");
     }
+    let origin = if request.native_interaction {
+        None
+    } else {
+        match authenticated_mcp_origin(
+            app,
+            payload.connector_credential.as_deref(),
+            payload
+                .connector_connection_id
+                .as_deref()
+                .unwrap_or(&payload.session_id),
+        ) {
+            Ok(origin) => Some(origin),
+            Err(error) => return error_response("403 Forbidden", error),
+        }
+    };
     let cancelled = app
         .plugin_system()
         .cancel_controlled(&RuntimeCancellationRequest {
+            mcp_origin: origin,
             plugin_id: Some(payload.plugin_id),
             request_id: payload.request_id,
             owner_id: payload.owner_id,
@@ -239,13 +314,13 @@ fn controlled_cancel_response(app: &AppCore, request: &HttpRequest) -> HttpRespo
             scope_id: payload.scope_id,
         })
         .unwrap_or(false);
-    protobuf_response(AppBridgeCancellationResponseV2 {
+    protobuf_response(AppBridgeCancellationResponseV3 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         cancelled,
     })
 }
 
-fn validate_controlled_request(payload: &AppBridgeInvocationRequestV2) -> Result<(), String> {
+fn validate_controlled_request(payload: &AppBridgeInvocationRequestV3) -> Result<(), String> {
     if payload.protocol_major != APP_BRIDGE_PROTOCOL_MAJOR {
         return Err(format!(
             "app bridge protocol major {}; expected {APP_BRIDGE_PROTOCOL_MAJOR}",
@@ -287,19 +362,19 @@ fn monotonic_deadline(deadline_unix_ms: u64) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
-fn bridge_wire_outcome(request_id: String, outcome: WireOutcome) -> AppBridgeInvocationResponseV2 {
+fn bridge_wire_outcome(request_id: String, outcome: WireOutcome) -> AppBridgeInvocationResponseV3 {
     match outcome {
-        WireOutcome::Succeeded { value } => AppBridgeInvocationResponseV2 {
+        WireOutcome::Succeeded { value } => AppBridgeInvocationResponseV3 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
             request_id,
-            status: AppBridgeInvocationStatusV2::Completed as i32,
+            status: AppBridgeInvocationStatusV3::Completed as i32,
             output_json: serde_json::to_vec(&value).unwrap_or_default(),
             message: String::new(),
             retryable: false,
         },
         WireOutcome::Failed { error } => bridge_failure(
             request_id,
-            AppBridgeInvocationStatusV2::Failed,
+            AppBridgeInvocationStatusV3::Failed,
             error.message,
             error.retryable,
         ),
@@ -309,15 +384,15 @@ fn bridge_wire_outcome(request_id: String, outcome: WireOutcome) -> AppBridgeInv
 fn bridge_runtime_error(
     request_id: String,
     error: RuntimeInvocationError,
-) -> AppBridgeInvocationResponseV2 {
+) -> AppBridgeInvocationResponseV3 {
     let status = match error.kind() {
-        RuntimeFailureKind::Busy => AppBridgeInvocationStatusV2::Busy,
-        RuntimeFailureKind::DeadlineExceeded => AppBridgeInvocationStatusV2::DeadlineExceeded,
-        RuntimeFailureKind::Cancelled => AppBridgeInvocationStatusV2::Cancelled,
-        RuntimeFailureKind::Unavailable => AppBridgeInvocationStatusV2::Unavailable,
-        RuntimeFailureKind::PluginFailure => AppBridgeInvocationStatusV2::Failed,
+        RuntimeFailureKind::Busy => AppBridgeInvocationStatusV3::Busy,
+        RuntimeFailureKind::DeadlineExceeded => AppBridgeInvocationStatusV3::DeadlineExceeded,
+        RuntimeFailureKind::Cancelled => AppBridgeInvocationStatusV3::Cancelled,
+        RuntimeFailureKind::Unavailable => AppBridgeInvocationStatusV3::Unavailable,
+        RuntimeFailureKind::PluginFailure => AppBridgeInvocationStatusV3::Failed,
         RuntimeFailureKind::InvalidInput | RuntimeFailureKind::Internal => {
-            AppBridgeInvocationStatusV2::Internal
+            AppBridgeInvocationStatusV3::Internal
         }
     };
     bridge_failure(request_id, status, error.to_string(), error.retryable())
@@ -325,11 +400,11 @@ fn bridge_runtime_error(
 
 fn bridge_failure(
     request_id: String,
-    status: AppBridgeInvocationStatusV2,
+    status: AppBridgeInvocationStatusV3,
     message: String,
     retryable: bool,
-) -> AppBridgeInvocationResponseV2 {
-    AppBridgeInvocationResponseV2 {
+) -> AppBridgeInvocationResponseV3 {
+    AppBridgeInvocationResponseV3 {
         protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
         request_id,
         status: status as i32,
@@ -440,9 +515,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    fn assistant_invocation() -> AppBridgeInvocationRequestV2 {
-        AppBridgeInvocationRequestV2 {
+    fn assistant_invocation() -> AppBridgeInvocationRequestV3 {
+        AppBridgeInvocationRequestV3 {
             protocol_major: APP_BRIDGE_PROTOCOL_MAJOR,
+            connector_credential: None,
+            connector_connection_id: None,
             request_id: "proof".into(),
             owner_id: "builtin.assistant".into(),
             session_id: "conversation".into(),
@@ -455,15 +532,90 @@ mod tests {
         }
     }
 
+    struct FakeAuthenticatedConnector<'a> {
+        app: &'a AppCore,
+        connection: &'a str,
+        proof: String,
+    }
+
+    impl FakeAuthenticatedConnector<'_> {
+        fn register(&self) -> u16 {
+            self.app.route_app_bridge_request("POST", "/api/mcp/register", Default::default(),
+                serde_json::to_vec(&json!({"instance_id":self.connection,"project_root":"/repo",
+                    "display_name":"same public label","capabilities":[],"connector_credential":self.proof})).unwrap()).0
+        }
+        fn heartbeat(&self, proof: Option<&str>) -> u16 {
+            self.app
+                .route_app_bridge_request(
+                    "POST",
+                    "/api/mcp/heartbeat",
+                    Default::default(),
+                    serde_json::to_vec(
+                        &json!({"instance_id":self.connection,"project_root":"/repo",
+                    "status":"ready","connector_credential":proof}),
+                    )
+                    .unwrap(),
+                )
+                .0
+        }
+    }
+
+    #[test]
+    fn connector_ingress_authenticates_each_packet_and_never_rebinds_a_connection_by_public_name() {
+        let app = AppCore::in_memory().unwrap();
+        let one = FakeAuthenticatedConnector {
+            app: &app,
+            connection: "one",
+            proof: "a1".repeat(32),
+        };
+        let two = FakeAuthenticatedConnector {
+            app: &app,
+            connection: "two",
+            proof: "b2".repeat(32),
+        };
+        assert_eq!(one.register(), 200);
+        assert_eq!(two.register(), 200);
+        let origin = authenticated_mcp_origin(&app, Some(&one.proof), "one").unwrap();
+        assert!(origin.project_epoch.is_some());
+        assert_eq!(one.heartbeat(Some(&one.proof)), 200);
+        assert_eq!(one.heartbeat(Some(&two.proof)), 403);
+        assert_eq!(one.heartbeat(None), 403);
+        assert!(authenticated_mcp_origin(&app, Some(&two.proof), "one").is_err());
+        assert!(authenticated_mcp_origin(&app, origin.connector_id.as_deref(), "one").is_err());
+        assert!(authenticated_mcp_origin(&app, Some(&one.proof), "unknown").is_err());
+        let takeover = FakeAuthenticatedConnector {
+            app: &app,
+            connection: "one",
+            proof: two.proof,
+        };
+        assert_eq!(takeover.register(), 403);
+        assert_eq!(
+            authenticated_mcp_origin(&app, Some(&one.proof), "one").unwrap(),
+            origin
+        );
+        let reconnect = FakeAuthenticatedConnector {
+            app: &app,
+            connection: "fresh-connection",
+            proof: one.proof,
+        };
+        assert_eq!(reconnect.register(), 200);
+        assert_eq!(
+            authenticated_mcp_origin(&app, Some(&reconnect.proof), reconnect.connection)
+                .unwrap()
+                .connector_id,
+            origin.connector_id
+        );
+    }
+
     #[test]
     fn bridge_rejects_old_major_and_unbound_assistant_identity() {
         let mut payload = assistant_invocation();
         assert!(validate_controlled_request(&payload).is_ok());
-        payload.protocol_major = 1;
+        payload.protocol_major = 2;
         assert!(
             validate_controlled_request(&payload)
                 .unwrap_err()
-                .contains("expected 2")
+                .contains("expected 3")
         );
         payload.protocol_major = APP_BRIDGE_PROTOCOL_MAJOR;
         payload.scope_epoch = None;
@@ -531,6 +683,7 @@ mod tests {
             query.insert("credential".into(), credential.into());
         }
         HttpRequest {
+            native_interaction: false,
             method: method.into(),
             path: path.into(),
             query,

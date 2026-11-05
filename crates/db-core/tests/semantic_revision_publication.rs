@@ -2,6 +2,8 @@
 #[path = "semantic_revision_publication/citation_retention.rs"]
 mod citation_retention;
 mod common;
+#[path = "semantic_revision_publication/document_reopen.rs"]
+mod document_reopen;
 #[path = "semantic_revision_publication/large_receipt.rs"]
 mod large_receipt;
 #[path = "semantic_revision_publication/working_states.rs"]

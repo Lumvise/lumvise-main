@@ -1,5 +1,7 @@
 //! Project-root selection reads adjacency columns, never relationship metadata.
+use crate::Result;
 use crate::local::grafeo::committed_columns::CommittedPropertyRows;
+use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
 use std::collections::HashSet;
 
 use grafeo::{EdgeId, GrafeoDB, Value};
@@ -11,18 +13,18 @@ pub(super) fn project_roots(
     graph: &GrafeoDB,
     project_root: &str,
     include_inactive: bool,
-) -> Vec<String> {
-    let members = project_member_ids(graph, project_root, include_inactive);
-    let parented = parented_members(graph, project_root, &members);
-    members.difference(&parented).cloned().collect()
+) -> Result<Vec<String>> {
+    let members = project_member_ids(graph, project_root, include_inactive)?;
+    let parented = parented_members(graph, project_root, &members)?;
+    Ok(members.difference(&parented).cloned().collect())
 }
 
 fn parented_members(
     graph: &GrafeoDB,
     project_root: &str,
     members: &HashSet<String>,
-) -> HashSet<String> {
-    let incoming = incoming_member_edges(graph, project_root, members);
+) -> Result<HashSet<String>> {
+    let incoming = incoming_member_edges(graph, project_root, members)?;
     let edges = incoming.iter().map(|(_, edge)| *edge).collect::<Vec<_>>();
     let keys = [
         "project_root",
@@ -32,30 +34,32 @@ fn parented_members(
         "label",
     ]
     .map(Into::into);
-    let properties = graph
-        .graph_store()
-        .get_edges_properties_selective_batch(&edges, &keys)
-        .committed_edges(&*graph.graph_store(), &edges);
-    incoming
+    let snapshot = graph.committed_snapshot()?;
+    let properties = snapshot
+        .edge_properties_selective_batch(&edges, &keys, snapshot.view())
+        .db()?
+        .committed_edges(&snapshot, &edges)?;
+    Ok(incoming
         .into_iter()
         .zip(properties)
         .filter_map(|((target, _), row)| {
             has_member_parent(|key| row.get(key), project_root, members).then_some(target)
         })
-        .collect()
+        .collect())
 }
 
 fn incoming_member_edges(
     graph: &GrafeoDB,
     project_root: &str,
     members: &HashSet<String>,
-) -> Vec<(String, EdgeId)> {
-    let store = graph.graph_store();
+) -> Result<Vec<(String, EdgeId)>> {
+    let snapshot = graph.committed_snapshot()?;
     let nodes =
-        node_ids_by_label_and_property(graph, "SemanticElement", "project_root", project_root);
-    let identities = store
-        .get_node_property_batch(&nodes, &"semantic_element_id".into())
-        .committed_nodes(&*graph.graph_store(), &nodes);
+        node_ids_by_label_and_property(graph, "SemanticElement", "project_root", project_root)?;
+    let identities = snapshot
+        .node_property_batch(&nodes, &"semantic_element_id".into(), snapshot.view())
+        .db()?
+        .committed_nodes(&snapshot, &nodes)?;
     let mut incoming = Vec::new();
     for (node, identity) in nodes.into_iter().zip(identities) {
         let Some(id) = identity
@@ -65,14 +69,16 @@ fn incoming_member_edges(
         else {
             continue;
         };
+        // GRAFEO06-REVIEW(23): committed incoming adjacency; 0.5 edges_from read the live store.
         incoming.extend(
-            store
-                .edges_from(node, Direction::Incoming)
+            snapshot
+                .edges(node, Direction::Incoming, &[], snapshot.view())
+                .db()?
                 .into_iter()
                 .map(|(_, edge)| (id.clone(), edge)),
         );
     }
-    incoming
+    Ok(incoming)
 }
 
 fn has_member_parent<'a>(

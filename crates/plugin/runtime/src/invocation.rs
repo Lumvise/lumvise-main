@@ -74,9 +74,33 @@ pub struct PluginInvocationFrame {
     pub export_id: String,
 }
 
+/// Host-verified MCP origin, retained across nested calls without carrying a credential.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PluginMcpOrigin {
+    /// Credential-authenticated installation; absent means an unidentified external client.
+    pub connector_id: Option<String>,
+    /// Original transport connection, retained when a nested call changes session identity.
+    pub connection_id: String,
+    /// Host-captured project generation; a project switch invalidates the original scope.
+    pub project_epoch: Option<u64>,
+}
+
+impl PluginMcpOrigin {
+    /// Marks an external connection that has not proved an installation identity.
+    /// Example: legacy HTTP ingress remains unable to acquire Knowledge-write authority.
+    pub fn unidentified(connection_id: impl Into<String>) -> Self {
+        Self {
+            connector_id: None,
+            connection_id: connection_id.into(),
+            project_epoch: None,
+        }
+    }
+}
+
 /// Caller-owned lifecycle information for one Plugin Invocation.
 #[derive(Clone, Debug)]
 pub struct PluginInvocationContext {
+    mcp_origin: Option<PluginMcpOrigin>,
     request_id: String,
     owner_id: String,
     session_id: Option<String>,
@@ -112,6 +136,7 @@ impl PluginInvocationContext {
         deadline: Instant,
     ) -> Self {
         Self {
+            mcp_origin: None,
             request_id: request_id.into(),
             owner_id: owner_id.into(),
             session_id: None,
@@ -129,6 +154,18 @@ impl PluginInvocationContext {
     /// Returns the caller's stable request correlation identity.
     pub fn request_id(&self) -> &str {
         &self.request_id
+    }
+
+    /// Stamps the ingress-authenticated origin; never construct this from plugin input.
+    /// Example: the host carries its verified connection into nested Knowledge calls.
+    pub fn with_mcp_origin(mut self, origin: PluginMcpOrigin) -> Self {
+        self.mcp_origin = Some(origin);
+        self
+    }
+
+    /// Reads the immutable transport origin. Example: recheck a grant before a nested write.
+    pub fn mcp_origin(&self) -> Option<&PluginMcpOrigin> {
+        self.mcp_origin.as_ref()
     }
 
     /// Returns the caller or session owner identity.
@@ -300,6 +337,8 @@ pub struct PluginInvocationRequest {
 /// Exact identity tuple authorized to cancel one controlled invocation.
 #[derive(Clone, Debug)]
 pub struct PluginInvocationCancellationRequest {
+    /// Present at external MCP ingress; native cancellation has no MCP restriction.
+    pub mcp_origin: Option<PluginMcpOrigin>,
     /// Target Plugin identity when known at the cancelling boundary.
     pub plugin_id: Option<String>,
     /// Caller correlation identity.
@@ -507,11 +546,25 @@ mod tests {
         )
         .with_route_identity("session", Some("assistant_session".into()))
         .with_scope_epoch(Some(7))
+        .with_mcp_origin(PluginMcpOrigin {
+            connector_id: Some("connector:one".into()),
+            connection_id: "original-connection".into(),
+            project_epoch: Some(3),
+        })
         .enter_plugin("builtin.knowledge", "document.create");
         let nested = parent
             .clone()
             .enter_plugin("builtin.semantic", "ingest_index_batch");
         assert_eq!(nested.scope_epoch(), Some(7));
+        assert_eq!(
+            nested.mcp_origin().unwrap().connector_id.as_deref(),
+            Some("connector:one")
+        );
+        assert_eq!(
+            nested.mcp_origin().unwrap().connection_id,
+            "original-connection"
+        );
+        assert_eq!(nested.mcp_origin().unwrap().project_epoch, Some(3));
         assert_eq!(nested.session_id(), parent.session_id());
         assert_eq!(parent.plugin_chain().len(), 1);
         assert_eq!(nested.plugin_chain()[0], parent.plugin_chain()[0]);

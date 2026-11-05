@@ -1,6 +1,22 @@
 //! Closed passive citation shapes shared by signed manifests. No resolution or retention policy.
 use super::{KnowledgeCitationTarget, KnowledgeProjectIdentity, KnowledgeQualifiedCitation};
+use crate::KnowledgeDocumentReference;
 use serde_json::{Value, json};
+
+impl KnowledgeDocumentReference {
+    /// Describes a complete selected input without flattening qualified authority or revision.
+    /// Example: `KnowledgeDocumentReference::input_schema()` signs a Memory input read.
+    pub fn input_schema() -> Value {
+        json!({"oneOf":[
+            KnowledgeQualifiedCitation::reference_schema(),
+            object(&["target_kind", "semantic_element_id"], json!({"target_kind":{"const":"semantic_element"},
+                "semantic_element_id":{"type":"string"}})),
+            object(&["target_kind", "artifact_id"], json!({"target_kind":{"const":"artifact"},
+                "artifact_id":{"type":"string"}, "edit_version":{"anyOf":[{"type":"integer","minimum":1},{"type":"null"}]}})),
+            object(&["target_kind", "document_id"], json!({"target_kind":{"const":"document"}, "document_id":{"type":"string"}}))
+        ]})
+    }
+}
 
 impl KnowledgeProjectIdentity {
     /// Describes the authoritative project identity carried by citations and memory restrictions.

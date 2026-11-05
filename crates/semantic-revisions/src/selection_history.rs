@@ -42,15 +42,7 @@ impl SemanticRevisionSelectionDelta {
         previous: Option<&SemanticRevisionSelectionState>,
     ) -> SemanticRevisionResult<SemanticRevisionSelectionState> {
         let generation = previous.map_or(0, |head| head.selection.generation);
-        if generation != self.previous_generation || self.selection.generation != generation + 1 {
-            return Err(SemanticRevisionError::invalid_value(
-                format!("{}:{generation}", self.selection.selection_id),
-                format!(
-                    "contiguous membership history before generation {}",
-                    self.selection.generation
-                ),
-            ));
-        }
+        validate_generation(generation, self)?;
         let (records, connections) = previous.map_or((&[][..], &[][..]), |head| {
             (&head.records, &head.connection_ids)
         });
@@ -135,20 +127,47 @@ fn changed_membership<T: Ord + Clone + std::fmt::Debug>(
 ) -> SemanticRevisionResult<Vec<T>> {
     let mut members = previous.iter().cloned().collect::<BTreeSet<_>>();
     for member in removed {
-        if !members.remove(member) {
-            return Err(SemanticRevisionError::invalid_value(
-                format!("{member:?}"),
-                "a previously selected member to remove",
-            ));
-        }
+        validate_membership_change(member, members.remove(member), false)?;
     }
     for member in added {
-        if !members.insert(member.clone()) {
-            return Err(SemanticRevisionError::invalid_value(
-                format!("{member:?}"),
-                "a newly selected member to add",
-            ));
-        }
+        let absent = members.insert(member.clone());
+        validate_membership_change(member, !absent, true)?;
     }
     Ok(members.into_iter().collect())
+}
+
+pub(crate) fn validate_generation(
+    previous: i64,
+    delta: &SemanticRevisionSelectionDelta,
+) -> SemanticRevisionResult<()> {
+    if previous != delta.previous_generation
+        || previous.checked_add(1) != Some(delta.selection.generation)
+    {
+        return Err(SemanticRevisionError::invalid_value(
+            format!("{}:{previous}", delta.selection.selection_id),
+            format!(
+                "contiguous membership history before generation {}",
+                delta.selection.generation
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_membership_change(
+    member: &impl std::fmt::Debug,
+    present: bool,
+    adding: bool,
+) -> SemanticRevisionResult<()> {
+    if present == adding {
+        return Err(SemanticRevisionError::invalid_value(
+            format!("{member:?}"),
+            if adding {
+                "a newly selected member to add"
+            } else {
+                "a previously selected member to remove"
+            },
+        ));
+    }
+    Ok(())
 }

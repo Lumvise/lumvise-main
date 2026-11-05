@@ -4,6 +4,7 @@ use lumvise_contracts::{ArtifactBlob, StoredArtifactTextVector, StoredSemanticEl
 use std::collections::{BTreeMap, BTreeSet};
 mod imports;
 mod origin;
+pub(in crate::policy_bytes) mod transfer;
 pub(super) use imports::{initial, receipt_intent, receipt_read};
 
 #[derive(Deserialize, Serialize)]

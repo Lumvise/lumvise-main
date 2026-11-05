@@ -4,6 +4,7 @@ use crate::{
     SCOPED_MCP_SSE_ENDPOINT, plugin::scoped_mcp_rpc::ScopedMcpRouteContext,
 };
 use serde_json::Value;
+mod scoped_authority;
 
 /// Returns whether this request targets the app-owned durable storage-change stream.
 pub(crate) fn is_storage_change_stream_request(request: &HttpRequest) -> bool {
@@ -12,6 +13,9 @@ pub(crate) fn is_storage_change_stream_request(request: &HttpRequest) -> bool {
 }
 
 pub(crate) fn route_http_request(app: &AppCore, request: HttpRequest) -> HttpResponse {
+    if request.path.starts_with("/api/mcp/scoped-authority/") {
+        return scoped_authority::response(app, request);
+    }
     #[cfg(feature = "assistant-e2e")]
     if let Some(response) = super::e2e_control::route_e2e_request(app, &request) {
         return response;
@@ -112,13 +116,19 @@ fn scoped_mcp_response(app: &AppCore, request: HttpRequest) -> HttpResponse {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", PLUGIN_MCP_SSE_ENDPOINT) => sse_response(PLUGIN_MCP_MESSAGE_ENDPOINT),
         ("GET", PLUGIN_MCP_MESSAGE_ENDPOINT) => streamable_http_get_not_supported(),
-        ("POST", PLUGIN_MCP_SSE_ENDPOINT) => plugin_json_rpc_response(app, request.body),
-        ("POST", PLUGIN_MCP_MESSAGE_ENDPOINT) => plugin_json_rpc_response(app, request.body),
+        ("POST", PLUGIN_MCP_SSE_ENDPOINT) => {
+            plugin_json_rpc_response(app, request.body, request.native_interaction)
+        }
+        ("POST", PLUGIN_MCP_MESSAGE_ENDPOINT) => {
+            plugin_json_rpc_response(app, request.body, request.native_interaction)
+        }
         ("GET", path) if parse_scoped_mcp_path(path, SCOPED_MCP_MESSAGE_ENDPOINT).is_some() => {
             streamable_http_get_not_supported()
         }
         ("GET", path) => scoped_sse_response(path),
-        ("POST", path) => scoped_json_rpc_response(app, path, request.body),
+        ("POST", path) => {
+            scoped_json_rpc_response(app, path, request.body, request.native_interaction)
+        }
         _ => unknown_app_http_endpoint(),
     }
 }
@@ -137,12 +147,18 @@ fn streamable_http_get_not_supported() -> HttpResponse {
     )
 }
 
-fn plugin_json_rpc_response(app: &AppCore, body: Vec<u8>) -> HttpResponse {
+fn plugin_json_rpc_response(
+    app: &AppCore,
+    body: Vec<u8>,
+    native_interaction: bool,
+) -> HttpResponse {
     let request = match serde_json::from_slice::<Value>(&body) {
         Ok(request) => request,
         Err(error) => return error_response("400 Bad Request", error.to_string()),
     };
-    let response = app.plugin_endpoints().handle_plugin_mcp_json_rpc(request);
+    let response = app
+        .plugin_endpoints()
+        .handle_mcp_http_transport(request, native_interaction);
     match response {
         Ok(Some(response)) => json_response("200 OK", response),
         Ok(None) => HttpResponse::empty("202 Accepted"),
@@ -157,12 +173,18 @@ fn scoped_sse_response(path: &str) -> HttpResponse {
     sse_response(&scoped_message_endpoint(&context))
 }
 
-fn scoped_json_rpc_response(app: &AppCore, path: &str, body: Vec<u8>) -> HttpResponse {
+fn scoped_json_rpc_response(
+    app: &AppCore,
+    path: &str,
+    body: Vec<u8>,
+    native_interaction: bool,
+) -> HttpResponse {
     let context = parse_scoped_mcp_path(path, SCOPED_MCP_MESSAGE_ENDPOINT)
         .or_else(|| parse_scoped_mcp_path(path, SCOPED_MCP_SSE_ENDPOINT));
-    let Some(context) = context else {
+    let Some(mut context) = context else {
         return unknown_app_http_endpoint();
     };
+    context.native_interaction = native_interaction;
     json_rpc_response(app, body, context)
 }
 
@@ -201,6 +223,8 @@ fn parse_scoped_mcp_path(path: &str, prefix: &str) -> Option<ScopedMcpRouteConte
         None => None,
     };
     Some(ScopedMcpRouteContext {
+        mcp_origin: None,
+        native_interaction: false,
         scope_id: segments[0].to_string(),
         owner_id: segments[1].to_string(),
         session_id: segments[2].to_string(),
@@ -319,6 +343,7 @@ mod tests {
         let response = route_http_request(
             &app,
             HttpRequest {
+                native_interaction: false,
                 method: "GET".to_string(),
                 path: "/health".to_string(),
                 query: Default::default(),
@@ -341,6 +366,7 @@ mod tests {
         let response = route_http_request(
             &app,
             HttpRequest {
+                native_interaction: false,
                 method: "GET".to_string(),
                 path: "/metrics".to_string(),
                 query: Default::default(),
@@ -380,6 +406,7 @@ mod tests {
             let response = route_http_request(
                 &app,
                 HttpRequest {
+                    native_interaction: false,
                     method: method.to_string(),
                     path: path.to_string(),
                     query: Default::default(),
@@ -416,6 +443,7 @@ mod tests {
             let response = route_http_request(
                 &app,
                 HttpRequest {
+                    native_interaction: false,
                     method: "GET".to_string(),
                     path: path.clone(),
                     query: Default::default(),
@@ -430,6 +458,7 @@ mod tests {
         let response = route_http_request(
             &app,
             HttpRequest {
+                native_interaction: false,
                 method: "GET".to_string(),
                 path: "/api/scoped-plugin-mcp/sse/scope-a/owner-a/session-a".to_string(),
                 query: Default::default(),
@@ -457,6 +486,7 @@ mod tests {
         ] {
             assert_eq!(
                 is_storage_change_stream_request(&HttpRequest {
+                    native_interaction: false,
                     method: method.to_string(),
                     path: path.to_string(),
                     query: Default::default(),
@@ -489,6 +519,7 @@ mod tests {
             let response = route_http_request(
                 &app,
                 HttpRequest {
+                    native_interaction: false,
                     method: (*method).to_string(),
                     path: (*path).to_string(),
                     query: Default::default(),
@@ -513,6 +544,7 @@ mod tests {
     #[test]
     fn wiki_routes_rewrite_to_knowledge_routes() {
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: "/api/wiki/manifest".to_string(),
             query: Default::default(),
@@ -525,6 +557,7 @@ mod tests {
         );
 
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: "/api/wiki/setup".to_string(),
             query: Default::default(),
@@ -537,6 +570,7 @@ mod tests {
         );
 
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: "/api/wiki/export".to_string(),
             query: Default::default(),
@@ -549,6 +583,7 @@ mod tests {
         );
 
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: "/api/wiki/page".to_string(),
             query: Default::default(),
@@ -561,6 +596,7 @@ mod tests {
         );
 
         let request = HttpRequest {
+            native_interaction: false,
             method: "POST".to_string(),
             path: "/api/wiki/write".to_string(),
             query: Default::default(),
@@ -573,6 +609,7 @@ mod tests {
         );
 
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: "/api/wiki/resolve-target".to_string(),
             query: Default::default(),
@@ -585,6 +622,7 @@ mod tests {
         );
 
         let request = HttpRequest {
+            native_interaction: false,
             method: "GET".to_string(),
             path: "/api/wiki/events".to_string(),
             query: Default::default(),

@@ -418,6 +418,7 @@ fn cancelling_top_level_invocation_cancels_nested_target_and_allows_restart() {
     assert!(
         system
             .cancel_controlled(&PluginInvocationCancellationRequest {
+                mcp_origin: None,
                 plugin_id: Some("plugin-invoke-cancel".into()),
                 request_id: "nested-cancel-request".into(),
                 owner_id: "nested-owner".into(),

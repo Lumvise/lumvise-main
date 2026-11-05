@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 const OWNER: &str = "app.index-publication";
 const TABLE: &str = "source-publications";
 
+#[derive(Clone)]
 pub(super) struct CheckpointRows {
     relational: Arc<dyn RelationalPersistence>,
     prefix: String,
@@ -59,8 +60,8 @@ impl CheckpointRows {
         })
     }
 
-    pub(super) fn use_app_owned_invocations(&mut self) {
-        self.invocations = IndexPublicationInvocations::AppOwned;
+    pub(super) fn use_invocations(&mut self, invocations: IndexPublicationInvocations) {
+        self.invocations = invocations;
     }
 
     pub(super) fn ensure(&self, control: &InvocationControl) -> Result<()> {

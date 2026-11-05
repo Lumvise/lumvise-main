@@ -30,6 +30,13 @@ fn export<'a>(manifest: &'a PluginManifest, id: &str) -> &'a ExportDescriptor {
         .unwrap()
 }
 
+fn without_assistant_route_identity(mut schema: serde_json::Value) -> serde_json::Value {
+    for field in ["mcp_owner_id", "plugin_id", "session_id"] {
+        schema["properties"].as_object_mut().unwrap().remove(field);
+    }
+    schema
+}
+
 fn without_descriptions(mut manifest: PluginManifest) -> serde_json::Value {
     for export in &mut manifest.exports {
         export.description.clear();
@@ -94,6 +101,36 @@ fn assistant_aliases_reuse_public_guidance_without_changing_scope() {
             matches!(&export(&manifest, alias).surface, ExportSurface::ScopedMcpTool { scope } if scope == "assistant_session")
         );
     }
+}
+
+#[test]
+fn assistant_memory_hook_aliases_are_scoped_and_keep_canonical_tools() {
+    let packaged: PluginManifest =
+        serde_json::from_str(include_str!("../lumvise-plugin-manifest.json")).unwrap();
+    let runtime = packaged_manifest();
+    for manifest in [&runtime, &packaged] {
+        assert_memory_hook_alias(manifest, "get_document_hook", "document.get_hook");
+        assert_memory_hook_alias(
+            manifest,
+            "configure_document_hook",
+            "document.configure_hook",
+        );
+    }
+}
+
+fn assert_memory_hook_alias(manifest: &PluginManifest, public: &str, alias: &str) {
+    let canonical = export(manifest, public);
+    let assistant = export(manifest, alias);
+    assert_eq!(assistant.description, canonical.description);
+    assert_eq!(
+        without_assistant_route_identity(assistant.input_schema.clone()),
+        canonical.input_schema
+    );
+    assert_eq!(assistant.output_schema, canonical.output_schema);
+    assert!(
+        matches!(&assistant.surface, ExportSurface::ScopedMcpTool { scope } if scope == "assistant_session")
+    );
+    assert!(matches!(&canonical.surface, ExportSurface::McpTool));
 }
 
 #[test]

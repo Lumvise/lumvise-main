@@ -6,8 +6,8 @@ use crate::local::grafeo::graph_store::GraphStore;
 use crate::local::grafeo::storage_manager::StorageManager;
 use crate::local::sql::artifact_blobs::ArtifactBlobRepository;
 use crate::local::sql::commits::{
-    latest_published_commit_version, published_commit_timestamp, recover_stale_pending_commits,
-    resolve_failed_commits, semantic_recovery_status,
+    latest_published_commit_version, published_commit_timestamp, reject_unresolved_commit,
+    semantic_recovery_status,
 };
 use crate::local::sql::connections::SqlConnections;
 #[cfg(test)]
@@ -72,18 +72,10 @@ impl DbCore {
         let conn = Arc::new(timed_startup_phase("sqlite_open", || {
             SqlConnections::open(&path, graph_path.try_exists()?)
         })?);
+        reject_unresolved_commit(&conn.read_conn())?;
         let graph = open_graph_database(&graph_path)?;
         let graph_store = GraphStore::new(graph);
         timed_startup_phase("graph_checkpoint", || graph_store.checkpoint())?;
-        {
-            let write_conn = conn.write_conn();
-            timed_startup_phase("pending_commit_recovery", || {
-                recover_stale_pending_commits(&write_conn)
-            })?;
-            timed_startup_phase("failed_commit_resolution", || {
-                resolve_failed_commits(&write_conn)
-            })?;
-        }
         let latest_published_revision = initialize_published_graph_watermark(&conn, &graph_store)?;
         let db = Self {
             conn,
@@ -481,7 +473,7 @@ mod tests {
     #[test]
     fn graph_wal_syncs_once_per_commit() {
         assert_eq!(
-            graph_config(Path::new("graph.grafeo")).wal_durability,
+            graph_config(Path::new("graph.grafeo")).wal_durability(),
             grafeo::DurabilityMode::Sync
         );
     }
@@ -521,6 +513,7 @@ mod tests {
         assert_eq!(
             main_only
                 .find_nodes_by_property("semantic_element_id", &grafeo::Value::from("crash-file"),)
+                .unwrap()
                 .len(),
             1,
             "open must flush recovered WAL state into the main graph before readiness"

@@ -15,7 +15,7 @@ use lumvise_plugin_sdk::{PluginContext, PluginError};
 use lumvise_semantic_revisions::{SemanticRevisionBody, SemanticRevisionResolution};
 use serde_json::{Value, json};
 
-pub(super) use schema::{qualified as qualified_schema, read_input, read_output};
+pub(super) use schema::{read_input, read_output};
 
 pub(super) fn invoke(input: Value, context: &mut PluginContext<'_>) -> Result<Value, PluginError> {
     let request: KnowledgeCitationReadRequest =

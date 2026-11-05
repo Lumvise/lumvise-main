@@ -5,19 +5,23 @@ use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 pub(crate) fn semantic_node_id_index(
     database: &GraphTransaction<'_>,
     project_root: &str,
-) -> BTreeMap<String, NodeId> {
-    let mut node_ids = database
-        .find_nodes_by_property(PROJECT_ROOT_PROPERTY, &GrafeoValue::from(project_root))
-        .into_iter()
-        .filter_map(|node_id| database.get_node(node_id))
-        .filter(|node| node.has_label("SemanticElement"))
-        .filter_map(|node| {
-            string_property(&node, SEMANTIC_ELEMENT_ID_PROPERTY)
-                .map(|semantic_id| (semantic_id, node.id))
-        })
-        .collect::<BTreeMap<_, _>>();
+) -> Result<BTreeMap<String, NodeId>> {
+    let mut node_ids = BTreeMap::new();
+    for node_id in
+        database.find_nodes_by_property(PROJECT_ROOT_PROPERTY, &GrafeoValue::from(project_root))?
+    {
+        let Some(node) = database.get_node(node_id)? else {
+            continue;
+        };
+        if !node.has_label("SemanticElement") {
+            continue;
+        }
+        if let Some(semantic_id) = string_property(&node, SEMANTIC_ELEMENT_ID_PROPERTY) {
+            node_ids.insert(semantic_id, node.id);
+        }
+    }
     node_ids.extend(database.semantic_node_ids());
-    node_ids
+    Ok(node_ids)
 }
 
 pub(crate) struct CompleteProjectRows {
@@ -63,20 +67,18 @@ const COMPLETE_ARTIFACT_PROPERTIES: &[&str] = &[
 pub(crate) fn semantic_element_by_id_selective(
     database: &GrafeoDB,
     semantic_element_id: &str,
-) -> Option<SemanticElement> {
-    let ids = [semantic_element_id.to_string()];
-    let node_ids = ids
-        .iter()
-        .flat_map(|id| {
-            database.find_nodes_by_property(
-                SEMANTIC_ELEMENT_ID_PROPERTY,
-                &GrafeoValue::from(id.as_str()),
-            )
-        })
-        .collect::<Vec<_>>();
-    selective_current_elements(database, &node_ids, None, false)
-        .into_iter()
-        .next()
+) -> Result<Option<SemanticElement>> {
+    let node_ids = database
+        .find_nodes_by_property(
+            SEMANTIC_ELEMENT_ID_PROPERTY,
+            &GrafeoValue::from(semantic_element_id),
+        )
+        .db()?;
+    Ok(
+        selective_current_elements(database, &node_ids, None, false)?
+            .into_iter()
+            .next(),
+    )
 }
 
 /// Tests current project membership without requiring an artifact's historical owner body.
@@ -85,22 +87,35 @@ pub(crate) fn artifact_is_current_in_project(
     database: &GrafeoDB,
     root: &str,
     artifact: &str,
-) -> bool {
-    node_ids_by_label_and_property(database, "SemanticArtifact", ARTIFACT_ID_PROPERTY, artifact)
-        .into_iter()
-        .any(|node| current_artifact_root(database, node).as_deref() == Some(root))
+) -> Result<bool> {
+    for node in node_ids_by_label_and_property(
+        database,
+        "SemanticArtifact",
+        ARTIFACT_ID_PROPERTY,
+        artifact,
+    )? {
+        if current_artifact_root(database, node)?.as_deref() == Some(root) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-fn current_artifact_root(database: &GrafeoDB, node: NodeId) -> Option<String> {
-    let node = database.get_node(node)?;
+fn current_artifact_root(database: &GrafeoDB, node: NodeId) -> Result<Option<String>> {
+    let Some(node) = database.get_node(node).db()? else {
+        return Ok(None);
+    };
     if node.get_property("revision_selected") == Some(&GrafeoValue::from(false)) {
-        return None;
+        return Ok(None);
     }
     // Managed artifacts carry project scope because their canonical owner can be collected.
-    string_property(&node, PROJECT_ROOT_PROPERTY).or_else(|| {
-        let owner = string_property(&node, SEMANTIC_ELEMENT_ID_PROPERTY)?;
-        semantic_element_by_id_selective(database, &owner).map(|owner| owner.project_root)
-    })
+    if let Some(root) = string_property(&node, PROJECT_ROOT_PROPERTY) {
+        return Ok(Some(root));
+    }
+    let Some(owner) = string_property(&node, SEMANTIC_ELEMENT_ID_PROPERTY) else {
+        return Ok(None);
+    };
+    Ok(semantic_element_by_id_selective(database, &owner)?.map(|owner| owner.project_root))
 }
 
 const COMPLETE_EDGE_PROPERTIES: &[&str] = &[
@@ -117,83 +132,91 @@ const COMPLETE_EDGE_PROPERTIES: &[&str] = &[
 pub(crate) fn complete_project_rows(
     database: &GrafeoDB,
     project_root: &str,
-) -> CompleteProjectRows {
-    let element_ids =
-        database.find_nodes_by_property(PROJECT_ROOT_PROPERTY, &GrafeoValue::from(project_root));
-    let elements = selective_elements(database, &element_ids, Some(project_root), true);
-    let (relationships, artifact_ids) = selective_adjacency(database, &element_ids, project_root);
-    let artifacts = selective_artifacts(database, &elements, &artifact_ids, None);
-    CompleteProjectRows {
+) -> Result<CompleteProjectRows> {
+    let element_ids = database
+        .find_nodes_by_property(PROJECT_ROOT_PROPERTY, &GrafeoValue::from(project_root))
+        .db()?;
+    let elements = selective_elements(database, &element_ids, Some(project_root), true)?;
+    let (relationships, artifact_ids) = selective_adjacency(database, &element_ids, project_root)?;
+    let artifacts = selective_artifacts(database, &elements, &artifact_ids, None)?;
+    Ok(CompleteProjectRows {
         elements,
         relationships,
         artifacts,
-    }
+    })
 }
 
 pub(crate) fn project_artifacts_selective(
     database: &GrafeoDB,
     project_root: &str,
     artifact_namespace: Option<&str>,
-) -> Vec<SemanticArtifact> {
-    let store = database.graph_store();
-    let artifact_nodes = store.nodes_by_label("SemanticArtifact");
-    let managed = artifact_nodes
-        .iter()
-        .filter(|id| {
-            database.get_node(**id).is_some_and(|node| {
-                string_property(&node, "project_root").as_deref() == Some(project_root)
-                    && node.get_property("revision_selected") != Some(&GrafeoValue::from(false))
-            })
-        })
-        .copied()
-        .collect::<Vec<_>>();
+) -> Result<Vec<SemanticArtifact>> {
+    let snapshot = database.committed_snapshot()?;
+    let view = snapshot.view();
+    let artifact_nodes = snapshot.nodes_by_label("SemanticArtifact", view).db()?;
+    let mut managed = Vec::new();
+    for id in &artifact_nodes {
+        if let Some(node) = database.get_node(*id).db()?
+            && string_property(&node, "project_root").as_deref() == Some(project_root)
+            && node.get_property("revision_selected") != Some(&GrafeoValue::from(false))
+        {
+            managed.push(*id);
+        }
+    }
     if !managed.is_empty() {
         return selective_artifacts(database, &[], &managed, artifact_namespace);
     }
     // Artifact search needs only owners of existing artifacts, not every source
     // element in a large project. Keep the same project-membership predicate.
-    let mut owners = semantic_owner_ids(database, &artifact_nodes);
-    let project_key = PROJECT_ROOT_PROPERTY.into();
-    owners.retain(|owner| {
-        database
+    let mut owners = semantic_owner_ids(database, &artifact_nodes)?;
+    let mut in_project = HashSet::new();
+    for owner in &owners {
+        let ids = database
             .find_nodes_by_property(
                 SEMANTIC_ELEMENT_ID_PROPERTY,
                 &GrafeoValue::from(owner.as_str()),
             )
-            .into_iter()
-            .any(|id| {
-                store
-                    .get_node_property(id, &project_key)
-                    .and_then(|value| value_string(&value))
-                    .as_deref()
-                    == Some(project_root)
-            })
-    });
+            .db()?;
+        for id in ids {
+            let root = snapshot
+                .node_property(id, PROJECT_ROOT_PROPERTY, view)
+                .db()?;
+            if root.and_then(|value| value_string(&value)).as_deref() == Some(project_root) {
+                in_project.insert(owner.clone());
+                break;
+            }
+        }
+    }
+    owners.retain(|owner| in_project.contains(owner));
     selective_artifacts_for_owners(database, owners, artifact_namespace)
 }
 
 pub(crate) fn artifacts_by_ids_selective(
     database: &GrafeoDB,
     artifact_ids: &HashSet<String>,
-) -> Vec<SemanticArtifact> {
-    let node_ids = artifact_ids
-        .iter()
-        .flat_map(|id| {
-            database.find_nodes_by_property(ARTIFACT_ID_PROPERTY, &GrafeoValue::from(id.as_str()))
-        })
-        .collect::<Vec<_>>();
+) -> Result<Vec<SemanticArtifact>> {
+    let mut node_ids = Vec::new();
+    for id in artifact_ids {
+        node_ids.extend(
+            database
+                .find_nodes_by_property(ARTIFACT_ID_PROPERTY, &GrafeoValue::from(id.as_str()))
+                .db()?,
+        );
+    }
     selective_artifacts(database, &[], &node_ids, None)
 }
 pub(super) fn selective_node_property_batch(
-    store: &dyn GrafeoGraphStore,
+    snapshot: &Snapshot,
     node_ids: &[NodeId],
     key: &str,
-) -> Vec<Option<GrafeoValue>> {
+) -> Result<Vec<Option<GrafeoValue>>> {
     #[cfg(test)]
     record_selective_node_batch_call();
-    store
-        .get_node_property_batch(node_ids, &key.into())
-        .committed_nodes(store, node_ids)
+    // GRAFEO06-REVIEW(3): read through the snapshot's committed view; 0.5 read the live store.
+    snapshot
+        .node_property_batch(node_ids, &key.into(), snapshot.view())
+        .db()?
+        .committed_nodes(snapshot, node_ids)
 }
 
 pub(crate) fn elements_by_ids_selective(
@@ -201,16 +224,18 @@ pub(crate) fn elements_by_ids_selective(
     project_root: &str,
     semantic_element_ids: &HashSet<String>,
     include_inactive: bool,
-) -> Vec<SemanticElement> {
-    let node_ids = semantic_element_ids
-        .iter()
-        .flat_map(|id| {
-            database.find_nodes_by_property(
-                SEMANTIC_ELEMENT_ID_PROPERTY,
-                &GrafeoValue::from(id.as_str()),
-            )
-        })
-        .collect::<Vec<_>>();
+) -> Result<Vec<SemanticElement>> {
+    let mut node_ids = Vec::new();
+    for id in semantic_element_ids {
+        node_ids.extend(
+            database
+                .find_nodes_by_property(
+                    SEMANTIC_ELEMENT_ID_PROPERTY,
+                    &GrafeoValue::from(id.as_str()),
+                )
+                .db()?,
+        );
+    }
     selective_current_elements(database, &node_ids, Some(project_root), include_inactive)
 }
 
@@ -223,25 +248,37 @@ pub(crate) fn candidate_elements_by_identity_keys(
     content_fingerprints: &HashSet<String>,
     kind_name_keys: &HashSet<String>,
     kind_file_name_keys: &HashSet<String>,
-) -> Vec<SemanticElement> {
+) -> Result<Vec<SemanticElement>> {
     let mut node_ids = HashSet::new();
     for value in content_fingerprints {
-        node_ids.extend(database.find_nodes_by_property(
-            CONTENT_FINGERPRINT_PROPERTY,
-            &GrafeoValue::from(value.as_str()),
-        ));
+        node_ids.extend(
+            database
+                .find_nodes_by_property(
+                    CONTENT_FINGERPRINT_PROPERTY,
+                    &GrafeoValue::from(value.as_str()),
+                )
+                .db()?,
+        );
     }
     for value in kind_name_keys {
-        node_ids.extend(database.find_nodes_by_property(
-            IDENTITY_KIND_NAME_PROPERTY,
-            &GrafeoValue::from(value.as_str()),
-        ));
+        node_ids.extend(
+            database
+                .find_nodes_by_property(
+                    IDENTITY_KIND_NAME_PROPERTY,
+                    &GrafeoValue::from(value.as_str()),
+                )
+                .db()?,
+        );
     }
     for value in kind_file_name_keys {
-        node_ids.extend(database.find_nodes_by_property(
-            IDENTITY_KIND_FILE_NAME_PROPERTY,
-            &GrafeoValue::from(value.as_str()),
-        ));
+        node_ids.extend(
+            database
+                .find_nodes_by_property(
+                    IDENTITY_KIND_FILE_NAME_PROPERTY,
+                    &GrafeoValue::from(value.as_str()),
+                )
+                .db()?,
+        );
     }
     let node_ids = node_ids.into_iter().collect::<Vec<_>>();
     selective_elements(database, &node_ids, None, true)
@@ -252,7 +289,7 @@ pub(crate) fn selective_elements(
     node_ids: &[NodeId],
     project_root: Option<&str>,
     include_inactive: bool,
-) -> Vec<SemanticElement> {
+) -> Result<Vec<SemanticElement>> {
     selective_elements_in_view(
         database,
         node_ids,
@@ -267,7 +304,7 @@ pub(crate) fn selective_current_elements(
     node_ids: &[NodeId],
     project_root: Option<&str>,
     include_inactive: bool,
-) -> Vec<SemanticElement> {
+) -> Result<Vec<SemanticElement>> {
     selective_elements_in_view(
         database,
         node_ids,
@@ -288,18 +325,20 @@ fn selective_elements_in_view(
     project_root: Option<&str>,
     include_inactive: bool,
     view: ElementReadView,
-) -> Vec<SemanticElement> {
-    let store = database.graph_store();
+) -> Result<Vec<SemanticElement>> {
+    let snapshot = database.committed_snapshot()?;
     let keys = COMPLETE_ELEMENT_PROPERTIES
         .iter()
         .map(|key| (*key).into())
         .collect::<Vec<_>>();
     #[cfg(test)]
     record_selective_node_batch_call();
-    let rows = store
-        .get_nodes_properties_selective_batch(node_ids, &keys)
-        .committed_nodes(&*database.graph_store(), node_ids);
-    node_ids
+    // GRAFEO06-REVIEW(4): committed ReadView batch; 0.5 read live columns then masked by epoch.
+    let rows = snapshot
+        .node_properties_selective_batch(node_ids, &keys, snapshot.view())
+        .db()?
+        .committed_nodes(&snapshot, node_ids)?;
+    Ok(node_ids
         .iter()
         .enumerate()
         .filter_map(|(row, _)| {
@@ -313,7 +352,7 @@ fn selective_elements_in_view(
         })
         .filter(|element| project_root.is_none_or(|root| element.project_root == root))
         .filter(|element| include_inactive || element.lifecycle != "inactive")
-        .collect()
+        .collect())
 }
 
 pub(crate) fn element_from_properties<'a>(
@@ -365,17 +404,19 @@ pub(super) fn selective_adjacency(
     database: &GrafeoDB,
     element_nodes: &[NodeId],
     project_root: &str,
-) -> (Vec<SemanticRelationship>, Vec<NodeId>) {
-    let adjacency = element_nodes
-        .iter()
-        .flat_map(|source| {
-            database
-                .graph_store()
-                .edges_from(*source, Direction::Outgoing)
-                .into_iter()
-                .map(|(target, edge)| (*source, target, edge))
-        })
-        .collect::<Vec<_>>();
+) -> Result<(Vec<SemanticRelationship>, Vec<NodeId>)> {
+    let snapshot = database.committed_snapshot()?;
+    let view = snapshot.view();
+    let mut adjacency = Vec::new();
+    for source in element_nodes {
+        // GRAFEO06-REVIEW(5): committed adjacency; 0.5 edges_from listed the live store's edges.
+        for (target, edge) in snapshot
+            .edges(*source, Direction::Outgoing, &[], view)
+            .db()?
+        {
+            adjacency.push((*source, target, edge));
+        }
+    }
     let edge_ids = adjacency
         .iter()
         .map(|(_, _, edge)| *edge)
@@ -386,10 +427,10 @@ pub(super) fn selective_adjacency(
         .collect::<Vec<_>>();
     #[cfg(test)]
     record_selective_edge_batch_call();
-    let properties = database
-        .graph_store()
-        .get_edges_properties_selective_batch(&edge_ids, &edge_keys)
-        .committed_edges(&*database.graph_store(), &edge_ids);
+    let properties = snapshot
+        .edge_properties_selective_batch(&edge_ids, &edge_keys, view)
+        .db()?
+        .committed_edges(&snapshot, &edge_ids)?;
     let mut relationships = Vec::new();
     let mut artifact_nodes = Vec::new();
     for ((_, target, _), properties) in adjacency.into_iter().zip(properties) {
@@ -407,26 +448,27 @@ pub(super) fn selective_adjacency(
             relationships.push(relationship);
         }
     }
-    (relationships, artifact_nodes)
+    Ok((relationships, artifact_nodes))
 }
 
 pub(super) fn selective_relationships(
     database: &GrafeoDB,
     edge_ids: &[EdgeId],
-) -> Vec<SemanticRelationship> {
+) -> Result<Vec<SemanticRelationship>> {
+    let snapshot = database.committed_snapshot()?;
     let keys = COMPLETE_EDGE_PROPERTIES
         .iter()
         .map(|key| (*key).into())
         .collect::<Vec<_>>();
     #[cfg(test)]
     record_selective_edge_batch_call();
-    database
-        .graph_store()
-        .get_edges_properties_selective_batch(edge_ids, &keys)
-        .committed_edges(&*database.graph_store(), edge_ids)
+    Ok(snapshot
+        .edge_properties_selective_batch(edge_ids, &keys, snapshot.view())
+        .db()?
+        .committed_edges(&snapshot, edge_ids)?
         .iter()
         .filter_map(|row| relationship_from_properties(|key| row.get(key)))
-        .collect()
+        .collect())
 }
 
 fn relationship_from_properties<'a>(
@@ -444,46 +486,56 @@ fn relationship_from_properties<'a>(
     })
 }
 
-pub(super) fn semantic_owner_ids(database: &GrafeoDB, node_ids: &[NodeId]) -> HashSet<String> {
-    let store = database.graph_store();
-    selective_node_property_batch(&*store, node_ids, SEMANTIC_ELEMENT_ID_PROPERTY)
-        .into_iter()
-        .filter_map(|value| value.and_then(|value| value_string(&value)))
-        .collect()
+pub(super) fn semantic_owner_ids(
+    database: &GrafeoDB,
+    node_ids: &[NodeId],
+) -> Result<HashSet<String>> {
+    let snapshot = database.committed_snapshot()?;
+    Ok(
+        selective_node_property_batch(&snapshot, node_ids, SEMANTIC_ELEMENT_ID_PROPERTY)?
+            .into_iter()
+            .filter_map(|value| value.and_then(|value| value_string(&value)))
+            .collect(),
+    )
 }
 
 pub(super) fn selective_artifacts_for_owners(
     database: &GrafeoDB,
     owner_ids: HashSet<String>,
     artifact_namespace: Option<&str>,
-) -> Vec<SemanticArtifact> {
-    let store = database.graph_store();
+) -> Result<Vec<SemanticArtifact>> {
+    let snapshot = database.committed_snapshot()?;
     // Owner equality is indexed; unrelated artifacts never need hydration.
-    let node_ids = owner_ids
-        .iter()
-        .flat_map(|owner| {
-            database.find_nodes_by_property(
+    let mut node_ids = Vec::new();
+    for owner in &owner_ids {
+        let owned = database
+            .find_nodes_by_property(
                 SEMANTIC_ELEMENT_ID_PROPERTY,
                 &GrafeoValue::from(owner.as_str()),
             )
-        })
-        .filter(|id| {
-            database
-                .get_node(*id)
+            .db()?;
+        for id in owned {
+            if database
+                .get_node(id)
+                .db()?
                 .is_some_and(|node| node.has_label("SemanticArtifact"))
-        })
-        .collect::<Vec<_>>();
+            {
+                node_ids.push(id);
+            }
+        }
+    }
     let keys = COMPLETE_ARTIFACT_PROPERTIES
         .iter()
         .map(|key| (*key).into())
         .collect::<Vec<_>>();
     #[cfg(test)]
     record_selective_node_batch_call();
-    let rows = store
-        .get_nodes_properties_selective_batch(&node_ids, &keys)
-        .committed_nodes(&*database.graph_store(), &node_ids);
+    let rows = snapshot
+        .node_properties_selective_batch(&node_ids, &keys, snapshot.view())
+        .db()?
+        .committed_nodes(&snapshot, &node_ids)?;
     let mut seen = HashSet::new();
-    node_ids
+    Ok(node_ids
         .iter()
         .enumerate()
         .filter_map(|(row, _)| {
@@ -504,7 +556,7 @@ pub(super) fn selective_artifacts_for_owners(
                 && seen.insert(artifact.artifact_id.clone()))
             .then_some(artifact)
         })
-        .collect()
+        .collect())
 }
 
 pub(super) fn selective_artifacts(
@@ -512,32 +564,37 @@ pub(super) fn selective_artifacts(
     elements: &[SemanticElement],
     edge_artifact_nodes: &[NodeId],
     artifact_namespace: Option<&str>,
-) -> Vec<SemanticArtifact> {
+) -> Result<Vec<SemanticArtifact>> {
     let owner_ids = elements
         .iter()
         .map(|element| element.semantic_element_id.as_str())
         .collect::<HashSet<_>>();
     let mut node_ids = edge_artifact_nodes.to_vec();
     for element_id in &owner_ids {
-        node_ids.extend(database.find_nodes_by_property(
-            SEMANTIC_ELEMENT_ID_PROPERTY,
-            &GrafeoValue::from(*element_id),
-        ));
+        node_ids.extend(
+            database
+                .find_nodes_by_property(
+                    SEMANTIC_ELEMENT_ID_PROPERTY,
+                    &GrafeoValue::from(*element_id),
+                )
+                .db()?,
+        );
     }
     let mut seen_nodes = HashSet::new();
     node_ids.retain(|node_id| seen_nodes.insert(*node_id));
-    let store = database.graph_store();
+    let snapshot = database.committed_snapshot()?;
     let keys = COMPLETE_ARTIFACT_PROPERTIES
         .iter()
         .map(|key| (*key).into())
         .collect::<Vec<_>>();
     #[cfg(test)]
     record_selective_node_batch_call();
-    let rows = store
-        .get_nodes_properties_selective_batch(&node_ids, &keys)
-        .committed_nodes(&*database.graph_store(), &node_ids);
+    let rows = snapshot
+        .node_properties_selective_batch(&node_ids, &keys, snapshot.view())
+        .db()?
+        .committed_nodes(&snapshot, &node_ids)?;
     let mut seen = HashSet::new();
-    node_ids
+    Ok(node_ids
         .iter()
         .enumerate()
         .filter_map(|(row, _)| {
@@ -556,7 +613,7 @@ pub(super) fn selective_artifacts(
             seen.insert(artifact.artifact_id.clone())
                 .then_some(artifact)
         })
-        .collect()
+        .collect())
 }
 
 pub(super) fn artifact_from_properties<'a>(
@@ -613,24 +670,28 @@ pub(super) fn value_json(value: &GrafeoValue) -> serde_json::Value {
 pub(crate) fn semantic_elements_for_project(
     database: &GrafeoDB,
     project_root: &str,
-) -> Vec<SemanticElement> {
-    semantic_elements_for_project_including_inactive(database, project_root)
-        .into_iter()
-        .filter(|element| element.lifecycle != "inactive")
-        .collect()
+) -> Result<Vec<SemanticElement>> {
+    Ok(
+        semantic_elements_for_project_including_inactive(database, project_root)?
+            .into_iter()
+            .filter(|element| element.lifecycle != "inactive")
+            .collect(),
+    )
 }
 
 pub(crate) fn semantic_elements_for_project_including_inactive(
     database: &GrafeoDB,
     project_root: &str,
-) -> Vec<SemanticElement> {
-    let semantic_node_ids = database
-        .graph_store()
-        .nodes_by_label("SemanticElement")
+) -> Result<Vec<SemanticElement>> {
+    let snapshot = database.committed_snapshot()?;
+    let semantic_node_ids = snapshot
+        .nodes_by_label("SemanticElement", snapshot.view())
+        .db()?
         .into_iter()
         .collect::<HashSet<_>>();
     let node_ids = database
         .find_nodes_by_property(PROJECT_ROOT_PROPERTY, &GrafeoValue::from(project_root))
+        .db()?
         .into_iter()
         .filter(|node_id| semantic_node_ids.contains(node_id))
         .collect::<Vec<_>>();
@@ -640,45 +701,51 @@ pub(crate) fn semantic_elements_for_project_including_inactive(
 pub(crate) fn semantic_element_by_id(
     database: &GrafeoDB,
     semantic_element_id: &str,
-) -> Option<SemanticElement> {
-    database
+) -> Result<Option<SemanticElement>> {
+    let node_ids = database
         .find_nodes_by_property(
             SEMANTIC_ELEMENT_ID_PROPERTY,
             &GrafeoValue::from(semantic_element_id),
         )
-        .into_iter()
-        .filter_map(|node_id| database.get_node(node_id))
-        .find(|node| node.has_label("SemanticElement") && element_node_is_active(node))
-        .and_then(|node| semantic_element_from_node(&node))
+        .db()?;
+    for node_id in node_ids {
+        if let Some(node) = database.get_node(node_id).db()?
+            && node.has_label("SemanticElement")
+            && element_node_is_active(&node)
+        {
+            return Ok(semantic_element_from_node(&node));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn semantic_artifacts_for_elements(
     database: &GrafeoDB,
     semantic_element_ids: &HashSet<String>,
-) -> Vec<SemanticArtifact> {
+) -> Result<Vec<SemanticArtifact>> {
     let mut artifacts = BTreeMap::new();
-    for artifact in semantic_artifacts_for_elements_from_edges(database, semantic_element_ids) {
+    for artifact in semantic_artifacts_for_elements_from_edges(database, semantic_element_ids)? {
         artifacts.insert(artifact.artifact_id.clone(), artifact);
     }
-    for artifact in semantic_artifacts_for_elements_by_property(database, semantic_element_ids) {
+    for artifact in semantic_artifacts_for_elements_by_property(database, semantic_element_ids)? {
         artifacts
             .entry(artifact.artifact_id.clone())
             .or_insert(artifact);
     }
-    artifacts.into_values().collect()
+    Ok(artifacts.into_values().collect())
 }
 
 pub(super) fn semantic_artifacts_for_elements_by_property(
     database: &GrafeoDB,
     semantic_element_ids: &HashSet<String>,
-) -> Vec<SemanticArtifact> {
+) -> Result<Vec<SemanticArtifact>> {
     selective_artifacts_for_owners(database, semantic_element_ids.clone(), None)
 }
 
 pub(crate) fn semantic_artifacts_for_element(
     database: &GrafeoDB,
     semantic_element_id: &str,
-) -> Vec<SemanticArtifact> {
+) -> Result<Vec<SemanticArtifact>> {
     let mut element_ids = HashSet::with_capacity(1);
     element_ids.insert(semantic_element_id.to_string());
     semantic_artifacts_for_elements(database, &element_ids)
@@ -687,13 +754,18 @@ pub(crate) fn semantic_artifacts_for_element(
 pub(crate) fn semantic_artifact_by_id(
     database: &GrafeoDB,
     artifact_id: &str,
-) -> Option<SemanticArtifact> {
-    database
+) -> Result<Option<SemanticArtifact>> {
+    let node_ids = database
         .find_nodes_by_property(ARTIFACT_ID_PROPERTY, &GrafeoValue::from(artifact_id))
-        .into_iter()
-        .filter_map(|node_id| database.get_node(node_id))
-        .find(|node| node.has_label("SemanticArtifact"))
-        .and_then(|node| semantic_artifact_from_node(&node))
+        .db()?;
+    for node_id in node_ids {
+        if let Some(node) = database.get_node(node_id).db()?
+            && node.has_label("SemanticArtifact")
+        {
+            return Ok(semantic_artifact_from_node(&node));
+        }
+    }
+    Ok(None)
 }
 
 /// Looks up nodes carrying `label` via the `property = value` index instead of a full scan.
@@ -702,28 +774,29 @@ pub(crate) fn node_ids_by_label_and_property(
     label: &str,
     property: &str,
     value: &str,
-) -> Vec<NodeId> {
+) -> Result<Vec<NodeId>> {
     // Bulk project operations need identities, not cloned metadata/vector properties.
     if property == PROJECT_ROOT_PROPERTY {
-        let labeled: HashSet<_> = database
-            .graph_store()
-            .nodes_by_label(label)
+        let snapshot = database.committed_snapshot()?;
+        let labeled: HashSet<_> = snapshot
+            .nodes_by_label(label, snapshot.view())
+            .db()?
             .into_iter()
             .collect();
-        return database
+        return Ok(database
             .find_nodes_by_property(property, &GrafeoValue::from(value))
+            .db()?
             .into_iter()
             .filter(|id| labeled.contains(id))
-            .collect();
+            .collect());
     }
-    database
-        .find_nodes_by_property(property, &GrafeoValue::from(value))
-        .into_iter()
-        .filter_map(|node_id| database.get_node(node_id))
-        .filter(|node| node.has_label(label))
-        .filter(|node| string_property(node, property).as_deref() == Some(value))
-        .map(|node| node.id)
-        .collect()
+    Ok(
+        nodes_by_label_and_property(database, label, property, value)?
+            .into_iter()
+            .filter(|node| string_property(node, property).as_deref() == Some(value))
+            .map(|node| node.id)
+            .collect(),
+    )
 }
 
 pub(crate) fn nodes_by_label_and_property(
@@ -731,13 +804,19 @@ pub(crate) fn nodes_by_label_and_property(
     label: &str,
     property: &str,
     value: &str,
-) -> Vec<grafeo_core::graph::lpg::Node> {
-    database
+) -> Result<Vec<grafeo_core::graph::lpg::Node>> {
+    let mut nodes = Vec::new();
+    for node_id in database
         .find_nodes_by_property(property, &GrafeoValue::from(value))
-        .into_iter()
-        .filter_map(|node_id| database.get_node(node_id))
-        .filter(|node| node.has_label(label))
-        .collect()
+        .db()?
+    {
+        if let Some(node) = database.get_node(node_id).db()?
+            && node.has_label(label)
+        {
+            nodes.push(node);
+        }
+    }
+    Ok(nodes)
 }
 
 #[cfg(test)]
@@ -746,20 +825,21 @@ pub(crate) fn delete_nodes_by_property(
     label: &str,
     property: &str,
     value: &str,
-) -> usize {
-    let node_ids = database
-        .find_nodes_by_property(property, &GrafeoValue::from(value))
-        .into_iter()
-        .filter_map(|node_id| database.get_node(node_id))
-        .filter(|node| node.has_label(label))
-        .filter(|node| string_property(node, property).as_deref() == Some(value))
-        .map(|node| node.id)
-        .collect::<Vec<_>>();
+) -> Result<usize> {
+    let mut node_ids = Vec::new();
+    for node_id in database.find_nodes_by_property(property, &GrafeoValue::from(value))? {
+        if let Some(node) = database.get_node(node_id)?
+            && node.has_label(label)
+            && string_property(&node, property).as_deref() == Some(value)
+        {
+            node_ids.push(node.id);
+        }
+    }
     let count = node_ids.len();
     for node_id in node_ids {
-        database.delete_node(node_id);
+        database.delete_node(node_id)?;
     }
-    count
+    Ok(count)
 }
 
 pub(super) fn relationship_edge_touches_element(
@@ -772,90 +852,119 @@ pub(super) fn relationship_edge_touches_element(
 pub(super) fn semantic_artifacts_for_elements_from_edges(
     database: &GrafeoDB,
     semantic_element_ids: &HashSet<String>,
-) -> Vec<SemanticArtifact> {
-    active_element_nodes(database, semantic_element_ids)
-        .into_iter()
-        .flat_map(|node| database.graph_store().edges_from(node, Direction::Outgoing))
-        .filter_map(|(_, edge_id)| database.get_edge(edge_id))
-        .filter(|edge| edge.edge_type == SEMANTIC_ARTIFACT_EDGE_TYPE)
-        .filter_map(|edge| database.get_node(edge.dst))
-        .filter(|node| node.has_label("SemanticArtifact"))
-        .filter(|node| node.get_property("revision_selected") != Some(&GrafeoValue::from(false)))
-        .filter_map(|node| semantic_artifact_from_node(&node))
-        .filter(|artifact| artifact.metadata["association_kind"] != "inherited")
-        .collect()
+) -> Result<Vec<SemanticArtifact>> {
+    let snapshot = database.committed_snapshot()?;
+    let view = snapshot.view();
+    let mut artifacts = Vec::new();
+    for node in active_element_nodes(database, semantic_element_ids)? {
+        for (_, edge_id) in snapshot.edges(node, Direction::Outgoing, &[], view).db()? {
+            let Some(edge) = database.get_edge(edge_id).db()? else {
+                continue;
+            };
+            if edge.edge_type != SEMANTIC_ARTIFACT_EDGE_TYPE {
+                continue;
+            }
+            let Some(target) = database.get_node(edge.dst).db()? else {
+                continue;
+            };
+            if target.has_label("SemanticArtifact")
+                && target.get_property("revision_selected") != Some(&GrafeoValue::from(false))
+                && let Some(artifact) = semantic_artifact_from_node(&target)
+                && artifact.metadata["association_kind"] != "inherited"
+            {
+                artifacts.push(artifact);
+            }
+        }
+    }
+    Ok(artifacts)
 }
 
 pub(super) fn active_element_nodes(
     database: &GrafeoDB,
     semantic_element_ids: &HashSet<String>,
-) -> Vec<NodeId> {
-    let nodes = semantic_element_ids
-        .iter()
-        .flat_map(|id| {
-            database.find_nodes_by_property(
+) -> Result<Vec<NodeId>> {
+    let mut nodes = Vec::new();
+    for id in semantic_element_ids {
+        let owned = database
+            .find_nodes_by_property(
                 SEMANTIC_ELEMENT_ID_PROPERTY,
                 &GrafeoValue::from(id.as_str()),
             )
-        })
-        .filter(|id| {
-            database
-                .get_node(*id)
+            .db()?;
+        for node_id in owned {
+            if database
+                .get_node(node_id)
+                .db()?
                 .is_some_and(|node| node.has_label("SemanticElement"))
-        })
-        .collect::<Vec<_>>();
-    let rows = database
-        .graph_store()
-        .get_nodes_properties_selective_batch(&nodes, &["active".into(), "lifecycle".into()])
-        .committed_nodes(&*database.graph_store(), &nodes);
-    nodes
+            {
+                nodes.push(node_id);
+            }
+        }
+    }
+    let snapshot = database.committed_snapshot()?;
+    let rows = snapshot
+        .node_properties_selective_batch(
+            &nodes,
+            &["active".into(), "lifecycle".into()],
+            snapshot.view(),
+        )
+        .db()?
+        .committed_nodes(&snapshot, &nodes)?;
+    Ok(nodes
         .into_iter()
         .zip(rows)
         .filter(|(_, row)| active_properties(row.get("active"), row.get("lifecycle")))
         .map(|(node, _)| node)
-        .collect()
+        .collect())
 }
 
 pub(super) fn semantic_element_node_id(
     database: &GrafeoDB,
     semantic_element_id: &str,
-) -> Option<NodeId> {
+) -> Result<Option<NodeId>> {
     let direct_id = semantic_element_node_id_for(semantic_element_id);
-    if semantic_element_id_matches(database, direct_id, semantic_element_id) {
-        return Some(direct_id);
+    if semantic_element_id_matches(database, direct_id, semantic_element_id)? {
+        return Ok(Some(direct_id));
     }
-    database
+    let node_ids = database
         .find_nodes_by_property(
             SEMANTIC_ELEMENT_ID_PROPERTY,
             &GrafeoValue::from(semantic_element_id),
         )
-        .into_iter()
-        .find(|node_id| {
-            database.get_node(*node_id).is_some_and(|node| {
-                node.has_label("SemanticElement") && element_node_is_active(&node)
-            })
-        })
+        .db()?;
+    for node_id in node_ids {
+        if database
+            .get_node(node_id)
+            .db()?
+            .is_some_and(|node| node.has_label("SemanticElement") && element_node_is_active(&node))
+        {
+            return Ok(Some(node_id));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 pub(super) fn transaction_semantic_element_node_id(
     database: &GraphTransaction<'_>,
     semantic_element_id: &str,
-) -> Option<NodeId> {
+) -> Result<Option<NodeId>> {
     if let Some(node_id) = database.semantic_node_id(semantic_element_id) {
-        return Some(node_id);
+        return Ok(Some(node_id));
     }
-    database
-        .find_nodes_by_property(
-            SEMANTIC_ELEMENT_ID_PROPERTY,
-            &GrafeoValue::from(semantic_element_id),
-        )
-        .into_iter()
-        .find(|node_id| {
-            database
-                .get_node(*node_id)
-                .is_some_and(|node| node.has_label("SemanticElement"))
-        })
+    let node_ids = database.find_nodes_by_property(
+        SEMANTIC_ELEMENT_ID_PROPERTY,
+        &GrafeoValue::from(semantic_element_id),
+    )?;
+    for node_id in node_ids {
+        if database
+            .get_node(node_id)?
+            .is_some_and(|node| node.has_label("SemanticElement"))
+        {
+            return Ok(Some(node_id));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn element_node_is_active(node: &grafeo_core::graph::lpg::Node) -> bool {
@@ -882,11 +991,11 @@ pub(super) fn semantic_element_id_matches(
     database: &GrafeoDB,
     node_id: NodeId,
     semantic_element_id: &str,
-) -> bool {
-    database.get_node(node_id).is_some_and(|node| {
+) -> Result<bool> {
+    Ok(database.get_node(node_id).db()?.is_some_and(|node| {
         node.has_label("SemanticElement")
             && element_node_is_active(&node)
             && string_property(&node, SEMANTIC_ELEMENT_ID_PROPERTY).as_deref()
                 == Some(semantic_element_id)
-    })
+    }))
 }
