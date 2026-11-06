@@ -7,8 +7,8 @@ mod elements;
 use crate::fingerprints::{file_kind, stable_hash};
 use crate::source::invalid;
 use crate::{
-    ParsedFile, PreparedProjectScan, ReferenceFileUpdate, ReferenceTarget, ScanError, ScannedFile,
-    SourceKind,
+    LinkTarget, ParsedFile, PreparedProjectScan, ReferenceFileUpdate, ReferenceTarget, ScanError,
+    ScannedFile, SourceKind,
 };
 use lumvise_contracts::{
     IndexBatchRequest, SemanticElementUpsert, SemanticRelationshipUpsert, SemanticSourceUpsert,
@@ -140,6 +140,7 @@ impl SemanticIndexProjection {
         }
         for update in scan.reference_updates() {
             self.append_references(update, &mut batch.semantic_relationships)?;
+            self.append_links(update, &mut batch.semantic_relationships)?;
         }
         coverage::project_resolutions(scan.reference_updates(), &mut batch.semantic_elements);
         deduplicate_relationships(&mut batch.semantic_relationships);
@@ -214,6 +215,44 @@ impl SemanticIndexProjection {
         }
         Ok(())
     }
+
+    fn append_links(
+        &mut self,
+        update: &ReferenceFileUpdate,
+        output: &mut Vec<SemanticRelationshipUpsert>,
+    ) -> Result<(), ScanError> {
+        if update.links.is_empty() {
+            return Ok(());
+        }
+        let source = self.file(&update.file)?;
+        for resolved in &update.links {
+            let link = &update.file.parsed.links[resolved.link_index];
+            let source_id = link
+                .owner_definition
+                .map(|index| &source.definition_ids[index])
+                .unwrap_or(&source.file_id);
+            let (target_element_id, target_locator) = match &resolved.target {
+                LinkTarget::Page(path) => {
+                    let name = path.rsplit('/').next().unwrap_or(path);
+                    let id = element_id(&self.source.semantic_source_id, path, "file", name);
+                    (Some(id.clone()), Some(id))
+                }
+                LinkTarget::Locator(locator) => (None, Some(locator.clone())),
+            };
+            if target_element_id.as_deref() == Some(source_id.as_str()) {
+                continue;
+            }
+            output.push(SemanticRelationshipUpsert {
+                source_element_id: source_id.clone(),
+                target_element_id,
+                relationship_kind: "semantic".into(),
+                relationship_label: "links_to".into(),
+                target_label: (!link.label.is_empty()).then(|| link.label.clone()),
+                target_locator,
+            });
+        }
+        Ok(())
+    }
 }
 
 fn relationship(
@@ -243,9 +282,11 @@ fn relationship(
 fn deduplicate_relationships(relationships: &mut Vec<SemanticRelationshipUpsert>) {
     let mut seen = BTreeSet::new();
     relationships.retain(|item| {
+        // Distinct external links from one owner share no element id; the locator tells them apart.
         seen.insert((
             item.source_element_id.clone(),
             item.target_element_id.clone(),
+            item.target_locator.clone(),
             item.relationship_label.clone(),
         ))
     });

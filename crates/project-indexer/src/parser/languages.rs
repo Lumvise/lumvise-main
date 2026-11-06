@@ -14,6 +14,7 @@ pub(super) enum SyntaxLanguage {
     CSharp,
     Json,
     Markdown,
+    Html,
 }
 
 impl SyntaxLanguage {
@@ -31,6 +32,7 @@ impl SyntaxLanguage {
             "cs" => Self::CSharp,
             "json" => Self::Json,
             "md" | "markdown" => Self::Markdown,
+            "html" | "htm" => Self::Html,
             _ => return None,
         })
     }
@@ -48,6 +50,7 @@ impl SyntaxLanguage {
             Self::CSharp => "csharp",
             Self::Json => "json",
             Self::Markdown => "markdown",
+            Self::Html => "html",
         }
     }
 
@@ -64,6 +67,7 @@ impl SyntaxLanguage {
             Self::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
             Self::Json => tree_sitter_json::LANGUAGE.into(),
             Self::Markdown => tree_sitter_md::LANGUAGE.into(),
+            Self::Html => tree_sitter_html::LANGUAGE.into(),
         }
     }
 
@@ -79,6 +83,8 @@ impl SyntaxLanguage {
             Self::CSharp => include_str!("queries/csharp.scm"),
             Self::Json => include_str!("queries/json.scm"),
             Self::Markdown => include_str!("queries/markdown.scm"),
+            // html.rs walks the tree directly; the shared engine still needs a query value.
+            Self::Html => "",
         }
     }
 }

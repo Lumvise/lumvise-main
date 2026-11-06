@@ -10,7 +10,6 @@ fn documents_convert_before_semantic_extraction_and_native_grammars_keep_precede
     for (path, bytes) in [
         ("report.docx", include_bytes!("fixtures/documents/report.docx").as_slice()),
         ("table.csv", b"Name,Value\nCoast,12\n".as_slice()),
-        ("report.html", b"<h1>Field report</h1><p>Coastal observations.</p><h2>Sensors</h2><p>Calibrate monthly.</p>".as_slice()),
         ("notes.ipynb", br##"{"cells":[{"cell_type":"markdown","source":["# Field report\n","Coastal observations."]}]}"##.as_slice()),
     ] {
         let parsed = parser.parse(path, bytes).unwrap();
@@ -27,6 +26,8 @@ fn documents_convert_before_semantic_extraction_and_native_grammars_keep_precede
         ("code.rs", b"fn sensor() {}".as_slice()),
         ("schema.json", b"{\"sensor\": 2}".as_slice()),
         ("notes.md", b"# Field report".as_slice()),
+        // HTML is a syntax language: its headings are html sections, not Docling sections.
+        ("report.html", b"<h1>Field report</h1><p>Coastal observations.</p><h2>Sensors</h2><p>Calibrate monthly.</p>".as_slice()),
     ] {
         let parsed = parser.parse(path, bytes).unwrap();
         assert!(parsed.document.is_none());

@@ -79,6 +79,9 @@ pub struct IndexedDefinition {
     pub span: SourceSpan,
     /// Logical container outside lexical nesting, such as a Rust impl target.
     pub implementation_type: Option<String>,
+    /// Content identity of an HTML section, hashed from its visible words and link
+    /// targets while parsing. Its words are not kept; None for other definitions.
+    pub html_fingerprint: Option<crate::SourceFingerprint>,
 }
 
 /// Unresolved source reference retained for incremental cross-file resolution.
@@ -94,6 +97,20 @@ pub struct IndexedReference {
     pub span: SourceSpan,
     /// Syntactic scope or receiver; never discarded to guess a bare-name target.
     pub qualifier: ReferenceQualifier,
+}
+
+/// Hyperlink from an HTML page. Kept out of `IndexedReference`, so name resolution
+/// never sees URLs. Example: `DocumentLink { href: "/wiki/Rust".into(), .. }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentLink {
+    /// The `href` attribute as written, with HTML entities decoded and no URL resolution.
+    pub href: String,
+    /// Visible anchor text, whitespace-collapsed; empty for image-only anchors.
+    pub label: String,
+    /// Innermost section or chrome definition containing the anchor; None is the file.
+    pub owner_definition: Option<usize>,
+    /// One-based source line of the anchor start tag.
+    pub line: usize,
 }
 
 /// Evidence available without compiler type inference. Example: `Scope("Vec".into())`.
@@ -156,6 +173,12 @@ pub struct ParsedFile {
     pub definitions: Vec<IndexedDefinition>,
     /// References remain unresolved until the project symbol set is available.
     pub references: Vec<IndexedReference>,
+    /// HTML hyperlinks; their targets are resolved against the project inventory later.
+    pub links: Vec<DocumentLink>,
+    /// Canonical page URL declared by `<meta name="lumvise:source-url">`, if any.
+    pub source_url: Option<String>,
+    /// Whether the page declares `<meta name="lumvise:stub" content="true">`.
+    pub stub: bool,
     /// One shared text body supports later content projection without rereading.
     pub source: Option<std::sync::Arc<str>>,
     /// Whether and how the source was parsed.

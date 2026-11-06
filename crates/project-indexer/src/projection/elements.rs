@@ -58,10 +58,19 @@ fn file_element(source: &str, file: &ScannedFile) -> Result<SemanticElementUpser
         content_fingerprint: fingerprint.map(|value| value.encoded.clone()),
         start_line: (!folder).then_some(1),
         end_line: file_end_line(file)?,
-        metadata: Some(
+        metadata: Some(with_stub(
+            file,
             serde_json::json!({ "kind": if folder { "directory" } else { file_kind(path) }, "bytes": file.byte_len, "source_digest_sha256": source_digest(file), "extraction": super::coverage::extraction(file), "fingerprint_algorithm": fingerprint.map(|value| value.algorithm), "markdown_alias": file.parsed.document.as_ref().map(|doc| { let mut metadata = doc.file_metadata(); metadata["content"] = serde_json::json!(file.parsed.source.as_deref()); metadata }).or_else(|| file.parsed.conversion_error.as_ref().map(|reason| serde_json::json!({"status":"unavailable", "reason":reason}))) }),
-        ),
+        )),
     })
+}
+
+/// Marks declared HTML stub pages, so placeholders are distinguishable from content.
+fn with_stub(file: &ScannedFile, mut metadata: serde_json::Value) -> serde_json::Value {
+    if file.parsed.stub {
+        metadata["stub"] = serde_json::json!(true);
+    }
+    metadata
 }
 
 fn source_digest(file: &ScannedFile) -> Option<String> {
@@ -129,7 +138,11 @@ fn definition_element(
                 "expected definition span within shared UTF-8 source",
             )
         })?;
-    let fingerprint = SourceFingerprint::text(body.trim());
+    // HTML sections arrive with their identity already hashed; other definitions hash their body.
+    let fingerprint = match &definition.html_fingerprint {
+        Some(fingerprint) => fingerprint.clone(),
+        None => SourceFingerprint::text(body.trim()),
+    };
     Ok(SemanticElementUpsert {
         revision_dependencies: Vec::new(),
         semantic_source_id: source.into(),
@@ -141,13 +154,25 @@ fn definition_element(
         content_fingerprint: Some(fingerprint.encoded),
         start_line: Some(line_number(&file.entry.path, definition.start_line)?),
         end_line: Some(line_number(&file.entry.path, definition.end_line)?),
-        metadata: Some(
+        metadata: Some(html_metadata(
+            definition,
             serde_json::json!({"extractor": if file.parsed.document.is_some() { "document_markdown" } else { "tree_sitter" }, "fingerprint_algorithm": fingerprint.algorithm,
                 "markdown_alias": file.parsed.document.as_ref().map(|doc| doc.metadata()),
                 "anchor_selector": file.parsed.document.as_ref().and_then(|doc| doc.selector(file.parsed.source.as_deref().unwrap_or(""), definition.span)),
                 "stable_name": id.strip_prefix(&format!("{source}:{}:{}:", file.entry.path, published_kind(&file.entry.path, &definition.kind))).and_then(|name| name.strip_suffix(':')).unwrap_or(&definition.name) }),
-        ),
+        )),
     })
+}
+
+/// Marks site chrome, so navigation and layout are told apart from content sections.
+fn html_metadata(
+    definition: &crate::IndexedDefinition,
+    mut metadata: serde_json::Value,
+) -> serde_json::Value {
+    if definition.kind == "html_chrome" {
+        metadata["chrome"] = serde_json::json!(true);
+    }
+    metadata
 }
 
 fn line_number(path: &str, line: usize) -> Result<i64, ScanError> {

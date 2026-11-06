@@ -43,6 +43,7 @@ impl<'a> ResolutionView<'a> {
         ReferenceFileUpdate {
             file: Arc::clone(file),
             references,
+            links: Vec::new(),
         }
     }
 

@@ -67,24 +67,26 @@ fn illustrated_office_preserves_tables_and_binary_images() {
 }
 
 #[test]
-fn html_never_fetches_external_images_and_keeps_structure() {
-    let html = b"<h1>Heading</h1><ul><li>One</li><li>Two</li></ul><img src='file:///etc/passwd'><img src='https://invalid.example/image.png'><table><tr><th>Key</th></tr><tr><td>Value</td></tr></table>";
-    let converted = basic_converter()
-        .convert("example.html", html)
-        .unwrap()
-        .unwrap();
-    assert!(converted.markdown.contains("# Heading"));
-    assert!(converted.markdown.contains("- One"));
-    assert!(converted.markdown.contains("Value"));
-    assert!(converted.images.is_empty());
-    assert!(converted.provenance.figures.is_empty());
+fn html_is_left_to_the_syntax_parser_not_docling() {
+    let html = b"<h1>Heading</h1><img src='https://invalid.example/image.png'>";
+    assert!(
+        basic_converter()
+            .convert("example.html", html)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        basic_converter()
+            .convert("example.htm", html)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
 fn rejects_malformed_empty_and_unsupported_inputs() {
     for (path, bytes) in [
         ("bad.docx", b"invalid ZIP".as_slice()),
-        ("empty.html", b"".as_slice()),
         ("bad.pdf", b"not PDF".as_slice()),
     ] {
         let error = basic_converter().convert(path, bytes).unwrap_err();

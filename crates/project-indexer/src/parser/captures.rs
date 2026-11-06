@@ -83,6 +83,7 @@ fn definition(kind: &str, name: Node<'_>, body: Node<'_>, text: &str) -> Indexed
         end_line: body.end_position().row + 1,
         span: span(body),
         implementation_type: super::qualifiers::definition_type(body, text),
+        html_fingerprint: None,
     }
 }
 

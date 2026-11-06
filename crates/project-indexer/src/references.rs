@@ -1,6 +1,9 @@
 //! Derived name indexes repair cached callers after definition changes. Nothing here
 //! is authoritative persistence; acknowledged source files are the only input state.
+mod links;
 mod resolution;
+
+pub use links::{LinkTarget, ResolvedLink};
 
 use crate::{ScannedFile, SourceKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,6 +54,8 @@ pub struct ReferenceFileUpdate {
     pub file: Arc<ScannedFile>,
     /// All references in the file, not only newly resolved occurrences.
     pub references: Vec<ResolvedReference>,
+    /// All hyperlinks in the file, resolved against the same inventory as `references`.
+    pub links: Vec<ResolvedLink>,
 }
 
 type SourceFiles = BTreeMap<String, Arc<ScannedFile>>;
@@ -60,6 +65,8 @@ type DefinitionNames = BTreeMap<String, BTreeMap<(String, usize), DefinitionSite
 pub(crate) struct ReferenceIndex {
     definitions: DefinitionNames,
     referrers: BTreeMap<String, BTreeSet<String>>,
+    /// Candidate page path of each same-site link, mapped to the pages linking to it.
+    page_referrers: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ReferenceIndex {
@@ -79,13 +86,27 @@ impl ReferenceIndex {
         for name in names {
             affected.extend(self.referrers.get(&name).into_iter().flatten().cloned());
         }
+        // Only pages that appeared or vanished change what a link resolves to.
+        let appeared_or_removed = removed.iter().chain(
+            replacements
+                .keys()
+                .filter(|path| !files.contains_key(*path)),
+        );
+        for path in appeared_or_removed {
+            affected.extend(self.page_referrers.get(path).into_iter().flatten().cloned());
+        }
+        let present = |path: &str| page_present(files, replacements, removed, path);
         let mut view = resolution::ResolutionView::new(&self.definitions, &added, &touched);
         affected
             .into_iter()
             .filter(|path| !removed.contains(path))
             .filter_map(|path| {
                 let file = replacements.get(&path).or_else(|| files.get(&path))?;
-                (file.entry.kind == SourceKind::File).then(|| (path, view.resolve_file(file)))
+                (file.entry.kind == SourceKind::File).then(|| {
+                    let mut update = view.resolve_file(file);
+                    update.links = links::resolve_file(file, present);
+                    (path, update)
+                })
             })
             .collect()
     }
@@ -108,6 +129,14 @@ impl ReferenceIndex {
                 }
             }
         }
+        for page in links::candidate_pages(file) {
+            if let Some(paths) = self.page_referrers.get_mut(&page) {
+                paths.remove(path);
+                if paths.is_empty() {
+                    self.page_referrers.remove(&page);
+                }
+            }
+        }
     }
 
     pub(crate) fn insert(&mut self, file: &Arc<ScannedFile>) {
@@ -118,7 +147,28 @@ impl ReferenceIndex {
                 .or_default()
                 .insert(file.entry.path.clone());
         }
+        for page in links::candidate_pages(file) {
+            self.page_referrers
+                .entry(page)
+                .or_default()
+                .insert(file.entry.path.clone());
+        }
     }
+}
+
+/// Whether a project file exists in the inventory after this preparation.
+fn page_present(
+    files: &SourceFiles,
+    replacements: &SourceFiles,
+    removed: &BTreeSet<String>,
+    path: &str,
+) -> bool {
+    let file = match replacements.get(path) {
+        Some(file) => Some(file),
+        None if removed.contains(path) => None,
+        None => files.get(path),
+    };
+    file.is_some_and(|file| file.entry.kind == SourceKind::File)
 }
 
 fn definition_names<'a>(files: impl Iterator<Item = &'a Arc<ScannedFile>>) -> DefinitionNames {
@@ -154,10 +204,11 @@ fn insert_definitions(names: &mut DefinitionNames, file: &Arc<ScannedFile>) {
 fn reference_definitions(
     file: &ScannedFile,
 ) -> impl Iterator<Item = (usize, &crate::IndexedDefinition)> {
-    // Document keys are searchable elements, not declarations in a code namespace.
+    // Document keys and page structure are searchable elements, not declarations in a
+    // code namespace: a `<header>` chrome element must not resolve a code `header`.
     let code_namespace = !matches!(
         &file.parsed.status,
-        crate::ParseStatus::Parsed { language, .. } if language == "json"
+        crate::ParseStatus::Parsed { language, .. } if language == "json" || language == "html"
     );
     file.parsed
         .definitions

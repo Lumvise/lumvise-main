@@ -3,6 +3,7 @@
 //! resolution and semantic identity assignment belong to subsequent scan stages.
 
 mod captures;
+mod html;
 mod languages;
 mod qualifiers;
 
@@ -143,7 +144,8 @@ impl ProjectFileParser for TreeSitterProjectParser {
                 ..ParsedFile::default()
             });
         };
-        if language != SyntaxLanguage::Markdown && is_minified(text) {
+        if !matches!(language, SyntaxLanguage::Markdown | SyntaxLanguage::Html) && is_minified(text)
+        {
             return Ok(ParsedFile {
                 source: Some(Arc::from(text)),
                 status: ParseStatus::Minified,
@@ -163,7 +165,8 @@ const MINIFIED_MIN_BYTES: usize = 1024;
 const MINIFIED_AVERAGE_LINE_BYTES: usize = 110;
 
 /// Detects bundler/minifier output such as committed Vite chunks, which keep
-/// few, very long lines. Prose (Markdown) is exempt by the caller.
+/// few, very long lines. Prose (Markdown, HTML) is exempt by the caller, so minified
+/// pages keep their links.
 fn is_minified(text: &str) -> bool {
     text.len() >= MINIFIED_MIN_BYTES
         && text.len() / text.lines().count().max(1) > MINIFIED_AVERAGE_LINE_BYTES
@@ -276,6 +279,7 @@ fn block_definition(
         end_line: end_line.max(start_line + 1),
         span: crate::SourceSpan { start, end },
         implementation_type: None,
+        html_fingerprint: None,
     }
 }
 
@@ -318,7 +322,11 @@ impl SyntaxEngine {
             .parser
             .parse(text, None)
             .ok_or_else(|| invalid(path, "expected completed syntax tree"))?;
-        let mut parsed = captures::extract(&self.query, &mut self.cursor, &tree, text);
+        let mut parsed = if language == SyntaxLanguage::Html {
+            html::extract(&tree, text)
+        } else {
+            captures::extract(&self.query, &mut self.cursor, &tree, text)
+        };
         if self.cursor.did_exceed_match_limit() {
             return Err(invalid(
                 path,

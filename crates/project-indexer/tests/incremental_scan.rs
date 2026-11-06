@@ -211,6 +211,7 @@ impl ProjectFileParser for FakeLanguageParser {
                 end_line: 1,
                 span: Default::default(),
                 implementation_type: None,
+                html_fingerprint: None,
             }],
             references: vec![],
             ..ParsedFile::default()

@@ -28,12 +28,15 @@ pub use fingerprints::SourceFingerprint;
 pub use parallel_parser::ParallelTreeSitterProjectParser;
 pub use parser::{BlockSettings, SyntaxParserMetrics, TreeSitterProjectParser};
 pub use projection::{ProjectionMetrics, SemanticIndexProjection};
-pub use references::{DefinitionSite, ReferenceFileUpdate, ReferenceTarget, ResolvedReference};
+pub use references::{
+    DefinitionSite, LinkTarget, ReferenceFileUpdate, ReferenceTarget, ResolvedLink,
+    ResolvedReference,
+};
 
 pub use scan::{PreparedProjectScan, ProjectIndexer, ScanMetrics, ScannedFile};
 pub use session::{ProjectIndexingSession, ProjectUpdateReport, SemanticIndexPublisher};
 pub use source::{
-    FileRead, FileStamp, IndexedDefinition, IndexedReference, ParseStatus, ParsedFile,
-    ProjectFileParser, ProjectSource, ReferenceQualifier, ScanError, ScanScope, SourceEntry,
-    SourceKind, SourceParseInput, SourceSpan,
+    DocumentLink, FileRead, FileStamp, IndexedDefinition, IndexedReference, ParseStatus,
+    ParsedFile, ProjectFileParser, ProjectSource, ReferenceQualifier, ScanError, ScanScope,
+    SourceEntry, SourceKind, SourceParseInput, SourceSpan,
 };

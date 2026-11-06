@@ -417,18 +417,27 @@ mod tests {
         let app = credentialed_app();
         let directory = scratch_dir("converted-document");
         index_root(&app, &directory);
-        let bytes = b"<h1>Coastal report</h1><p>Calibrate monthly.</p>";
-        std::fs::write(directory.join("report.html"), bytes).unwrap();
+        let bytes = b"station,interval\nCoastal,monthly\n";
+        std::fs::write(directory.join("report.csv"), bytes).unwrap();
         let response =
-            source_file_response(&app, &request(&directory.to_string_lossy(), "report.html"));
+            source_file_response(&app, &request(&directory.to_string_lossy(), "report.csv"));
         assert_eq!(response.status, "200 OK");
         let payload: serde_json::Value =
             serde_json::from_slice(response.buffered_bytes().unwrap()).unwrap();
-        let converted = lumvise_project_indexer::convert_document("report.html", bytes)
+        let converted = lumvise_project_indexer::convert_document("report.csv", bytes)
             .unwrap()
             .unwrap();
         assert_eq!(payload["text"], converted.markdown);
         assert_eq!(payload["representation"], "markdown");
+        // HTML is indexed in raw-source lines, so its preview must be the raw page, not Markdown.
+        let page = "<h1>Coastal report</h1><p>Calibrate monthly.</p>";
+        std::fs::write(directory.join("report.html"), page).unwrap();
+        let response =
+            source_file_response(&app, &request(&directory.to_string_lossy(), "report.html"));
+        let payload: serde_json::Value =
+            serde_json::from_slice(response.buffered_bytes().unwrap()).unwrap();
+        assert_eq!(payload["text"], page);
+        assert_ne!(payload["representation"], "markdown");
         std::fs::write(directory.join("broken.pdf"), b"%PDF-invalid").unwrap();
         assert_eq!(
             source_file_response(&app, &request(&directory.to_string_lossy(), "broken.pdf")).status,

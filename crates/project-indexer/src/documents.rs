@@ -62,7 +62,7 @@ pub fn is_document_path(path: &str) -> bool {
             .unwrap_or("")
             .to_ascii_lowercase()
             .as_str(),
-        "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "html" | "htm" | "csv" | "ipynb" | "xml"
+        "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "csv" | "ipynb" | "xml"
     )
 }
 
