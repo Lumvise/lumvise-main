@@ -3,7 +3,8 @@ use chrono::Utc;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 // This release covers the SQLite/Grafeo pair, independently of app releases.
-const DATABASE_FORMAT_RELEASE: i64 = 1;
+// Release 2 pairs SQLite with Grafeo 0.6; refusing release 1 keeps its 0.5 graph from being converted on open.
+const DATABASE_FORMAT_RELEASE: i64 = 2;
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS persistent_settings (
