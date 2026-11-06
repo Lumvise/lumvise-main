@@ -110,7 +110,6 @@ struct Walk<'a> {
     /// Receives text of non-section owners so they still advance the text cursor.
     scratch: String,
     source_url: Option<String>,
-    stub: bool,
 }
 
 impl<'a> Walk<'a> {
@@ -130,7 +129,6 @@ impl<'a> Walk<'a> {
             text: TextCursor { last_end: 0 },
             scratch: String::new(),
             source_url: None,
-            stub: false,
         }
     }
 
@@ -258,7 +256,6 @@ impl<'a> Walk<'a> {
                     self.source_url = Some(url.to_owned());
                 }
             }
-            "lumvise:stub" => self.stub = content.trim().eq_ignore_ascii_case("true"),
             _ => {}
         }
     }
@@ -364,7 +361,6 @@ impl<'a> Walk<'a> {
             definitions,
             links,
             source_url: self.source_url,
-            stub: self.stub,
             ..ParsedFile::default()
         }
     }

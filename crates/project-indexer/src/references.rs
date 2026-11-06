@@ -3,7 +3,6 @@
 mod links;
 mod resolution;
 
-pub(crate) use links::external_url;
 pub use links::{LinkTarget, ResolvedLink};
 
 use crate::{ScannedFile, SourceKind};

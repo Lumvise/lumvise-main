@@ -130,10 +130,23 @@ impl SemanticIndexProjection {
                     .map(|update| (&update.file.entry.path, update.file.as_ref())),
             )
             .collect();
+        let updates: BTreeMap<_, _> = scan
+            .reference_updates()
+            .map(|update| (update.file.entry.path.as_str(), update))
+            .collect();
         for file in selected.values() {
+            let projected = self.file(file)?;
             batch
                 .semantic_elements
-                .extend(self.file(file)?.elements.iter().cloned());
+                .extend(projected.elements.iter().cloned());
+            if let Some(update) = updates.get(file.entry.path.as_str()) {
+                batch.semantic_elements.extend(elements::link_elements(
+                    &self.source.semantic_source_id,
+                    file,
+                    &projected.file_id,
+                    &update.links,
+                )?);
+            }
         }
         if !scan.is_full_snapshot() {
             batch.replace_paths = selected.keys().map(|path| (*path).clone()).collect();

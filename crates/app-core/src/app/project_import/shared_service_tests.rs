@@ -1001,17 +1001,25 @@ fn html_pages_sharing_an_external_link_import_into_their_own_partitions() {
         .iter()
         .filter(|element| element.element_kind == "html_external_link")
         .collect();
-    assert_eq!(externals.len(), 2, "one external element per linking page");
-    assert!(externals.iter().all(|element| element.name == external));
-    let external_of = |path: &str| {
+    // One link element per distinct URL per linking page: index has the external and the
+    // unsaved same-site `missing.html`; about has the external only.
+    let missing = "https://site.example/missing.html";
+    assert_eq!(
+        externals.len(),
+        3,
+        "one link element per URL per linking page"
+    );
+    let external_of = |path: &str, url: &str| {
         externals
             .iter()
-            .find(|element| element.path == path)
-            .unwrap_or_else(|| panic!("no external element in {path}"))
+            .find(|element| element.path == path && element.name == url)
+            .unwrap_or_else(|| panic!("no {url} link element in {path}"))
             .semantic_element_id
             .clone()
     };
-    let (index_external, about_external) = (external_of("index.html"), external_of("about.html"));
+    let index_external = external_of("index.html", external);
+    let index_missing = external_of("index.html", missing);
+    let about_external = external_of("about.html", external);
     let links: Vec<_> = snapshot
         .connections
         .iter()
@@ -1025,10 +1033,14 @@ fn html_pages_sharing_an_external_link_import_into_their_own_partitions() {
             .map(|relationship| relationship.target_element_id.as_str())
             .collect::<BTreeSet<_>>()
     };
-    // The missing same-site page adds no edge: index links about + external only.
+    // The missing same-site page keeps its link element: index links about, external, missing.
     assert_eq!(
         edges_from(&index),
-        BTreeSet::from([about.as_str(), index_external.as_str()]),
+        BTreeSet::from([
+            about.as_str(),
+            index_external.as_str(),
+            index_missing.as_str()
+        ]),
     );
     assert_eq!(
         edges_from(&about),

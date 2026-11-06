@@ -25,7 +25,7 @@ document.write("<a href='/wiki/Fake'>fake</a>");
 <h1 class="title">Topic</h1>
 <p>Lead text with <a href="/wiki/Existing">link to existing</a> and <a href="https://other.example.net/info?x=1&amp;y=2">external</a>.</p>
 <h2 id="History">History</h2>
-<p>Early history &amp; notes. See <a href="/wiki/Stub">stub page</a>.</p>
+<p>Early history &amp; notes. See <a href="/wiki/Unsaved">unsaved page</a>.</p>
 <h3>Early life</h3>
 <p>Born somewhere. <a href="/wiki/Missing_Page">missing</a></p>
 <figure><img src="x.png" alt=""><figcaption>Photo from <a href="/wiki/Existing#Section">archive</a></figcaption></figure>
@@ -44,11 +44,6 @@ document.write("<a href='/wiki/Fake'>fake</a>");
 const EXISTING: &str = r#"<!DOCTYPE html>
 <html><head><title>Existing</title></head>
 <body><h1>Existing</h1><p>Plain page.</p></body></html>
-"#;
-
-const STUB: &str = r#"<!DOCTYPE html>
-<html><head><meta name="lumvise:stub" content="true"><title>Stub</title></head>
-<body><p>Placeholder.</p></body></html>
 "#;
 
 /// Scans and acknowledges a project the way a successful publication does.
@@ -166,14 +161,13 @@ fn assert_external(
     );
 }
 
-/// No relationship from `owner` carries anchor text `label`.
-fn assert_no_link(batch: &IndexBatchRequest, owner: &SemanticElementUpsert, label: &str) {
-    assert!(
-        !links_from(batch, owner)
-            .iter()
-            .any(|relationship| relationship.target_label.as_deref() == Some(label)),
-        "same-site link `{label}` to an absent page must not produce an edge"
-    );
+/// Whether `page` owns a link element for `url`.
+fn has_link_element(batch: &IndexBatchRequest, page: &str, url: &str) -> bool {
+    batch.semantic_elements.iter().any(|element| {
+        element.path == page
+            && element.semantic_element_type == "html_external_link"
+            && element.semantic_element_name == url
+    })
 }
 
 fn section_fingerprints(batch: &IndexBatchRequest, path: &str) -> BTreeMap<String, String> {
@@ -203,7 +197,6 @@ fn topic_project() -> Project {
     let project = Project::new();
     project.write("wiki/Topic.html", TOPIC);
     project.write("wiki/Existing.html", EXISTING);
-    project.write("wiki/Stub.html", STUB);
     project
 }
 
@@ -259,7 +252,7 @@ fn html_headings_nest_as_sections_and_chrome_is_marked() {
 }
 
 #[test]
-fn html_links_keep_owners_and_resolve_to_pages_stubs_or_locators() {
+fn html_links_keep_owners_and_resolve_to_pages_or_link_elements() {
     let mut project = topic_project();
     let batch = project.publish(ScanScope::Full);
     let page = "wiki/Topic.html";
@@ -274,19 +267,29 @@ fn html_links_keep_owners_and_resolve_to_pages_stubs_or_locators() {
     let aside = find(&batch, page, "html_chrome", "aside");
     let footer = find(&batch, page, "html_chrome", "footer");
     let existing = file_of(&batch, "wiki/Existing.html");
-    let stub = file_of(&batch, "wiki/Stub.html");
-
-    // Pages declaring a stub mark it on the file element; full pages carry no marker.
-    assert_eq!(stub.metadata.as_ref().unwrap()["stub"], true);
-    assert!(existing.metadata.as_ref().unwrap().get("stub").is_none());
 
     // Links before the first heading belong to the file element.
     assert_page(link(&batch, file, "top link"), existing);
-    // Same-site links to absent pages produce no edge; chrome owners keep their other links.
-    assert_no_link(&batch, nav, "Main page");
-    assert_no_link(&batch, header, "Site");
+    // Same-site links to pages not stored keep their URL as a link element, like off-site links.
+    assert_external(
+        &batch,
+        link(&batch, nav, "Main page"),
+        page,
+        "https://wiki.example.org/wiki/Main_Page",
+    );
+    assert_external(
+        &batch,
+        link(&batch, header, "Site"),
+        page,
+        "https://wiki.example.org/",
+    );
     assert_page(link(&batch, aside, "aside link"), existing);
-    assert_no_link(&batch, footer, "Terms");
+    assert_external(
+        &batch,
+        link(&batch, footer, "Terms"),
+        page,
+        "https://wiki.example.org/wiki/Terms",
+    );
     // Inline, figure and list links belong to the section that contains them.
     assert_page(link(&batch, topic, "link to existing"), existing);
     assert_external(
@@ -295,8 +298,18 @@ fn html_links_keep_owners_and_resolve_to_pages_stubs_or_locators() {
         page,
         "https://other.example.net/info?x=1&y=2",
     );
-    assert_page(link(&batch, history, "stub page"), stub);
-    assert_no_link(&batch, early, "missing");
+    assert_external(
+        &batch,
+        link(&batch, history, "unsaved page"),
+        page,
+        "https://wiki.example.org/wiki/Unsaved",
+    );
+    assert_external(
+        &batch,
+        link(&batch, early, "missing"),
+        page,
+        "https://wiki.example.org/wiki/Missing_Page",
+    );
     assert_page(link(&batch, early, "archive"), existing);
     assert_page(link(&batch, later, "Existing html"), existing);
     // Same-site duplicates from one section collapse: the absolute and relative links name one page.
@@ -423,46 +436,38 @@ fn html_section_fingerprints_follow_words_and_links_not_markup() {
 }
 
 #[test]
-fn stub_replaced_by_full_page_keeps_target_identity_for_unchanged_linker() {
+fn links_to_unsaved_pages_follow_the_page_as_it_appears_and_leaves() {
     let mut project = topic_project();
     let first = project.publish(ScanScope::Full);
     let page = "wiki/Topic.html";
-    let history = find(&first, page, "html_section", "History");
-    let stub_before = file_of(&first, "wiki/Stub.html");
-    assert_eq!(stub_before.metadata.as_ref().unwrap()["stub"], true);
-    assert_page(link(&first, history, "stub page"), stub_before);
-
-    // The full page replaces the stub at the same path; Topic itself does not change.
-    project.write("wiki/Stub.html", EXISTING);
-    let second = project.publish(ScanScope::Paths(vec!["wiki/Stub.html".into()]));
-    let stub_after = file_of(&second, "wiki/Stub.html");
-    assert_eq!(
-        stub_after.semantic_element_id,
-        stub_before.semantic_element_id
-    );
-    assert!(stub_after.metadata.as_ref().unwrap().get("stub").is_none());
-}
-
-#[test]
-fn links_follow_target_pages_as_they_appear_and_leave() {
-    let mut project = topic_project();
-    let first = project.publish(ScanScope::Full);
-    let page = "wiki/Topic.html";
+    let url = "https://wiki.example.org/wiki/Missing_Page";
     let early = find(&first, page, "html_section", "Early life");
-    assert_no_link(&first, early, "missing");
+    assert_external(&first, link(&first, early, "missing"), page, url);
 
+    // Adding the page rescans only it; the unchanged linker re-resolves to the page.
     project.write("wiki/Missing_Page.html", EXISTING);
     let appeared = project.publish(ScanScope::Paths(vec!["wiki/Missing_Page.html".into()]));
+    assert!(
+        appeared
+            .replace_paths
+            .iter()
+            .any(|path| path.as_str() == page)
+    );
     let early_appeared = find(&appeared, page, "html_section", "Early life");
     assert_page(
         link(&appeared, early_appeared, "missing"),
         file_of(&appeared, "wiki/Missing_Page.html"),
     );
+    assert!(
+        !has_link_element(&appeared, page, url),
+        "the link element for a stored page must be replaced away"
+    );
 
+    // Removing the page returns the linker to a link element.
     project.remove("wiki/Missing_Page.html");
     let left = project.publish(ScanScope::Paths(vec!["wiki/Missing_Page.html".into()]));
     let early_left = find(&left, page, "html_section", "Early life");
-    assert_no_link(&left, early_left, "missing");
+    assert_external(&left, link(&left, early_left, "missing"), page, url);
 }
 
 #[test]

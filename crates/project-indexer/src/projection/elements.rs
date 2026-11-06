@@ -1,5 +1,5 @@
 use super::{ProjectedFile, element_id, external_element_id, file_kind, published_kind};
-use crate::references::external_url;
+use crate::references::{LinkTarget, ResolvedLink};
 use crate::source::invalid;
 use crate::{ScanError, ScannedFile, SourceFingerprint, SourceKind};
 use lumvise_contracts::SemanticElementUpsert;
@@ -26,20 +26,6 @@ pub(super) fn project_file(source: &str, file: &ScannedFile) -> Result<Projected
             definition,
         )?);
     }
-    // One element per distinct off-site URL, owned by this page and placed at its first link.
-    let mut externals = BTreeMap::new();
-    for link in &file.parsed.links {
-        if let Some(url) = external_url(
-            &file.entry.path,
-            file.parsed.source_url.as_deref(),
-            &link.href,
-        ) {
-            externals.entry(url).or_insert(link.line);
-        }
-    }
-    for (url, line) in externals {
-        elements.push(external_link_element(source, file, &file_id, &url, line)?);
-    }
     Ok(ProjectedFile {
         digest: file.digest,
         kind: file.entry.kind,
@@ -48,6 +34,28 @@ pub(super) fn project_file(source: &str, file: &ScannedFile) -> Result<Projected
         definition_ids,
         elements,
     })
+}
+
+/// One link element per distinct locator URL, owned by this page and placed at its first
+/// link. Built from resolved links, because whether a same-site link keeps an element
+/// depends on whether its target page is stored.
+pub(super) fn link_elements(
+    source: &str,
+    file: &ScannedFile,
+    file_id: &str,
+    links: &[ResolvedLink],
+) -> Result<Vec<SemanticElementUpsert>, ScanError> {
+    let mut locators = BTreeMap::new();
+    for resolved in links {
+        if let LinkTarget::Locator(url) = &resolved.target {
+            let line = file.parsed.links[resolved.link_index].line;
+            locators.entry(url).or_insert(line);
+        }
+    }
+    locators
+        .into_iter()
+        .map(|(url, line)| external_link_element(source, file, file_id, url, line))
+        .collect()
 }
 
 fn external_link_element(
@@ -99,19 +107,10 @@ fn file_element(source: &str, file: &ScannedFile) -> Result<SemanticElementUpser
         content_fingerprint: fingerprint.map(|value| value.encoded.clone()),
         start_line: (!folder).then_some(1),
         end_line: file_end_line(file)?,
-        metadata: Some(with_stub(
-            file,
+        metadata: Some(
             serde_json::json!({ "kind": if folder { "directory" } else { file_kind(path) }, "bytes": file.byte_len, "source_digest_sha256": source_digest(file), "extraction": super::coverage::extraction(file), "fingerprint_algorithm": fingerprint.map(|value| value.algorithm), "markdown_alias": file.parsed.document.as_ref().map(|doc| { let mut metadata = doc.file_metadata(); metadata["content"] = serde_json::json!(file.parsed.source.as_deref()); metadata }).or_else(|| file.parsed.conversion_error.as_ref().map(|reason| serde_json::json!({"status":"unavailable", "reason":reason}))) }),
-        )),
+        ),
     })
-}
-
-/// Marks declared HTML stub pages, so placeholders are distinguishable from content.
-fn with_stub(file: &ScannedFile, mut metadata: serde_json::Value) -> serde_json::Value {
-    if file.parsed.stub {
-        metadata["stub"] = serde_json::json!(true);
-    }
-    metadata
 }
 
 fn source_digest(file: &ScannedFile) -> Option<String> {

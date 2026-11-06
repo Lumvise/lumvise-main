@@ -177,8 +177,6 @@ pub struct ParsedFile {
     pub links: Vec<DocumentLink>,
     /// Canonical page URL declared by `<meta name="lumvise:source-url">`, if any.
     pub source_url: Option<String>,
-    /// Whether the page declares `<meta name="lumvise:stub" content="true">`.
-    pub stub: bool,
     /// One shared text body supports later content projection without rereading.
     pub source: Option<std::sync::Arc<str>>,
     /// Whether and how the source was parsed.

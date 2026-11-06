@@ -1,6 +1,6 @@
 //! Resolves HTML hyperlinks against the acknowledged project inventory. A link is
-//! either a project page, identified by path, or a locator string; links never become
-//! name references.
+//! either a stored project page, identified by path, or an absolute locator URL; links
+//! never become name references.
 
 use crate::ScannedFile;
 use crate::source::validate_path;
@@ -11,7 +11,8 @@ use std::collections::BTreeSet;
 pub enum LinkTarget {
     /// Project page by canonical project-relative path; projection maps it to a file element.
     Page(String),
-    /// Absolute external URL, query kept and fragment dropped. Owned by the linking page.
+    /// Absolute URL, query kept and fragment dropped. Used for off-site links and for
+    /// same-site links whose page is not stored. Owned by the linking page.
     Locator(String),
 }
 
@@ -34,27 +35,19 @@ pub(crate) fn resolve_file(
         .links
         .iter()
         .enumerate()
-        .filter_map(|(link_index, link)| {
+        .map(|(link_index, link)| {
             let classified = classify(
                 &file.entry.path,
                 file.parsed.source_url.as_deref(),
                 &link.href,
             );
-            // Same-site links to absent pages name nothing, so they produce no relationship.
-            let target = if classified.external {
-                LinkTarget::Locator(classified.locator)
-            } else {
-                LinkTarget::Page(classified.pages.into_iter().find(|page| present(page))?)
+            let target = match classified.pages.into_iter().find(|page| present(page)) {
+                Some(page) => LinkTarget::Page(page),
+                None => LinkTarget::Locator(classified.locator),
             };
-            Some(ResolvedLink { link_index, target })
+            ResolvedLink { link_index, target }
         })
         .collect()
-}
-
-/// The absolute URL of a link that leaves the page's site, or None for same-site links.
-pub(crate) fn external_url(page: &str, source_url: Option<&str>, href: &str) -> Option<String> {
-    let classified = classify(page, source_url, href);
-    classified.external.then_some(classified.locator)
 }
 
 /// Every project page a file's same-site links may name, present or not. Reference
@@ -77,9 +70,7 @@ pub(crate) fn candidate_pages(file: &ScannedFile) -> BTreeSet<String> {
 struct Classified {
     /// Candidate project files in lookup order; empty for links leaving the site.
     pages: Vec<String>,
-    /// Whether the link leaves the page's site (scheme or host differs).
-    external: bool,
-    /// Absolute URL without fragment for external links; project-relative path otherwise.
+    /// Absolute URL without fragment; project-relative path when the page has no source URL.
     locator: String,
 }
 
@@ -117,6 +108,8 @@ fn classify(page: &str, source_url: Option<&str>, href: &str) -> Classified {
             format!("{directory}{}", reference.path),
         )
     };
+    // Locators drop the fragment; the query stays, so distinct queries name distinct pages.
+    let query = reference.suffix.split('#').next().unwrap_or_default();
     if !(same(scheme, base_scheme) && same(authority, base_authority)) {
         let url = match (reference.authority, base_scheme) {
             // A network-path reference such as `//host/x` takes the page's scheme.
@@ -127,20 +120,16 @@ fn classify(page: &str, source_url: Option<&str>, href: &str) -> Classified {
         };
         return Classified {
             pages: Vec::new(),
-            external: true,
             locator: url.split('#').next().unwrap_or_default().to_owned(),
         };
     }
     let path = remove_dot_segments(&path);
     let locator = match (base_scheme, base_authority) {
-        (Some(scheme), Some(authority)) => {
-            format!("{scheme}://{authority}{path}{}", reference.suffix)
-        }
-        _ => format!("{}{}", path.trim_start_matches('/'), reference.suffix),
+        (Some(scheme), Some(authority)) => format!("{scheme}://{authority}{path}{query}"),
+        _ => format!("{}{query}", path.trim_start_matches('/')),
     };
     Classified {
         pages: page_candidates(&path),
-        external: false,
         locator,
     }
 }
