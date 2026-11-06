@@ -147,29 +147,6 @@ fn assert_page(relationship: &SemanticRelationshipUpsert, target: &SemanticEleme
     );
 }
 
-/// The link's target is the external element named by `url`, owned by the linking page.
-fn assert_external(
-    batch: &IndexBatchRequest,
-    relationship: &SemanticRelationshipUpsert,
-    page: &str,
-    url: &str,
-) {
-    let target = find(batch, page, "html_external_link", url);
-    assert_eq!(
-        relationship.target_element_id.as_deref(),
-        Some(target.semantic_element_id.as_str())
-    );
-}
-
-/// Whether `page` owns a link element for `url`.
-fn has_link_element(batch: &IndexBatchRequest, page: &str, url: &str) -> bool {
-    batch.semantic_elements.iter().any(|element| {
-        element.path == page
-            && element.semantic_element_type == "html_external_link"
-            && element.semantic_element_name == url
-    })
-}
-
 fn section_fingerprints(batch: &IndexBatchRequest, path: &str) -> BTreeMap<String, String> {
     batch
         .semantic_elements
@@ -252,7 +229,7 @@ fn html_headings_nest_as_sections_and_chrome_is_marked() {
 }
 
 #[test]
-fn html_links_keep_owners_and_resolve_to_pages_or_link_elements() {
+fn html_links_keep_owners_and_resolve_only_to_stored_pages() {
     let mut project = topic_project();
     let batch = project.publish(ScanScope::Full);
     let page = "wiki/Topic.html";
@@ -270,53 +247,22 @@ fn html_links_keep_owners_and_resolve_to_pages_or_link_elements() {
 
     // Links before the first heading belong to the file element.
     assert_page(link(&batch, file, "top link"), existing);
-    // Same-site links to pages not stored keep their URL as a link element, like off-site links.
-    assert_external(
-        &batch,
-        link(&batch, nav, "Main page"),
-        page,
-        "https://wiki.example.org/wiki/Main_Page",
-    );
-    assert_external(
-        &batch,
-        link(&batch, header, "Site"),
-        page,
-        "https://wiki.example.org/",
-    );
+    // Off-site links and links to pages not stored leave no edge.
+    assert!(links_from(&batch, nav).is_empty());
+    assert!(links_from(&batch, header).is_empty());
     assert_page(link(&batch, aside, "aside link"), existing);
-    assert_external(
-        &batch,
-        link(&batch, footer, "Terms"),
-        page,
-        "https://wiki.example.org/wiki/Terms",
-    );
+    assert!(links_from(&batch, footer).is_empty());
     // Inline, figure and list links belong to the section that contains them.
     assert_page(link(&batch, topic, "link to existing"), existing);
-    assert_external(
-        &batch,
-        link(&batch, topic, "external"),
-        page,
-        "https://other.example.net/info?x=1&y=2",
-    );
-    assert_external(
-        &batch,
-        link(&batch, history, "unsaved page"),
-        page,
-        "https://wiki.example.org/wiki/Unsaved",
-    );
-    assert_external(
-        &batch,
-        link(&batch, early, "missing"),
-        page,
-        "https://wiki.example.org/wiki/Missing_Page",
-    );
+    assert_eq!(links_from(&batch, topic).len(), 1);
+    assert!(links_from(&batch, history).is_empty());
     assert_page(link(&batch, early, "archive"), existing);
+    assert_eq!(links_from(&batch, early).len(), 1);
     assert_page(link(&batch, later, "Existing html"), existing);
     // Same-site duplicates from one section collapse: the absolute and relative links name one page.
     assert_eq!(links_from(&batch, later).len(), 1);
     // Javascript, mailto, tel, fragment and script-string hrefs never become links.
     assert!(links_from(&batch, legacy).is_empty());
-    // Every links_to names a stored element, so no relationship is left unresolved.
     assert!(
         batch
             .semantic_relationships
@@ -329,6 +275,81 @@ fn html_links_keep_owners_and_resolve_to_pages_or_link_elements() {
             .as_deref()
             .is_none_or(|locator| !locator.contains("Fake"))
     }));
+}
+
+#[test]
+fn html_links_become_edges_only_to_stored_pages_without_link_elements() {
+    let mut project = Project::new();
+    project.write("wiki/Existing.html", EXISTING);
+    project.write(
+        "wiki/Linker.html",
+        r#"<html><body><p><a href="https://other.example.net/x">off-site</a> <a href="/wiki/Unsaved">unsaved</a> <a href="/wiki/Existing">saved</a></p></body></html>"#,
+    );
+    let batch = project.publish(ScanScope::Full);
+    let linker = file_of(&batch, "wiki/Linker.html");
+    let existing = file_of(&batch, "wiki/Existing.html");
+    assert!(
+        batch
+            .semantic_elements
+            .iter()
+            .all(|element| element.semantic_element_type != "html_external_link"),
+        "links never become elements"
+    );
+    let edges = links_from(&batch, linker);
+    assert_eq!(edges.len(), 1, "only the saved-page link yields an edge");
+    assert_page(edges[0], existing);
+}
+
+#[test]
+fn html_links_resolve_when_their_page_is_scanned_not_when_the_target_appears() {
+    let mut project = Project::new();
+    let linker = "wiki/Linker.html";
+    let target = "wiki/Target.html";
+    project.write(
+        linker,
+        r#"<html><body><p><a href="/wiki/Target.html">to target</a></p></body></html>"#,
+    );
+    let first = project.publish(ScanScope::Full);
+    let linker_id = file_of(&first, linker).semantic_element_id.clone();
+    assert!(
+        links_from(&first, file_of(&first, linker)).is_empty(),
+        "the target is not stored yet"
+    );
+
+    // The target appears and is scanned alone: its own link to the linker resolves.
+    project.write(
+        target,
+        r#"<html><body><p><a href="/wiki/Linker.html">to linker</a></p></body></html>"#,
+    );
+    let second = project.publish(ScanScope::Paths(vec![target.into()]));
+    let target_file = file_of(&second, target);
+    let target_id = target_file.semantic_element_id.clone();
+    let outgoing = links_from(&second, target_file);
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(
+        outgoing[0].target_element_id.as_deref(),
+        Some(linker_id.as_str())
+    );
+    assert!(
+        second
+            .semantic_relationships
+            .iter()
+            .all(|relationship| relationship.source_element_id != linker_id),
+        "the unchanged linker is not re-resolved until it is scanned"
+    );
+
+    // Scanning the linker resolves its link to the stored target.
+    project.write(
+        linker,
+        r#"<html><body><p><a href="/wiki/Target.html">to target, edited</a></p></body></html>"#,
+    );
+    let third = project.publish(ScanScope::Paths(vec![linker.into()]));
+    let rescanned = links_from(&third, file_of(&third, linker));
+    assert_eq!(rescanned.len(), 1);
+    assert_eq!(
+        rescanned[0].target_element_id.as_deref(),
+        Some(target_id.as_str())
+    );
 }
 
 #[test]
@@ -433,41 +454,6 @@ fn html_section_fingerprints_follow_words_and_links_not_markup() {
             "section `{name}` must not move"
         );
     }
-}
-
-#[test]
-fn links_to_unsaved_pages_follow_the_page_as_it_appears_and_leaves() {
-    let mut project = topic_project();
-    let first = project.publish(ScanScope::Full);
-    let page = "wiki/Topic.html";
-    let url = "https://wiki.example.org/wiki/Missing_Page";
-    let early = find(&first, page, "html_section", "Early life");
-    assert_external(&first, link(&first, early, "missing"), page, url);
-
-    // Adding the page rescans only it; the unchanged linker re-resolves to the page.
-    project.write("wiki/Missing_Page.html", EXISTING);
-    let appeared = project.publish(ScanScope::Paths(vec!["wiki/Missing_Page.html".into()]));
-    assert!(
-        appeared
-            .replace_paths
-            .iter()
-            .any(|path| path.as_str() == page)
-    );
-    let early_appeared = find(&appeared, page, "html_section", "Early life");
-    assert_page(
-        link(&appeared, early_appeared, "missing"),
-        file_of(&appeared, "wiki/Missing_Page.html"),
-    );
-    assert!(
-        !has_link_element(&appeared, page, url),
-        "the link element for a stored page must be replaced away"
-    );
-
-    // Removing the page returns the linker to a link element.
-    project.remove("wiki/Missing_Page.html");
-    let left = project.publish(ScanScope::Paths(vec!["wiki/Missing_Page.html".into()]));
-    let early_left = find(&left, page, "html_section", "Early life");
-    assert_external(&left, link(&left, early_left, "missing"), page, url);
 }
 
 #[test]

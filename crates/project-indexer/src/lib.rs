@@ -29,8 +29,7 @@ pub use parallel_parser::ParallelTreeSitterProjectParser;
 pub use parser::{BlockSettings, SyntaxParserMetrics, TreeSitterProjectParser};
 pub use projection::{ProjectionMetrics, SemanticIndexProjection};
 pub use references::{
-    DefinitionSite, LinkTarget, ReferenceFileUpdate, ReferenceTarget, ResolvedLink,
-    ResolvedReference,
+    DefinitionSite, ReferenceFileUpdate, ReferenceTarget, ResolvedLink, ResolvedReference,
 };
 
 pub use scan::{PreparedProjectScan, ProjectIndexer, ScanMetrics, ScannedFile};

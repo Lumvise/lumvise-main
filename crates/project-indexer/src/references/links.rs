@@ -1,32 +1,23 @@
-//! Resolves HTML hyperlinks against the acknowledged project inventory. A link is
-//! either a stored project page, identified by path, or an absolute locator URL; links
-//! never become name references.
+//! Resolves HTML hyperlinks against the acknowledged project inventory. A link becomes
+//! an edge only when its target is a stored project page; every other link is dropped.
+//! Links never become name references.
 
 use crate::ScannedFile;
 use crate::source::validate_path;
 use std::collections::BTreeSet;
 
-/// Where one page link points after resolution. Example: `LinkTarget::Page("docs/a.html".into())`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LinkTarget {
-    /// Project page by canonical project-relative path; projection maps it to a file element.
-    Page(String),
-    /// Absolute URL, query kept and fragment dropped. Used for off-site links and for
-    /// same-site links whose page is not stored. Owned by the linking page.
-    Locator(String),
-}
-
-/// Resolution of one parsed link. Example: `file.parsed.links[resolved.link_index]`.
+/// Resolution of one parsed link to a stored page. Example: `resolved.target_page == "docs/a.html"`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedLink {
     /// Index into ParsedFile::links.
     pub link_index: usize,
-    /// Target as seen by the inventory that resolved it.
-    pub target: LinkTarget,
+    /// Canonical project-relative path of the stored page the link names.
+    pub target_page: String,
 }
 
-/// Resolves every link of one page. `present` answers whether a project file exists in
-/// the acknowledged inventory, so a link to a page added earlier names that page.
+/// Resolves the links of one page that name a stored page. `present` answers whether a
+/// project file exists in the acknowledged inventory, so a link to a page added earlier
+/// names that page.
 pub(crate) fn resolve_file(
     file: &ScannedFile,
     present: impl Fn(&str) -> bool,
@@ -35,48 +26,42 @@ pub(crate) fn resolve_file(
         .links
         .iter()
         .enumerate()
-        .map(|(link_index, link)| {
-            let classified = classify(
+        .filter_map(|(link_index, link)| {
+            let target_page = link_candidates(
                 &file.entry.path,
                 file.parsed.source_url.as_deref(),
                 &link.href,
-            );
-            let target = match classified.pages.into_iter().find(|page| present(page)) {
-                Some(page) => LinkTarget::Page(page),
-                None => LinkTarget::Locator(classified.locator),
-            };
-            ResolvedLink { link_index, target }
+            )
+            .into_iter()
+            .find(|page| present(page))?;
+            Some(ResolvedLink {
+                link_index,
+                target_page,
+            })
         })
         .collect()
 }
 
-/// Every project page a file's same-site links may name, present or not. Reference
-/// repair indexes these so a page appearing or vanishing re-resolves its linkers.
+/// Every stored page a file's same-site links may name, present or not. Reference repair
+/// indexes these so a removed page re-projects the pages that linked to it.
 pub(crate) fn candidate_pages(file: &ScannedFile) -> BTreeSet<String> {
     file.parsed
         .links
         .iter()
         .flat_map(|link| {
-            classify(
+            link_candidates(
                 &file.entry.path,
                 file.parsed.source_url.as_deref(),
                 &link.href,
             )
-            .pages
         })
         .collect()
 }
 
-struct Classified {
-    /// Candidate project files in lookup order; empty for links leaving the site.
-    pages: Vec<String>,
-    /// Absolute URL without fragment; project-relative path when the page has no source URL.
-    locator: String,
-}
-
-/// Resolves `href` against the page's source URL, or against the page's project path
-/// when no source URL is declared. Root-relative paths name the project root then.
-fn classify(page: &str, source_url: Option<&str>, href: &str) -> Classified {
+/// Project files a same-site href may name, in lookup order. Empty for links leaving the
+/// site. Resolves `href` against the page's source URL, or against the page's project
+/// path when no source URL is declared. Root-relative paths name the project root then.
+fn link_candidates(page: &str, source_url: Option<&str>, href: &str) -> Vec<String> {
     let base = source_url.map(split);
     let page_path = format!("/{page}");
     let (base_scheme, base_authority, base_path) = match &base {
@@ -108,30 +93,10 @@ fn classify(page: &str, source_url: Option<&str>, href: &str) -> Classified {
             format!("{directory}{}", reference.path),
         )
     };
-    // Locators drop the fragment; the query stays, so distinct queries name distinct pages.
-    let query = reference.suffix.split('#').next().unwrap_or_default();
     if !(same(scheme, base_scheme) && same(authority, base_authority)) {
-        let url = match (reference.authority, base_scheme) {
-            // A network-path reference such as `//host/x` takes the page's scheme.
-            (Some(_), Some(scheme)) if reference.scheme.is_none() => {
-                format!("{scheme}:{}", href.trim())
-            }
-            _ => href.trim().to_owned(),
-        };
-        return Classified {
-            pages: Vec::new(),
-            locator: url.split('#').next().unwrap_or_default().to_owned(),
-        };
+        return Vec::new();
     }
-    let path = remove_dot_segments(&path);
-    let locator = match (base_scheme, base_authority) {
-        (Some(scheme), Some(authority)) => format!("{scheme}://{authority}{path}{query}"),
-        _ => format!("{}{query}", path.trim_start_matches('/')),
-    };
-    Classified {
-        pages: page_candidates(&path),
-        locator,
-    }
+    page_candidates(&remove_dot_segments(&path))
 }
 
 /// Project files a site path may name, in lookup order: an `.html`/`.htm` path is the
@@ -155,12 +120,11 @@ fn page_candidates(path: &str) -> Vec<String> {
         .collect()
 }
 
-/// A URI reference split into its parts; `suffix` keeps the `?query` and `#fragment`.
+/// A URI reference split into scheme, authority and path; any `?query` or `#fragment` is dropped.
 struct Parts<'a> {
     scheme: Option<&'a str>,
     authority: Option<&'a str>,
     path: &'a str,
-    suffix: &'a str,
 }
 
 fn split(reference: &str) -> Parts<'_> {
@@ -180,7 +144,6 @@ fn split(reference: &str) -> Parts<'_> {
         scheme,
         authority,
         path: &rest[..end],
-        suffix: &rest[end..],
     }
 }
 

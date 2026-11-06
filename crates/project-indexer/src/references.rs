@@ -3,7 +3,7 @@
 mod links;
 mod resolution;
 
-pub use links::{LinkTarget, ResolvedLink};
+pub use links::ResolvedLink;
 
 use crate::{ScannedFile, SourceKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,7 +54,7 @@ pub struct ReferenceFileUpdate {
     pub file: Arc<ScannedFile>,
     /// All references in the file, not only newly resolved occurrences.
     pub references: Vec<ResolvedReference>,
-    /// All hyperlinks in the file, resolved against the same inventory as `references`.
+    /// Hyperlinks of the file that name a stored page, resolved against the same inventory as `references`.
     pub links: Vec<ResolvedLink>,
 }
 
@@ -66,6 +66,7 @@ pub(crate) struct ReferenceIndex {
     definitions: DefinitionNames,
     referrers: BTreeMap<String, BTreeSet<String>>,
     /// Candidate page path of each same-site link, mapped to the pages linking to it.
+    /// Consulted only when a page is removed, so its linkers drop their edge to it.
     page_referrers: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -86,13 +87,9 @@ impl ReferenceIndex {
         for name in names {
             affected.extend(self.referrers.get(&name).into_iter().flatten().cloned());
         }
-        // Only pages that appeared or vanished change what a link resolves to.
-        let appeared_or_removed = removed.iter().chain(
-            replacements
-                .keys()
-                .filter(|path| !files.contains_key(*path)),
-        );
-        for path in appeared_or_removed {
+        // Additions are lazy: a linker re-resolves only when it is scanned. A removed page
+        // must not keep edges from its linkers, so those linkers are re-projected here.
+        for path in removed {
             affected.extend(self.page_referrers.get(path).into_iter().flatten().cloned());
         }
         let present = |path: &str| page_present(files, replacements, removed, path);

@@ -7,8 +7,8 @@ mod elements;
 use crate::fingerprints::{file_kind, stable_hash};
 use crate::source::invalid;
 use crate::{
-    LinkTarget, ParsedFile, PreparedProjectScan, ReferenceFileUpdate, ReferenceTarget, ScanError,
-    ScannedFile, SourceKind,
+    ParsedFile, PreparedProjectScan, ReferenceFileUpdate, ReferenceTarget, ScanError, ScannedFile,
+    SourceKind,
 };
 use lumvise_contracts::{
     IndexBatchRequest, SemanticElementUpsert, SemanticRelationshipUpsert, SemanticSourceUpsert,
@@ -130,23 +130,11 @@ impl SemanticIndexProjection {
                     .map(|update| (&update.file.entry.path, update.file.as_ref())),
             )
             .collect();
-        let updates: BTreeMap<_, _> = scan
-            .reference_updates()
-            .map(|update| (update.file.entry.path.as_str(), update))
-            .collect();
         for file in selected.values() {
             let projected = self.file(file)?;
             batch
                 .semantic_elements
                 .extend(projected.elements.iter().cloned());
-            if let Some(update) = updates.get(file.entry.path.as_str()) {
-                batch.semantic_elements.extend(elements::link_elements(
-                    &self.source.semantic_source_id,
-                    file,
-                    &projected.file_id,
-                    &update.links,
-                )?);
-            }
         }
         if !scan.is_full_snapshot() {
             batch.replace_paths = selected.keys().map(|path| (*path).clone()).collect();
@@ -251,32 +239,19 @@ impl SemanticIndexProjection {
                 .owner_definition
                 .map(|index| &source.definition_ids[index])
                 .unwrap_or(&source.file_id);
-            let (target_element_id, target_locator) = match &resolved.target {
-                LinkTarget::Page(path) => {
-                    let name = path.rsplit('/').next().unwrap_or(path);
-                    let id = element_id(&self.source.semantic_source_id, path, "file", name);
-                    (Some(id.clone()), Some(id))
-                }
-                // External links are owned by the linking page, so the id is per page.
-                LinkTarget::Locator(url) => {
-                    let id = external_element_id(
-                        &self.source.semantic_source_id,
-                        &update.file.entry.path,
-                        url,
-                    );
-                    (Some(id.clone()), Some(id))
-                }
-            };
-            if target_element_id.as_deref() == Some(source_id.as_str()) {
+            let page = &resolved.target_page;
+            let name = page.rsplit('/').next().unwrap_or(page);
+            let target_id = element_id(&self.source.semantic_source_id, page, "file", name);
+            if target_id == *source_id {
                 continue;
             }
             output.push(SemanticRelationshipUpsert {
                 source_element_id: source_id.clone(),
-                target_element_id,
+                target_element_id: Some(target_id.clone()),
                 relationship_kind: "semantic".into(),
                 relationship_label: "links_to".into(),
                 target_label: (!link.label.is_empty()).then(|| link.label.clone()),
-                target_locator,
+                target_locator: Some(target_id),
             });
         }
         Ok(())
@@ -310,11 +285,9 @@ fn relationship(
 fn deduplicate_relationships(relationships: &mut Vec<SemanticRelationshipUpsert>) {
     let mut seen = BTreeSet::new();
     relationships.retain(|item| {
-        // Distinct external links from one owner share no element id; the locator tells them apart.
         seen.insert((
             item.source_element_id.clone(),
             item.target_element_id.clone(),
-            item.target_locator.clone(),
             item.relationship_label.clone(),
         ))
     });
@@ -322,11 +295,6 @@ fn deduplicate_relationships(relationships: &mut Vec<SemanticRelationshipUpsert>
 
 fn element_id(source: &str, path: &str, kind: &str, name: &str) -> String {
     format!("{source}:{path}:{kind}:{name}:")
-}
-
-/// Id of an off-site link element; each linking page owns its own copy of the URL.
-fn external_element_id(source: &str, page: &str, url: &str) -> String {
-    element_id(source, page, "html_external_link", url)
 }
 
 fn published_kind<'a>(path: &str, kind: &'a str) -> &'a str {

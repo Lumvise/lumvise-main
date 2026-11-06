@@ -968,24 +968,19 @@ fn background_refresh_rounds_keep_a_bounded_job_registry() {
 }
 
 #[test]
-fn html_pages_sharing_an_external_link_import_into_their_own_partitions() {
+fn html_links_import_only_edges_to_stored_pages_into_each_partition() {
     let local = Arc::new(LocalPersistence::in_memory().unwrap());
     let root = tempfile::tempdir().unwrap();
-    let external = "https://other.example/x?q=1";
     std::fs::write(
         root.path().join("index.html"),
-        format!(
-            r#"<html><head><meta name="lumvise:source-url" content="https://site.example/index.html"></head>
-<body><p><a href="about.html">About</a> <a href="{external}#top">Ext</a> <a href="missing.html">Gone</a></p></body></html>"#
-        ),
+        r#"<html><head><meta name="lumvise:source-url" content="https://site.example/index.html"></head>
+<body><p><a href="about.html">About</a> <a href="https://other.example/x?q=1">Ext</a> <a href="missing.html">Gone</a></p></body></html>"#,
     )
     .unwrap();
     std::fs::write(
         root.path().join("about.html"),
-        format!(
-            r#"<html><head><meta name="lumvise:source-url" content="https://site.example/about.html"></head>
-<body><p><a href="index.html">Home</a> <a href="{external}">Same</a></p></body></html>"#
-        ),
+        r#"<html><head><meta name="lumvise:source-url" content="https://site.example/about.html"></head>
+<body><p><a href="index.html">Home</a> <a href="https://other.example/x?q=1">Same</a></p></body></html>"#,
     )
     .unwrap();
     let host = SharedImportHost::new(local, "client-html");
@@ -996,54 +991,84 @@ fn html_pages_sharing_an_external_link_import_into_their_own_partitions() {
     let snapshot = host.selected();
     let index = file_id(&snapshot, "index.html");
     let about = file_id(&snapshot, "about.html");
-    let externals: Vec<_> = snapshot
-        .elements
-        .iter()
-        .filter(|element| element.element_kind == "html_external_link")
-        .collect();
-    // One link element per distinct URL per linking page: index has the external and the
-    // unsaved same-site `missing.html`; about has the external only.
-    let missing = "https://site.example/missing.html";
-    assert_eq!(
-        externals.len(),
-        3,
-        "one link element per URL per linking page"
+    assert!(
+        snapshot
+            .elements
+            .iter()
+            .all(|element| element.element_kind != "html_external_link"),
+        "links never become elements"
     );
-    let external_of = |path: &str, url: &str| {
-        externals
-            .iter()
-            .find(|element| element.path == path && element.name == url)
-            .unwrap_or_else(|| panic!("no {url} link element in {path}"))
-            .semantic_element_id
-            .clone()
-    };
-    let index_external = external_of("index.html", external);
-    let index_missing = external_of("index.html", missing);
-    let about_external = external_of("about.html", external);
-    let links: Vec<_> = snapshot
-        .connections
-        .iter()
-        .map(|connection| &connection.relationship)
-        .filter(|relationship| relationship.label == "links_to")
-        .collect();
     let edges_from = |source: &str| {
-        links
+        snapshot
+            .connections
             .iter()
-            .filter(|relationship| relationship.source_element_id == source)
+            .map(|connection| &connection.relationship)
+            .filter(|relationship| {
+                relationship.label == "links_to" && relationship.source_element_id == source
+            })
             .map(|relationship| relationship.target_element_id.as_str())
             .collect::<BTreeSet<_>>()
     };
-    // The missing same-site page keeps its link element: index links about, external, missing.
-    assert_eq!(
-        edges_from(&index),
-        BTreeSet::from([
-            about.as_str(),
-            index_external.as_str(),
-            index_missing.as_str()
-        ]),
+    // Off-site and unsaved links leave no edge; each saved page is linked from the other.
+    assert_eq!(edges_from(&index), BTreeSet::from([about.as_str()]));
+    assert_eq!(edges_from(&about), BTreeSet::from([index.as_str()]));
+}
+
+#[test]
+fn removing_a_linked_html_page_leaves_no_edge_to_its_element() {
+    let local = Arc::new(LocalPersistence::in_memory().unwrap());
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("index.html"),
+        r#"<html><body><p><a href="about.html">About</a></p></body></html>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("about.html"),
+        r#"<html><body><p><a href="index.html">Home</a></p></body></html>"#,
+    )
+    .unwrap();
+    let host = SharedImportHost::new(local, "client-html-removal");
+    host.import(root.path()).expect("linked HTML pages import");
+    let before = host.selected();
+    let index = file_id(&before, "index.html");
+    let about = file_id(&before, "about.html");
+    assert!(
+        before
+            .connections
+            .iter()
+            .any(
+                |connection| connection.relationship.source_element_id == index
+                    && connection.relationship.target_element_id == about
+            ),
+        "index links to about before the removal"
     );
-    assert_eq!(
-        edges_from(&about),
-        BTreeSet::from([index.as_str(), about_external.as_str()]),
+
+    std::fs::remove_file(root.path().join("about.html")).unwrap();
+    host.app
+        .plugin_host_services
+        .project_import_service()
+        .import_native_via(
+            host.publisher.clone(),
+            refresh_input(root.path(), PROJECT),
+            true,
+        )
+        .ok()
+        .expect("refresh publishes the removed page");
+
+    let after = host.selected();
+    assert!(
+        after
+            .elements
+            .iter()
+            .all(|element| element.semantic_element_id != about),
+        "the removed page's element is gone"
+    );
+    assert!(
+        after
+            .connections
+            .iter()
+            .all(|connection| connection.relationship.target_element_id != about),
+        "no edge targets the removed page"
     );
 }
