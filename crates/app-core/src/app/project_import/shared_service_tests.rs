@@ -966,3 +966,72 @@ fn background_refresh_rounds_keep_a_bounded_job_registry() {
     }
     assert_eq!(service.jobs.len(), RETAINED_FINISHED_JOBS);
 }
+
+#[test]
+fn html_pages_sharing_an_external_link_import_into_their_own_partitions() {
+    let local = Arc::new(LocalPersistence::in_memory().unwrap());
+    let root = tempfile::tempdir().unwrap();
+    let external = "https://other.example/x?q=1";
+    std::fs::write(
+        root.path().join("index.html"),
+        format!(
+            r#"<html><head><meta name="lumvise:source-url" content="https://site.example/index.html"></head>
+<body><p><a href="about.html">About</a> <a href="{external}#top">Ext</a> <a href="missing.html">Gone</a></p></body></html>"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("about.html"),
+        format!(
+            r#"<html><head><meta name="lumvise:source-url" content="https://site.example/about.html"></head>
+<body><p><a href="index.html">Home</a> <a href="{external}">Same</a></p></body></html>"#
+        ),
+    )
+    .unwrap();
+    let host = SharedImportHost::new(local, "client-html");
+
+    host.import(root.path())
+        .expect("HTML pages sharing an external URL import");
+
+    let snapshot = host.selected();
+    let index = file_id(&snapshot, "index.html");
+    let about = file_id(&snapshot, "about.html");
+    let externals: Vec<_> = snapshot
+        .elements
+        .iter()
+        .filter(|element| element.element_kind == "html_external_link")
+        .collect();
+    assert_eq!(externals.len(), 2, "one external element per linking page");
+    assert!(externals.iter().all(|element| element.name == external));
+    let external_of = |path: &str| {
+        externals
+            .iter()
+            .find(|element| element.path == path)
+            .unwrap_or_else(|| panic!("no external element in {path}"))
+            .semantic_element_id
+            .clone()
+    };
+    let (index_external, about_external) = (external_of("index.html"), external_of("about.html"));
+    let links: Vec<_> = snapshot
+        .connections
+        .iter()
+        .map(|connection| &connection.relationship)
+        .filter(|relationship| relationship.label == "links_to")
+        .collect();
+    let edges_from = |source: &str| {
+        links
+            .iter()
+            .filter(|relationship| relationship.source_element_id == source)
+            .map(|relationship| relationship.target_element_id.as_str())
+            .collect::<BTreeSet<_>>()
+    };
+    // The missing same-site page adds no edge: index links about + external only.
+    assert_eq!(
+        edges_from(&index),
+        BTreeSet::from([about.as_str(), index_external.as_str()]),
+    );
+    assert_eq!(
+        edges_from(&about),
+        BTreeSet::from([index.as_str(), about_external.as_str()]),
+    );
+}

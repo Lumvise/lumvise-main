@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 pub enum LinkTarget {
     /// Project page by canonical project-relative path; projection maps it to a file element.
     Page(String),
-    /// External URL, or the project-relative location when the page declares no source URL.
+    /// Absolute external URL, query kept and fragment dropped. Owned by the linking page.
     Locator(String),
 }
 
@@ -34,19 +34,27 @@ pub(crate) fn resolve_file(
         .links
         .iter()
         .enumerate()
-        .map(|(link_index, link)| {
+        .filter_map(|(link_index, link)| {
             let classified = classify(
                 &file.entry.path,
                 file.parsed.source_url.as_deref(),
                 &link.href,
             );
-            let target = match classified.pages.into_iter().find(|page| present(page)) {
-                Some(page) => LinkTarget::Page(page),
-                None => LinkTarget::Locator(classified.locator),
+            // Same-site links to absent pages name nothing, so they produce no relationship.
+            let target = if classified.external {
+                LinkTarget::Locator(classified.locator)
+            } else {
+                LinkTarget::Page(classified.pages.into_iter().find(|page| present(page))?)
             };
-            ResolvedLink { link_index, target }
+            Some(ResolvedLink { link_index, target })
         })
         .collect()
+}
+
+/// The absolute URL of a link that leaves the page's site, or None for same-site links.
+pub(crate) fn external_url(page: &str, source_url: Option<&str>, href: &str) -> Option<String> {
+    let classified = classify(page, source_url, href);
+    classified.external.then_some(classified.locator)
 }
 
 /// Every project page a file's same-site links may name, present or not. Reference
@@ -69,7 +77,9 @@ pub(crate) fn candidate_pages(file: &ScannedFile) -> BTreeSet<String> {
 struct Classified {
     /// Candidate project files in lookup order; empty for links leaving the site.
     pages: Vec<String>,
-    /// Absolute URL, or the project-relative path when there is no source URL.
+    /// Whether the link leaves the page's site (scheme or host differs).
+    external: bool,
+    /// Absolute URL without fragment for external links; project-relative path otherwise.
     locator: String,
 }
 
@@ -108,7 +118,7 @@ fn classify(page: &str, source_url: Option<&str>, href: &str) -> Classified {
         )
     };
     if !(same(scheme, base_scheme) && same(authority, base_authority)) {
-        let locator = match (reference.authority, base_scheme) {
+        let url = match (reference.authority, base_scheme) {
             // A network-path reference such as `//host/x` takes the page's scheme.
             (Some(_), Some(scheme)) if reference.scheme.is_none() => {
                 format!("{scheme}:{}", href.trim())
@@ -117,7 +127,8 @@ fn classify(page: &str, source_url: Option<&str>, href: &str) -> Classified {
         };
         return Classified {
             pages: Vec::new(),
-            locator,
+            external: true,
+            locator: url.split('#').next().unwrap_or_default().to_owned(),
         };
     }
     let path = remove_dot_segments(&path);
@@ -129,6 +140,7 @@ fn classify(page: &str, source_url: Option<&str>, href: &str) -> Classified {
     };
     Classified {
         pages: page_candidates(&path),
+        external: false,
         locator,
     }
 }

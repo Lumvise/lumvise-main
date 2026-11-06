@@ -51,8 +51,6 @@ const STUB: &str = r#"<!DOCTYPE html>
 <body><p>Placeholder.</p></body></html>
 "#;
 
-const MISSING_URL: &str = "https://wiki.example.org/wiki/Missing_Page";
-
 /// Scans and acknowledges a project the way a successful publication does.
 struct Project {
     root: tempfile::TempDir,
@@ -154,9 +152,28 @@ fn assert_page(relationship: &SemanticRelationshipUpsert, target: &SemanticEleme
     );
 }
 
-fn assert_locator(relationship: &SemanticRelationshipUpsert, url: &str) {
-    assert_eq!(relationship.target_element_id, None);
-    assert_eq!(relationship.target_locator.as_deref(), Some(url));
+/// The link's target is the external element named by `url`, owned by the linking page.
+fn assert_external(
+    batch: &IndexBatchRequest,
+    relationship: &SemanticRelationshipUpsert,
+    page: &str,
+    url: &str,
+) {
+    let target = find(batch, page, "html_external_link", url);
+    assert_eq!(
+        relationship.target_element_id.as_deref(),
+        Some(target.semantic_element_id.as_str())
+    );
+}
+
+/// No relationship from `owner` carries anchor text `label`.
+fn assert_no_link(batch: &IndexBatchRequest, owner: &SemanticElementUpsert, label: &str) {
+    assert!(
+        !links_from(batch, owner)
+            .iter()
+            .any(|relationship| relationship.target_label.as_deref() == Some(label)),
+        "same-site link `{label}` to an absent page must not produce an edge"
+    );
 }
 
 fn section_fingerprints(batch: &IndexBatchRequest, path: &str) -> BTreeMap<String, String> {
@@ -265,31 +282,34 @@ fn html_links_keep_owners_and_resolve_to_pages_stubs_or_locators() {
 
     // Links before the first heading belong to the file element.
     assert_page(link(&batch, file, "top link"), existing);
-    // Chrome links are kept, owned by the chrome element that contains them.
-    assert_locator(
-        link(&batch, nav, "Main page"),
-        "https://wiki.example.org/wiki/Main_Page",
-    );
-    assert_locator(link(&batch, header, "Site"), "https://wiki.example.org/");
+    // Same-site links to absent pages produce no edge; chrome owners keep their other links.
+    assert_no_link(&batch, nav, "Main page");
+    assert_no_link(&batch, header, "Site");
     assert_page(link(&batch, aside, "aside link"), existing);
-    assert_locator(
-        link(&batch, footer, "Terms"),
-        "https://wiki.example.org/wiki/Terms",
-    );
+    assert_no_link(&batch, footer, "Terms");
     // Inline, figure and list links belong to the section that contains them.
     assert_page(link(&batch, topic, "link to existing"), existing);
-    assert_locator(
+    assert_external(
+        &batch,
         link(&batch, topic, "external"),
+        page,
         "https://other.example.net/info?x=1&y=2",
     );
     assert_page(link(&batch, history, "stub page"), stub);
-    assert_locator(link(&batch, early, "missing"), MISSING_URL);
+    assert_no_link(&batch, early, "missing");
     assert_page(link(&batch, early, "archive"), existing);
     assert_page(link(&batch, later, "Existing html"), existing);
     // Same-site duplicates from one section collapse: the absolute and relative links name one page.
     assert_eq!(links_from(&batch, later).len(), 1);
     // Javascript, mailto, tel, fragment and script-string hrefs never become links.
     assert!(links_from(&batch, legacy).is_empty());
+    // Every links_to names a stored element, so no relationship is left unresolved.
+    assert!(
+        batch
+            .semantic_relationships
+            .iter()
+            .all(|relationship| relationship.target_element_id.is_some())
+    );
     assert!(batch.semantic_relationships.iter().all(|relationship| {
         relationship
             .target_locator
@@ -429,7 +449,7 @@ fn links_follow_target_pages_as_they_appear_and_leave() {
     let first = project.publish(ScanScope::Full);
     let page = "wiki/Topic.html";
     let early = find(&first, page, "html_section", "Early life");
-    assert_locator(link(&first, early, "missing"), MISSING_URL);
+    assert_no_link(&first, early, "missing");
 
     project.write("wiki/Missing_Page.html", EXISTING);
     let appeared = project.publish(ScanScope::Paths(vec!["wiki/Missing_Page.html".into()]));
@@ -442,7 +462,7 @@ fn links_follow_target_pages_as_they_appear_and_leave() {
     project.remove("wiki/Missing_Page.html");
     let left = project.publish(ScanScope::Paths(vec!["wiki/Missing_Page.html".into()]));
     let early_left = find(&left, page, "html_section", "Early life");
-    assert_locator(link(&left, early_left, "missing"), MISSING_URL);
+    assert_no_link(&left, early_left, "missing");
 }
 
 #[test]

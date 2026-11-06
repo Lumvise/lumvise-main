@@ -1,4 +1,5 @@
-use super::{ProjectedFile, element_id, file_kind, published_kind};
+use super::{ProjectedFile, element_id, external_element_id, file_kind, published_kind};
+use crate::references::external_url;
 use crate::source::invalid;
 use crate::{ScanError, ScannedFile, SourceFingerprint, SourceKind};
 use lumvise_contracts::SemanticElementUpsert;
@@ -25,6 +26,20 @@ pub(super) fn project_file(source: &str, file: &ScannedFile) -> Result<Projected
             definition,
         )?);
     }
+    // One element per distinct off-site URL, owned by this page and placed at its first link.
+    let mut externals = BTreeMap::new();
+    for link in &file.parsed.links {
+        if let Some(url) = external_url(
+            &file.entry.path,
+            file.parsed.source_url.as_deref(),
+            &link.href,
+        ) {
+            externals.entry(url).or_insert(link.line);
+        }
+    }
+    for (url, line) in externals {
+        elements.push(external_link_element(source, file, &file_id, &url, line)?);
+    }
     Ok(ProjectedFile {
         digest: file.digest,
         kind: file.entry.kind,
@@ -32,6 +47,32 @@ pub(super) fn project_file(source: &str, file: &ScannedFile) -> Result<Projected
         file_id,
         definition_ids,
         elements,
+    })
+}
+
+fn external_link_element(
+    source: &str,
+    file: &ScannedFile,
+    file_id: &str,
+    url: &str,
+    line: usize,
+) -> Result<SemanticElementUpsert, ScanError> {
+    let fingerprint = SourceFingerprint::text(url);
+    let line = Some(line_number(&file.entry.path, line)?);
+    Ok(SemanticElementUpsert {
+        revision_dependencies: Vec::new(),
+        semantic_source_id: source.into(),
+        semantic_element_id: external_element_id(source, &file.entry.path, url),
+        path: file.entry.path.clone(),
+        semantic_element_type: "html_external_link".into(),
+        semantic_element_name: url.into(),
+        parent_element_id: Some(file_id.into()),
+        content_fingerprint: Some(fingerprint.encoded),
+        start_line: line,
+        end_line: line,
+        metadata: Some(
+            serde_json::json!({"external": true, "fingerprint_algorithm": fingerprint.algorithm, "stable_name": url}),
+        ),
     })
 }
 

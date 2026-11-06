@@ -144,6 +144,13 @@ impl SemanticIndexProjection {
         }
         coverage::project_resolutions(scan.reference_updates(), &mut batch.semantic_elements);
         deduplicate_relationships(&mut batch.semantic_relationships);
+        debug_assert!(
+            batch
+                .semantic_relationships
+                .iter()
+                .all(|item| item.target_element_id.is_some()),
+            "every relationship names a target element"
+        );
         for path in scan.removed_paths() {
             self.files.remove(path);
         }
@@ -237,7 +244,15 @@ impl SemanticIndexProjection {
                     let id = element_id(&self.source.semantic_source_id, path, "file", name);
                     (Some(id.clone()), Some(id))
                 }
-                LinkTarget::Locator(locator) => (None, Some(locator.clone())),
+                // External links are owned by the linking page, so the id is per page.
+                LinkTarget::Locator(url) => {
+                    let id = external_element_id(
+                        &self.source.semantic_source_id,
+                        &update.file.entry.path,
+                        url,
+                    );
+                    (Some(id.clone()), Some(id))
+                }
             };
             if target_element_id.as_deref() == Some(source_id.as_str()) {
                 continue;
@@ -294,6 +309,11 @@ fn deduplicate_relationships(relationships: &mut Vec<SemanticRelationshipUpsert>
 
 fn element_id(source: &str, path: &str, kind: &str, name: &str) -> String {
     format!("{source}:{path}:{kind}:{name}:")
+}
+
+/// Id of an off-site link element; each linking page owns its own copy of the URL.
+fn external_element_id(source: &str, page: &str, url: &str) -> String {
+    element_id(source, page, "html_external_link", url)
 }
 
 fn published_kind<'a>(path: &str, kind: &'a str) -> &'a str {
