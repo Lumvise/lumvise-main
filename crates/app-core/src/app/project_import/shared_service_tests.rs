@@ -1015,6 +1015,69 @@ fn html_links_import_only_edges_to_stored_pages_into_each_partition() {
 }
 
 #[test]
+fn adding_a_linked_html_page_adds_the_edge_from_its_stored_linker() {
+    let local = Arc::new(LocalPersistence::in_memory().unwrap());
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("index.html"),
+        r#"<html><body><p><a href="index.html">Self top</a></p><h2>Part</h2><p><a href="about.html">About</a> <a href="index.html">Self part</a></p></body></html>"#,
+    )
+    .unwrap();
+    let host = SharedImportHost::new(local, "client-html-addition");
+    host.import(root.path()).expect("the linker imports alone");
+    // Edges leaving any element of one page: its file element and its sections.
+    let edges_from_page = |snapshot: &SemanticRevisionSelectionSnapshot, page: &str| {
+        let owner = format!(":{page}:");
+        snapshot
+            .connections
+            .iter()
+            .map(|connection| &connection.relationship)
+            .filter(|relationship| {
+                relationship.label == "links_to" && relationship.source_element_id.contains(&owner)
+            })
+            .map(|relationship| relationship.target_element_id.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let before = host.selected();
+    let index = file_id(&before, "index.html");
+    assert!(
+        edges_from_page(&before, "index.html").is_empty(),
+        "the link target is not stored and self-links are no edges"
+    );
+
+    // The target is added and imported alone. The unchanged linker must gain its edge in
+    // this same import, not when the linker itself is next edited.
+    std::fs::write(
+        root.path().join("about.html"),
+        r#"<html><body><p><a href="index.html">Home</a></p></body></html>"#,
+    )
+    .unwrap();
+    host.app
+        .plugin_host_services
+        .project_import_service()
+        .import_native_via(
+            host.publisher.clone(),
+            refresh_input(root.path(), PROJECT),
+            true,
+        )
+        .ok()
+        .expect("refresh publishes the added page");
+
+    let after = host.selected();
+    let index = file_id(&after, "index.html");
+    let about = file_id(&after, "about.html");
+    assert_eq!(
+        edges_from_page(&after, "index.html"),
+        BTreeSet::from([about.clone()]),
+        "the unchanged linker links to the added page and not to itself"
+    );
+    assert_eq!(
+        edges_from_page(&after, "about.html"),
+        BTreeSet::from([index])
+    );
+}
+
+#[test]
 fn removing_a_linked_html_page_leaves_no_edge_to_its_element() {
     let local = Arc::new(LocalPersistence::in_memory().unwrap());
     let root = tempfile::tempdir().unwrap();

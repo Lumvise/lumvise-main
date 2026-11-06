@@ -87,9 +87,9 @@ impl ReferenceIndex {
         for name in names {
             affected.extend(self.referrers.get(&name).into_iter().flatten().cloned());
         }
-        // Additions are lazy: a linker re-resolves only when it is scanned. A removed page
-        // must not keep edges from its linkers, so those linkers are re-projected here.
-        for path in removed {
+        // A page that is added or removed changes what its stored linkers resolve to, so
+        // those linkers are re-projected here: additions gain edges, removals lose them.
+        for path in &touched {
             affected.extend(self.page_referrers.get(path).into_iter().flatten().cloned());
         }
         let present = |path: &str| page_present(files, replacements, removed, path);

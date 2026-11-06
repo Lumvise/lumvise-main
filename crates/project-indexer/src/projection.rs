@@ -240,11 +240,12 @@ impl SemanticIndexProjection {
                 .map(|index| &source.definition_ids[index])
                 .unwrap_or(&source.file_id);
             let page = &resolved.target_page;
-            let name = page.rsplit('/').next().unwrap_or(page);
-            let target_id = element_id(&self.source.semantic_source_id, page, "file", name);
-            if target_id == *source_id {
+            // A page linking to itself (from any section, chrome or the file) is not an edge.
+            if *page == update.file.entry.path {
                 continue;
             }
+            let name = page.rsplit('/').next().unwrap_or(page);
+            let target_id = element_id(&self.source.semantic_source_id, page, "file", name);
             output.push(SemanticRelationshipUpsert {
                 source_element_id: source_id.clone(),
                 target_element_id: Some(target_id.clone()),

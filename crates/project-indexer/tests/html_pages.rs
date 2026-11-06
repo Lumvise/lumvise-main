@@ -301,54 +301,41 @@ fn html_links_become_edges_only_to_stored_pages_without_link_elements() {
 }
 
 #[test]
-fn html_links_resolve_when_their_page_is_scanned_not_when_the_target_appears() {
+fn html_links_resolve_when_their_target_page_is_added_in_the_same_scan() {
     let mut project = Project::new();
     let linker = "wiki/Linker.html";
     let target = "wiki/Target.html";
     project.write(
         linker,
-        r#"<html><body><p><a href="/wiki/Target.html">to target</a></p></body></html>"#,
+        r#"<html><body><p><a href="/wiki/Linker.html">self top</a></p><h2>Part</h2><p><a href="Linker.html">self part</a> <a href="/wiki/Target.html">to target</a></p></body></html>"#,
     );
     let first = project.publish(ScanScope::Full);
-    let linker_id = file_of(&first, linker).semantic_element_id.clone();
+    let linker_file = file_of(&first, linker);
     assert!(
-        links_from(&first, file_of(&first, linker)).is_empty(),
-        "the target is not stored yet"
+        links_from(&first, linker_file).is_empty(),
+        "self-links never become edges, and the target is not stored yet"
+    );
+    assert_eq!(
+        links_from(&first, find(&first, linker, "html_section", "Part")).len(),
+        0
     );
 
-    // The target appears and is scanned alone: its own link to the linker resolves.
+    // The target is added and scanned alone. The unchanged linker is re-projected in the
+    // same batch, so its edge to the new page exists before the linker is edited.
     project.write(
         target,
-        r#"<html><body><p><a href="/wiki/Linker.html">to linker</a></p></body></html>"#,
+        r#"<html><body><p><a href="/wiki/Linker.html">back</a></p></body></html>"#,
     );
     let second = project.publish(ScanScope::Paths(vec![target.into()]));
     let target_file = file_of(&second, target);
-    let target_id = target_file.semantic_element_id.clone();
-    let outgoing = links_from(&second, target_file);
-    assert_eq!(outgoing.len(), 1);
-    assert_eq!(
-        outgoing[0].target_element_id.as_deref(),
-        Some(linker_id.as_str())
-    );
+    let linker_file = file_of(&second, linker);
+    let part = find(&second, linker, "html_section", "Part");
+    assert_page(link(&second, part, "to target"), target_file);
+    assert_eq!(links_from(&second, part).len(), 1);
+    assert_page(link(&second, target_file, "back"), linker_file);
     assert!(
-        second
-            .semantic_relationships
-            .iter()
-            .all(|relationship| relationship.source_element_id != linker_id),
-        "the unchanged linker is not re-resolved until it is scanned"
-    );
-
-    // Scanning the linker resolves its link to the stored target.
-    project.write(
-        linker,
-        r#"<html><body><p><a href="/wiki/Target.html">to target, edited</a></p></body></html>"#,
-    );
-    let third = project.publish(ScanScope::Paths(vec![linker.into()]));
-    let rescanned = links_from(&third, file_of(&third, linker));
-    assert_eq!(rescanned.len(), 1);
-    assert_eq!(
-        rescanned[0].target_element_id.as_deref(),
-        Some(target_id.as_str())
+        links_from(&second, linker_file).is_empty(),
+        "the linker's self-links stay edge-free after re-projection"
     );
 }
 
