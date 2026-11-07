@@ -364,6 +364,78 @@ fn raw_semantic_writes_and_retired_project_epochs_do_not_inherit_a_knowledge_gra
 }
 
 #[test]
+fn only_the_search_index_rebuild_may_store_derived_vectors_from_an_mcp_call() {
+    use lumvise_db_core::SemanticOperation::{
+        RemoveElement, StoreArtifactTextVectors, StoreElementNameVectors, StoreElementTextVectors,
+    };
+    let app = AppCore::in_memory().unwrap();
+    let (_id, context) = connected(&app);
+    let authority = app.connector_authority();
+    let from = |plugin: &str, export: &str| {
+        PluginInvocationContext::new(
+            "rebuild",
+            "agent",
+            PluginInvocationClass::Foreground,
+            Instant::now() + Duration::from_secs(60),
+        )
+        .with_mcp_origin(context.mcp_origin().unwrap().clone())
+        .enter_plugin(plugin, export)
+    };
+    let names = || StoreElementNameVectors {
+        project_root: "/repo".into(),
+        vectors: vec![],
+    };
+    let texts = || StoreElementTextVectors {
+        project_root: "/repo".into(),
+        vectors: vec![],
+    };
+    let rebuild = from("builtin.semantic", "rebuild_search_index");
+    assert!(
+        authority
+            .authorize_connector_semantic(&rebuild, &names())
+            .is_ok()
+    );
+    assert!(
+        authority
+            .authorize_connector_semantic(&rebuild, &texts())
+            .is_ok()
+    );
+    // The rebuild export gets vectors only: no other write, not artifact vectors.
+    let artifacts = StoreArtifactTextVectors {
+        project_root: "/repo".into(),
+        vectors: vec![],
+    };
+    assert!(
+        authority
+            .authorize_connector_semantic(&rebuild, &artifacts)
+            .is_err()
+    );
+    let remove = RemoveElement {
+        semantic_element_id: "document".into(),
+    };
+    assert!(
+        authority
+            .authorize_connector_semantic(&rebuild, &remove)
+            .is_err()
+    );
+    // Another export, or a plugin entered from the rebuild, cannot borrow the exception.
+    let ingest = from("builtin.semantic", "ingest_index_batch");
+    assert!(
+        authority
+            .authorize_connector_semantic(&ingest, &names())
+            .is_err()
+    );
+    let nested = rebuild
+        .clone()
+        .enter_plugin("builtin.canvas", "canvas_save");
+    assert!(
+        authority
+            .authorize_connector_semantic(&nested, &texts())
+            .is_err()
+    );
+}
+
+#[test]
 fn concurrent_pending_requests_create_only_one_native_review_prompt() {
     let app = Arc::new(AppCore::in_memory().unwrap());
     let (_id, context) = connected(&app);

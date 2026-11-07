@@ -148,6 +148,7 @@ impl KnowledgeAuthority {
             || !semantic_mutation(operation)
             // Owner repair keeps its own direct-export, bound-owner check in `authorize_recovery`.
             || matches!(operation, SemanticOperation::RecoverRevisionIntegrity(_))
+            || search_index_rebuild_vectors(context, operation)
         {
             return Ok(());
         }
@@ -173,6 +174,21 @@ impl KnowledgeAuthority {
             "raw index publication; use the app-owned index_project source scanner",
         ))
     }
+}
+
+/// Vectors the Semantic search index rebuild derives from stored names and page text
+/// (ADR 0002, 2026-11-07): the caller passes only a project root, so it cannot supply content.
+fn search_index_rebuild_vectors(
+    context: &PluginInvocationContext,
+    operation: &SemanticOperation,
+) -> bool {
+    matches!(
+        operation,
+        SemanticOperation::StoreElementNameVectors { .. }
+            | SemanticOperation::StoreElementTextVectors { .. }
+    ) && context.plugin_chain().last().is_some_and(|frame| {
+        frame.plugin_id == "builtin.semantic" && frame.export_id == "rebuild_search_index"
+    })
 }
 
 fn write_operation(export: &str) -> Option<ConnectorKnowledgeOperation> {
