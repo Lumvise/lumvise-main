@@ -2,6 +2,7 @@ mod dependency;
 pub(crate) use dependency::dependency_tree;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -191,12 +192,13 @@ struct SearchIndexState {
 }
 
 const MAX_NEURAL_EMBED_TEXTS: usize = 128;
+const MAX_NEURAL_EMBED_BYTES: usize = 256 * 1024;
 /// Vector records per storage call, so one rebuild is never a single unbounded write.
 const VECTOR_STORE_BATCH: usize = 128;
 
 /// Stops starting text-vector pages after this long; a page in progress is still finished.
-/// Keeps one call inside the 60 s invocation deadline.
-const TEXT_PASS_BUDGET: Duration = Duration::from_secs(40);
+/// Keeps one call inside the 60 s invocation deadline; a live 40 s pass took 58.9 s.
+const TEXT_PASS_BUDGET: Duration = Duration::from_secs(30);
 
 pub(crate) fn rebuild_search_index(
     input: Value,
@@ -288,7 +290,7 @@ fn store_name_vectors(
     let embedded = if names.is_empty() {
         EmbedBatch::empty()
     } else {
-        embed_texts(context, &names).map_err(|cause| {
+        embed_texts(context, &names, EmbedTask::Document).map_err(|cause| {
             rebuild_failed(
                 context,
                 state_key,
@@ -417,7 +419,8 @@ fn vector_results(
             results: Some(Vec::new()),
         };
     }
-    let Some(embedded) = embed_texts(context, &[request.query.as_str()]).ok() else {
+    let Some(embedded) = embed_texts(context, &[request.query.as_str()], EmbedTask::Query).ok()
+    else {
         return failed_vector_search();
     };
     let Some(query_vector) = embedded.vectors.first().cloned() else {
@@ -584,15 +587,57 @@ impl EmbedBatch {
     }
 }
 
+/// What a `neural.embed` call embeds for: search queries and stored content are embedded differently.
+#[derive(Clone, Copy)]
+pub(crate) enum EmbedTask {
+    Document,
+    Query,
+}
+
+impl EmbedTask {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Query => "query",
+        }
+    }
+}
+
+/// Splits `texts` into consecutive ranges that each fit one `neural.embed` call: at most
+/// `MAX_NEURAL_EMBED_TEXTS` texts and `MAX_NEURAL_EMBED_BYTES` bytes. A text over the byte
+/// limit gets a range of its own; the host decides whether it accepts it.
+pub(crate) fn embed_batch_ranges(texts: &[&str]) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (index, text) in texts.iter().enumerate() {
+        let full =
+            index - start == MAX_NEURAL_EMBED_TEXTS || bytes + text.len() > MAX_NEURAL_EMBED_BYTES;
+        if index > start && full {
+            ranges.push(start..index);
+            start = index;
+            bytes = 0;
+        }
+        bytes += text.len();
+    }
+    if start < texts.len() {
+        ranges.push(start..texts.len());
+    }
+    ranges
+}
+
 pub(crate) fn embed_texts(
     context: &mut PluginContext<'_>,
     texts: &[&str],
+    task: EmbedTask,
 ) -> Result<EmbedBatch, PluginError> {
     let mut vectors = Vec::with_capacity(texts.len());
     let mut engine_id = None;
     let mut model = None;
-    for batch in texts.chunks(MAX_NEURAL_EMBED_TEXTS) {
-        let output = context.host_call("neural.embed", json!({"texts": batch}))?;
+    for range in embed_batch_ranges(texts) {
+        let batch = &texts[range];
+        let output =
+            context.host_call("neural.embed", json!({"texts": batch, "task": task.wire()}))?;
         let values = output["vectors"]
             .as_array()
             .filter(|values| values.len() == batch.len())
@@ -920,4 +965,30 @@ pub(crate) fn project_element_counts(
     let root = input["project_root"].as_str().unwrap_or_default();
     require_non_empty(root, "project_root")?;
     storage::project_element_counts(context, root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::embed_batch_ranges;
+
+    #[test]
+    fn embed_batches_hold_at_most_128_texts() {
+        let texts = vec!["a"; 300];
+        assert_eq!(embed_batch_ranges(&texts), vec![0..128, 128..256, 256..300]);
+    }
+
+    #[test]
+    fn embed_batches_stay_under_256_kib() {
+        // Six texts of 40 KiB fit (240 KiB); a seventh would reach 280 KiB.
+        let text = "a".repeat(40 * 1024);
+        let texts = vec![text.as_str(); 13];
+        assert_eq!(embed_batch_ranges(&texts), vec![0..6, 6..12, 12..13]);
+    }
+
+    #[test]
+    fn a_text_over_the_byte_limit_gets_a_batch_of_its_own() {
+        let big = "a".repeat(300 * 1024);
+        let texts = ["x", big.as_str(), "y"];
+        assert_eq!(embed_batch_ranges(&texts), vec![0..1, 1..2, 2..3]);
+    }
 }

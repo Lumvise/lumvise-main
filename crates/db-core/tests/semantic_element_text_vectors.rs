@@ -56,10 +56,20 @@ fn sync(persistence: &LocalPersistence, elements: Vec<SemanticElement>) {
 }
 
 fn text_vector(id: &str, fingerprint: &str, vector: Vec<f32>) -> StoredSemanticElementTextVector {
+    text_chunk(id, fingerprint, 0, vector)
+}
+
+fn text_chunk(
+    id: &str,
+    fingerprint: &str,
+    chunk: u32,
+    vector: Vec<f32>,
+) -> StoredSemanticElementTextVector {
     StoredSemanticElementTextVector {
         semantic_element_id: id.into(),
         project_root: ROOT.into(),
         content_fingerprint: fingerprint.into(),
+        chunk,
         vector: ArtifactTextVector {
             engine_id: ENGINE.into(),
             model: Some(MODEL.into()),
@@ -84,20 +94,27 @@ fn store(
     )
 }
 
-fn search_ids(persistence: &LocalPersistence) -> Vec<String> {
+fn search_hits(persistence: &LocalPersistence, query: Vec<f32>, k: usize) -> Vec<(String, f32)> {
     let SemanticResult::ElementVectorSearch(hits) = execute_ok(
         persistence,
         SemanticOperation::SearchElementTextVectors {
             project_root: ROOT.into(),
-            query: vec![1.0, 0.0],
-            k: 10,
+            query,
+            k,
             engine_id: ENGINE.into(),
             model: Some(MODEL.into()),
         },
     ) else {
         panic!("expected element vector search");
     };
-    hits.into_iter().map(|hit| hit.id).collect()
+    hits.into_iter().map(|hit| (hit.id, hit.score)).collect()
+}
+
+fn search_ids(persistence: &LocalPersistence) -> Vec<String> {
+    search_hits(persistence, vec![1.0, 0.0], 10)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
 }
 
 #[test]
@@ -230,4 +247,78 @@ fn portable_archive_carries_no_text_vectors_and_import_does_not_restore_them() {
         },
     );
     assert!(search_ids(&restored).is_empty());
+}
+
+#[test]
+fn storing_one_chunk_replaces_every_earlier_chunk_of_the_element() {
+    let persistence = LocalPersistence::in_memory().unwrap();
+    sync(
+        &persistence,
+        vec![section("sec-a", "html_section", Some(FP_A))],
+    );
+    store(
+        &persistence,
+        vec![
+            text_chunk("sec-a", FP_A, 0, vec![1.0, 0.0]),
+            text_chunk("sec-a", FP_A, 1, vec![0.0, 1.0]),
+            text_chunk("sec-a", FP_A, 2, vec![0.0, 1.0]),
+        ],
+    )
+    .unwrap();
+    store(
+        &persistence,
+        vec![text_chunk("sec-a", FP_A, 0, vec![0.6, 0.8])],
+    )
+    .unwrap();
+    // Chunks 1 and 2 would score 1.0 against this query if they had survived the replace.
+    let hits = search_hits(&persistence, vec![0.0, 1.0], 10);
+    assert_eq!(hits.len(), 1);
+    assert!((hits[0].1 - 0.8).abs() < 1e-6, "score was {}", hits[0].1);
+}
+
+#[test]
+fn text_vector_write_rejects_a_duplicate_chunk_of_one_element() {
+    let persistence = LocalPersistence::in_memory().unwrap();
+    sync(
+        &persistence,
+        vec![section("sec-a", "html_section", Some(FP_A))],
+    );
+    let result = store(
+        &persistence,
+        vec![
+            text_chunk("sec-a", FP_A, 0, vec![1.0, 0.0]),
+            text_chunk("sec-a", FP_A, 0, vec![0.0, 1.0]),
+        ],
+    );
+    assert!(result.is_err());
+    assert!(search_hits(&persistence, vec![1.0, 0.0], 10).is_empty());
+}
+
+#[test]
+fn search_returns_one_hit_per_element_scored_by_its_best_chunk() {
+    let persistence = LocalPersistence::in_memory().unwrap();
+    sync(
+        &persistence,
+        vec![
+            section("sec-a", "html_section", Some(FP_A)),
+            section("sec-b", "html_section", Some(FP_B)),
+        ],
+    );
+    store(
+        &persistence,
+        vec![
+            text_chunk("sec-a", FP_A, 0, vec![1.0, 0.0]),
+            text_chunk("sec-a", FP_A, 1, vec![0.0, 1.0]),
+            text_chunk("sec-b", FP_B, 0, vec![0.6, 0.8]),
+        ],
+    )
+    .unwrap();
+    let hits = search_hits(&persistence, vec![0.0, 1.0], 10);
+    let ids = hits.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>();
+    assert_eq!(ids, ["sec-a", "sec-b"]);
+    assert!((hits[0].1 - 1.0).abs() < 1e-6);
+    assert!((hits[1].1 - 0.8).abs() < 1e-6);
+    // k counts elements: sec-a's two chunks must not fill both slots.
+    assert_eq!(search_hits(&persistence, vec![0.0, 1.0], 2).len(), 2);
+    assert_eq!(search_hits(&persistence, vec![0.0, 1.0], 1)[0].0, "sec-a");
 }

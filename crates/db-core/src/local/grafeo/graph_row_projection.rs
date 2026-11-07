@@ -224,6 +224,7 @@ pub(crate) fn element_text_vector_props(
             "content_fingerprint",
             GrafeoValue::from(stored.content_fingerprint.clone()),
         ),
+        ("chunk", GrafeoValue::from(i64::from(stored.chunk))),
     ];
     properties.extend(vector_payload_props(&stored.vector)?);
     Ok(properties)

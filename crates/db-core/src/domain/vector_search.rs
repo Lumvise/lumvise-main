@@ -2,7 +2,10 @@
 use crate::{ArtifactTextVector, DbError, Result, VectorSearchResult};
 #[cfg(test)]
 use std::cell::Cell;
-use std::{collections::BinaryHeap, sync::Arc};
+use std::{
+    collections::{BinaryHeap, HashMap},
+    sync::Arc,
+};
 #[cfg(test)]
 thread_local! { pub(crate) static SCORE_CALLS: Cell<usize> = const { Cell::new(0) }; }
 
@@ -102,6 +105,43 @@ pub(crate) fn top_k(
             .total_cmp(&left.score)
             .then(left.id.cmp(&right.id))
     });
+    ranked
+        .into_iter()
+        .map(|candidate| VectorSearchResult {
+            id: candidate.id,
+            score: candidate.score,
+        })
+        .collect()
+}
+
+/// Like `top_k`, but an id keeps only its best-scoring candidate, so one element with many
+/// chunk vectors takes one result. Every candidate is scored, and the map holds one entry per id.
+pub(crate) fn top_k_best_per_id(
+    candidates: impl IntoIterator<Item = (String, Arc<[f32]>)>,
+    query: &[f32],
+    k: usize,
+) -> Vec<VectorSearchResult> {
+    let mut best: HashMap<String, f32> = HashMap::new();
+    for (id, vector) in candidates {
+        if vector.len() != query.len() {
+            continue;
+        }
+        let score = cosine_score(query, &vector);
+        best.entry(id)
+            .and_modify(|kept| *kept = kept.max(score))
+            .or_insert(score);
+    }
+    let mut ranked = best
+        .into_iter()
+        .map(|(id, score)| RankedCandidate { id, score })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then(left.id.cmp(&right.id))
+    });
+    ranked.truncate(k);
     ranked
         .into_iter()
         .map(|candidate| VectorSearchResult {

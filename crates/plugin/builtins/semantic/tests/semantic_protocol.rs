@@ -617,6 +617,7 @@ fn search_never_backfills_vectors_and_reports_index_readiness() {
     );
     assert_eq!(missing["mode"], "lexical_fallback");
     assert_eq!(missing["index_state"], "missing");
+    let before_rebuild = broker.embed_tasks().len();
     assert_eq!(
         missing["results"][0]["element"]["semantic_element_id"],
         "file:parser"
@@ -636,6 +637,8 @@ fn search_never_backfills_vectors_and_reports_index_readiness() {
     assert_eq!(rebuild["indexed_nodes"], 3);
     assert!(!rebuild.as_object().unwrap().contains_key("continuation"));
     assert_eq!(broker.row_count(PLUGIN_ID, "semantic_element_vectors"), 0);
+    assert_eq!(broker.embed_tasks()[before_rebuild..], ["document"]);
+    let before_search = broker.embed_tasks().len();
     let vector = success(
         runtime
             .invoke(
@@ -647,6 +650,7 @@ fn search_never_backfills_vectors_and_reports_index_readiness() {
     );
     assert_eq!(vector["mode"], "vector");
     assert_eq!(vector["index_state"], "ready");
+    assert_eq!(broker.embed_tasks()[before_search..], ["query"]);
 
     *broker.embed_available.lock().expect("embed switch") = false;
     let lexical = success(

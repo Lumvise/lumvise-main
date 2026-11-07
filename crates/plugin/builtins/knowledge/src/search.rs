@@ -31,7 +31,7 @@ impl KnowledgeSearchVectors {
         texts: &[(String, String)],
         context: &mut PluginContext<'_>,
     ) -> Option<BTreeMap<String, f32>> {
-        let query = embed(context, &[query])?.pop()?;
+        let query = embed(context, &[query], "query")?.pop()?;
         let mut scores = BTreeMap::new();
         let missing = texts
             .iter()
@@ -75,7 +75,7 @@ impl KnowledgeSearchVectors {
             .iter()
             .map(|(_, text)| text.as_str())
             .collect::<Vec<_>>();
-        let embeddings = embed(context, &inputs)?;
+        let embeddings = embed(context, &inputs, "document")?;
         let mut rows = Vec::new();
         for ((id, text), vector) in texts.iter().zip(embeddings) {
             scores.insert(id.clone(), cosine(query, &vector)?);
@@ -285,6 +285,7 @@ fn persist_batch(
     let vectors = required_embeddings(
         context,
         &texts.iter().map(String::as_str).collect::<Vec<_>>(),
+        "document",
     )?;
     persist_vectors(
         &artifacts.iter().collect::<Vec<_>>(),
@@ -332,20 +333,21 @@ fn lexical_results(request: &SearchRequest, artifacts: &[KnowledgeArtifact]) -> 
         .collect()
 }
 
-fn embed(context: &mut PluginContext<'_>, texts: &[&str]) -> Option<Vec<Vec<f32>>> {
-    required_embeddings(context, texts).ok()
+fn embed(context: &mut PluginContext<'_>, texts: &[&str], task: &str) -> Option<Vec<Vec<f32>>> {
+    required_embeddings(context, texts, task).ok()
 }
 
 fn required_embeddings(
     context: &mut PluginContext<'_>,
     texts: &[&str],
+    task: &str,
 ) -> Result<Vec<Vec<f32>>, PluginError> {
     let chunks = texts
         .iter()
         .map(|text| embedding_chunks(text))
         .collect::<Vec<_>>();
     let inputs = chunks.iter().flatten().copied().collect::<Vec<_>>();
-    let vectors = embed_bounded_chunks(context, &inputs)?;
+    let vectors = embed_bounded_chunks(context, &inputs, task)?;
     let dimensions = vectors.first().map_or(0, Vec::len);
     if vectors.iter().any(|vector| vector.len() != dimensions) {
         return Err(invalid_embeddings(
@@ -373,11 +375,12 @@ fn embedding_chunks(mut text: &str) -> Vec<&str> {
 fn embed_bounded_chunks(
     context: &mut PluginContext<'_>,
     mut chunks: &[&str],
+    task: &str,
 ) -> Result<Vec<Vec<f32>>, PluginError> {
     let mut vectors = Vec::with_capacity(chunks.len());
     while !chunks.is_empty() {
         let count = embedding_batch_count(chunks);
-        vectors.extend(embed_request(context, &chunks[..count])?);
+        vectors.extend(embed_request(context, &chunks[..count], task)?);
         chunks = &chunks[count..];
     }
     Ok(vectors)
@@ -426,8 +429,9 @@ fn average_chunk_embedding(chunks: &[&str], vectors: &[Vec<f32>]) -> Vec<f32> {
 fn embed_request(
     context: &mut PluginContext<'_>,
     texts: &[&str],
+    task: &str,
 ) -> Result<Vec<Vec<f32>>, PluginError> {
-    let output = context.host_call("neural.embed", json!({"texts": texts}))?;
+    let output = context.host_call("neural.embed", json!({"texts": texts, "task": task}))?;
     let vectors = output["vectors"]
         .as_array()
         .ok_or_else(|| invalid_embeddings(&output, texts.len()))?

@@ -1,5 +1,7 @@
 #[cfg(test)]
 use crate::ArtifactTextVectorizer;
+use std::collections::{BTreeMap, HashSet};
+
 use crate::local::grafeo::graph_rows::{
     apply_element_name_vector_replace, apply_element_text_vector_replace,
     prepare_element_name_vector_replace, prepare_element_text_vector_replace,
@@ -142,17 +144,22 @@ impl<'db> SemanticStorage<'db> {
         )
     }
 
-    /// Stores text vectors for `html_section` elements.
+    /// Stores text vectors for `html_section` elements, one per chunk.
     ///
     /// Each record must name an active `html_section` in `project_root` whose
-    /// `content_fingerprint` equals the record's. The text is never stored; the
-    /// caller embeds it from the page file and discards it.
+    /// `content_fingerprint` equals the record's. For each element named, the call
+    /// replaces all of its stored text vectors with exactly the chunks given in this
+    /// call; a (element, chunk) pair may appear only once. The text is never stored;
+    /// the caller embeds it from the page file and discards it.
     pub fn store_element_text_vectors(
         &self,
         project_root: &str,
         vectors: &[StoredSemanticElementTextVector],
     ) -> Result<()> {
         require_non_empty(project_root, "non-empty project root")?;
+        let mut seen_chunks = HashSet::with_capacity(vectors.len());
+        let mut chunks_by_element: BTreeMap<&str, Vec<&StoredSemanticElementTextVector>> =
+            BTreeMap::new();
         for stored in vectors {
             if stored.project_root != project_root {
                 return Err(crate::DbError::invalid_value(
@@ -160,6 +167,16 @@ impl<'db> SemanticStorage<'db> {
                     "vector project root matching request project root",
                 ));
             }
+            if !seen_chunks.insert((stored.semantic_element_id.as_str(), stored.chunk)) {
+                return Err(crate::DbError::invalid_value(
+                    &stored.semantic_element_id,
+                    "unique chunk per element in one text vector call",
+                ));
+            }
+            chunks_by_element
+                .entry(stored.semantic_element_id.as_str())
+                .or_default()
+                .push(stored);
             let element = self
                 .graph
                 .read(|graph| semantic_element_by_id_selective(graph, &stored.semantic_element_id))?
@@ -190,9 +207,11 @@ impl<'db> SemanticStorage<'db> {
         }
         self.commit_preplanned_graph_write(
             |database| {
-                vectors
+                chunks_by_element
                     .iter()
-                    .map(|stored| prepare_element_text_vector_replace(database, stored))
+                    .map(|(element_id, chunks)| {
+                        prepare_element_text_vector_replace(database, element_id, chunks)
+                    })
                     .collect::<Result<Vec<_>>>()
             },
             |graph, _commit_version, _collector, plans| {

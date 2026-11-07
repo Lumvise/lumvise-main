@@ -12,7 +12,7 @@ use lumvise_plugin_sdk::{
 use serde_json::{Value, json};
 
 use crate::models::{SemanticArtifact, SemanticElement};
-use crate::query::embed_texts;
+use crate::query::{EmbedTask, embed_texts};
 use crate::storage;
 use crate::text_vectors;
 
@@ -98,7 +98,7 @@ fn index_elements(
         .iter()
         .map(|(_, text)| text.as_str())
         .collect::<Vec<_>>();
-    let embedded = embed_texts(context, &texts)?;
+    let embedded = embed_texts(context, &texts, EmbedTask::Document)?;
     let crate::query::EmbedBatch {
         vectors,
         engine_id,
@@ -127,7 +127,7 @@ fn index_artifacts(
         .iter()
         .map(|(_, _, text)| text.trim())
         .collect::<Vec<_>>();
-    let embedded = embed_texts(context, &texts)?;
+    let embedded = embed_texts(context, &texts, EmbedTask::Document)?;
     let crate::query::EmbedBatch {
         vectors,
         engine_id,

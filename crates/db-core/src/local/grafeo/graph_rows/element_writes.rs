@@ -56,26 +56,42 @@ pub(crate) fn prepare_element_name_vector_replace(
     })
 }
 
+/// Every stored text-vector chunk of one element, replaced as a set.
+pub(crate) struct TextVectorChunksPlan {
+    node_ids: Vec<NodeId>,
+    chunks: Vec<Vec<(&'static str, GrafeoValue)>>,
+}
+
 pub(crate) fn prepare_element_text_vector_replace(
     database: &GrafeoDB,
-    stored: &StoredSemanticElementTextVector,
-) -> Result<VectorReplacePlan> {
-    Ok(VectorReplacePlan {
+    semantic_element_id: &str,
+    chunks: &[&StoredSemanticElementTextVector],
+) -> Result<TextVectorChunksPlan> {
+    Ok(TextVectorChunksPlan {
         node_ids: node_ids_by_label_and_property(
             database,
             "SemanticElementTextVector",
             SEMANTIC_ELEMENT_ID_PROPERTY,
-            &stored.semantic_element_id,
+            semantic_element_id,
         )?,
-        properties: element_text_vector_props(stored)?,
+        chunks: chunks
+            .iter()
+            .map(|stored| element_text_vector_props(stored))
+            .collect::<Result<Vec<_>>>()?,
     })
 }
 
 pub(crate) fn apply_element_text_vector_replace(
     database: &GraphTransaction<'_>,
-    plan: VectorReplacePlan,
+    plan: TextVectorChunksPlan,
 ) -> Result<()> {
-    apply_vector_replace(database, "SemanticElementTextVector", plan)
+    for node_id in plan.node_ids {
+        database.delete_node(node_id)?;
+    }
+    for properties in plan.chunks {
+        database.create_node_with_props(&["SemanticElementTextVector"], properties)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn prepare_artifact_vector_replace(

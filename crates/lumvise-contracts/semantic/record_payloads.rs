@@ -38,12 +38,17 @@ pub struct StoredSemanticElementNameVector {
     pub vector: ArtifactTextVector,
 }
 
-/// Vector for an `html_section` element's visible text. The text itself is never stored.
+/// Vector for one chunk of an `html_section` element's visible text. The text itself is never stored.
+///
+/// A store call replaces every text vector previously stored for each element it names with
+/// exactly the chunks given for that element in the same call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredSemanticElementTextVector {
     pub semantic_element_id: String,
     pub project_root: String,
     pub content_fingerprint: String,
+    /// 0-based position of this chunk within the section text.
+    pub chunk: u32,
     pub vector: ArtifactTextVector,
 }
 

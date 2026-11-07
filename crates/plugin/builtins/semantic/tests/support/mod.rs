@@ -32,6 +32,9 @@ use sha2::{Digest, Sha256};
 
 use lumvise_plugin_semantic::{PACKAGE_PROTOCOL_VERSION, package_manifest_source};
 
+/// Text containing this makes the fixture's `neural.embed` call fail.
+pub const EMBED_REJECTED_MARKER: &str = "embedrejected";
+
 pub trait ControlledTestInvoke {
     fn invoke(
         &self,
@@ -72,6 +75,7 @@ pub struct MemoryCapabilityBroker {
     source_commit_gate: Mutex<Option<SourceDescriptorCommitGate>>,
     pub embed_available: Mutex<bool>,
     embed_batch_sizes: Mutex<Vec<usize>>,
+    embed_tasks: Mutex<Vec<String>>,
     stored_element_name_vectors:
         Mutex<HashMap<String, BTreeMap<String, StoredSemanticElementNameVector>>>,
     stored_artifact_text_vectors: Mutex<HashMap<String, StoredArtifactTextVector>>,
@@ -104,6 +108,7 @@ impl MemoryCapabilityBroker {
             source_commit_gate: Mutex::default(),
             embed_available: Mutex::default(),
             embed_batch_sizes: Mutex::default(),
+            embed_tasks: Mutex::default(),
             stored_element_name_vectors: Mutex::default(),
             stored_artifact_text_vectors: Mutex::default(),
             continuation_calls: Mutex::default(),
@@ -266,6 +271,11 @@ impl MemoryCapabilityBroker {
                 panic!("expected ProjectSnapshot semantic count query to succeed: {error}")
             }
         }
+    }
+
+    /// The `task` of every `neural.embed` call, in call order.
+    pub fn embed_tasks(&self) -> Vec<String> {
+        self.embed_tasks.lock().expect("embed tasks").clone()
     }
 
     pub fn embed_batch_sizes(&self) -> Vec<usize> {
@@ -489,8 +499,22 @@ impl MemoryCapabilityBroker {
             .lock()
             .expect("embed batch sizes")
             .push(texts.len());
+        self.embed_tasks.lock().expect("embed tasks").push(
+            request.input["task"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        );
         if texts.len() > 128 {
             return Err(host_error("neural.embed", "too_many_texts"));
+        }
+        // Any text carrying this marker makes the whole call fail, as a rejected host batch does.
+        if texts.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|text| text.contains(EMBED_REJECTED_MARKER))
+        }) {
+            return Err(host_error("neural.embed", "embedding_rejected"));
         }
         let vectors = texts
             .iter()

@@ -1,6 +1,8 @@
 #[cfg(test)]
 use crate::domain::vector_search::{SCORE_CALLS, cosine_score};
-use crate::domain::vector_search::{top_k as rank_vectors, validate_search_input};
+use crate::domain::vector_search::{
+    top_k as rank_vectors, top_k_best_per_id, validate_search_input,
+};
 use crate::local::grafeo::committed_columns::CommittedPropertyRows;
 use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
 use crate::local::grafeo::graph_rows::{
@@ -19,6 +21,19 @@ fn top_k(
     k: usize,
 ) -> Vec<VectorSearchResult> {
     rank_vectors(
+        candidates.into_iter().map(|(_, id, vector)| (id, vector)),
+        query,
+        k,
+    )
+}
+
+/// One result per element: a chunked section scores by its best chunk.
+fn top_k_per_element(
+    candidates: impl IntoIterator<Item = (NodeId, String, Arc<[f32]>)>,
+    query: &[f32],
+    k: usize,
+) -> Vec<VectorSearchResult> {
+    top_k_best_per_id(
         candidates.into_iter().map(|(_, id, vector)| (id, vector)),
         query,
         k,
@@ -127,7 +142,7 @@ impl<'db> SemanticStorage<'db> {
                     )
                 },
             )?;
-            Ok(top_k(candidates, query, k))
+            Ok(top_k_per_element(candidates, query, k))
         })
     }
 }

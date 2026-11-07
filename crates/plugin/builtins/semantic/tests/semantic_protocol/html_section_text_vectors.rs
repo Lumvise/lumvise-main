@@ -2,6 +2,8 @@ use super::*;
 use lumvise_plugin_runtime::PluginSystem;
 use std::path::Path;
 
+use super::support;
+
 const PAGE: &str = "<html><body><h2>Overview</h2><p>Plain introduction.</p>\
 <h2>Details</h2><p>The parser reads each token.</p></body></html>";
 
@@ -401,4 +403,56 @@ fn paths_are_rejected_outside_text_mode() {
     ));
 
     assert_eq!(error.code, "invalid_semantic_input");
+}
+
+#[test]
+fn long_section_is_embedded_and_stored_as_one_vector_per_chunk() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    let long_page = format!(
+        "<html><body><h2>Long</h2><p>{}</p></body></html>",
+        "word ".repeat(1500)
+    );
+    let pages = [("wiki/Long.html", long_page.as_str())];
+    let root_text = write_project(project.path(), &pages);
+    ingest_pages(&runtime, &broker, &root_text, &pages);
+    *broker.embed_available.lock().expect("embed switch") = true;
+
+    let rebuilt = success(rebuild(&runtime, &root_text));
+
+    // 1,501 words make three chunks of 700, 700 and 101 words: one stored vector each.
+    assert_eq!(rebuilt["text_vectors"]["stored"], 3);
+    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 0);
+    assert_eq!(broker.embed_batch_sizes().last(), Some(&3));
+    assert_eq!(broker.embed_tasks(), vec!["document", "document"]);
+}
+
+#[test]
+fn rejected_embed_batch_skips_only_the_section_that_fails_alone() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    let mixed_page = format!(
+        "<html><body><h2>Good</h2><p>parser text.</p>\
+<h2>Bad</h2><p>{} text.</p></body></html>",
+        support::EMBED_REJECTED_MARKER
+    );
+    let pages = [("wiki/Mixed.html", mixed_page.as_str())];
+    let root_text = write_project(project.path(), &pages);
+    ingest_pages(&runtime, &broker, &root_text, &pages);
+    *broker.embed_available.lock().expect("embed switch") = true;
+
+    let rebuilt = success(rebuild(&runtime, &root_text));
+
+    // Both sections share one rejected embed call; each is retried alone, so only Bad is lost.
+    assert_eq!(rebuilt["text_vectors"]["stored"], 1);
+    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 1);
+    assert_eq!(rebuilt["text_vectors"]["skipped_pages"], 0);
+    assert_eq!(
+        rebuilt["text_vectors"]["failures"][0]["semantic_element_id"],
+        "sec:wiki/Mixed.html#1"
+    );
 }

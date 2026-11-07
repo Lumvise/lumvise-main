@@ -8,14 +8,20 @@
 //! reported in the returned report and never fails the caller.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 
 use lumvise_plugin_sdk::{PluginContext, PluginError};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::models::SemanticElement;
-use crate::query::embed_texts;
+use crate::query::{EmbedTask, embed_batch_ranges, embed_texts};
 use crate::storage;
+
+/// Words per embedded chunk. shortcut: 700 whitespace words approximates the model's ~1,024-token window, upgrade to counting with the model's tokenizer when chunk edges matter.
+const CHUNK_WORDS: usize = 700;
+/// Largest chunk text sent to `neural.embed`, the host's per-text limit.
+const MAX_CHUNK_BYTES: usize = 32 * 1024;
 
 /// `project.source` reads a line range; this end line reads to the end of any real page.
 const WHOLE_FILE_END_LINE: u64 = u32::MAX as u64;
@@ -23,7 +29,7 @@ const WHOLE_FILE_END_LINE: u64 = u32::MAX as u64;
 /// What the text-vector pass stored and what it could not, with the causes.
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct TextVectorReport {
-    /// Section vectors stored.
+    /// Chunk vectors stored.
     pub stored: usize,
     /// Sections left without a vector because their page or their record failed.
     pub skipped_sections: usize,
@@ -114,7 +120,54 @@ fn run_within_budget<T>(
 
 #[cfg(test)]
 mod tests {
-    use super::run_within_budget;
+    use super::{MAX_CHUNK_BYTES, run_within_budget, section_chunks};
+
+    #[test]
+    fn section_chunks_split_after_700_words() {
+        let text = (1..=701)
+            .map(|word| format!("w{word}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let chunks = section_chunks(&text);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].split_whitespace().count(), 700);
+        assert!(chunks[0].ends_with(" w700"));
+        assert_eq!(chunks[1], "w701");
+    }
+
+    #[test]
+    fn empty_and_whitespace_sections_have_no_chunks() {
+        assert!(section_chunks("").is_empty());
+        assert!(section_chunks(" \n\t  ").is_empty());
+    }
+
+    #[test]
+    fn a_word_over_the_byte_limit_is_cut_on_char_boundaries() {
+        // Three bytes per char and a limit that is not a multiple of three: each cut must back up.
+        let word = "€".repeat(MAX_CHUNK_BYTES);
+        let chunks = section_chunks(&word);
+        assert!(chunks.len() >= 3);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= MAX_CHUNK_BYTES));
+        assert_eq!(chunks.concat(), word);
+    }
+
+    #[test]
+    fn a_chunk_of_many_long_words_is_capped_by_bytes_not_only_by_words() {
+        let text = vec!["x".repeat(100); 700].join(" ");
+        let chunks = section_chunks(&text);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= MAX_CHUNK_BYTES));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn multibyte_words_count_as_words() {
+        let text = vec!["語"; 1400].join(" ");
+        let chunks = section_chunks(&text);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].split_whitespace().count(), 700);
+        assert_eq!(chunks[1].split_whitespace().count(), 700);
+    }
 
     #[test]
     fn pages_after_the_budget_ends_are_returned_in_order() {
@@ -141,7 +194,22 @@ mod tests {
     }
 }
 
-/// Embeds and stores one page. An error means nothing from this page was stored.
+/// One section's chunks, in page order. Chunk `i` of the section is `chunks[i]`.
+struct SectionChunks {
+    semantic_element_id: String,
+    content_fingerprint: String,
+    chunks: Vec<String>,
+}
+
+/// A chunk vector and the engine that produced it.
+struct EmbeddedChunk {
+    vector: Vec<f32>,
+    engine_id: String,
+    model: Option<String>,
+}
+
+/// Embeds and stores one page. A section whose chunks cannot be embedded or stored is
+/// skipped and counted; an error means the page could not be read or parsed at all.
 fn index_page(
     context: &mut PluginContext<'_>,
     project_root: &str,
@@ -153,68 +221,157 @@ fn index_page(
         .into_iter()
         .map(|section| (section.content_fingerprint, section.text))
         .collect();
-    let mut sections: Vec<(String, String, String)> = Vec::new();
+    let mut sections: Vec<SectionChunks> = Vec::new();
     for element in page_elements {
         let Some(fingerprint) = element.content_fingerprint.as_deref() else {
             continue;
         };
         match page_texts.get(fingerprint).map(|text| text.trim()) {
-            Some(text) if !text.is_empty() => sections.push((
-                element.semantic_element_id.clone(),
-                fingerprint.to_owned(),
-                text.to_owned(),
-            )),
+            Some(text) if !text.is_empty() => sections.push(SectionChunks {
+                semantic_element_id: element.semantic_element_id.clone(),
+                content_fingerprint: fingerprint.to_owned(),
+                chunks: section_chunks(text),
+            }),
             _ => {}
         }
     }
-    if sections.is_empty() {
+    // A section's chunks are contiguous in `texts`, so each section owns one range of slots.
+    let mut texts: Vec<&str> = Vec::new();
+    let mut slots: Vec<Range<usize>> = Vec::with_capacity(sections.len());
+    for section in &sections {
+        let start = texts.len();
+        texts.extend(section.chunks.iter().map(String::as_str));
+        slots.push(start..texts.len());
+    }
+    if texts.is_empty() {
         return Ok(());
     }
-    let section_texts = sections
-        .iter()
-        .map(|(_, _, text)| text.as_str())
-        .collect::<Vec<_>>();
-    let embedded = embed_texts(context, &section_texts)?;
-    let records: Vec<(String, Value)> = sections
-        .into_iter()
-        .zip(embedded.vectors)
-        .map(|((id, fingerprint, _), vector)| {
-            let record = json!({"semantic_element_id": id, "project_root": project_root,
-                "content_fingerprint": fingerprint,
-                "vector": {"engine_id": embedded.engine_id, "model": embedded.model,
-                    "dimensions": vector.len(), "vector": vector, "normalized": false,
-                    "metadata": {}}});
-            (id, record)
-        })
-        .collect();
+    let mut vectors: Vec<Option<EmbeddedChunk>> = (0..texts.len()).map(|_| None).collect();
+    let mut embed_errors: Vec<Option<String>> = vec![None; sections.len()];
+    for batch in embed_batch_ranges(&texts) {
+        if embed_into(context, &texts, batch.clone(), &mut vectors).is_ok() {
+            continue;
+        }
+        // A rejected batch is retried one section at a time, so only the rejected sections are skipped.
+        for (index, section_slots) in slots.iter().enumerate() {
+            if section_slots.start < batch.end && batch.start < section_slots.end {
+                if let Err(error) = embed_into(context, &texts, section_slots.clone(), &mut vectors)
+                {
+                    embed_errors[index] = Some(error.message);
+                }
+            }
+        }
+    }
+    let mut records: Vec<(String, Vec<Value>)> = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        let embedded = vectors[slots[index].clone()]
+            .iter()
+            .map(Option::as_ref)
+            .collect::<Option<Vec<_>>>();
+        match (&embed_errors[index], embedded) {
+            (None, Some(embedded)) => {
+                let rows = embedded
+                    .iter()
+                    .enumerate()
+                    .map(|(chunk, embedded)| {
+                        json!({"semantic_element_id": section.semantic_element_id,
+                            "project_root": project_root,
+                            "content_fingerprint": section.content_fingerprint,
+                            "chunk": chunk,
+                            "vector": {"engine_id": embedded.engine_id, "model": embedded.model,
+                                "dimensions": embedded.vector.len(), "vector": embedded.vector,
+                                "normalized": false, "metadata": {}}})
+                    })
+                    .collect();
+                records.push((section.semantic_element_id.clone(), rows));
+            }
+            (Some(error), _) => {
+                skip_section(report, path, &section.semantic_element_id, error.clone())
+            }
+            (None, None) => skip_section(
+                report,
+                path,
+                &section.semantic_element_id,
+                "a chunk has no vector".into(),
+            ),
+        }
+    }
     store_page_records(context, project_root, path, records, report);
     Ok(())
 }
 
-/// Stores a page in one call. If that call is rejected, each record is retried alone so
+/// Embeds `texts[range]` in one call and fills the matching `vectors` slots.
+fn embed_into(
+    context: &mut PluginContext<'_>,
+    texts: &[&str],
+    range: Range<usize>,
+    vectors: &mut [Option<EmbeddedChunk>],
+) -> Result<(), PluginError> {
+    let batch = embed_texts(context, &texts[range.clone()], EmbedTask::Document)?;
+    for (slot, vector) in vectors[range].iter_mut().zip(batch.vectors) {
+        *slot = Some(EmbeddedChunk {
+            vector,
+            engine_id: batch.engine_id.clone(),
+            model: batch.model.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Splits section text into chunks of at most `CHUNK_WORDS` words, each cut to `MAX_CHUNK_BYTES`.
+fn section_chunks(text: &str) -> Vec<String> {
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    words
+        .chunks(CHUNK_WORDS)
+        .flat_map(|group| cut_to_bytes(&group.join(" ")))
+        .collect()
+}
+
+/// Cuts `text` into pieces of at most `MAX_CHUNK_BYTES`, each ending on a char boundary.
+fn cut_to_bytes(text: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    while rest.len() > MAX_CHUNK_BYTES {
+        let mut end = MAX_CHUNK_BYTES;
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        pieces.push(rest[..end].to_owned());
+        rest = &rest[end..];
+    }
+    pieces.push(rest.to_owned());
+    pieces
+}
+
+fn skip_section(report: &mut TextVectorReport, path: &str, id: &str, error: String) {
+    report.skipped_sections += 1;
+    report.failures.push(SkippedText {
+        path: path.to_owned(),
+        semantic_element_id: Some(id.to_owned()),
+        error,
+    });
+}
+
+/// Stores a page in one call. If that call is rejected, each section is retried alone so
 /// only the rejected sections are skipped and the rest of the page keeps its vectors.
 fn store_page_records(
     context: &mut PluginContext<'_>,
     project_root: &str,
     path: &str,
-    records: Vec<(String, Value)>,
+    records: Vec<(String, Vec<Value>)>,
     report: &mut TextVectorReport,
 ) {
-    let batch = records.iter().map(|(_, record)| record.clone()).collect();
+    let batch = records
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().cloned())
+        .collect();
     match storage::store_element_text_vectors(context, project_root, batch) {
         Ok(stored) => report.stored += stored,
         Err(_) => {
-            for (id, record) in records {
-                match storage::store_element_text_vectors(context, project_root, vec![record]) {
+            for (id, rows) in records {
+                match storage::store_element_text_vectors(context, project_root, rows) {
                     Ok(stored) => report.stored += stored,
-                    Err(error) => {
-                        report.skipped_sections += 1;
-                        report.failures.push(SkippedText {
-                            path: path.to_owned(),
-                            semantic_element_id: Some(id),
-                            error: error.message,
-                        });
-                    }
+                    Err(error) => skip_section(report, path, &id, error.message),
                 }
             }
         }
