@@ -242,3 +242,163 @@ fn rebuild_error_names_the_storage_cause_when_name_vectors_are_rejected() {
     assert!(error.message.contains("expected native vector storage"));
     assert!(error.message.contains("injected_store_failure"));
 }
+
+const PARSER_PAGE: &str =
+    "<html><body><h2>Parsing</h2><p>parser reads each token.</p></body></html>";
+const RENDER_PAGE: &str =
+    "<html><body><h2>Drawing</h2><p>render paints each frame.</p></body></html>";
+const PARSER_SECTION: &str = "sec:wiki/Parse.html#0";
+const RENDER_SECTION: &str = "sec:wiki/Draw.html#0";
+
+/// Ingests both pages with the embedder on. Name vectors are not built yet.
+fn ingest_parser_and_render(
+    broker: &Arc<MemoryCapabilityBroker>,
+    runtime: &PluginSystem,
+    root: &str,
+) {
+    ingest_pages(
+        runtime,
+        broker,
+        root,
+        &[
+            ("wiki/Parse.html", PARSER_PAGE),
+            ("wiki/Draw.html", RENDER_PAGE),
+        ],
+    );
+    *broker.embed_available.lock().expect("embed switch") = true;
+}
+
+fn rebuild_with(runtime: &PluginSystem, root_text: &str, extra: serde_json::Value) -> WireOutcome {
+    let mut input = serde_json::json!({"project_root": root_text});
+    for (key, value) in extra.as_object().expect("extra input object") {
+        input[key] = value.clone();
+    }
+    runtime
+        .invoke(PLUGIN_ID, REBUILD_SEARCH_INDEX_EXPORT_ID, input)
+        .expect("rebuild invoke")
+}
+
+/// The whole search response; the score is 0 when the element is not in the results.
+fn search(runtime: &PluginSystem, root_text: &str, query: &str) -> serde_json::Value {
+    success(
+        runtime
+            .invoke(
+                PLUGIN_ID,
+                SEARCH_EXPORT_ID,
+                serde_json::json!({"project_root": root_text, "query": query, "limit": 100}),
+            )
+            .expect("search"),
+    )
+}
+
+fn score_of(response: &serde_json::Value, semantic_element_id: &str) -> f64 {
+    response["results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|result| result["element"]["semantic_element_id"] == semantic_element_id)
+        .map_or(0.0, |result| result["score"].as_f64().expect("score"))
+}
+
+#[test]
+fn names_mode_sets_ready_and_stores_no_text_vectors() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    let root_text = write_project(
+        project.path(),
+        &[
+            ("wiki/Parse.html", PARSER_PAGE),
+            ("wiki/Draw.html", RENDER_PAGE),
+        ],
+    );
+    ingest_parser_and_render(&broker, &runtime, &root_text);
+
+    let rebuilt = success(rebuild_with(
+        &runtime,
+        &root_text,
+        serde_json::json!({"mode": "names"}),
+    ));
+
+    assert_eq!(rebuilt["index_state"], "ready");
+    assert!(rebuilt["text_vectors"].is_null());
+    assert_eq!(rebuilt["pending_paths"], serde_json::json!([]));
+    // The body word matches only a text vector; names-only leaves that section unmatched.
+    assert_eq!(
+        score_of(&search(&runtime, &root_text, "parser"), PARSER_SECTION),
+        0.0
+    );
+}
+
+#[test]
+fn text_mode_stores_only_the_given_paths_and_keeps_the_index_state() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    let root_text = write_project(
+        project.path(),
+        &[
+            ("wiki/Parse.html", PARSER_PAGE),
+            ("wiki/Draw.html", RENDER_PAGE),
+        ],
+    );
+    ingest_parser_and_render(&broker, &runtime, &root_text);
+    success(rebuild_with(
+        &runtime,
+        &root_text,
+        serde_json::json!({"mode": "names"}),
+    ));
+
+    let first = success(rebuild_with(
+        &runtime,
+        &root_text,
+        serde_json::json!({"mode": "text", "paths": ["wiki/Parse.html"]}),
+    ));
+
+    assert_eq!(first["text_vectors"]["stored"], 1);
+    assert_eq!(first["pending_paths"], serde_json::json!([]));
+    let after_first = search(&runtime, &root_text, "parser");
+    assert!(score_of(&after_first, PARSER_SECTION) > 0.0);
+    assert_eq!(after_first["index_state"], "ready");
+    // The page that was not requested still has no text vector.
+    assert_eq!(
+        score_of(&search(&runtime, &root_text, "render"), RENDER_SECTION),
+        0.0
+    );
+
+    // A second call with the remaining path completes the work and still keeps the state.
+    let second = success(rebuild_with(
+        &runtime,
+        &root_text,
+        serde_json::json!({"mode": "text", "paths": ["wiki/Draw.html"]}),
+    ));
+    assert_eq!(second["text_vectors"]["stored"], 1);
+    let after_second = search(&runtime, &root_text, "render");
+    assert!(score_of(&after_second, RENDER_SECTION) > 0.0);
+    assert_eq!(after_second["index_state"], "ready");
+}
+
+#[test]
+fn paths_are_rejected_outside_text_mode() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    let root_text = write_project(project.path(), &[("wiki/Parse.html", PARSER_PAGE)]);
+    ingest_pages(
+        &runtime,
+        &broker,
+        &root_text,
+        &[("wiki/Parse.html", PARSER_PAGE)],
+    );
+
+    let error = failure(rebuild_with(
+        &runtime,
+        &root_text,
+        serde_json::json!({"mode": "names", "paths": ["wiki/Parse.html"]}),
+    ));
+
+    assert_eq!(error.code, "invalid_semantic_input");
+}

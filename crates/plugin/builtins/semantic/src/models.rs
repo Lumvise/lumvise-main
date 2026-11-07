@@ -153,6 +153,23 @@ pub(crate) struct ElementAtLocationRequest {
 #[derive(Debug, Deserialize)]
 pub(crate) struct RebuildSearchIndexRequest {
     pub project_root: String,
+    #[serde(default)]
+    pub mode: RebuildMode,
+    /// Pages for `text` mode only; `None` means every page with an `html_section`.
+    pub paths: Option<Vec<String>>,
+}
+
+/// Which part of the search vector rebuild one call performs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RebuildMode {
+    /// Name vectors, then text vectors within the time budget; sets the index state.
+    #[default]
+    Full,
+    /// Name vectors only; sets the index state.
+    Names,
+    /// Text vectors only, for `paths` or every page; never changes the index state.
+    Text,
 }
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct IndexBatchRequest {

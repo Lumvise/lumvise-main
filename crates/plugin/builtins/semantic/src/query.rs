@@ -2,11 +2,12 @@ mod dependency;
 pub(crate) use dependency::dependency_tree;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::{
     models::{
-        DEFAULT_TREE_DEPTH, ElementAtLocationRequest, RebuildSearchIndexRequest, SemanticElement,
-        SemanticRelationship, SemanticTreeRequest,
+        DEFAULT_TREE_DEPTH, ElementAtLocationRequest, RebuildMode, RebuildSearchIndexRequest,
+        SemanticElement, SemanticRelationship, SemanticTreeRequest,
     },
     parse, require_non_empty, serialize_response,
     storage::{self, SEARCH_INDEX_STATE},
@@ -193,29 +194,93 @@ const MAX_NEURAL_EMBED_TEXTS: usize = 128;
 /// Vector records per storage call, so one rebuild is never a single unbounded write.
 const VECTOR_STORE_BATCH: usize = 128;
 
+/// Stops starting text-vector pages after this long; a page in progress is still finished.
+/// Keeps one call inside the 60 s invocation deadline.
+const TEXT_PASS_BUDGET: Duration = Duration::from_secs(40);
+
 pub(crate) fn rebuild_search_index(
     input: Value,
     context: &mut PluginContext<'_>,
 ) -> Result<Value, PluginError> {
+    // Measured from the start of the handler, so the budget covers the snapshot read too.
+    let started = Instant::now();
     let request: RebuildSearchIndexRequest = parse(input, "semantic search index rebuild input")?;
     require_non_empty(&request.project_root, "project_root")?;
+    if request.paths.is_some() && request.mode != RebuildMode::Text {
+        return Err(PluginError::new(
+            "invalid_semantic_input",
+            "`paths` is only valid with mode `text`",
+            false,
+        ));
+    }
+    // Text-only calls never touch the index state; the name vectors and state belong to full/names.
     let state_key = storage::project_key(&request.project_root, "search-index", &["state"]);
-    write_index_state(
-        context,
-        &state_key,
-        SearchIndexState {
-            project_root: request.project_root.clone(),
-            state: "rebuilding".into(),
-            indexed_nodes: 0,
-            error: None,
-        },
-    )?;
+    let rebuilds_names = request.mode != RebuildMode::Text;
+    if rebuilds_names {
+        write_index_state(
+            context,
+            &state_key,
+            SearchIndexState {
+                project_root: request.project_root.clone(),
+                state: "rebuilding".into(),
+                indexed_nodes: 0,
+                error: None,
+            },
+        )?;
+    }
     let snapshot = storage::project_snapshot::<SemanticElement, Value, Value>(
         context,
         &json!({"project_root": request.project_root}),
         None,
     )?;
     let elements = snapshot.elements;
+    if rebuilds_names {
+        store_name_vectors(context, &state_key, &request.project_root, &elements)?;
+    }
+    // Text vectors are per page and per section: their failures are reported, not fatal.
+    let text = (request.mode != RebuildMode::Names).then(|| {
+        text_vectors::index_html_sections(
+            context,
+            &request.project_root,
+            &elements,
+            request.paths.as_deref(),
+            || started.elapsed() < TEXT_PASS_BUDGET,
+        )
+    });
+    let mut response = json!({"project_root": request.project_root});
+    if let Some(text) = text {
+        response["text_vectors"] = json!(text.report);
+        response["pending_paths"] = json!(text.pending_paths);
+    } else {
+        response["text_vectors"] = Value::Null;
+        response["pending_paths"] = json!([]);
+    }
+    if rebuilds_names {
+        write_index_state(
+            context,
+            &state_key,
+            SearchIndexState {
+                project_root: request.project_root.clone(),
+                state: "ready".into(),
+                indexed_nodes: elements.len(),
+                error: None,
+            },
+        )?;
+        response["index_state"] = json!("ready");
+        response["indexed_nodes"] = json!(elements.len());
+        response["commit_version"] = json!(snapshot.commit_version);
+        response["published_at"] = json!(snapshot.published_at);
+    }
+    Ok(response)
+}
+
+/// Embeds every element name and stores the vectors in batches. A failure marks the index failed.
+fn store_name_vectors(
+    context: &mut PluginContext<'_>,
+    state_key: &str,
+    project_root: &str,
+    elements: &[SemanticElement],
+) -> Result<(), PluginError> {
     let names = elements
         .iter()
         .map(|element| element.name.as_str())
@@ -226,8 +291,8 @@ pub(crate) fn rebuild_search_index(
         embed_texts(context, &names).map_err(|cause| {
             rebuild_failed(
                 context,
-                &state_key,
-                &request.project_root,
+                state_key,
+                project_root,
                 "neural.embed vectors",
                 cause,
             )
@@ -235,7 +300,7 @@ pub(crate) fn rebuild_search_index(
     };
     let mut vectors = elements.iter().zip(embedded.vectors).map(|(element, vector)| json!({
         "semantic_element_id": element.semantic_element_id.clone(),
-        "project_root": request.project_root.clone(),
+        "project_root": project_root,
         "source_text": element.name.trim(),
         "vector": {"engine_id": embedded.engine_id, "model": embedded.model,
             "dimensions": vector.len(), "vector": vector, "normalized": false, "metadata": {}}
@@ -246,37 +311,18 @@ pub(crate) fn rebuild_search_index(
             .take(VECTOR_STORE_BATCH)
             .collect::<Vec<_>>();
         if batch.is_empty() {
-            break;
+            return Ok(());
         }
-        if let Err(cause) =
-            storage::store_element_name_vectors(context, &request.project_root, batch)
-        {
+        if let Err(cause) = storage::store_element_name_vectors(context, project_root, batch) {
             return Err(rebuild_failed(
                 context,
-                &state_key,
-                &request.project_root,
+                state_key,
+                project_root,
                 "native vector storage",
                 cause,
             ));
         }
     }
-    // Text vectors are per page and per section: their failures are reported, not fatal.
-    let text = text_vectors::index_html_sections(context, &request.project_root, &elements);
-    write_index_state(
-        context,
-        &state_key,
-        SearchIndexState {
-            project_root: request.project_root.clone(),
-            state: "ready".into(),
-            indexed_nodes: elements.len(),
-            error: None,
-        },
-    )?;
-    Ok(
-        json!({"project_root": request.project_root, "index_state": "ready",
-        "indexed_nodes": elements.len(), "commit_version": snapshot.commit_version,
-        "published_at": snapshot.published_at, "text_vectors": text}),
-    )
 }
 
 /// Stores the failed state with the cause, and returns the rebuild error that carries it.

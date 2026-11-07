@@ -396,25 +396,22 @@ fn exports() -> Vec<ExportDescriptor> {
                 &["project_root"],
                 json!({
                     "project_root": string(),
+                    "mode": {"type": "string", "enum": ["full", "names", "text"]},
+                    "paths": array(string()),
                 }),
             ),
             object(
-                &[
-                    "project_root",
-                    "index_state",
-                    "indexed_nodes",
-                    "commit_version",
-                    "published_at",
-                    "text_vectors",
-                ],
+                &["project_root", "text_vectors", "pending_paths"],
                 json!({
                     "project_root": string(),
                     "index_state": {"type": "string", "enum": ["rebuilding", "ready"]},
                     "indexed_nodes": integer(), "commit_version": integer(),
                     "published_at": string(),
-                    "text_vectors": object(
-                        &["stored", "skipped_sections", "skipped_pages", "failures"],
-                        json!({
+                    "text_vectors": {
+                        "type": ["object", "null"],
+                        "additionalProperties": false,
+                        "required": ["stored", "skipped_sections", "skipped_pages", "failures"],
+                        "properties": {
                             "stored": integer(), "skipped_sections": integer(),
                             "skipped_pages": integer(),
                             "failures": array(object(
@@ -425,8 +422,9 @@ fn exports() -> Vec<ExportDescriptor> {
                                     "error": string()
                                 }),
                             )),
-                        }),
-                    ),
+                        },
+                    },
+                    "pending_paths": array(string()),
                 }),
             ),
         ),

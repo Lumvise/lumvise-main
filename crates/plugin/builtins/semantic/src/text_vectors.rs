@@ -41,20 +41,32 @@ pub(crate) struct SkippedText {
     pub error: String,
 }
 
+/// The text-vector pass result: what was stored, and the pages it did not start in time.
+#[derive(Debug, Default)]
+pub(crate) struct TextPass {
+    pub report: TextVectorReport,
+    /// Pages not started because the time budget ran out; a later call can pass them as `paths`.
+    pub pending_paths: Vec<String>,
+}
+
 /// Stores text vectors for the active `html_section` elements in `elements`.
 ///
-/// Each page is read once. A section gets a vector only when its indexed fingerprint
-/// matches a section the indexer finds in the current page bytes; sections without
-/// words get none.
+/// Only pages in `paths` are considered when given. Each page is read once. A page is
+/// started only while `may_start_page` returns true; the rest are returned as pending.
+/// A section gets a vector only when its indexed fingerprint matches a section the
+/// indexer finds in the current page bytes; sections without words get none.
 pub(crate) fn index_html_sections(
     context: &mut PluginContext<'_>,
     project_root: &str,
     elements: &[SemanticElement],
-) -> TextVectorReport {
+    paths: Option<&[String]>,
+    may_start_page: impl FnMut() -> bool,
+) -> TextPass {
     let mut by_path: BTreeMap<&str, Vec<&SemanticElement>> = BTreeMap::new();
     for element in elements
         .iter()
         .filter(|element| element.element_kind == "html_section" && element.lifecycle == "active")
+        .filter(|element| paths.is_none_or(|paths| paths.contains(&element.path)))
     {
         by_path
             .entry(element.path.as_str())
@@ -62,7 +74,8 @@ pub(crate) fn index_html_sections(
             .push(element);
     }
     let mut report = TextVectorReport::default();
-    for (path, page_elements) in by_path {
+    let pages = by_path.into_iter().collect::<Vec<_>>();
+    let pending = run_within_budget(pages, may_start_page, |(path, page_elements)| {
         if let Err(error) = index_page(context, project_root, path, &page_elements, &mut report) {
             report.skipped_pages += 1;
             report.skipped_sections += page_elements.len();
@@ -72,8 +85,60 @@ pub(crate) fn index_html_sections(
                 error: error.message,
             });
         }
+    });
+    TextPass {
+        report,
+        pending_paths: pending
+            .into_iter()
+            .map(|(path, _)| path.to_owned())
+            .collect(),
     }
-    report
+}
+
+/// Runs `run` on each item while `may_start` allows, and returns the items not started.
+/// Once `may_start` says no, it is not asked again: every later item stays pending.
+fn run_within_budget<T>(
+    items: Vec<T>,
+    mut may_start: impl FnMut() -> bool,
+    mut run: impl FnMut(T),
+) -> Vec<T> {
+    let mut items = items.into_iter();
+    while let Some(item) = items.next() {
+        if !may_start() {
+            return std::iter::once(item).chain(items).collect();
+        }
+        run(item);
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_within_budget;
+
+    #[test]
+    fn pages_after_the_budget_ends_are_returned_in_order() {
+        let mut allowed_starts = 2;
+        let mut started = Vec::new();
+        let pending = run_within_budget(
+            vec!["a", "b", "c", "d"],
+            || {
+                allowed_starts -= 1;
+                allowed_starts >= 0
+            },
+            |page| started.push(page),
+        );
+        assert_eq!(started, ["a", "b"]);
+        assert_eq!(pending, ["c", "d"]);
+    }
+
+    #[test]
+    fn no_page_is_pending_when_the_budget_never_ends() {
+        let mut started = Vec::new();
+        let pending = run_within_budget(vec![1, 2, 3], || true, |page| started.push(page));
+        assert_eq!(started, [1, 2, 3]);
+        assert!(pending.is_empty());
+    }
 }
 
 /// Embeds and stores one page. An error means nothing from this page was stored.

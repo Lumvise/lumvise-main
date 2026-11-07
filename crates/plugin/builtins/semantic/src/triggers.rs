@@ -54,7 +54,9 @@ pub(crate) fn storage_change(
         context,
         &artifact_ids.iter().cloned().collect::<Vec<_>>(),
     )?;
-    let text = text_vectors::index_html_sections(context, &request.project_root, &elements);
+    let text =
+        text_vectors::index_html_sections(context, &request.project_root, &elements, None, || true)
+            .report;
     let mut element_records = Vec::new();
     for element in elements
         .into_iter()

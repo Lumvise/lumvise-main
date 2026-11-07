@@ -36,7 +36,7 @@ const EXPORT_GUIDANCE: &[(&str, &str)] = &[
     ),
     (
         "rebuild_search_index",
-        "Rebuild search vectors for existing indexed elements in explicit project_root. Inspect the returned index_state; this does not parse changed source or rebuild static relationships. Refresh stale source through the compiled project indexer first.",
+        "Rebuild search vectors for existing indexed elements in explicit project_root. mode full (default) rebuilds name vectors, then text vectors within about 40 s, and sets index_state. mode names rebuilds name vectors only and sets index_state. mode text stores section text vectors for paths (or every page) and never changes index_state; continue with the returned pending_paths until it is empty. Inspect the returned index_state; this does not parse changed source or rebuild static relationships. Refresh stale source through the compiled project indexer first.",
     ),
     (
         "ingest_index_batch",
