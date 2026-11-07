@@ -9,6 +9,7 @@ mod qualifiers;
 
 use crate::source::invalid;
 use crate::{IndexedDefinition, ParseStatus, ParsedFile, ProjectFileParser, ScanError};
+pub use html::HtmlSectionText;
 use languages::SyntaxLanguage;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -287,6 +288,17 @@ struct SyntaxEngine {
     parser: Parser,
     query: Query,
     cursor: QueryCursor,
+}
+
+/// Returns the visible text and content fingerprint of every `html_section` in HTML source.
+/// Nothing is persisted; the caller embeds the text and drops it.
+pub fn html_section_texts(source: &str) -> Result<Vec<HtmlSectionText>, ScanError> {
+    let mut engine = SyntaxEngine::new(SyntaxLanguage::Html)?;
+    let tree = engine
+        .parser
+        .parse(source, None)
+        .ok_or_else(|| invalid("html", "expected completed syntax tree"))?;
+    Ok(html::section_texts(&tree, source))
 }
 
 impl SyntaxEngine {

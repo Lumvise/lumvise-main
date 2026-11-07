@@ -261,6 +261,7 @@ fn semantic_mutation(operation: &SemanticOperation) -> bool {
             | ArtifactsByIds { .. }
             | SearchElementCandidates { .. }
             | SearchElementNameVectors { .. }
+            | SearchElementTextVectors { .. }
             | SearchArtifactTextVectors { .. }
             | RelationshipsFrom { .. }
             | RelationshipsTouchingElements { .. }

@@ -1,6 +1,6 @@
 use crate::{
     ArtifactTextVector, Result, SemanticArtifact, SemanticElement, SemanticRelationship,
-    StoredArtifactTextVector, StoredSemanticElementNameVector,
+    StoredArtifactTextVector, StoredSemanticElementNameVector, StoredSemanticElementTextVector,
 };
 use grafeo::Value as GrafeoValue;
 use serde_json::Value;
@@ -207,13 +207,40 @@ pub(crate) fn element_name_vector_props(
     )
 }
 
+/// Text vectors carry no source text: the fingerprint alone binds them to the element's content.
+pub(crate) fn element_text_vector_props(
+    stored: &StoredSemanticElementTextVector,
+) -> Result<Vec<(&'static str, GrafeoValue)>> {
+    let mut properties = vec![
+        (
+            SEMANTIC_ELEMENT_ID_PROPERTY,
+            GrafeoValue::from(stored.semantic_element_id.clone()),
+        ),
+        (
+            PROJECT_ROOT_PROPERTY,
+            GrafeoValue::from(stored.project_root.clone()),
+        ),
+        (
+            "content_fingerprint",
+            GrafeoValue::from(stored.content_fingerprint.clone()),
+        ),
+    ];
+    properties.extend(vector_payload_props(&stored.vector)?);
+    Ok(properties)
+}
+
 fn vector_props(
     mut properties: Vec<(&'static str, GrafeoValue)>,
     source_text: &str,
     vector: &ArtifactTextVector,
 ) -> Result<Vec<(&'static str, GrafeoValue)>> {
-    properties.extend([
-        ("source_text", GrafeoValue::from(source_text.to_string())),
+    properties.push(("source_text", GrafeoValue::from(source_text.to_string())));
+    properties.extend(vector_payload_props(vector)?);
+    Ok(properties)
+}
+
+fn vector_payload_props(vector: &ArtifactTextVector) -> Result<Vec<(&'static str, GrafeoValue)>> {
+    Ok(vec![
         ("engine_id", GrafeoValue::from(vector.engine_id.clone())),
         (
             "model",
@@ -226,8 +253,7 @@ fn vector_props(
             "metadata_json",
             GrafeoValue::from(serde_json::to_string(&vector.metadata)?),
         ),
-    ]);
-    Ok(properties)
+    ])
 }
 
 pub(crate) fn storage_alias_properties(metadata: &Value) -> Vec<(&'static str, GrafeoValue)> {

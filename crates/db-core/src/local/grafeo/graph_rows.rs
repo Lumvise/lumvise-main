@@ -6,8 +6,8 @@ use crate::local::grafeo::graph_reads::{CommittedGraph, GrafeoResult};
 use crate::local::grafeo::graph_row_projection::bool_property;
 pub(crate) use crate::local::grafeo::graph_row_projection::{
     artifact_vector_from_node, artifact_vector_props, element_name_vector_from_node,
-    element_name_vector_props, semantic_artifact_from_node, semantic_element_from_node,
-    storage_alias_properties, string_property,
+    element_name_vector_props, element_text_vector_props, semantic_artifact_from_node,
+    semantic_element_from_node, storage_alias_properties, string_property,
 };
 use crate::local::grafeo::graph_row_projection::{
     edge_string_property, semantic_relationship_from_edge,
@@ -15,7 +15,7 @@ use crate::local::grafeo::graph_row_projection::{
 use crate::local::grafeo::graph_store::GraphTransaction;
 use crate::{
     ArtifactTextVector, DbError, Result, SemanticArtifact, SemanticElement, SemanticMatchEvidence,
-    SemanticRelationship,
+    SemanticRelationship, StoredSemanticElementTextVector,
 };
 use grafeo::{EdgeId, GrafeoDB, NodeId, Snapshot, Value as GrafeoValue};
 use grafeo_core::graph::Direction;
@@ -319,6 +319,7 @@ pub(crate) struct ArtifactDeletionPlan {
 pub(crate) struct ElementDeactivationPlan {
     element_node_ids: Vec<NodeId>,
     element_vector_node_ids: Vec<NodeId>,
+    element_text_vector_node_ids: Vec<NodeId>,
     pub(crate) entity_kind: String,
     relationship_edge_ids: Vec<EdgeId>,
     artifact_node_ids: Vec<NodeId>,

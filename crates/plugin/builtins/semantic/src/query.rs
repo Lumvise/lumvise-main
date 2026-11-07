@@ -10,6 +10,7 @@ use crate::{
     },
     parse, require_non_empty, serialize_response,
     storage::{self, SEARCH_INDEX_STATE},
+    text_vectors,
 };
 use lumvise_contracts::{SearchContextRequestV2, SearchContextResponseV2, SemanticSearchResultV2};
 use lumvise_plugin_sdk::{PluginContext, PluginError};
@@ -145,23 +146,11 @@ pub(crate) fn search(input: Value, context: &mut PluginContext<'_>) -> Result<Va
         &request.query,
         candidate_limit,
     )?;
-    elements.retain(|element| {
-        request
-            .project_root
-            .as_ref()
-            .is_none_or(|root| &element.project_root == root)
-    });
-    elements.retain(|element| request.include_inactive.unwrap_or(false) || is_active(element));
-    elements.retain(|element| {
-        request
-            .element_kind
-            .as_ref()
-            .is_none_or(|kind| &element.element_kind == kind)
-    });
+    elements.retain(|element| keeps(&request, element));
     let vector_search = declared_index_state(context, request.project_root.as_deref())
         .filter(|state| state == "rebuilding" || state == "failed")
         .map_or_else(
-            || vector_results(context, &request.query, &elements),
+            || vector_results(context, &request, &elements, candidate_limit),
             |state| VectorSearch {
                 index_state: state,
                 results: None,
@@ -275,6 +264,22 @@ pub(crate) fn rebuild_search_index(
             true,
         ));
     }
+    if text_vectors::index_html_sections(context, &request.project_root, &elements).is_err() {
+        write_failed_index_state(
+            context,
+            &state_key,
+            &request.project_root,
+            "native text vector storage failed",
+        )?;
+        return Err(PluginError::new(
+            "semantic_index_rebuild_failed",
+            format!(
+                "failed to rebuild Semantic search index for `{}`; expected native text vector storage",
+                request.project_root
+            ),
+            true,
+        ));
+    }
     write_index_state(
         context,
         &state_key,
@@ -328,68 +333,118 @@ fn search_limit(limit: Option<usize>) -> Result<usize, PluginError> {
     Ok(limit)
 }
 
+/// Whether a stored element belongs in this search's result set.
+fn keeps(request: &SearchContextRequestV2, element: &SemanticElement) -> bool {
+    request
+        .project_root
+        .as_ref()
+        .is_none_or(|root| &element.project_root == root)
+        && (request.include_inactive.unwrap_or(false) || is_active(element))
+        && request
+            .element_kind
+            .as_ref()
+            .is_none_or(|kind| &element.element_kind == kind)
+}
+
 struct VectorSearch {
     index_state: String,
     results: Option<Vec<SemanticSearchResultV2>>,
 }
 
+/// Scores elements by their better vector hit: the name vector or the section text vector.
+/// Text hits may name elements outside the lexical candidates, so a body-only query still
+/// finds its section; those elements are resolved by id and kept only when `keeps` accepts them.
 fn vector_results(
     context: &mut PluginContext<'_>,
-    query: &str,
-    elements: &[SemanticElement],
+    request: &SearchContextRequestV2,
+    candidates: &[SemanticElement],
+    text_limit: usize,
 ) -> VectorSearch {
-    if elements.is_empty() {
+    let candidate_roots = candidates
+        .iter()
+        .map(|element| element.project_root.as_str())
+        .collect::<BTreeSet<_>>();
+    let text_roots = candidate_roots
+        .iter()
+        .copied()
+        .chain(request.project_root.as_deref())
+        .collect::<BTreeSet<_>>();
+    if text_roots.is_empty() {
         return VectorSearch {
             index_state: "ready".into(),
             results: Some(Vec::new()),
         };
     }
-    let Some(embedded) = embed_texts(context, &[query]) else {
+    let Some(embedded) = embed_texts(context, &[request.query.as_str()]) else {
         return failed_vector_search();
     };
-    let Some(query_vector) = embedded.vectors.into_iter().next() else {
+    let Some(query_vector) = embedded.vectors.first().cloned() else {
         return failed_vector_search();
     };
-    let elements_by_id = elements
+    let elements_by_id = candidates
         .iter()
         .map(|element| (element.semantic_element_id.as_str(), element))
         .collect::<HashMap<_, _>>();
-    let roots = elements
-        .iter()
-        .map(|element| element.project_root.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut results = Vec::new();
-    for project_root in roots {
-        let output = match context.host_call(
-            "storage.semantic",
-            json!({
-                "operation": "search_element_name_vectors",
-                "project_root": project_root,
-                "query": query_vector,
-                "k": elements.len(),
-                "engine_id": embedded.engine_id,
-                "model": embedded.model,
-            }),
-        ) {
-            Ok(output) => output,
-            Err(_) => return failed_vector_search(),
-        };
-        let Some(records) = output["results"].as_array() else {
+    let mut best: HashMap<String, (f32, SemanticElement)> = HashMap::new();
+    for root in &candidate_roots {
+        let Some(hits) = vector_hits(
+            context,
+            "search_element_name_vectors",
+            root,
+            &query_vector,
+            candidates.len(),
+            &embedded,
+        ) else {
             return failed_vector_search();
         };
-        for record in records {
-            let (Some(id), Some(score)) = (record["id"].as_str(), record["score"].as_f64()) else {
-                return failed_vector_search();
-            };
-            let Some(element) = elements_by_id.get(id) else {
-                continue;
-            };
-            results.push(SemanticSearchResultV2 {
-                element: element.view(element.parent_element_id.clone()),
-                score: score as f32,
-            });
+        for (id, score) in hits {
+            if let Some(element) = elements_by_id.get(id.as_str()) {
+                keep_best(&mut best, score, element);
+            }
         }
     }
+    let mut unlisted: BTreeMap<&str, Vec<(String, f32)>> = BTreeMap::new();
+    for root in &text_roots {
+        let Some(hits) = vector_hits(
+            context,
+            "search_element_text_vectors",
+            root,
+            &query_vector,
+            text_limit,
+            &embedded,
+        ) else {
+            return failed_vector_search();
+        };
+        for (id, score) in hits {
+            match elements_by_id.get(id.as_str()) {
+                Some(element) => keep_best(&mut best, score, element),
+                None => unlisted.entry(root).or_default().push((id, score)),
+            }
+        }
+    }
+    for (root, hits) in unlisted {
+        let ids = hits.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        let Ok(resolved) = storage::graph_elements_by_ids::<SemanticElement>(context, root, &ids)
+        else {
+            return failed_vector_search();
+        };
+        let scores = hits
+            .iter()
+            .map(|(id, score)| (id.as_str(), *score))
+            .collect::<HashMap<_, _>>();
+        for element in resolved.iter().filter(|element| keeps(request, element)) {
+            if let Some(&score) = scores.get(element.semantic_element_id.as_str()) {
+                keep_best(&mut best, score, element);
+            }
+        }
+    }
+    let results = best
+        .into_values()
+        .map(|(score, element)| SemanticSearchResultV2 {
+            element: element.view(element.parent_element_id.clone()),
+            score,
+        })
+        .collect::<Vec<_>>();
     if results.is_empty() {
         return VectorSearch {
             index_state: "missing".into(),
@@ -400,6 +455,56 @@ fn vector_results(
         index_state: "ready".into(),
         results: Some(results),
     }
+}
+
+fn keep_best(
+    best: &mut HashMap<String, (f32, SemanticElement)>,
+    score: f32,
+    element: &SemanticElement,
+) {
+    match best.get_mut(&element.semantic_element_id) {
+        Some(entry) if score > entry.0 => *entry = (score, element.clone()),
+        Some(_) => {}
+        None => {
+            best.insert(
+                element.semantic_element_id.clone(),
+                (score, element.clone()),
+            );
+        }
+    }
+}
+
+fn vector_hits(
+    context: &mut PluginContext<'_>,
+    operation: &str,
+    project_root: &str,
+    query: &[f32],
+    k: usize,
+    embedded: &EmbedBatch,
+) -> Option<Vec<(String, f32)>> {
+    let output = context
+        .host_call(
+            "storage.semantic",
+            json!({
+                "operation": operation,
+                "project_root": project_root,
+                "query": query,
+                "k": k,
+                "engine_id": embedded.engine_id,
+                "model": embedded.model,
+            }),
+        )
+        .ok()?;
+    output["results"]
+        .as_array()?
+        .iter()
+        .map(|record| {
+            Some((
+                record["id"].as_str()?.to_owned(),
+                record["score"].as_f64()? as f32,
+            ))
+        })
+        .collect()
 }
 
 fn failed_vector_search() -> VectorSearch {

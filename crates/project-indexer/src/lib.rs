@@ -26,7 +26,10 @@ pub use documents::{
 pub use filesystem::{FilesystemProjectSource, user_ignore_file};
 pub use fingerprints::SourceFingerprint;
 pub use parallel_parser::ParallelTreeSitterProjectParser;
-pub use parser::{BlockSettings, SyntaxParserMetrics, TreeSitterProjectParser};
+pub use parser::{
+    BlockSettings, HtmlSectionText, SyntaxParserMetrics, TreeSitterProjectParser,
+    html_section_texts,
+};
 pub use projection::{ProjectionMetrics, SemanticIndexProjection};
 pub use references::{
     DefinitionSite, ReferenceFileUpdate, ReferenceTarget, ResolvedLink, ResolvedReference,

@@ -1,6 +1,6 @@
 pub use lumvise_contracts::{
     ArtifactBlob, ArtifactDependency, ArtifactDependencyTarget, ArtifactTextVector,
-    StoredArtifactTextVector, StoredSemanticElementNameVector,
+    StoredArtifactTextVector, StoredSemanticElementNameVector, StoredSemanticElementTextVector,
 };
 use lumvise_semantic_revisions::{SemanticArtifact, SemanticElement, SemanticRelationship};
 use serde::{Deserialize, Serialize};

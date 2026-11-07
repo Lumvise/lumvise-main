@@ -227,6 +227,57 @@ fn vector_ranking_cannot_disclose_revoked_document_ids_or_scores() {
 }
 
 #[test]
+fn text_vector_operations_follow_the_name_vector_authorization() {
+    let fixture = AgentAuthorityFixture::new();
+    let ids = fixture.seed_documents();
+    let ranked = RankedDocuments {
+        store: fixture.store.clone(),
+        ids,
+    };
+    let control = InvocationControl::sixty_seconds();
+    let access = KnowledgeSemanticAccess {
+        semantic: &ranked,
+        authority: &fixture.authority,
+        context: &fixture.context,
+        control: &control,
+    };
+    for root in [ROOT, "agent-space://other"] {
+        let name_search = access
+            .execute(SemanticOperation::SearchElementNameVectors {
+                project_root: root.into(),
+                query: vec![],
+                k: 10,
+                engine_id: "fixture".into(),
+                model: None,
+            })
+            .is_ok();
+        let text_search = access
+            .execute(SemanticOperation::SearchElementTextVectors {
+                project_root: root.into(),
+                query: vec![1.0, 0.0],
+                k: 10,
+                engine_id: "fixture".into(),
+                model: None,
+            })
+            .is_ok();
+        assert_eq!(text_search, name_search, "search in {root}");
+        let name_store = access
+            .execute(SemanticOperation::StoreElementNameVectors {
+                project_root: root.into(),
+                vectors: vec![],
+            })
+            .is_ok();
+        let text_store = access
+            .execute(SemanticOperation::StoreElementTextVectors {
+                project_root: root.into(),
+                vectors: vec![],
+            })
+            .is_ok();
+        assert_eq!(text_store, name_store, "store in {root}");
+    }
+}
+
+#[test]
 fn private_annotations_cannot_omit_newly_supplied_source_context() {
     let mut fixture = AgentAuthorityFixture::new();
     fixture.bind("scout", None).unwrap();

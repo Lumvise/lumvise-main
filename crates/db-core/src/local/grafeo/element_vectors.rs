@@ -1,7 +1,9 @@
 #[cfg(test)]
 use crate::ArtifactTextVectorizer;
 use crate::local::grafeo::graph_rows::{
-    apply_element_name_vector_replace, prepare_element_name_vector_replace,
+    apply_element_name_vector_replace, apply_element_text_vector_replace,
+    prepare_element_name_vector_replace, prepare_element_text_vector_replace,
+    semantic_element_by_id_selective,
 };
 #[cfg(test)]
 use crate::local::grafeo::graph_rows::{
@@ -12,7 +14,9 @@ use crate::local::grafeo::semantic_storage::SemanticStorage;
 #[cfg(test)]
 use crate::local::grafeo::semantic_storage::validate_element;
 use crate::local::sql::validation::require_non_empty;
-use crate::{Result, SemanticElement, StoredSemanticElementNameVector};
+use crate::{
+    Result, SemanticElement, StoredSemanticElementNameVector, StoredSemanticElementTextVector,
+};
 
 impl<'db> SemanticStorage<'db> {
     /// Upserts a semantic element and stores a generated embedding for its name.
@@ -138,6 +142,68 @@ impl<'db> SemanticStorage<'db> {
         )
     }
 
+    /// Stores text vectors for `html_section` elements.
+    ///
+    /// Each record must name an active `html_section` in `project_root` whose
+    /// `content_fingerprint` equals the record's. The text is never stored; the
+    /// caller embeds it from the page file and discards it.
+    pub fn store_element_text_vectors(
+        &self,
+        project_root: &str,
+        vectors: &[StoredSemanticElementTextVector],
+    ) -> Result<()> {
+        require_non_empty(project_root, "non-empty project root")?;
+        for stored in vectors {
+            if stored.project_root != project_root {
+                return Err(crate::DbError::invalid_value(
+                    &stored.project_root,
+                    "vector project root matching request project root",
+                ));
+            }
+            let element = self
+                .graph
+                .read(|graph| semantic_element_by_id_selective(graph, &stored.semantic_element_id))?
+                .ok_or_else(|| {
+                    crate::DbError::invalid_value(
+                        &stored.semantic_element_id,
+                        "existing semantic element for text vector",
+                    )
+                })?;
+            if element.project_root != project_root
+                || element.element_kind != HTML_SECTION_KIND
+                || element.content_fingerprint.as_deref()
+                    != Some(stored.content_fingerprint.as_str())
+            {
+                return Err(crate::DbError::invalid_value(
+                    &stored.semantic_element_id,
+                    "current html section fingerprint matching text vector",
+                ));
+            }
+            crate::validate_vector_payload(&stored.semantic_element_id, &stored.vector).map_err(
+                |_| {
+                    crate::DbError::invalid_value(
+                        &stored.semantic_element_id,
+                        "finite vector matching declared dimensions",
+                    )
+                },
+            )?;
+        }
+        self.commit_preplanned_graph_write(
+            |database| {
+                vectors
+                    .iter()
+                    .map(|stored| prepare_element_text_vector_replace(database, stored))
+                    .collect::<Result<Vec<_>>>()
+            },
+            |graph, _commit_version, _collector, plans| {
+                for plan in plans {
+                    apply_element_text_vector_replace(graph, plan)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
     /// Lazily creates or refreshes the stored name vector for one element.
     ///
     /// # Example
@@ -206,6 +272,8 @@ impl<'db> SemanticStorage<'db> {
         Ok(vector.filter(|vector| vector.source_text == source_text))
     }
 }
+
+const HTML_SECTION_KIND: &str = "html_section";
 
 pub(crate) fn element_name_text(element: &SemanticElement) -> Result<String> {
     let text = element.name.trim();

@@ -27,6 +27,7 @@ fn top_k(
 
 const ARTIFACT_VECTOR_LABEL: &str = "SemanticArtifactVector";
 const ELEMENT_NAME_VECTOR_LABEL: &str = "SemanticElementNameVector";
+const ELEMENT_TEXT_VECTOR_LABEL: &str = "SemanticElementTextVector";
 const VECTOR_PROPERTY: &str = "vector";
 
 impl<'db> SemanticStorage<'db> {
@@ -52,9 +53,10 @@ impl<'db> SemanticStorage<'db> {
                 &snapshot,
                 &node_ids,
                 "artifact_id",
+                None,
                 engine_id,
                 model,
-                |id| artifact_is_current_in_project(graph, project_root, id),
+                |id, _| artifact_is_current_in_project(graph, project_root, id),
             )?;
             Ok(top_k(candidates, query, k))
         })
@@ -79,9 +81,10 @@ impl<'db> SemanticStorage<'db> {
                 &snapshot,
                 &node_ids,
                 "semantic_element_id",
+                None,
                 engine_id,
                 model,
-                |id| {
+                |id, _| {
                     Ok(semantic_element_by_id_selective(graph, id)?
                         .is_some_and(|element| element.project_root == project_root))
                 },
@@ -89,22 +92,63 @@ impl<'db> SemanticStorage<'db> {
             Ok(top_k(candidates, query, k))
         })
     }
+
+    /// Returns the exact cosine top-k `html_section` text vectors in one project.
+    ///
+    /// A vector is a candidate only while the element is active in `project_root`
+    /// and its stored fingerprint equals the element's current fingerprint.
+    pub fn search_element_text_vectors(
+        &self,
+        project_root: &str,
+        query: &[f32],
+        k: usize,
+        engine_id: &str,
+        model: Option<&str>,
+    ) -> Result<Vec<VectorSearchResult>> {
+        validate_search_input(project_root, query, k)?;
+        self.graph.read(|graph| {
+            let snapshot = graph.committed_snapshot()?;
+            let node_ids = snapshot
+                .nodes_by_label(ELEMENT_TEXT_VECTOR_LABEL, snapshot.view())
+                .db()?;
+            let candidates = vector_candidates_from_properties(
+                &snapshot,
+                &node_ids,
+                "semantic_element_id",
+                Some("content_fingerprint"),
+                engine_id,
+                model,
+                |id, fingerprint| {
+                    Ok(
+                        semantic_element_by_id_selective(graph, id)?.is_some_and(|element| {
+                            element.project_root == project_root
+                                && element.content_fingerprint.as_deref() == fingerprint
+                        }),
+                    )
+                },
+            )?;
+            Ok(top_k(candidates, query, k))
+        })
+    }
 }
 
+/// `extra_property` is one more string column handed to `include_record` next to the id.
 fn vector_candidates_from_properties(
     snapshot: &Snapshot,
     node_ids: &[NodeId],
     id_property: &str,
+    extra_property: Option<&str>,
     engine_id: &str,
     model: Option<&str>,
-    include_record: impl Fn(&str) -> Result<bool>,
+    include_record: impl Fn(&str, Option<&str>) -> Result<bool>,
 ) -> Result<Vec<(NodeId, String, Arc<[f32]>)>> {
-    let keys = vec![
+    let mut keys: Vec<_> = vec![
         id_property.into(),
         "engine_id".into(),
         "model".into(),
         VECTOR_PROPERTY.into(),
     ];
+    keys.extend(extra_property.map(Into::into));
     let rows = snapshot
         .node_properties_selective_batch(node_ids, &keys, snapshot.view())
         .db()?
@@ -117,9 +161,10 @@ fn vector_candidates_from_properties(
         let Some(id) = batch_string(properties.get(id_property)) else {
             continue;
         };
+        let extra = extra_property.and_then(|key| batch_string(properties.get(key)));
         if batch_string(properties.get("engine_id")).as_deref() != Some(engine_id)
             || batch_string(properties.get("model")).as_deref() != model.or(Some(""))
-            || !include_record(&id)?
+            || !include_record(&id, extra.as_deref())?
         {
             continue;
         }

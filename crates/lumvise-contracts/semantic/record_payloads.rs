@@ -38,6 +38,15 @@ pub struct StoredSemanticElementNameVector {
     pub vector: ArtifactTextVector,
 }
 
+/// Vector for an `html_section` element's visible text. The text itself is never stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredSemanticElementTextVector {
+    pub semantic_element_id: String,
+    pub project_root: String,
+    pub content_fingerprint: String,
+    pub vector: ArtifactTextVector,
+}
+
 #[cfg(test)]
 #[path = "record_payloads/tests.rs"]
 mod tests;

@@ -5,6 +5,8 @@ use lumvise_db_core::{
 use lumvise_resource_routing::InvocationControl;
 use std::sync::Arc;
 
+use super::{KNOWLEDGE_PLUGIN_ID, NUCLEUS_PLUGIN_ID, SEMANTIC_PLUGIN_ID};
+
 mod revision_publication;
 mod revision_staging;
 
@@ -259,6 +261,51 @@ fn semantic_plugin_stores_and_searches_native_element_vectors() {
         .unwrap();
     assert_eq!(output["results"].as_array().unwrap().len(), 1);
     assert_eq!(output["results"][0]["id"], "near");
+}
+
+#[test]
+fn text_vector_operations_are_authorized_exactly_like_name_vectors() {
+    let broker = broker_for(persistence());
+    for plugin_id in [
+        SEMANTIC_PLUGIN_ID,
+        KNOWLEDGE_PLUGIN_ID,
+        NUCLEUS_PLUGIN_ID,
+        "third.party",
+    ] {
+        let name_store = broker
+            .invoke(request(
+                plugin_id,
+                json!({"operation": "store_element_name_vectors", "project_root": "/repo", "vectors": []}),
+            ))
+            .is_ok();
+        let text_store = broker
+            .invoke(request(
+                plugin_id,
+                json!({"operation": "store_element_text_vectors", "project_root": "/repo", "vectors": []}),
+            ))
+            .is_ok();
+        assert_eq!(text_store, name_store, "store by {plugin_id}");
+        let search = |operation: &str| {
+            broker
+                .invoke(request(
+                    plugin_id,
+                    json!({"operation": operation, "project_root": "/repo",
+                        "query": [1.0, 0.0], "k": 1, "engine_id": "neural.embed"}),
+                ))
+                .is_ok()
+        };
+        let name_search = search("search_element_name_vectors");
+        assert_eq!(
+            search("search_element_text_vectors"),
+            name_search,
+            "search by {plugin_id}"
+        );
+        if plugin_id == SEMANTIC_PLUGIN_ID {
+            assert!(text_store && name_search, "semantic plugin owns both paths");
+        } else if plugin_id == "third.party" {
+            assert!(!text_store && !name_search, "unrelated plugin is denied");
+        }
+    }
 }
 
 #[test]

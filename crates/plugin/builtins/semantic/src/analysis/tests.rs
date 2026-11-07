@@ -41,6 +41,14 @@ impl FakeCodeHost {
 impl HostCallTransport for FakeCodeHost {
     fn host_call(&mut self, capability: &str, input: Value) -> Result<Value, PluginError> {
         self.calls.push((capability.into(), input.clone()));
+        if capability == "neural.embed" {
+            // No embedding provider in this fixture: vector search degrades to lexical fallback.
+            return Err(PluginError::new(
+                "provider_unavailable",
+                "no embedding provider",
+                true,
+            ));
+        }
         match (capability, input["operation"].as_str().unwrap()) {
             ("storage.semantic", "project_snapshot") => Ok(self.snapshot.clone()),
             ("storage.semantic", "search_project_structure") => Ok(self.snapshot.clone()),

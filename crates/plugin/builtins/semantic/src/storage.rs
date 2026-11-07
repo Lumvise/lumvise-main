@@ -336,6 +336,19 @@ pub(crate) fn store_element_name_vectors(
     Ok(output.get("stored").and_then(Value::as_u64).unwrap_or(0) as usize)
 }
 
+pub(crate) fn store_element_text_vectors(
+    context: &mut PluginContext<'_>,
+    project_root: &str,
+    vectors: Vec<Value>,
+) -> Result<usize, PluginError> {
+    let output = context.host_call(
+        SEMANTIC_CAPABILITY,
+        json!({"operation": "store_element_text_vectors", "project_root": project_root,
+            "vectors": vectors}),
+    )?;
+    Ok(output.get("stored").and_then(Value::as_u64).unwrap_or(0) as usize)
+}
+
 pub(crate) fn store_artifact_text_vectors(
     context: &mut PluginContext<'_>,
     project_root: &str,

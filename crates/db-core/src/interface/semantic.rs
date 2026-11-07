@@ -8,7 +8,8 @@ use crate::{
     ProjectIdentity, SemanticArtifact, SemanticBatchSyncReport, SemanticElement,
     SemanticGraphProjection, SemanticGraphProjectionRequest, SemanticPartition,
     SemanticProjectSnapshot, SemanticRelationship, SemanticSelectiveSubgraph,
-    StoredArtifactTextVector, StoredSemanticElementNameVector, VectorSearchResult,
+    StoredArtifactTextVector, StoredSemanticElementNameVector, StoredSemanticElementTextVector,
+    VectorSearchResult,
 };
 
 pub type PersistenceResult<T> = std::result::Result<T, DbError>;
@@ -138,6 +139,17 @@ pub enum SemanticOperation {
     StoreElementNameVectors {
         project_root: String,
         vectors: Vec<StoredSemanticElementNameVector>,
+    },
+    SearchElementTextVectors {
+        project_root: String,
+        query: Vec<f32>,
+        k: usize,
+        engine_id: String,
+        model: Option<String>,
+    },
+    StoreElementTextVectors {
+        project_root: String,
+        vectors: Vec<StoredSemanticElementTextVector>,
     },
     SearchArtifactTextVectors {
         project_root: String,
@@ -318,6 +330,9 @@ pub enum SemanticResult {
     Elements(Vec<SemanticElement>),
     ElementVectorSearch(Vec<VectorSearchResult>),
     StoredElementNameVectors {
+        count: usize,
+    },
+    StoredElementTextVectors {
         count: usize,
     },
     ArtifactVectorSearch(Vec<VectorSearchResult>),

@@ -223,10 +223,12 @@ impl KnowledgeSemanticAccess<'_> {
                 ..
             } => self.require_root(root, scope, false),
             SearchElementNameVectors { project_root, .. }
+            | SearchElementTextVectors { project_root, .. }
             | SearchArtifactTextVectors { project_root, .. } => {
                 self.require_root(project_root, scope, false)
             }
             StoreElementNameVectors { project_root, .. }
+            | StoreElementTextVectors { project_root, .. }
             | StoreArtifactTextVectors { project_root, .. } => {
                 self.require_root(project_root, scope, true)
             }

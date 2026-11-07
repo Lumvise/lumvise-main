@@ -414,6 +414,30 @@ impl SemanticPersistence for LocalPersistence {
                     count: vectors.len(),
                 })
             }
+            SemanticOperation::SearchElementTextVectors {
+                project_root,
+                query,
+                k,
+                engine_id,
+                model,
+            } => Ok(SemanticResult::ElementVectorSearch(
+                storage.search_element_text_vectors(
+                    &project_root,
+                    &query,
+                    k,
+                    &engine_id,
+                    model.as_deref(),
+                )?,
+            )),
+            SemanticOperation::StoreElementTextVectors {
+                project_root,
+                vectors,
+            } => {
+                storage.store_element_text_vectors(&project_root, &vectors)?;
+                Ok(SemanticResult::StoredElementTextVectors {
+                    count: vectors.len(),
+                })
+            }
             SemanticOperation::SearchArtifactTextVectors {
                 project_root,
                 query,

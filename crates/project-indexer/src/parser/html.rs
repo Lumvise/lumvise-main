@@ -66,6 +66,35 @@ pub(super) fn extract(tree: &Tree, source: &str) -> ParsedFile {
     walk.finish()
 }
 
+/// Visible words and index fingerprint of each `html_section`, in document order.
+/// Shares the walk and identity code with `extract`, so the fingerprints match the indexed elements.
+pub(super) fn section_texts(tree: &Tree, source: &str) -> Vec<HtmlSectionText> {
+    let mut walk = Walk::new(source);
+    walk.children(tree.root_node());
+    walk.section_identities()
+        .into_iter()
+        .map(|identity| HtmlSectionText {
+            text: identity.words,
+            content_fingerprint: identity.fingerprint.encoded,
+        })
+        .collect()
+}
+
+/// Visible text of one HTML section and the content fingerprint the index stores for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HtmlSectionText {
+    pub text: String,
+    pub content_fingerprint: String,
+}
+
+struct SectionIdentity {
+    start: usize,
+    end: usize,
+    name: String,
+    words: String,
+    fingerprint: SourceFingerprint,
+}
+
 /// Who receives visible text and links: the innermost open chrome element, else the
 /// innermost open heading section, else the file element.
 #[derive(Clone, Copy)]
@@ -312,17 +341,15 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn finish(self) -> ParsedFile {
-        let section_count = self.sections.len();
-        // A section's identity is its visible words, then its own link targets in order.
-        let mut targets: Vec<Vec<&str>> = vec![Vec::new(); section_count];
+    /// A section's identity is its visible words, then its own link targets in order.
+    fn section_identities(&self) -> Vec<SectionIdentity> {
+        let mut targets: Vec<Vec<&str>> = vec![Vec::new(); self.sections.len()];
         for link in &self.links {
             if let Owner::Section(index) = link.owner {
                 targets[index].push(link.href.as_str());
             }
         }
-        let mut definitions: Vec<IndexedDefinition> = self
-            .sections
+        self.sections
             .iter()
             .zip(&targets)
             .map(|(section, targets)| {
@@ -331,12 +358,29 @@ impl<'a> Walk<'a> {
                     .chain(targets.iter().copied())
                     .collect::<Vec<_>>()
                     .join("\n");
+                SectionIdentity {
+                    start: section.start,
+                    end: section.end,
+                    name: section.name.clone(),
+                    fingerprint: SourceFingerprint::text(&identity),
+                    words,
+                }
+            })
+            .collect()
+    }
+
+    fn finish(self) -> ParsedFile {
+        let section_count = self.sections.len();
+        let mut definitions: Vec<IndexedDefinition> = self
+            .section_identities()
+            .into_iter()
+            .map(|identity| {
                 self.definition(
                     "html_section",
-                    &section.name,
-                    section.start,
-                    section.end,
-                    Some(SourceFingerprint::text(&identity)),
+                    &identity.name,
+                    identity.start,
+                    identity.end,
+                    Some(identity.fingerprint),
                 )
             })
             .collect();

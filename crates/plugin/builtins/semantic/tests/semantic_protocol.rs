@@ -4,6 +4,8 @@ mod code_intelligence;
 mod context_scope;
 #[path = "semantic_protocol/duplicate_identities.rs"]
 mod duplicate_identities;
+#[path = "semantic_protocol/html_section_text_vectors.rs"]
+mod html_section_text_vectors;
 #[path = "semantic_protocol/index_base.rs"]
 mod index_base;
 #[path = "semantic_protocol/partition_replacement.rs"]

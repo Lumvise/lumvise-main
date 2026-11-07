@@ -3770,6 +3770,7 @@ dependencies = [
  "lumvise-plugin-protocol",
  "lumvise-plugin-runtime",
  "lumvise-plugin-sdk",
+ "lumvise-project-indexer",
  "lumvise-resource-routing",
  "lumvise-semantic-revisions",
  "regex",

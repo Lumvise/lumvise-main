@@ -56,6 +56,28 @@ pub(crate) fn prepare_element_name_vector_replace(
     })
 }
 
+pub(crate) fn prepare_element_text_vector_replace(
+    database: &GrafeoDB,
+    stored: &StoredSemanticElementTextVector,
+) -> Result<VectorReplacePlan> {
+    Ok(VectorReplacePlan {
+        node_ids: node_ids_by_label_and_property(
+            database,
+            "SemanticElementTextVector",
+            SEMANTIC_ELEMENT_ID_PROPERTY,
+            &stored.semantic_element_id,
+        )?,
+        properties: element_text_vector_props(stored)?,
+    })
+}
+
+pub(crate) fn apply_element_text_vector_replace(
+    database: &GraphTransaction<'_>,
+    plan: VectorReplacePlan,
+) -> Result<()> {
+    apply_vector_replace(database, "SemanticElementTextVector", plan)
+}
+
 pub(crate) fn prepare_artifact_vector_replace(
     database: &GrafeoDB,
     artifact: &SemanticArtifact,
@@ -516,6 +538,12 @@ pub(crate) fn prepare_element_deactivation(
             SEMANTIC_ELEMENT_ID_PROPERTY,
             semantic_element_id,
         )?,
+        element_text_vector_node_ids: node_ids_by_label_and_property(
+            database,
+            "SemanticElementTextVector",
+            SEMANTIC_ELEMENT_ID_PROPERTY,
+            semantic_element_id,
+        )?,
         relationship_edge_ids,
         artifact_node_ids,
         artifact_vector_node_ids,
@@ -557,6 +585,9 @@ pub(crate) fn apply_element_deactivation(
             .expect("planned semantic element remains available");
     }
     for node_id in plan.element_vector_node_ids {
+        database.delete_node(node_id)?;
+    }
+    for node_id in plan.element_text_vector_node_ids {
         database.delete_node(node_id)?;
     }
     for node_id in plan.artifact_node_ids {

@@ -23,4 +23,7 @@ fn vector_payloads_retain_existing_serialized_shapes_and_large_metadata_numbers(
     unchanged::<StoredSemanticElementNameVector>(&format!(
         r#"{{"semantic_element_id":"e","project_root":"/source","source_text":"name","vector":{vector}}}"#,
     ));
+    unchanged::<StoredSemanticElementTextVector>(&format!(
+        r#"{{"semantic_element_id":"e","project_root":"/source","content_fingerprint":"fp","vector":{vector}}}"#,
+    ));
 }

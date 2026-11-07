@@ -19,6 +19,7 @@ mod revision_control;
 mod revision_reads;
 mod snapshot;
 mod storage;
+mod text_vectors;
 mod triggers;
 
 pub use indexing::INDEX_PROJECT_EXPORT_ID;

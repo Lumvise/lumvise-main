@@ -44,6 +44,7 @@ fn publication_root(operation: &SemanticOperation) -> Option<&str> {
         | SyncStructure { project_root, .. }
         | BeginProjectSnapshot { project_root, .. }
         | StoreElementNameVectors { project_root, .. }
+        | StoreElementTextVectors { project_root, .. }
         | StoreArtifactTextVectors { project_root, .. } => Some(project_root),
         SyncPartition { partition, .. } => Some(&partition.project_root),
         _ => None,
@@ -56,6 +57,7 @@ fn view_root(operation: &SemanticOperation) -> Option<&str> {
         ElementsByIds { project_root, .. }
         | ElementsByIdsIncludingInactive { project_root, .. }
         | SearchElementNameVectors { project_root, .. }
+        | SearchElementTextVectors { project_root, .. }
         | SearchArtifactTextVectors { project_root, .. }
         | ProjectIdentity { project_root }
         | ProjectAccess { project_root }

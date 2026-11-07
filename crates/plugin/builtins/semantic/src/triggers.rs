@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use crate::models::{SemanticArtifact, SemanticElement};
 use crate::query::embed_texts;
 use crate::storage;
+use crate::text_vectors;
 
 pub(crate) fn storage_change(
     input: Value,
@@ -53,6 +54,7 @@ pub(crate) fn storage_change(
         context,
         &artifact_ids.iter().cloned().collect::<Vec<_>>(),
     )?;
+    let text_count = text_vectors::index_html_sections(context, &request.project_root, &elements)?;
     let mut element_records = Vec::new();
     for element in elements
         .into_iter()
@@ -78,7 +80,7 @@ pub(crate) fn storage_change(
     let artifact_count = index_artifacts(context, &request.project_root, artifact_records)?;
     Ok(json!({
         "acknowledged": true,
-        "processed": element_count + artifact_count,
+        "processed": element_count + text_count + artifact_count,
     }))
 }
 

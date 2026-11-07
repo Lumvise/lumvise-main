@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use lumvise_db_core::{
     ProjectSnapshotScope, SemanticArtifact, SemanticElement, SemanticGraphProjectionRequest,
     SemanticOperation, SemanticPartition, SemanticPersistence, SemanticRelationship,
-    SemanticResult, StoredSemanticElementNameVector,
+    SemanticResult, StoredSemanticElementNameVector, StoredSemanticElementTextVector,
 };
 use lumvise_plugin_runtime::HostCapabilityError;
 use lumvise_resource_routing::InvocationControl;
@@ -141,6 +141,18 @@ enum SemanticStorageRequest {
     StoreElementNameVectors {
         project_root: String,
         vectors: Vec<StoredSemanticElementNameVector>,
+    },
+    SearchElementTextVectors {
+        project_root: String,
+        query: Vec<f32>,
+        k: usize,
+        engine_id: String,
+        #[serde(default)]
+        model: Option<String>,
+    },
+    StoreElementTextVectors {
+        project_root: String,
+        vectors: Vec<StoredSemanticElementTextVector>,
     },
     SearchArtifactTextVectors {
         project_root: String,
@@ -475,6 +487,19 @@ fn dispatch(
             SemanticResult::StoredElementNameVectors { count } => Ok(json!({"stored": count})),
             result => unexpected_result("StoredElementNameVectors", result),
         },
+        SemanticStorageRequest::StoreElementTextVectors {
+            project_root,
+            vectors,
+        } => match execute(
+            semantic,
+            SemanticOperation::StoreElementTextVectors {
+                project_root,
+                vectors,
+            },
+        )? {
+            SemanticResult::StoredElementTextVectors { count } => Ok(json!({"stored": count})),
+            result => unexpected_result("StoredElementTextVectors", result),
+        },
         SemanticStorageRequest::Element {
             semantic_element_id,
         } => match execute(
@@ -531,6 +556,25 @@ fn dispatch(
         } => match execute(
             semantic,
             SemanticOperation::SearchElementNameVectors {
+                project_root,
+                query,
+                k,
+                engine_id,
+                model,
+            },
+        )? {
+            SemanticResult::ElementVectorSearch(results) => Ok(json!({"results": results})),
+            result => unexpected_result("ElementVectorSearch", result),
+        },
+        SemanticStorageRequest::SearchElementTextVectors {
+            project_root,
+            query,
+            k,
+            engine_id,
+            model,
+        } => match execute(
+            semantic,
+            SemanticOperation::SearchElementTextVectors {
                 project_root,
                 query,
                 k,
@@ -916,6 +960,7 @@ fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), Ho
         | SemanticStorageRequest::AbortProjectSnapshot { .. }
         | SemanticStorageRequest::RemoveElement { .. }
         | SemanticStorageRequest::StoreElementNameVectors { .. }
+        | SemanticStorageRequest::StoreElementTextVectors { .. }
         | SemanticStorageRequest::StoreArtifactTextVectors { .. }
         | SemanticStorageRequest::ProjectRendererGraph { .. } => plugin_id == SEMANTIC_PLUGIN_ID,
         SemanticStorageRequest::ProjectArtifacts { .. } => {
