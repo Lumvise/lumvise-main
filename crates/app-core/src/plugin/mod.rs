@@ -176,7 +176,10 @@ impl<'app> PluginEndpoints<'app> {
         vectorizer: Box<dyn ArtifactTextVectorizer + Send + Sync>,
     ) -> crate::Result<()> {
         let probe = vectorizer
-            .vectorize_artifact_text(VECTOR_ENGINE_IDENTITY_PROBE_TEXT)
+            .vectorize_artifact_text(
+                VECTOR_ENGINE_IDENTITY_PROBE_TEXT,
+                lumvise_db_core::TextEmbeddingTask::Document,
+            )
             .map_err(|error| {
                 AppCoreError::invalid_value(
                     error.to_string(),

@@ -6,6 +6,7 @@ use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
+use lumvise_db_core::TextEmbeddingTask;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,7 +23,87 @@ pub struct FastEmbedText2VectorConfig {
 pub struct FastEmbedText2VectorEngine {
     config: FastEmbedText2VectorConfig,
     vector_engine_id: String,
+    profile: TextProfile,
     model: Mutex<TextEmbedding>,
+}
+
+/// Per-model text preparation: task prefixes, context length and optional Matryoshka output size.
+struct TextProfile {
+    document_prefix: &'static str,
+    query_prefix: &'static str,
+    max_length: Option<usize>,
+    output_dimensions: Option<usize>,
+}
+
+const PLAIN_TEXT: TextProfile = TextProfile {
+    document_prefix: "",
+    query_prefix: "",
+    max_length: None,
+    output_dimensions: None,
+};
+
+const NOMIC_TEXT: TextProfile = TextProfile {
+    document_prefix: "search_document: ",
+    query_prefix: "search_query: ",
+    max_length: Some(2048),
+    output_dimensions: Some(512),
+};
+
+fn text_profile(model_id: &str) -> TextProfile {
+    match resolve_fastembed_model(model_id) {
+        Ok(EmbeddingModel::NomicEmbedTextV15) => NOMIC_TEXT,
+        _ => PLAIN_TEXT,
+    }
+}
+
+impl TextProfile {
+    fn prepare(&self, text: &str, task: TextEmbeddingTask) -> String {
+        let prefix = match task {
+            TextEmbeddingTask::Document => self.document_prefix,
+            TextEmbeddingTask::Query => self.query_prefix,
+        };
+        format!("{prefix}{text}")
+    }
+
+    /// Matryoshka cut: layer-norm the full output, keep the leading dimensions, then L2-normalize.
+    fn finish(&self, mut vector: Vec<f32>) -> Result<Vec<f32>> {
+        let Some(dimensions) = self.output_dimensions else {
+            return Ok(vector);
+        };
+        if vector.len() < dimensions {
+            return Err(NeuralError::MalformedPayload {
+                value: vector.len().to_string(),
+                expected: format!("FastEmbed vector of at least {dimensions} dimensions"),
+            });
+        }
+        layer_norm(&mut vector);
+        vector.truncate(dimensions);
+        l2_normalize(&mut vector);
+        Ok(vector)
+    }
+}
+
+fn layer_norm(values: &mut [f32]) {
+    let count = values.len() as f32;
+    let mean = values.iter().sum::<f32>() / count;
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f32>()
+        / count;
+    let scale = (variance + 1e-5).sqrt();
+    for value in values.iter_mut() {
+        *value = (*value - mean) / scale;
+    }
+}
+
+fn l2_normalize(values: &mut [f32]) {
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in values.iter_mut() {
+            *value /= norm;
+        }
+    }
 }
 
 impl FastEmbedText2VectorConfig {
@@ -83,13 +164,16 @@ impl FastEmbedText2VectorEngine {
         } else {
             config.engine_id.clone()
         };
+        let profile = text_profile(&config.model_id);
+        let max_length = config.max_length.or(profile.max_length);
         let model = match config.model_dir.as_deref() {
-            Some(model_dir) => local_model(model_dir, config.max_length, pooling)?,
-            None => builtin_model(&config)?,
+            Some(model_dir) => local_model(model_dir, max_length, pooling)?,
+            None => builtin_model(&config, max_length)?,
         };
         Ok(Self {
             config,
             vector_engine_id,
+            profile,
             model: Mutex::new(model),
         })
     }
@@ -102,9 +186,18 @@ impl FastEmbedText2VectorEngine {
     /// let response = engine.embed(&Text2VectorRequest { text: "policy".to_string() })?;
     /// ```
     pub fn embed(&self, request: &Text2VectorRequest) -> Result<Text2VectorResponse> {
+        self.embed_task(request, TextEmbeddingTask::Document)
+    }
+
+    /// Embeds one text request as either indexed content or a search query.
+    pub fn embed_task(
+        &self,
+        request: &Text2VectorRequest,
+        task: TextEmbeddingTask,
+    ) -> Result<Text2VectorResponse> {
         require_non_empty(&request.text, "non-empty text to vectorize")?;
         require_requested_model(request.model.as_deref(), &self.config.model_id)?;
-        let vector = self.embed_text(&request.text)?;
+        let vector = self.embed_text_for_task(&request.text, task)?;
         Ok(Text2VectorResponse {
             dimensions: vector.len(),
             vector,
@@ -131,26 +224,35 @@ fn require_requested_model(requested: Option<&str>, configured: &str) -> Result<
     })
 }
 
-impl VectorEmbedder for FastEmbedText2VectorEngine {
-    fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+impl FastEmbedText2VectorEngine {
+    fn embed_text_for_task(&self, text: &str, task: TextEmbeddingTask) -> Result<Vec<f32>> {
+        let prepared = self.profile.prepare(text, task);
         let mut model = self.model.lock().map_err(|_| NeuralError::ProviderFailed {
             provider_id: self.config.engine_id.clone(),
             message: "FastEmbed model mutex poisoned".to_string(),
         })?;
-        let embeddings = model.embed(vec![text.to_string()], None).map_err(|error| {
-            NeuralError::ProviderFailed {
-                provider_id: self.config.engine_id.clone(),
-                message: error.to_string(),
-            }
-        })?;
-        embeddings
+        let embeddings =
+            model
+                .embed(vec![prepared], None)
+                .map_err(|error| NeuralError::ProviderFailed {
+                    provider_id: self.config.engine_id.clone(),
+                    message: error.to_string(),
+                })?;
+        let vector = embeddings
             .into_iter()
             .next()
             .filter(|vector| !vector.is_empty())
             .ok_or_else(|| NeuralError::MalformedPayload {
                 value: text.to_string(),
                 expected: "non-empty FastEmbed vector".to_string(),
-            })
+            })?;
+        self.profile.finish(vector)
+    }
+}
+
+impl VectorEmbedder for FastEmbedText2VectorEngine {
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_text_for_task(text, TextEmbeddingTask::Document)
     }
 }
 
@@ -159,14 +261,17 @@ fn validate_config(config: &FastEmbedText2VectorConfig) -> Result<()> {
     require_non_empty(&config.model_id, "non-empty FastEmbed model id")
 }
 
-fn builtin_model(config: &FastEmbedText2VectorConfig) -> Result<TextEmbedding> {
+fn builtin_model(
+    config: &FastEmbedText2VectorConfig,
+    max_length: Option<usize>,
+) -> Result<TextEmbedding> {
     let model = resolve_fastembed_model(&config.model_id)?;
     let mut options =
         InitOptions::new(model).with_show_download_progress(config.show_download_progress);
     if let Some(cache_dir) = &config.cache_dir {
         options = options.with_cache_dir(cache_dir.clone());
     }
-    if let Some(max_length) = config.max_length {
+    if let Some(max_length) = max_length {
         options = options.with_max_length(max_length);
     }
     TextEmbedding::try_new(options).map_err(|error| NeuralError::ProviderFailed {
@@ -229,6 +334,9 @@ fn resolve_fastembed_model(model_id: &str) -> Result<EmbeddingModel> {
             Ok(EmbeddingModel::BGESmallENV15)
         }
         "bge-m3" | "baai/bge-m3" => Ok(EmbeddingModel::BGEM3),
+        "nomic-embed-text-v1.5" | "nomic-ai/nomic-embed-text-v1.5" => {
+            Ok(EmbeddingModel::NomicEmbedTextV15)
+        }
         "mxbai-embed-xsmall-v1" | "mixedbread-ai/mxbai-embed-xsmall-v1" => {
             Ok(EmbeddingModel::MxbaiEmbedLargeV1)
         }
@@ -236,5 +344,77 @@ fn resolve_fastembed_model(model_id: &str) -> Result<EmbeddingModel> {
             value: model_id.to_string(),
             expected: "supported FastEmbed model alias".to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_norm_matches_hand_computed_values() {
+        // Mean 2.5 and population variance 1.25 give offsets -1.5, -0.5, 0.5, 1.5 divided by sqrt(1.25).
+        let mut values = [1.0, 2.0, 3.0, 4.0];
+        layer_norm(&mut values);
+        let expected = [-1.5, -0.5, 0.5, 1.5].map(|offset: f32| offset / 1.25f32.sqrt());
+        for (actual, expected) in values.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-5, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn nomic_output_is_layer_normed_cut_to_512_and_unit_norm() {
+        // Mean 1/3 and variance 8/9 over all 768 values: +1 maps to 1/√2 and -1 maps to -√2.
+        // The 512 kept values hold 256 of each, so their squared sum is 640.
+        let input: Vec<f32> = (0..768)
+            .map(|index| {
+                if index < 512 && index % 2 == 1 {
+                    -1.0
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+
+        let output = NOMIC_TEXT.finish(input).expect("768-dimension vector");
+
+        assert_eq!(output.len(), 512);
+        let norm = output.iter().map(|value| value * value).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "norm {norm}");
+        let even = 1.0 / 1280f32.sqrt();
+        let odd = -1.0 / 320f32.sqrt();
+        for (index, value) in output.iter().enumerate() {
+            let expected = if index % 2 == 0 { even } else { odd };
+            assert!(
+                (value - expected).abs() < 1e-6,
+                "index {index}: {value} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn nomic_prefixes_follow_task_for_both_aliases() {
+        for model_id in ["nomic-embed-text-v1.5", "nomic-ai/nomic-embed-text-v1.5"] {
+            let profile = text_profile(model_id);
+            assert_eq!(
+                profile.prepare("notes", TextEmbeddingTask::Document),
+                "search_document: notes"
+            );
+            assert_eq!(
+                profile.prepare("notes", TextEmbeddingTask::Query),
+                "search_query: notes"
+            );
+        }
+    }
+
+    #[test]
+    fn other_models_embed_raw_text_for_every_task() {
+        let profile = text_profile("all-minilm-l6-v2");
+        assert_eq!(
+            profile.prepare("notes", TextEmbeddingTask::Document),
+            "notes"
+        );
+        assert_eq!(profile.prepare("notes", TextEmbeddingTask::Query), "notes");
+        assert!(profile.output_dimensions.is_none());
     }
 }

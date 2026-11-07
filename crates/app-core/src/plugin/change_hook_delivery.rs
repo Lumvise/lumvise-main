@@ -244,7 +244,10 @@ impl PluginEndpoints<'_> {
             if source_text.is_empty() {
                 continue;
             }
-            let vector = vectorizer.vectorize_artifact_text(source_text)?;
+            let vector = vectorizer.vectorize_artifact_text(
+                source_text,
+                lumvise_db_core::TextEmbeddingTask::Document,
+            )?;
             element_vectors.push(StoredSemanticElementNameVector {
                 semantic_element_id: element.semantic_element_id.clone(),
                 project_root: element.project_root.clone(),
@@ -273,7 +276,10 @@ impl PluginEndpoints<'_> {
             else {
                 continue;
             };
-            let vector = vectorizer.vectorize_artifact_text(source_text)?;
+            let vector = vectorizer.vectorize_artifact_text(
+                source_text,
+                lumvise_db_core::TextEmbeddingTask::Document,
+            )?;
             artifact_vectors.push(StoredArtifactTextVector {
                 artifact_id: artifact.artifact_id,
                 semantic_element_id: artifact.semantic_element_id,
@@ -567,6 +573,7 @@ mod tests {
         fn vectorize_artifact_text(
             &self,
             text: &str,
+            _task: lumvise_db_core::TextEmbeddingTask,
         ) -> lumvise_db_core::Result<ArtifactTextVector> {
             Ok(ArtifactTextVector {
                 engine_id: "test-vectorizer".into(),

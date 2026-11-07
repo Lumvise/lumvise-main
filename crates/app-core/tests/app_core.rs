@@ -361,7 +361,11 @@ fn llm_request() -> LlmRequest {
 struct FreshVectorizer;
 
 impl lumvise_db_core::ArtifactTextVectorizer for FreshVectorizer {
-    fn vectorize_artifact_text(&self, text: &str) -> lumvise_db_core::Result<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        _task: lumvise_db_core::TextEmbeddingTask,
+    ) -> lumvise_db_core::Result<ArtifactTextVector> {
         Ok(ArtifactTextVector {
             engine_id: "fresh-engine".into(),
             model: Some("fresh-model".into()),

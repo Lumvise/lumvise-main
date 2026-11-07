@@ -571,7 +571,11 @@ fn invoke_rejects_inconsistent_vector_dimensions() {
 struct NamedLengthVectorizer;
 
 impl ArtifactTextVectorizer for NamedLengthVectorizer {
-    fn vectorize_artifact_text(&self, text: &str) -> DbResult<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        _task: lumvise_db_core::TextEmbeddingTask,
+    ) -> DbResult<ArtifactTextVector> {
         Ok(test_vector(vec![text.len() as f32, 1.0]))
     }
 }
@@ -579,7 +583,11 @@ impl ArtifactTextVectorizer for NamedLengthVectorizer {
 struct InconsistentVectorizer;
 
 impl ArtifactTextVectorizer for InconsistentVectorizer {
-    fn vectorize_artifact_text(&self, text: &str) -> DbResult<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        _task: lumvise_db_core::TextEmbeddingTask,
+    ) -> DbResult<ArtifactTextVector> {
         Ok(test_vector(vec![1.0; text.len()]))
     }
 }
@@ -592,5 +600,66 @@ fn test_vector(vector: Vec<f32>) -> ArtifactTextVector {
         vector,
         normalized: false,
         metadata: json!({}),
+    }
+}
+
+struct TaskMarkerVectorizer;
+
+impl ArtifactTextVectorizer for TaskMarkerVectorizer {
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        task: lumvise_db_core::TextEmbeddingTask,
+    ) -> DbResult<ArtifactTextVector> {
+        let marker = match task {
+            lumvise_db_core::TextEmbeddingTask::Document => 0.0,
+            lumvise_db_core::TextEmbeddingTask::Query => 1.0,
+        };
+        Ok(test_vector(vec![text.len() as f32, marker]))
+    }
+}
+
+#[test]
+fn invoke_forwards_embed_task_and_defaults_to_document() {
+    let app = app_with_default_broker();
+    let broker = app
+        .default_plugin_host_capability_broker()
+        .expect("default Plugin System broker");
+    *broker.vectorizer.lock().expect("vectorizer lock") = Some(Arc::new(TaskMarkerVectorizer));
+
+    let vectors_for = |input: Value| {
+        broker
+            .invoke(request("plugin.semantic", NEURAL_EMBED_CAPABILITY, input))
+            .expect("embed")["vectors"]
+            .clone()
+    };
+
+    assert_eq!(vectors_for(json!({"texts": ["a"]})), json!([[1.0, 0.0]]));
+    assert_eq!(
+        vectors_for(json!({"texts": ["a"], "task": "document"})),
+        json!([[1.0, 0.0]])
+    );
+    assert_eq!(
+        vectors_for(json!({"texts": ["a"], "task": "query"})),
+        json!([[1.0, 1.0]])
+    );
+}
+
+#[test]
+fn invoke_rejects_unknown_embed_task_and_extra_fields() {
+    let app = app_with_default_broker();
+    let broker = app
+        .default_plugin_host_capability_broker()
+        .expect("default Plugin System broker");
+
+    for input in [
+        json!({"texts": ["a"], "task": "passage"}),
+        json!({"texts": ["a"], "task": 1}),
+        json!({"texts": ["a"], "mode": "query"}),
+    ] {
+        let error = broker
+            .invoke(request("plugin.semantic", NEURAL_EMBED_CAPABILITY, input))
+            .expect_err("invalid neural.embed input");
+        assert!(error.to_string().contains("invalid_host_capability_input"));
     }
 }

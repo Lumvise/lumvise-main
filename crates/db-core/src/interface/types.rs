@@ -268,8 +268,20 @@ pub struct VectorSearchResult {
     pub score: f32,
 }
 
+/// Whether a text is indexed content or a search query; asymmetric models embed them differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextEmbeddingTask {
+    Document,
+    Query,
+}
+
 pub trait ArtifactTextVectorizer {
-    fn vectorize_artifact_text(&self, text: &str) -> crate::Result<ArtifactTextVector>;
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        task: TextEmbeddingTask,
+    ) -> crate::Result<ArtifactTextVector>;
 }
 
 /// Durable UUID v4 identity for one semantic project lineage.

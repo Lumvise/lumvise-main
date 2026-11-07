@@ -29,7 +29,7 @@ impl<'db> SemanticStorage<'db> {
         let vector = artifact_text(artifact)
             .map(|source_text| {
                 vectorizer
-                    .vectorize_artifact_text(&source_text)
+                    .vectorize_artifact_text(&source_text, crate::TextEmbeddingTask::Document)
                     .map(|vector| (source_text, vector))
             })
             .transpose()?;
@@ -62,7 +62,7 @@ impl<'db> SemanticStorage<'db> {
         let vector = artifact_text(&artifact)
             .map(|source_text| {
                 vectorizer
-                    .vectorize_artifact_text(&source_text)
+                    .vectorize_artifact_text(&source_text, crate::TextEmbeddingTask::Document)
                     .map(|vector| (source_text, vector))
             })
             .transpose()?;
@@ -220,7 +220,8 @@ impl<'db> SemanticStorage<'db> {
             self.remove_artifact_text_vector(&artifact.artifact_id)?;
             return Ok(());
         };
-        let vector = vectorizer.vectorize_artifact_text(&source_text)?;
+        let vector =
+            vectorizer.vectorize_artifact_text(&source_text, crate::TextEmbeddingTask::Document)?;
         self.commit_preplanned_graph_write(
             |database| prepare_artifact_vector_replace(database, artifact, &source_text, &vector),
             |graph, _commit_version, _collector, plan| apply_artifact_vector_replace(graph, plan),

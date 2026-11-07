@@ -3,6 +3,7 @@ use bytes::Bytes;
 use lumvise_db_core::{
     ArtifactTextVector, ArtifactTextVectorizer, DbCore, PZ_REQUIRED_ENTRIES, PzArchive, Result,
     SemanticArtifact, SemanticElement, SemanticRelationship, StoredSemanticElementNameVector,
+    TextEmbeddingTask,
 };
 use lumvise_resource_routing::InvocationControl;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -58,7 +59,11 @@ fn artifact(id: &str, owner: &str, text: &str, metadata: serde_json::Value) -> S
 struct TestVectorizer;
 
 impl ArtifactTextVectorizer for TestVectorizer {
-    fn vectorize_artifact_text(&self, _text: &str) -> Result<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        _text: &str,
+        _task: TextEmbeddingTask,
+    ) -> Result<ArtifactTextVector> {
         Ok(ArtifactTextVector {
             engine_id: "test-engine".into(),
             model: Some("test-model".into()),

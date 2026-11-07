@@ -1,5 +1,6 @@
 use lumvise_db_core::{
     ArtifactTextVector, ArtifactTextVectorizer, DbCore, Result, SemanticArtifact, SemanticElement,
+    TextEmbeddingTask,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -201,7 +202,11 @@ impl NamedFakeArtifactVectorizer {
 }
 
 impl ArtifactTextVectorizer for NamedFakeArtifactVectorizer {
-    fn vectorize_artifact_text(&self, text: &str) -> Result<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        _task: TextEmbeddingTask,
+    ) -> Result<ArtifactTextVector> {
         Ok(ArtifactTextVector {
             engine_id: self.engine_id.clone(),
             model: Some("fake-model".to_string()),
@@ -216,7 +221,11 @@ impl ArtifactTextVectorizer for NamedFakeArtifactVectorizer {
 struct FailingArtifactVectorizer;
 
 impl ArtifactTextVectorizer for FailingArtifactVectorizer {
-    fn vectorize_artifact_text(&self, _text: &str) -> Result<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        _text: &str,
+        _task: TextEmbeddingTask,
+    ) -> Result<ArtifactTextVector> {
         Err(lumvise_db_core::DbError::vectorizer("vectorizer failed"))
     }
 }
@@ -233,7 +242,11 @@ impl BlockingArtifactVectorizer {
 }
 
 impl ArtifactTextVectorizer for BlockingArtifactVectorizer {
-    fn vectorize_artifact_text(&self, text: &str) -> Result<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        _task: TextEmbeddingTask,
+    ) -> Result<ArtifactTextVector> {
         self.entered.send(()).unwrap();
         self.release.recv().unwrap();
         Ok(ArtifactTextVector {

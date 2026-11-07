@@ -1,5 +1,6 @@
 use lumvise_db_core::{
     ArtifactTextVector, ArtifactTextVectorizer, DbCore, Result, SemanticArtifact, SemanticElement,
+    TextEmbeddingTask,
 };
 use serde_json::json;
 
@@ -78,7 +79,11 @@ impl NamedElementVectorizer {
 }
 
 impl ArtifactTextVectorizer for NamedElementVectorizer {
-    fn vectorize_artifact_text(&self, text: &str) -> Result<ArtifactTextVector> {
+    fn vectorize_artifact_text(
+        &self,
+        text: &str,
+        _task: TextEmbeddingTask,
+    ) -> Result<ArtifactTextVector> {
         Ok(ArtifactTextVector {
             engine_id: self.engine_id.clone(),
             model: Some("model-a".to_string()),

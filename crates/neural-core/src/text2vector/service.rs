@@ -6,6 +6,7 @@ use crate::text2vector::FastEmbedText2VectorConfig;
 use crate::text2vector::FastEmbedText2VectorEngine;
 use crate::text2vector::spawned_engine::SpawnedText2VectorEngine;
 use crate::text2vector::{Text2VectorRequest, Text2VectorResponse, Text2VectorRuntimeConfig};
+use lumvise_db_core::TextEmbeddingTask;
 
 pub struct Text2VectorService {
     backend: Text2VectorBackend,
@@ -64,7 +65,15 @@ impl Text2VectorService {
     }
 
     pub fn embed(&self, request: &Text2VectorRequest) -> Result<Text2VectorResponse> {
-        self.backend.embed(request)
+        self.embed_task(request, TextEmbeddingTask::Document)
+    }
+
+    pub fn embed_task(
+        &self,
+        request: &Text2VectorRequest,
+        task: TextEmbeddingTask,
+    ) -> Result<Text2VectorResponse> {
+        self.backend.embed_task(request, task)
     }
 }
 
@@ -116,11 +125,16 @@ impl Text2VectorBackend {
         )?)))
     }
 
-    fn embed(&self, request: &Text2VectorRequest) -> Result<Text2VectorResponse> {
+    fn embed_task(
+        &self,
+        request: &Text2VectorRequest,
+        task: TextEmbeddingTask,
+    ) -> Result<Text2VectorResponse> {
         match self {
+            // shortcut: spawned engines have no task contract, so the task is dropped there; revisit when a spawned engine needs asymmetric prefixes.
             Self::Spawned(engine) => engine.embed(request),
             #[cfg(feature = "fastembed")]
-            Self::FastEmbed(engine) => engine.embed(request),
+            Self::FastEmbed(engine) => engine.embed_task(request, task),
         }
     }
 }
@@ -129,12 +143,16 @@ impl lumvise_db_core::ArtifactTextVectorizer for Text2VectorService {
     fn vectorize_artifact_text(
         &self,
         text: &str,
+        task: TextEmbeddingTask,
     ) -> lumvise_db_core::Result<lumvise_db_core::ArtifactTextVector> {
         let response = self
-            .embed(&Text2VectorRequest {
-                text: text.to_string(),
-                model: None,
-            })
+            .embed_task(
+                &Text2VectorRequest {
+                    text: text.to_string(),
+                    model: None,
+                },
+                task,
+            )
             .map_err(|error| lumvise_db_core::DbError::vectorizer(error.to_string()))?;
         Ok(lumvise_db_core::ArtifactTextVector {
             engine_id: response.metadata.engine_id,
