@@ -68,17 +68,34 @@ fn signed_knowledge_package_runs_through_plugin_system_lifecycle() {
         .scoped_exports("assistant_session")
         .expect("assistant-scoped exports");
     assert_eq!(scoped.len(), 1);
-    assert_eq!(scoped[0].exports.len(), 16);
-    for name in [
+    let mut scoped_ids: Vec<&str> = scoped[0]
+        .exports
+        .iter()
+        .map(|export| export.id.as_str())
+        .collect();
+    scoped_ids.sort_unstable();
+    let mut expected = vec![
         "knowledge.create",
         "knowledge.update",
-        "document.create",
+        "knowledge.list_dependents",
+        "knowledge.search",
+        "knowledge.list_for_element",
+        "knowledge.get",
+        "knowledge.find_elements",
+        "knowledge.get_element",
+        "document.get_hook",
+        "document.configure_hook",
         "document.space",
         "document.reference",
+        "document.create",
+        "document.get",
         "document.update",
-    ] {
-        assert!(scoped[0].exports.iter().any(|export| export.id == name));
-    }
+        "document.list",
+        "document.search",
+        "document.delete",
+    ];
+    expected.sort_unstable();
+    assert_eq!(scoped_ids, expected);
     assert!(
         scoped[0]
             .exports
