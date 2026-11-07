@@ -2,7 +2,7 @@ mod observations;
 mod source_projection;
 use source_projection::SourceDescriptorCommitGate;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -67,6 +67,8 @@ pub struct MemoryCapabilityBroker {
     persistence: Arc<LocalPersistence>,
     semantic: AppCoreHostCapabilityBroker,
     fail_next_commit: Mutex<bool>,
+    fail_store_operation: Mutex<Option<String>>,
+    rejected_text_vector_ids: Mutex<BTreeSet<String>>,
     source_commit_gate: Mutex<Option<SourceDescriptorCommitGate>>,
     pub embed_available: Mutex<bool>,
     embed_batch_sizes: Mutex<Vec<usize>>,
@@ -97,6 +99,8 @@ impl MemoryCapabilityBroker {
             persistence,
             semantic: AppCoreHostCapabilityBroker::new(semantic, relational),
             fail_next_commit: Mutex::default(),
+            fail_store_operation: Mutex::default(),
+            rejected_text_vector_ids: Mutex::default(),
             source_commit_gate: Mutex::default(),
             embed_available: Mutex::default(),
             embed_batch_sizes: Mutex::default(),
@@ -115,6 +119,20 @@ impl MemoryCapabilityBroker {
 impl MemoryCapabilityBroker {
     pub fn fail_next_commit(&self) {
         *self.fail_next_commit.lock().expect("commit failure switch") = true;
+    }
+    /// Makes every storage call of this operation fail, as a rejected write would.
+    pub fn fail_store_operation(&self, operation: &str) {
+        *self
+            .fail_store_operation
+            .lock()
+            .expect("store failure switch") = Some(operation.into());
+    }
+    /// Rejects any text-vector write that carries this section, as a stale fingerprint would.
+    pub fn reject_text_vectors_for(&self, semantic_element_id: &str) {
+        self.rejected_text_vector_ids
+            .lock()
+            .expect("rejected text vectors")
+            .insert(semantic_element_id.into());
     }
     pub fn row_count(&self, plugin_id: &str, table: &str) -> usize {
         self.plugin_rows(plugin_id, table).len()
@@ -381,6 +399,32 @@ impl HostCapabilityBroker for MemoryCapabilityBroker {
                 let mut fail = self.fail_next_commit.lock().expect("fail switch");
                 if std::mem::take(&mut *fail) {
                     return Err(host_error("storage.semantic", "injected_commit_failure"));
+                }
+                let operation = request.input["operation"].as_str().unwrap_or_default();
+                if self
+                    .fail_store_operation
+                    .lock()
+                    .expect("store failure switch")
+                    .as_deref()
+                    == Some(operation)
+                {
+                    return Err(host_error("storage.semantic", "injected_store_failure"));
+                }
+                if operation == "store_element_text_vectors" {
+                    let rejected = self
+                        .rejected_text_vector_ids
+                        .lock()
+                        .expect("rejected text vectors");
+                    let stale = request.input["vectors"].as_array().is_some_and(|vectors| {
+                        vectors.iter().any(|vector| {
+                            rejected.contains(
+                                vector["semantic_element_id"].as_str().unwrap_or_default(),
+                            )
+                        })
+                    });
+                    if stale {
+                        return Err(host_error("storage.semantic", "stale_text_vector"));
+                    }
                 }
                 if request.input["operation"] == "store_element_name_vectors" {
                     return self.invoke_store_element_name_vectors(request);

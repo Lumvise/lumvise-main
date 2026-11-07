@@ -405,12 +405,28 @@ fn exports() -> Vec<ExportDescriptor> {
                     "indexed_nodes",
                     "commit_version",
                     "published_at",
+                    "text_vectors",
                 ],
                 json!({
                     "project_root": string(),
                     "index_state": {"type": "string", "enum": ["rebuilding", "ready"]},
                     "indexed_nodes": integer(), "commit_version": integer(),
-                    "published_at": string()
+                    "published_at": string(),
+                    "text_vectors": object(
+                        &["stored", "skipped_sections", "skipped_pages", "failures"],
+                        json!({
+                            "stored": integer(), "skipped_sections": integer(),
+                            "skipped_pages": integer(),
+                            "failures": array(object(
+                                &["path", "semantic_element_id", "error"],
+                                json!({
+                                    "path": string(),
+                                    "semantic_element_id": {"type": ["string", "null"]},
+                                    "error": string()
+                                }),
+                            )),
+                        }),
+                    ),
                 }),
             ),
         ),

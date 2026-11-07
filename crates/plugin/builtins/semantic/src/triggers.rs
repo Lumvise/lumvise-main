@@ -54,7 +54,7 @@ pub(crate) fn storage_change(
         context,
         &artifact_ids.iter().cloned().collect::<Vec<_>>(),
     )?;
-    let text_count = text_vectors::index_html_sections(context, &request.project_root, &elements)?;
+    let text = text_vectors::index_html_sections(context, &request.project_root, &elements);
     let mut element_records = Vec::new();
     for element in elements
         .into_iter()
@@ -80,7 +80,7 @@ pub(crate) fn storage_change(
     let artifact_count = index_artifacts(context, &request.project_root, artifact_records)?;
     Ok(json!({
         "acknowledged": true,
-        "processed": element_count + text_count + artifact_count,
+        "processed": element_count + text.stored + artifact_count,
     }))
 }
 
@@ -96,7 +96,7 @@ fn index_elements(
         .iter()
         .map(|(_, text)| text.as_str())
         .collect::<Vec<_>>();
-    let embedded = embed_texts(context, &texts).ok_or_else(embedding_failed)?;
+    let embedded = embed_texts(context, &texts)?;
     let crate::query::EmbedBatch {
         vectors,
         engine_id,
@@ -125,7 +125,7 @@ fn index_artifacts(
         .iter()
         .map(|(_, _, text)| text.trim())
         .collect::<Vec<_>>();
-    let embedded = embed_texts(context, &texts).ok_or_else(embedding_failed)?;
+    let embedded = embed_texts(context, &texts)?;
     let crate::query::EmbedBatch {
         vectors,
         engine_id,
@@ -146,8 +146,4 @@ fn index_artifacts(
 fn vector_record(engine_id: &str, model: &Option<String>, vector: Vec<f32>) -> Value {
     json!({"engine_id": engine_id, "model": model,
         "dimensions": vector.len(), "vector": vector, "normalized": false, "metadata": {}})
-}
-
-fn embedding_failed() -> PluginError {
-    PluginError::new("semantic_embedding_failed", "embedding batch failed", true)
 }

@@ -190,6 +190,8 @@ struct SearchIndexState {
 }
 
 const MAX_NEURAL_EMBED_TEXTS: usize = 128;
+/// Vector records per storage call, so one rebuild is never a single unbounded write.
+const VECTOR_STORE_BATCH: usize = 128;
 
 pub(crate) fn rebuild_search_index(
     input: Value,
@@ -218,68 +220,48 @@ pub(crate) fn rebuild_search_index(
         .iter()
         .map(|element| element.name.as_str())
         .collect::<Vec<_>>();
-    let embedded = match names
-        .is_empty()
-        .then(EmbedBatch::empty)
-        .or_else(|| embed_texts(context, &names))
-    {
-        Some(embedded) => embedded,
-        None => {
-            write_failed_index_state(
+    let embedded = if names.is_empty() {
+        EmbedBatch::empty()
+    } else {
+        embed_texts(context, &names).map_err(|cause| {
+            rebuild_failed(
                 context,
                 &state_key,
                 &request.project_root,
-                "embedding failed",
-            )?;
-            return Err(PluginError::new(
-                "semantic_index_rebuild_failed",
-                format!(
-                    "failed to rebuild Semantic search index for `{}`; expected neural.embed vectors",
-                    request.project_root
-                ),
-                true,
-            ));
-        }
+                "neural.embed vectors",
+                cause,
+            )
+        })?
     };
-    let vectors = elements.iter().zip(embedded.vectors).map(|(element, vector)| json!({
+    let mut vectors = elements.iter().zip(embedded.vectors).map(|(element, vector)| json!({
         "semantic_element_id": element.semantic_element_id.clone(),
         "project_root": request.project_root.clone(),
         "source_text": element.name.trim(),
         "vector": {"engine_id": embedded.engine_id, "model": embedded.model,
             "dimensions": vector.len(), "vector": vector, "normalized": false, "metadata": {}}
-    })).collect::<Vec<_>>();
-    if storage::store_element_name_vectors(context, &request.project_root, vectors).is_err() {
-        write_failed_index_state(
-            context,
-            &state_key,
-            &request.project_root,
-            "native vector storage failed",
-        )?;
-        return Err(PluginError::new(
-            "semantic_index_rebuild_failed",
-            format!(
-                "failed to rebuild Semantic search index for `{}`; expected native vector storage",
-                request.project_root
-            ),
-            true,
-        ));
+    }));
+    loop {
+        let batch = vectors
+            .by_ref()
+            .take(VECTOR_STORE_BATCH)
+            .collect::<Vec<_>>();
+        if batch.is_empty() {
+            break;
+        }
+        if let Err(cause) =
+            storage::store_element_name_vectors(context, &request.project_root, batch)
+        {
+            return Err(rebuild_failed(
+                context,
+                &state_key,
+                &request.project_root,
+                "native vector storage",
+                cause,
+            ));
+        }
     }
-    if text_vectors::index_html_sections(context, &request.project_root, &elements).is_err() {
-        write_failed_index_state(
-            context,
-            &state_key,
-            &request.project_root,
-            "native text vector storage failed",
-        )?;
-        return Err(PluginError::new(
-            "semantic_index_rebuild_failed",
-            format!(
-                "failed to rebuild Semantic search index for `{}`; expected native text vector storage",
-                request.project_root
-            ),
-            true,
-        ));
-    }
+    // Text vectors are per page and per section: their failures are reported, not fatal.
+    let text = text_vectors::index_html_sections(context, &request.project_root, &elements);
     write_index_state(
         context,
         &state_key,
@@ -293,25 +275,39 @@ pub(crate) fn rebuild_search_index(
     Ok(
         json!({"project_root": request.project_root, "index_state": "ready",
         "indexed_nodes": elements.len(), "commit_version": snapshot.commit_version,
-        "published_at": snapshot.published_at}),
+        "published_at": snapshot.published_at, "text_vectors": text}),
     )
 }
-fn write_failed_index_state(
+
+/// Stores the failed state with the cause, and returns the rebuild error that carries it.
+fn rebuild_failed(
     context: &mut PluginContext<'_>,
     state_key: &str,
     project_root: &str,
-    error: &str,
-) -> Result<(), PluginError> {
-    write_index_state(
-        context,
-        state_key,
-        SearchIndexState {
-            project_root: project_root.into(),
-            state: "failed".into(),
-            indexed_nodes: 0,
-            error: Some(error.into()),
-        },
-    )
+    expected: &str,
+    cause: PluginError,
+) -> PluginError {
+    let message = format!(
+        "failed to rebuild Semantic search index for `{project_root}`; expected {expected}: {}",
+        cause.message
+    );
+    let state = SearchIndexState {
+        project_root: project_root.into(),
+        state: "failed".into(),
+        indexed_nodes: 0,
+        error: Some(message.clone()),
+    };
+    match write_index_state(context, state_key, state) {
+        Ok(()) => PluginError::new("semantic_index_rebuild_failed", message, true),
+        Err(state_error) => PluginError::new(
+            "semantic_index_rebuild_failed",
+            format!(
+                "{message}; failed index state was not stored: {}",
+                state_error.message
+            ),
+            true,
+        ),
+    }
 }
 
 fn write_index_state(
@@ -375,7 +371,7 @@ fn vector_results(
             results: Some(Vec::new()),
         };
     }
-    let Some(embedded) = embed_texts(context, &[request.query.as_str()]) else {
+    let Some(embedded) = embed_texts(context, &[request.query.as_str()]).ok() else {
         return failed_vector_search();
     };
     let Some(query_vector) = embedded.vectors.first().cloned() else {
@@ -542,35 +538,46 @@ impl EmbedBatch {
     }
 }
 
-pub(crate) fn embed_texts(context: &mut PluginContext<'_>, texts: &[&str]) -> Option<EmbedBatch> {
+pub(crate) fn embed_texts(
+    context: &mut PluginContext<'_>,
+    texts: &[&str],
+) -> Result<EmbedBatch, PluginError> {
     let mut vectors = Vec::with_capacity(texts.len());
     let mut engine_id = None;
     let mut model = None;
     for batch in texts.chunks(MAX_NEURAL_EMBED_TEXTS) {
-        let output = context
-            .host_call("neural.embed", json!({"texts": batch}))
-            .ok()?;
-        let values = output["vectors"].as_array()?;
-        if values.len() != batch.len() {
-            return None;
-        }
+        let output = context.host_call("neural.embed", json!({"texts": batch}))?;
+        let values = output["vectors"]
+            .as_array()
+            .filter(|values| values.len() == batch.len())
+            .ok_or_else(|| embedding_error(format!("expected {} vectors", batch.len())))?;
         for value in values {
-            vectors.push(vector(value)?);
+            vectors.push(vector(value).ok_or_else(|| embedding_error("expected finite numbers"))?);
         }
         if engine_id.is_none() {
             engine_id = output["engine_id"].as_str().map(str::to_string);
             model = output["model"].as_str().map(str::to_string);
         }
     }
-    let dimensions = vectors.first()?.len();
+    let dimensions = vectors.first().map_or(0, Vec::len);
     if !(dimensions > 0 && vectors.iter().all(|vector| vector.len() == dimensions)) {
-        return None;
+        return Err(embedding_error(
+            "expected equal non-empty vector dimensions",
+        ));
     }
-    Some(EmbedBatch {
+    Ok(EmbedBatch {
         vectors,
-        engine_id: engine_id?,
+        engine_id: engine_id.ok_or_else(|| embedding_error("expected engine_id"))?,
         model,
     })
+}
+
+fn embedding_error(reason: impl Into<String>) -> PluginError {
+    PluginError::new(
+        "semantic_embedding_failed",
+        format!("embedding batch failed: {}", reason.into()),
+        true,
+    )
 }
 
 fn vector(value: &Value) -> Option<Vec<f32>> {

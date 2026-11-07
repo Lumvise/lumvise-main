@@ -1,7 +1,86 @@
 use super::*;
+use lumvise_plugin_runtime::PluginSystem;
+use std::path::Path;
 
 const PAGE: &str = "<html><body><h2>Overview</h2><p>Plain introduction.</p>\
 <h2>Details</h2><p>The parser reads each token.</p></body></html>";
+
+const WIKI_A: &str = "<html><body><h2>One</h2><p>alpha text.</p><h2>Two</h2><p>beta text.</p>\
+<h2>Three</h2><p>gamma text.</p></body></html>";
+const WIKI_B: &str = "<html><body><h2>Solo</h2><p>delta text.</p></body></html>";
+
+fn start_plugin(workspace: &Path, broker: &Arc<MemoryCapabilityBroker>) -> PluginSystem {
+    let (_, installed) = signed_install(workspace, &SigningKey::from_bytes(&[73; 32]));
+    let runtime = system(Arc::clone(broker));
+    runtime.install(&installed).expect("install");
+    runtime.start(PLUGIN_ID).expect("start");
+    runtime
+}
+
+/// Writes `pages` into a real project folder and returns its canonical root.
+fn write_project(dir: &Path, pages: &[(&str, &str)]) -> String {
+    let root = std::fs::canonicalize(dir).expect("canonical project root");
+    for (path, html) in pages {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("page folder")).expect("page folder");
+        std::fs::write(file, html).expect("write page");
+    }
+    root.to_string_lossy().into_owned()
+}
+
+/// Ingests every page and its `html_section`s. Fingerprints come from the indexer's own
+/// extraction, as they do during indexing.
+fn ingest_pages(
+    runtime: &PluginSystem,
+    broker: &MemoryCapabilityBroker,
+    root_text: &str,
+    pages: &[(&str, &str)],
+) {
+    let mut elements = Vec::new();
+    for (path, html) in pages {
+        elements.push(serde_json::json!({
+            "semantic_source_id": "source-web", "semantic_element_id": format!("file:{path}"),
+            "path": path, "semantic_element_type": "file",
+            "semantic_element_name": path, "start_line": 1, "end_line": 1,
+        }));
+        let sections = lumvise_project_indexer::html_section_texts(html).expect("sections");
+        for (index, section) in sections.iter().enumerate() {
+            elements.push(serde_json::json!({
+                "semantic_source_id": "source-web",
+                "semantic_element_id": format!("sec:{path}#{index}"),
+                "path": path, "semantic_element_type": "html_section",
+                "semantic_element_name": format!("section {index}"),
+                "start_line": 1, "end_line": 1,
+                "content_fingerprint": section.content_fingerprint,
+            }));
+        }
+    }
+    let batch = serde_json::json!({
+        "provider_instance_id": "web-indexer",
+        "project_root": root_text,
+        "semantic_sources": [{
+            "semantic_source_id": "source-web", "kind": "repository", "name": "web",
+            "root_path": root_text, "root_uri": format!("file://{root_text}")
+        }],
+        "semantic_elements": elements,
+        "semantic_relationships": [],
+    });
+    success(
+        runtime
+            .invoke(PLUGIN_ID, INGEST_EXPORT_ID, broker.observe_fixture(batch))
+            .expect("ingest pages"),
+    );
+}
+
+fn rebuild(runtime: &PluginSystem, root_text: &str) -> WireOutcome {
+    runtime
+        .invoke(
+            PLUGIN_ID,
+            REBUILD_SEARCH_INDEX_EXPORT_ID,
+            serde_json::json!({"project_root": root_text}),
+        )
+        .expect("rebuild invoke")
+}
 
 #[test]
 fn section_body_words_find_their_section_through_text_vectors() {
@@ -82,4 +161,84 @@ fn section_body_words_find_their_section_through_text_vectors() {
         found["results"][0]["element"]["semantic_element_id"],
         "sec:Details"
     );
+}
+
+#[test]
+fn rebuild_skips_only_a_rejected_section_and_stores_the_others() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    let pages = [("wiki/A.html", WIKI_A), ("wiki/B.html", WIKI_B)];
+    let root_text = write_project(project.path(), &pages);
+    ingest_pages(&runtime, &broker, &root_text, &pages);
+    *broker.embed_available.lock().expect("embed switch") = true;
+    broker.reject_text_vectors_for("sec:wiki/A.html#1");
+
+    let rebuilt = success(rebuild(&runtime, &root_text));
+
+    assert_eq!(rebuilt["index_state"], "ready");
+    // Page A keeps its two other sections; page B keeps its one.
+    assert_eq!(rebuilt["text_vectors"]["stored"], 3);
+    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 1);
+    assert_eq!(rebuilt["text_vectors"]["skipped_pages"], 0);
+    assert_eq!(
+        rebuilt["text_vectors"]["failures"][0]["semantic_element_id"],
+        "sec:wiki/A.html#1"
+    );
+    assert!(
+        rebuilt["text_vectors"]["failures"][0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("stale_text_vector"))
+    );
+}
+
+#[test]
+fn rebuild_keeps_vectors_for_readable_pages_when_one_page_is_unreadable() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    // Missing.html is indexed but never written, so project.source cannot read it.
+    let root_text = write_project(project.path(), &[("wiki/A.html", WIKI_A)]);
+    ingest_pages(
+        &runtime,
+        &broker,
+        &root_text,
+        &[("wiki/A.html", WIKI_A), ("wiki/Missing.html", WIKI_B)],
+    );
+    *broker.embed_available.lock().expect("embed switch") = true;
+
+    let rebuilt = success(rebuild(&runtime, &root_text));
+
+    assert_eq!(rebuilt["index_state"], "ready");
+    assert_eq!(rebuilt["text_vectors"]["stored"], 3);
+    assert_eq!(rebuilt["text_vectors"]["skipped_pages"], 1);
+    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 1);
+    let failure = &rebuilt["text_vectors"]["failures"][0];
+    assert_eq!(failure["path"], "wiki/Missing.html");
+    assert!(failure["semantic_element_id"].is_null());
+    assert!(
+        failure["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("No such file"))
+    );
+}
+
+#[test]
+fn rebuild_error_names_the_storage_cause_when_name_vectors_are_rejected() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let broker = Arc::new(MemoryCapabilityBroker::default());
+    let runtime = start_plugin(workspace.path(), &broker);
+    let project = tempfile::tempdir().expect("project");
+    let root_text = write_project(project.path(), &[("wiki/A.html", WIKI_A)]);
+    ingest_pages(&runtime, &broker, &root_text, &[("wiki/A.html", WIKI_A)]);
+    *broker.embed_available.lock().expect("embed switch") = true;
+    broker.fail_store_operation("store_element_name_vectors");
+
+    let error = failure(rebuild(&runtime, &root_text));
+
+    assert_eq!(error.code, "semantic_index_rebuild_failed");
+    assert!(error.message.contains("expected native vector storage"));
+    assert!(error.message.contains("injected_store_failure"));
 }

@@ -1155,6 +1155,53 @@
           },
           "published_at": {
             "type": "string"
+          },
+          "text_vectors": {
+            "additionalProperties": false,
+            "properties": {
+              "failures": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "semantic_element_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "semantic_element_id",
+                    "error"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "skipped_pages": {
+                "type": "integer"
+              },
+              "skipped_sections": {
+                "type": "integer"
+              },
+              "stored": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "stored",
+              "skipped_sections",
+              "skipped_pages",
+              "failures"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -1162,7 +1209,8 @@
           "index_state",
           "indexed_nodes",
           "commit_version",
-          "published_at"
+          "published_at",
+          "text_vectors"
         ],
         "type": "object"
       }
