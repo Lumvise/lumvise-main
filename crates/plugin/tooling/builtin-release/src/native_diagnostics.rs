@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn retains_matching_symbols_and_records_only_the_stripped_signed_copy() {
         let temporary = tempfile::tempdir().unwrap();
-        let original = std::env::current_exe().unwrap();
+        let original = compile_native_symbol_fixture(temporary.path());
         let original_hash = binary_sha256(&original).unwrap();
         let matrix = BuiltinReleaseMatrix {
             descriptors: BTreeMap::new(),
@@ -195,7 +195,17 @@ mod tests {
         assert_eq!(record["sha256"], binary_sha256(&binary).unwrap());
         assert_eq!(record["uuid"], executable_uuid(&binary).unwrap());
         assert_eq!(original_hash, binary_sha256(&original).unwrap());
+        assert_ne!(original_hash, binary_sha256(&binary).unwrap());
         assert!(diagnostics.join("symbols.dSYM").is_dir());
+        let compilation_units = checked(
+            Command::new("xcrun")
+                .args(["dwarfdump", "--debug-info"])
+                .arg(diagnostics.join("symbols.dSYM")),
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8_lossy(&compilation_units.stdout).contains("native_symbol_fixture.rs")
+        );
         assert!(
             fs::read_to_string(diagnostics.join("source-lookup.txt"))
                 .unwrap()
@@ -203,5 +213,25 @@ mod tests {
         );
         let load_commands = checked(Command::new("otool").arg("-l").arg(&binary)).unwrap();
         assert!(!String::from_utf8_lossy(&load_commands.stdout).contains("__DWARF"));
+        checked(
+            Command::new("codesign")
+                .args(["--verify", "--strict"])
+                .arg(&binary),
+        )
+        .unwrap();
+    }
+
+    fn compile_native_symbol_fixture(directory: &Path) -> PathBuf {
+        let source = directory.join("native_symbol_fixture.rs");
+        let binary = directory.join("native-symbol-fixture");
+        fs::write(&source, "fn main() { std::hint::black_box(42); }\n").unwrap();
+        // Symbolication needs real DWARF independently of the test harness profile.
+        let mut compiler = Command::new("rustc");
+        compiler.args(["--edition=2024", "-C", "debuginfo=2"]);
+        // Keep object DWARF for capture's dsymutil instead of rustc consuming it first.
+        compiler.args(["-C", "split-debuginfo=unpacked"]);
+        compiler.arg(&source).arg("-o").arg(&binary);
+        checked(&mut compiler).unwrap();
+        binary
     }
 }
