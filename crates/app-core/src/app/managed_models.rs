@@ -225,7 +225,7 @@ fn activate_vector(
         ))
         .map_err(|error| format!("loading managed vector model `{}`: {error}", entry.id))?;
     app.plugin_endpoints()
-        .set_plugin_vectorizer(Box::new(service))
+        .set_plugin_embedding_service(std::sync::Arc::new(service))
         .map_err(|error| error.to_string())
 }
 

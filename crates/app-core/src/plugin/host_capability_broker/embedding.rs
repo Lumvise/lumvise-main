@@ -1,13 +1,19 @@
 //! neural.embed validation and vectorizer execution; storage routing stays in the broker.
-use super::{NEURAL_EMBED_CAPABILITY, SharedPluginVectorizer};
+#[cfg(test)]
+mod tests;
+use super::{
+    NEURAL_CHUNK_TEXT_CAPABILITY, NEURAL_EMBED_CAPABILITY, PluginEmbeddingService,
+    SharedPluginVectorizer,
+};
+mod chunk_text;
+pub(super) use chunk_text::invoke_neural_chunk_text;
 use lumvise_db_core::{ArtifactTextVectorizer, TextEmbeddingTask};
 use lumvise_plugin_runtime::HostCapabilityError;
 use serde_json::{Map, Value, json};
 
 pub(super) const MAX_EMBED_TEXTS: usize = 128;
-const EMBED_INPUT_SHAPE: &str = "object with field `texts` and optional field `task`";
-const MAX_EMBED_TEXT_BYTES: usize = 32 * 1024;
-const MAX_EMBED_TOTAL_BYTES: usize = 256 * 1024;
+const EMBED_INPUT_SHAPE: &str =
+    "object with field `texts` and optional fields `task` and `expected_profile_fingerprint`";
 const MAX_EMBED_DIMENSIONS: usize = 4_096;
 
 pub(super) fn invoke_neural_embed(
@@ -15,25 +21,31 @@ pub(super) fn invoke_neural_embed(
     input: Value,
 ) -> Result<Value, HostCapabilityError> {
     let (texts, task) = embed_texts(&input)?;
-    let vectorizer = vectorizer
-        .lock()
-        .map_err(|_| embed_failure("plugin vectorizer mutex poisoned"))?
-        .clone()
-        .ok_or_else(|| embed_unavailable("no text vectorizer is configured"))?;
+    let selected = selected_service(vectorizer, NEURAL_EMBED_CAPABILITY)?;
+    let expected = expected_profile(&input)?;
+    let profile_fingerprint = checked_profile(&selected, expected)?;
     let embedded = texts
         .iter()
-        .map(|text| embed_one(vectorizer.as_ref(), text, task))
+        .map(|text| embed_one(selected.vectorizer.as_ref(), text, task))
         .collect::<Result<Vec<_>, _>>()?;
-    let vectors = embedded
-        .iter()
-        .map(|result| result.vector.clone())
-        .collect::<Vec<_>>();
-    validate_vectors(&vectors, texts.len())?;
+    embedded_response(embedded, profile_fingerprint, texts.len())
+}
+
+fn embedded_response(
+    embedded: Vec<lumvise_db_core::ArtifactTextVector>,
+    profile: Option<String>,
+    expected: usize,
+) -> Result<Value, HostCapabilityError> {
     let (engine_id, model) = embedded
         .first()
         .map(|result| (result.engine_id.clone(), result.model.clone()))
         .unwrap_or_default();
-    Ok(json!({"vectors": vectors, "engine_id": engine_id, "model": model}))
+    let vectors = embedded
+        .into_iter()
+        .map(|result| result.vector)
+        .collect::<Vec<_>>();
+    validate_vectors(&vectors, expected)?;
+    Ok(json!({"vectors":vectors,"engine_id":engine_id,"model":model,"profile_fingerprint":profile}))
 }
 
 fn embed_texts(input: &Value) -> Result<(Vec<&str>, TextEmbeddingTask), HostCapabilityError> {
@@ -50,15 +62,17 @@ fn embed_texts(input: &Value) -> Result<(Vec<&str>, TextEmbeddingTask), HostCapa
         .iter()
         .map(embed_text)
         .collect::<Result<Vec<_>, _>>()?;
-    validate_total_text_bytes(&texts, &fields["texts"])?;
     Ok((texts, task))
 }
 
 fn require_embed_fields(fields: &Map<String, Value>) -> Result<(), HostCapabilityError> {
     if fields.contains_key("texts")
-        && fields
-            .keys()
-            .all(|key| matches!(key.as_str(), "texts" | "task"))
+        && fields.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "texts" | "task" | "expected_profile_fingerprint"
+            )
+        })
     {
         return Ok(());
     }
@@ -89,24 +103,8 @@ fn validate_embed_count(count: usize, value: &Value) -> Result<(), HostCapabilit
 fn embed_text(value: &Value) -> Result<&str, HostCapabilityError> {
     value
         .as_str()
-        .filter(|text| !text.is_empty() && text.len() <= MAX_EMBED_TEXT_BYTES)
-        .ok_or_else(|| {
-            invalid_embed_input(
-                value,
-                &format!("non-empty UTF-8 string no larger than {MAX_EMBED_TEXT_BYTES} bytes"),
-            )
-        })
-}
-
-fn validate_total_text_bytes(texts: &[&str], value: &Value) -> Result<(), HostCapabilityError> {
-    let total = texts.iter().map(|text| text.len()).sum::<usize>();
-    if total <= MAX_EMBED_TOTAL_BYTES {
-        return Ok(());
-    }
-    Err(invalid_embed_input(
-        value,
-        &format!("texts totaling no more than {MAX_EMBED_TOTAL_BYTES} UTF-8 bytes"),
-    ))
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| invalid_embed_input(value, "non-empty UTF-8 string"))
 }
 
 fn embed_one(
@@ -116,7 +114,7 @@ fn embed_one(
 ) -> Result<lumvise_db_core::ArtifactTextVector, HostCapabilityError> {
     vectorizer
         .vectorize_artifact_text(text, task)
-        .map_err(|error| embed_failure(format!("text vectorization failed: {error}")))
+        .map_err(|_| embed_failure(format!("text vectorization failed for {} source bytes; expected a vector from the configured provider", text.len())))
 }
 
 fn validate_vectors(vectors: &[Vec<f32>], expected: usize) -> Result<(), HostCapabilityError> {
@@ -139,17 +137,11 @@ fn invalid_embed_input(value: &Value, expected: &str) -> HostCapabilityError {
     HostCapabilityError::new(
         NEURAL_EMBED_CAPABILITY,
         "invalid_host_capability_input",
-        format!("invalid neural.embed input `{value}`; expected {expected}"),
+        format!(
+            "invalid neural.embed input ({}); expected {expected}",
+            input_shape(value)
+        ),
         false,
-    )
-}
-
-fn embed_unavailable(message: impl Into<String>) -> HostCapabilityError {
-    HostCapabilityError::new(
-        NEURAL_EMBED_CAPABILITY,
-        "host_capability_unavailable",
-        message,
-        true,
     )
 }
 
@@ -160,4 +152,77 @@ fn embed_failure(message: impl Into<String>) -> HostCapabilityError {
         message,
         true,
     )
+}
+
+fn selected_service(
+    shared: &SharedPluginVectorizer,
+    capability: &str,
+) -> Result<PluginEmbeddingService, HostCapabilityError> {
+    shared
+        .lock()
+        .map_err(|_| embed_failure("plugin vectorizer mutex poisoned"))?
+        .clone()
+        .ok_or_else(|| {
+            HostCapabilityError::new(
+                capability,
+                "host_capability_unavailable",
+                "no text vectorizer is configured",
+                true,
+            )
+        })
+}
+
+fn expected_profile(input: &Value) -> Result<Option<&str>, HostCapabilityError> {
+    match input.get("expected_profile_fingerprint") {
+        None => Ok(None),
+        Some(value) => value
+            .as_str()
+            .filter(|profile| !profile.is_empty())
+            .map(Some)
+            .ok_or_else(|| {
+                invalid_embed_input(value, "non-empty expected_profile_fingerprint string")
+            }),
+    }
+}
+
+fn checked_profile(
+    service: &PluginEmbeddingService,
+    expected: Option<&str>,
+) -> Result<Option<String>, HostCapabilityError> {
+    let profile = service
+        .planner
+        .as_ref()
+        .and_then(|planner| planner.embedding_profile_fingerprint().ok());
+    match (expected, profile) {
+        (Some(_), None) => Err(unsupported_profile()),
+        (Some(expected), Some(actual)) if expected != actual => Err(mismatched_profile()),
+        (_, actual) => Ok(actual),
+    }
+}
+
+fn unsupported_profile() -> HostCapabilityError {
+    HostCapabilityError::new(
+        NEURAL_EMBED_CAPABILITY,
+        "unsupported_embedding_profile",
+        "configured backend cannot attest owned local assets",
+        false,
+    )
+}
+
+fn mismatched_profile() -> HostCapabilityError {
+    HostCapabilityError::new(
+        NEURAL_EMBED_CAPABILITY,
+        "embedding_profile_conflict",
+        "expected_profile_fingerprint differs from selected immutable embedding service",
+        true,
+    )
+}
+
+fn input_shape(value: &Value) -> String {
+    match value {
+        Value::String(text) => format!("string of {} bytes", text.len()),
+        Value::Array(items) => format!("array of {} items", items.len()),
+        Value::Object(fields) => format!("object of {} fields", fields.len()),
+        _ => format!("non-text scalar {value}"),
+    }
 }

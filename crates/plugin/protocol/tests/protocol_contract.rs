@@ -22,8 +22,8 @@ fn codec_round_trips_host_hello_through_public_contract() {
     assert_eq!(decoded, message);
 }
 #[test]
-fn protobuf_protocol_uses_major_seven() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(7, 0));
+fn protobuf_protocol_uses_major_eight() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(8, 0));
 }
 
 #[test]
@@ -47,6 +47,34 @@ fn codec_round_trips_host_invocation() {
     });
 
     assert_round_trip(message);
+}
+
+#[test]
+fn codec_round_trips_staged_section_chunk_and_profile_guard() {
+    for (capability_id, input) in [
+        (
+            "storage.semantic",
+            json!({
+                "operation": "stage_element_text_vector_chunk",
+                "key": {"project_root": "/repo", "semantic_element_id": "section", "generation_id": "run-1"},
+                "chunk": 3, "vector": [0.25, -0.5]
+            }),
+        ),
+        (
+            "neural.embed",
+            json!({
+                "texts": ["tail: 日本語"], "task": "document",
+                "expected_profile_fingerprint": "sha256:profile"
+            }),
+        ),
+    ] {
+        assert_round_trip(message(MessageBody::HostInvoke {
+            session_id: "session-1".into(),
+            invocation_id: "rebuild-1".into(),
+            capability_id: capability_id.into(),
+            input,
+        }));
+    }
 }
 #[test]
 fn codec_round_trips_storage_trigger_batch_contract() {
@@ -194,7 +222,7 @@ fn stream_codec_reads_frame_written_by_public_writer() {
 #[test]
 fn codec_rejects_previous_protocol_major_with_versions() {
     let invalid = WireMessage {
-        protocol: ProtocolVersion::new(6, 0),
+        protocol: ProtocolVersion::new(7, 0),
         body: MessageBody::HostShutdown {
             session_id: "session-1".into(),
             reason: None,
@@ -206,8 +234,8 @@ fn codec_rejects_previous_protocol_major_with_versions() {
     assert!(matches!(
         error,
         ProtocolError::UnsupportedProtocolMajor {
-            actual: 6,
-            expected: 7
+            actual: 7,
+            expected: 8
         }
     ));
 }

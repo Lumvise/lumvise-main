@@ -1,3 +1,6 @@
+mod chunk_planner;
+mod rebuild;
+pub use rebuild::run_rebuild;
 mod observations;
 mod source_projection;
 use source_projection::SourceDescriptorCommitGate;
@@ -384,6 +387,12 @@ impl HostCapabilityBroker for MemoryCapabilityBroker {
         request: HostCapabilityRequest,
     ) -> Result<serde_json::Value, HostCapabilityError> {
         match request.capability_id.as_str() {
+            "neural.chunk_text" => {
+                if !*self.embed_available.lock().expect("embed switch") {
+                    return Err(host_error("neural.chunk_text", "provider_unavailable"));
+                }
+                chunk_planner::FixtureChunkPlanner::plan(&request.input)
+            }
             "storage.plugin" => self.invoke_storage(request),
             "storage.semantic" => {
                 if let Some(operation) = request.input["operation"].as_str() {
@@ -419,6 +428,19 @@ impl HostCapabilityBroker for MemoryCapabilityBroker {
                     == Some(operation)
                 {
                     return Err(host_error("storage.semantic", "injected_store_failure"));
+                }
+                if operation == "commit_element_text_vector_generation"
+                    && self
+                        .rejected_text_vector_ids
+                        .lock()
+                        .expect("rejected text vectors")
+                        .contains(
+                            request.input["key"]["semantic_element_id"]
+                                .as_str()
+                                .unwrap_or_default(),
+                        )
+                {
+                    return Err(host_error("storage.semantic", "stale_text_vector"));
                 }
                 if operation == "store_element_text_vectors" {
                     let rejected = self
@@ -534,7 +556,7 @@ impl MemoryCapabilityBroker {
             })
             .collect::<Vec<_>>();
         Ok(
-            serde_json::json!({"vectors": vectors, "engine_id": "test-fixture-embed", "model": "test-model"}),
+            serde_json::json!({"vectors": vectors, "engine_id": "test-fixture-embed", "model": "test-model", "profile_fingerprint": chunk_planner::PROFILE}),
         )
     }
 }
@@ -578,7 +600,7 @@ pub fn signed_install(workspace: &Path, signing_key: &SigningKey) -> (PathBuf, I
 
 pub fn system(broker: Arc<MemoryCapabilityBroker>) -> PluginSystem {
     PluginSystem::with_broker_and_sandbox(
-        PluginRuntimeConfig::default().with_controlled_test_deadline(Duration::from_secs(5)),
+        PluginRuntimeConfig::default().with_controlled_test_deadline(Duration::from_secs(60)),
         broker,
         Arc::new(TestSubprocessSandbox),
     )

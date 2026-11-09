@@ -175,35 +175,38 @@ impl<'app> PluginEndpoints<'app> {
         &self,
         vectorizer: Box<dyn ArtifactTextVectorizer + Send + Sync>,
     ) -> crate::Result<()> {
-        let probe = vectorizer
-            .vectorize_artifact_text(
-                VECTOR_ENGINE_IDENTITY_PROBE_TEXT,
-                lumvise_db_core::TextEmbeddingTask::Document,
-            )
-            .map_err(|error| {
-                AppCoreError::invalid_value(
-                    error.to_string(),
-                    "vectorizer able to embed its identity probe text",
-                )
-            })?;
-        let identity = VectorEngineIdentity {
-            engine_id: probe.engine_id,
-            model: probe.model,
-        };
-        let vectorizer: Arc<dyn ArtifactTextVectorizer + Send + Sync> = Arc::from(vectorizer);
-        {
-            let mut current = self
-                .app
-                .plugin_vectorizer
-                .lock()
-                .map_err(|_| AppCoreError::poisoned_mutex("plugin_vectorizer"))?;
-            *current = Some(vectorizer);
-        }
+        self.install_plugin_embedding_service(
+            host_capability_broker::PluginEmbeddingService::unplanned(Arc::from(vectorizer)),
+        )
+    }
+
+    /// Installs one immutable service for planning, profile checks and embedding.
+    /// Example: `app.plugin_endpoints().set_plugin_embedding_service(Arc::new(service))?`.
+    pub fn set_plugin_embedding_service(
+        &self,
+        service: Arc<lumvise_neural_core::text2vector::Text2VectorService>,
+    ) -> crate::Result<()> {
+        self.install_plugin_embedding_service(
+            host_capability_broker::PluginEmbeddingService::planned(service),
+        )
+    }
+
+    fn install_plugin_embedding_service(
+        &self,
+        service: host_capability_broker::PluginEmbeddingService,
+    ) -> crate::Result<()> {
+        let identity = probe_embedding_identity(&service)?;
+        let mut current = self
+            .app
+            .plugin_vectorizer
+            .lock()
+            .map_err(|_| AppCoreError::poisoned_mutex("plugin_vectorizer"))?;
         let mut active = self
             .app
             .active_vector_engine
             .lock()
             .map_err(|_| AppCoreError::poisoned_mutex("active_vector_engine"))?;
+        *current = Some(service);
         *active = Some(identity);
         Ok(())
     }
@@ -237,8 +240,30 @@ impl<'app> PluginEndpoints<'app> {
             .plugin_vectorizer
             .lock()
             .map_err(|_| AppCoreError::poisoned_mutex("plugin_vectorizer"))?
-            .clone())
+            .clone()
+            .map(|service| service.vectorizer))
     }
 }
 
 const VECTOR_ENGINE_IDENTITY_PROBE_TEXT: &str = "lumvise-vector-engine-identity-probe";
+
+fn probe_embedding_identity(
+    service: &host_capability_broker::PluginEmbeddingService,
+) -> crate::Result<VectorEngineIdentity> {
+    let probe = service
+        .vectorizer
+        .vectorize_artifact_text(
+            VECTOR_ENGINE_IDENTITY_PROBE_TEXT,
+            lumvise_db_core::TextEmbeddingTask::Document,
+        )
+        .map_err(|_| {
+            AppCoreError::invalid_value(
+                "embedding identity probe",
+                "vectorizer able to embed its identity probe text",
+            )
+        })?;
+    Ok(VectorEngineIdentity {
+        engine_id: probe.engine_id,
+        model: probe.model,
+    })
+}

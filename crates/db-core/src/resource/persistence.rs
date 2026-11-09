@@ -164,6 +164,7 @@ impl RelationalPersistence for CentralizedPersistence {
 pub(super) fn encode_semantic_operation(
     operation: SemanticOperation,
 ) -> Result<SemanticOperationV1> {
+    reject_local_text_generation(&operation)?;
     let operation_name = semantic_operation_name(&operation).into();
     Ok(SemanticOperationV1 {
         operation_name,
@@ -175,6 +176,7 @@ pub(super) fn decode_semantic_operation(
     operation: &SemanticOperationV1,
 ) -> Result<SemanticOperation> {
     let decoded: SemanticOperation = decode_record(operation, SEMANTIC_OPERATION_TYPE)?;
+    reject_local_text_generation(&decoded)?;
     verify_name(&operation.operation_name, semantic_operation_name(&decoded))?;
     Ok(decoded)
 }
@@ -437,6 +439,16 @@ fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
         SemanticOperation::StoreElementNameVectors { .. } => "StoreElementNameVectors",
         SemanticOperation::SearchElementTextVectors { .. } => "SearchElementTextVectors",
         SemanticOperation::StoreElementTextVectors { .. } => "StoreElementTextVectors",
+        SemanticOperation::BeginElementTextVectorGeneration { .. } => {
+            "BeginElementTextVectorGeneration"
+        }
+        SemanticOperation::StageElementTextVectorChunk { .. } => "StageElementTextVectorChunk",
+        SemanticOperation::CommitElementTextVectorGeneration { .. } => {
+            "CommitElementTextVectorGeneration"
+        }
+        SemanticOperation::AbortElementTextVectorGeneration { .. } => {
+            "AbortElementTextVectorGeneration"
+        }
         SemanticOperation::SearchArtifactTextVectors { .. } => "SearchArtifactTextVectors",
         SemanticOperation::StoreArtifactTextVectors { .. } => "StoreArtifactTextVectors",
         SemanticOperation::RelationshipsFrom { .. } => "RelationshipsFrom",
@@ -478,6 +490,7 @@ fn semantic_operation_name(operation: &SemanticOperation) -> &'static str {
 
 fn semantic_result_name(result: &SemanticResult) -> &'static str {
     match result {
+        SemanticResult::ElementTextVectorGeneration(_) => "ElementTextVectorGeneration",
         SemanticResult::RevisionFamilies(_) => "RevisionFamilies",
         SemanticResult::RevisionConnections(_) => "RevisionConnections",
         SemanticResult::RevisionSelection(_) => "RevisionSelection",
@@ -589,4 +602,20 @@ fn relational_result_name(result: &RelationalResult) -> &'static str {
         RelationalResult::McpInstances(_) => "McpInstances",
         RelationalResult::McpInstanceDeregistered { .. } => "McpInstanceDeregistered",
     }
+}
+
+fn reject_local_text_generation(operation: &SemanticOperation) -> Result<()> {
+    if matches!(
+        operation,
+        SemanticOperation::BeginElementTextVectorGeneration { .. }
+            | SemanticOperation::StageElementTextVectorChunk { .. }
+            | SemanticOperation::CommitElementTextVectorGeneration { .. }
+            | SemanticOperation::AbortElementTextVectorGeneration { .. }
+    ) {
+        return Err(DbError::invalid_value(
+            semantic_operation_name(operation),
+            "local persistence for section-vector generation operations",
+        ));
+    }
+    Ok(())
 }

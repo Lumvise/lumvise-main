@@ -105,6 +105,17 @@ impl SemanticPersistence for LocalPersistence {
             .storage_manager()
             .semantic_storage()
             .with_control(control.clone());
+        // Live readers must not enter a publication planner while another writer is held.
+        if matches!(
+            &operation,
+            SemanticOperation::BeginElementTextVectorGeneration { .. }
+                | SemanticOperation::StageElementTextVectorChunk { .. }
+                | SemanticOperation::CommitElementTextVectorGeneration { .. }
+                | SemanticOperation::AbortElementTextVectorGeneration { .. }
+                | SemanticOperation::Maintenance
+        ) {
+            storage.expire_text_vector_generations()?;
+        }
         match operation {
             SemanticOperation::SearchProjectStructure { project_root } => Ok(
                 SemanticResult::ProjectSnapshot(storage.search_project_structure(&project_root)?),
@@ -429,6 +440,26 @@ impl SemanticPersistence for LocalPersistence {
                     model.as_deref(),
                 )?,
             )),
+            SemanticOperation::BeginElementTextVectorGeneration { spec } => {
+                Ok(SemanticResult::ElementTextVectorGeneration(
+                    storage.begin_text_vector_generation(&spec)?,
+                ))
+            }
+            SemanticOperation::StageElementTextVectorChunk { key, chunk, vector } => {
+                Ok(SemanticResult::ElementTextVectorGeneration(
+                    storage.stage_text_vector_chunk(&key, chunk, &vector)?,
+                ))
+            }
+            SemanticOperation::CommitElementTextVectorGeneration { key } => {
+                Ok(SemanticResult::ElementTextVectorGeneration(
+                    storage.commit_text_vector_generation(&key)?,
+                ))
+            }
+            SemanticOperation::AbortElementTextVectorGeneration { key } => {
+                Ok(SemanticResult::ElementTextVectorGeneration(
+                    storage.abort_text_vector_generation(&key)?,
+                ))
+            }
             SemanticOperation::StoreElementTextVectors {
                 project_root,
                 vectors,
@@ -937,3 +968,6 @@ mod integrity_tests;
 
 #[cfg(test)]
 mod membership_copy_tests;
+
+#[cfg(test)]
+mod text_generation_tests;

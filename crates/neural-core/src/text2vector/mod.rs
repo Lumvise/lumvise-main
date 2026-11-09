@@ -1,3 +1,6 @@
+mod chunking;
+pub use chunking::{TextChunkPlan, TextChunkPlanRequest, TextChunkPlanner, TextChunkRange};
+
 pub mod request;
 pub mod response;
 pub mod runtime_config;

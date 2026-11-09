@@ -15,6 +15,7 @@ mod ingest;
 mod manifest;
 mod models;
 mod query;
+mod rebuild_contract;
 mod revision_control;
 mod revision_reads;
 mod snapshot;

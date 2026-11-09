@@ -11,6 +11,7 @@ use semver::Version;
 pub(super) const PLUGIN_STORAGE_CAPABILITY: &str = "storage.plugin";
 pub(super) const SEMANTIC_STORAGE: &str = "storage.semantic";
 pub(super) const SEMANTIC_SNAPSHOT_CAPABILITY: &str = "semantic.snapshot";
+pub(super) const NEURAL_CHUNK_TEXT_CAPABILITY: &str = "neural.chunk_text";
 pub(super) const NEURAL_EMBED_CAPABILITY: &str = "neural.embed";
 pub(super) const PLUGIN_INVOKE_CAPABILITY: &str = "plugin.invoke";
 pub(super) const FRONTEND_ACTION: &str = "frontend.action";
@@ -45,6 +46,7 @@ pub(super) enum HostCapabilityRoute {
     IndexPublication,
     ProjectImport,
     NeuralEmbed,
+    NeuralChunkText,
     PluginInvokeAuthorization,
     KnowledgeAuthority,
     Services,
@@ -65,7 +67,7 @@ impl HostCapabilityDefinition {
     }
 }
 
-const HOST_CAPABILITIES: [HostCapabilityDefinition; 25] = [
+const HOST_CAPABILITIES: [HostCapabilityDefinition; 26] = [
     HostCapabilityDefinition {
         minor: 4,
         ..capability(
@@ -89,6 +91,10 @@ const HOST_CAPABILITIES: [HostCapabilityDefinition; 25] = [
         HostCapabilityRoute::SemanticSnapshot,
     ),
     capability(NEURAL_EMBED_CAPABILITY, HostCapabilityRoute::NeuralEmbed),
+    capability(
+        NEURAL_CHUNK_TEXT_CAPABILITY,
+        HostCapabilityRoute::NeuralChunkText,
+    ),
     capability(
         PLUGIN_INVOKE_CAPABILITY,
         HostCapabilityRoute::PluginInvokeAuthorization,
@@ -172,7 +178,7 @@ mod tests {
             .map(|definition| definition.id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(identities.len(), 25);
+        assert_eq!(identities.len(), 26);
         assert_eq!(identities, expected_identities());
     }
 
@@ -236,7 +242,7 @@ mod tests {
         expected_routes().into_iter().map(|(id, _)| id).collect()
     }
 
-    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 25] {
+    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 26] {
         [
             (
                 super::super::knowledge_authority::CAPABILITY,
@@ -255,6 +261,10 @@ mod tests {
                 HostCapabilityRoute::SemanticSnapshot,
             ),
             (NEURAL_EMBED_CAPABILITY, HostCapabilityRoute::NeuralEmbed),
+            (
+                NEURAL_CHUNK_TEXT_CAPABILITY,
+                HostCapabilityRoute::NeuralChunkText,
+            ),
             (
                 PLUGIN_INVOKE_CAPABILITY,
                 HostCapabilityRoute::PluginInvokeAuthorization,

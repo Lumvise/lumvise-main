@@ -9,6 +9,7 @@ use super::{KNOWLEDGE_PLUGIN_ID, NUCLEUS_PLUGIN_ID, SEMANTIC_PLUGIN_ID};
 
 mod revision_publication;
 mod revision_staging;
+mod vector_generations;
 
 fn observed_revision(db: &LocalPersistence) -> Value {
     let SemanticResult::ProjectIdentity(identity) = semantic_result(

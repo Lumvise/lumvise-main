@@ -1,4 +1,5 @@
 use super::*;
+mod vector_generations;
 use crate::{AppCore, ConnectorGrantMaintainer};
 use lumvise_plugin_runtime::{
     HostCapabilityBroker, HostCapabilityRequest, PluginInvocationClass, PluginInvocationContext,

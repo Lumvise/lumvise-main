@@ -5,7 +5,10 @@ use crate::text2vector::FastEmbedText2VectorConfig;
 #[cfg(feature = "fastembed")]
 use crate::text2vector::FastEmbedText2VectorEngine;
 use crate::text2vector::spawned_engine::SpawnedText2VectorEngine;
-use crate::text2vector::{Text2VectorRequest, Text2VectorResponse, Text2VectorRuntimeConfig};
+use crate::text2vector::{
+    Text2VectorRequest, Text2VectorResponse, Text2VectorRuntimeConfig, TextChunkPlan,
+    TextChunkPlanRequest, TextChunkPlanner,
+};
 use lumvise_db_core::TextEmbeddingTask;
 
 pub struct Text2VectorService {
@@ -162,5 +165,57 @@ impl lumvise_db_core::ArtifactTextVectorizer for Text2VectorService {
             normalized: response.normalized,
             metadata: response.metadata.metadata,
         })
+    }
+}
+
+impl TextChunkPlanner for Text2VectorService {
+    fn embedding_profile_fingerprint(&self) -> Result<String> {
+        match &self.backend {
+            Text2VectorBackend::Spawned(_) => Err(unsupported_chunk_planning()),
+            #[cfg(feature = "fastembed")]
+            Text2VectorBackend::FastEmbed(engine) => engine.embedding_profile_fingerprint(),
+        }
+    }
+
+    fn plan_text_chunks(&self, request: &TextChunkPlanRequest) -> Result<TextChunkPlan> {
+        match &self.backend {
+            Text2VectorBackend::Spawned(_) => Err(unsupported_chunk_planning()),
+            #[cfg(feature = "fastembed")]
+            Text2VectorBackend::FastEmbed(engine) => engine.plan_text_chunks(request),
+        }
+    }
+}
+
+fn unsupported_chunk_planning() -> crate::NeuralError {
+    crate::NeuralError::InvalidValue {
+        value: "spawned embedding backend".into(),
+        expected: "owned local tokenizer and model assets for supported token planning/profile attestation".into(),
+    }
+}
+
+#[cfg(test)]
+mod chunk_backend_tests {
+    use super::*;
+    #[test]
+    fn spawned_service_explicitly_refuses_profile_and_chunk_planning() {
+        let service = Text2VectorService::new(EngineConfig {
+            engine_id: "spawned".into(),
+            spawn: crate::SpawnConfig {
+                command: "echo".into(),
+                args: vec![],
+                timeout_ms: 1000,
+            },
+            expected_dimensions: None,
+        })
+        .unwrap();
+        assert!(service.embedding_profile_fingerprint().is_err());
+        let request = TextChunkPlanRequest {
+            text: "private source".into(),
+            task: TextEmbeddingTask::Document,
+            max_tokens: 1024,
+        };
+        let error = service.plan_text_chunks(&request).unwrap_err();
+        assert!(error.to_string().contains("owned local tokenizer"));
+        assert!(!error.to_string().contains("private source"));
     }
 }

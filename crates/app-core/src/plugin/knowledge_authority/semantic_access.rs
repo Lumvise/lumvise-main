@@ -218,6 +218,14 @@ impl KnowledgeSemanticAccess<'_> {
     ) -> lumvise_db_core::Result<()> {
         use SemanticOperation::*;
         match operation {
+            BeginElementTextVectorGeneration { spec } => {
+                self.require_root(&spec.key.project_root, scope, true)
+            }
+            StageElementTextVectorChunk { key, .. }
+            | CommitElementTextVectorGeneration { key }
+            | AbortElementTextVectorGeneration { key } => {
+                self.require_root(&key.project_root, scope, true)
+            }
             SearchElementCandidates {
                 project_root: Some(root),
                 ..
@@ -457,6 +465,11 @@ impl KnowledgeSemanticAccess<'_> {
         scope: Option<&KnowledgeAccessContext>,
     ) -> lumvise_db_core::Result<SemanticResult> {
         match result {
+            SemanticResult::ElementTextVectorGeneration(status) => {
+                // A surviving session may lose its write grant while publication runs.
+                self.require_root(&status.key.project_root, scope, true)?;
+                Ok(SemanticResult::ElementTextVectorGeneration(status))
+            }
             SemanticResult::ProjectRoots(roots) => Ok(SemanticResult::ProjectRoots(
                 roots
                     .into_iter()

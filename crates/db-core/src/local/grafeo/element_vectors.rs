@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::ArtifactTextVectorizer;
+use crate::{ArtifactTextVectorizer, TextEmbeddingTask};
 use std::collections::{BTreeMap, HashSet};
 
 use crate::local::grafeo::graph_rows::{
@@ -37,7 +37,8 @@ impl<'db> SemanticStorage<'db> {
     ) -> Result<()> {
         validate_element(element)?;
         let source_text = element_name_text(element)?;
-        let vector = vectorizer.vectorize_artifact_text(&source_text)?;
+        let vector =
+            vectorizer.vectorize_artifact_text(&source_text, TextEmbeddingTask::Document)?;
         self.commit_preplanned_graph_write(
             |database| {
                 Ok((
@@ -270,7 +271,8 @@ impl<'db> SemanticStorage<'db> {
         vectorizer: &dyn ArtifactTextVectorizer,
     ) -> Result<()> {
         let source_text = element_name_text(element)?;
-        let vector = vectorizer.vectorize_artifact_text(&source_text)?;
+        let vector =
+            vectorizer.vectorize_artifact_text(&source_text, TextEmbeddingTask::Document)?;
         self.commit_preplanned_graph_write(
             |database| {
                 prepare_element_name_vector_replace(database, element, &source_text, &vector)

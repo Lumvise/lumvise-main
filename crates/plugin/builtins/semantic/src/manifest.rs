@@ -1,4 +1,5 @@
 mod guidance;
+mod rebuild;
 mod schemas;
 pub(crate) use guidance::analysis_description;
 use lumvise_plugin_protocol::CURRENT_PROTOCOL_VERSION;
@@ -31,7 +32,7 @@ pub const DEPENDENCY_TREE_EXPORT_ID: &str = "get_dependency_tree";
 pub const ELEMENT_AT_LOCATION_EXPORT_ID: &str = "get_element_at_location";
 /// MCP export searching semantic elements.
 pub const SEARCH_EXPORT_ID: &str = "search_semantic_elements";
-/// MCP export rebuilding one bounded page of the Semantic search vector index.
+/// MCP export starting, continuing or canceling a durable search vector rebuild.
 pub const REBUILD_SEARCH_INDEX_EXPORT_ID: &str = "rebuild_search_index";
 /// MCP export ingesting one semantic index batch.
 pub const INGEST_EXPORT_ID: &str = "ingest_index_batch";
@@ -264,6 +265,10 @@ pub(crate) fn source(target: &str, executable_sha256: &str) -> PluginManifest {
                 id: "neural.embed".into(),
                 version: "^1.0".into(),
             },
+            HostCapabilityRequirement {
+                id: "neural.chunk_text".into(),
+                version: "^1.0".into(),
+            },
         ],
     }
 }
@@ -392,41 +397,8 @@ fn exports() -> Vec<ExportDescriptor> {
         descriptor(
             Invocation::RebuildSearchIndex,
             ExportSurface::McpTool,
-            object(
-                &["project_root"],
-                json!({
-                    "project_root": string(),
-                    "mode": {"type": "string", "enum": ["full", "names", "text"]},
-                    "paths": array(string()),
-                }),
-            ),
-            object(
-                &["project_root", "text_vectors", "pending_paths"],
-                json!({
-                    "project_root": string(),
-                    "index_state": {"type": "string", "enum": ["rebuilding", "ready"]},
-                    "indexed_nodes": integer(), "commit_version": integer(),
-                    "published_at": string(),
-                    "text_vectors": {
-                        "type": ["object", "null"],
-                        "additionalProperties": false,
-                        "required": ["stored", "skipped_sections", "skipped_pages", "failures"],
-                        "properties": {
-                            "stored": integer(), "skipped_sections": integer(),
-                            "skipped_pages": integer(),
-                            "failures": array(object(
-                                &["path", "semantic_element_id", "error"],
-                                json!({
-                                    "path": string(),
-                                    "semantic_element_id": {"type": ["string", "null"]},
-                                    "error": string()
-                                }),
-                            )),
-                        },
-                    },
-                    "pending_paths": array(string()),
-                }),
-            ),
+            rebuild::input_schema(),
+            rebuild::output_schema(),
         ),
         descriptor(
             Invocation::Ingest,

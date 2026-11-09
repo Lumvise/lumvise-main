@@ -89,6 +89,9 @@ impl DbCore {
             change_buffer: Arc::new(Mutex::new(ChangeBuffer::new(latest_published_revision))),
             change_hook_operations: Mutex::new(()),
         };
+        db.storage_manager()
+            .semantic_storage()
+            .expire_text_vector_generations()?;
         Ok(db)
     }
 

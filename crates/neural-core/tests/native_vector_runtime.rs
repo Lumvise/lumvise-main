@@ -146,13 +146,18 @@ fn local_bge_models_use_cls_and_publish_a_new_vector_identity() {
             "{model}: {:?}",
             embedded.vector
         );
-        assert_eq!(embedded.metadata.engine_id, "fixture-engine::bge-cls-v1");
+        assert!(
+            embedded
+                .metadata
+                .engine_id
+                .starts_with("fixture-engine::bge-cls-v1::profile-")
+        );
         assert_eq!(embedded.metadata.model.as_deref(), Some(model));
     }
 }
 
 #[test]
-fn local_minilm_and_custom_models_keep_mean_pooling_and_identity() {
+fn local_minilm_and_custom_models_keep_mean_pooling_with_attested_identity() {
     let fixture = PoolingOnnxFixture::new();
     for model in [
         "all-minilm-l6-v2",
@@ -169,6 +174,128 @@ fn local_minilm_and_custom_models_keep_mean_pooling_and_identity() {
                 embedded.vector
             );
         }
-        assert_eq!(embedded.metadata.engine_id, "fixture-engine");
+        assert!(
+            embedded
+                .metadata
+                .engine_id
+                .starts_with("fixture-engine::profile-")
+        );
     }
+}
+
+impl PoolingOnnxFixture {
+    fn profile_engine(&self, max_length: usize) -> FastEmbedText2VectorEngine {
+        let mut config = FastEmbedText2VectorConfig::local_onnx(
+            "fixture-engine",
+            "custom-local-model",
+            self.assets.path().into(),
+        );
+        config.max_length = Some(max_length);
+        FastEmbedText2VectorEngine::new(config).unwrap()
+    }
+}
+
+fn vector_for(engine: &FastEmbedText2VectorEngine) -> lumvise_db_core::ArtifactTextVector {
+    let response = engine
+        .embed(&lumvise_neural_core::text2vector::Text2VectorRequest {
+            text: "first second".into(),
+            model: None,
+        })
+        .unwrap();
+    lumvise_db_core::ArtifactTextVector {
+        engine_id: response.metadata.engine_id,
+        model: response.metadata.model,
+        dimensions: response.dimensions,
+        vector: response.vector,
+        normalized: response.normalized,
+        metadata: response.metadata.metadata,
+    }
+}
+
+fn execute_vector_operation(
+    db: &lumvise_db_core::LocalPersistence,
+    operation: lumvise_db_core::SemanticOperation,
+) -> lumvise_db_core::SemanticResult {
+    use lumvise_db_core::SemanticPersistence;
+    db.execute(
+        operation,
+        &lumvise_resource_routing::InvocationControl::sixty_seconds(),
+    )
+    .unwrap()
+}
+
+fn persist_profile_vector(
+    db: &lumvise_db_core::LocalPersistence,
+    vector: lumvise_db_core::ArtifactTextVector,
+) {
+    use lumvise_db_core::{SemanticElement, SemanticOperation, StoredSemanticElementTextVector};
+    let element = SemanticElement {
+        project_root: "/profile-canary".into(),
+        semantic_element_id: "section".into(),
+        semantic_source_id: "page".into(),
+        path: "page.html".into(),
+        element_kind: "html_section".into(),
+        name: "Heading".into(),
+        parent_element_id: None,
+        content_fingerprint: Some("fp1:000000000000000a:000000000000000a".into()),
+        start_line: Some(1),
+        end_line: Some(1),
+        lifecycle: "active".into(),
+        match_evidence: None,
+        metadata: serde_json::json!({}),
+        revision_dependencies: vec![],
+    };
+    execute_vector_operation(
+        db,
+        SemanticOperation::SyncStructure {
+            project_root: "/profile-canary".into(),
+            elements: vec![element],
+            relationships: vec![],
+        },
+    );
+    execute_vector_operation(
+        db,
+        SemanticOperation::StoreElementTextVectors {
+            project_root: "/profile-canary".into(),
+            vectors: vec![StoredSemanticElementTextVector {
+                semantic_element_id: "section".into(),
+                project_root: "/profile-canary".into(),
+                chunk: 0,
+                content_fingerprint: "fp1:000000000000000a:000000000000000a".into(),
+                vector,
+            }],
+        },
+    );
+}
+
+fn profile_search_count(
+    db: &lumvise_db_core::LocalPersistence,
+    query: lumvise_db_core::ArtifactTextVector,
+) -> usize {
+    use lumvise_db_core::{SemanticOperation, SemanticResult};
+    match execute_vector_operation(
+        db,
+        SemanticOperation::SearchElementTextVectors {
+            project_root: "/profile-canary".into(),
+            query: query.vector,
+            k: 5,
+            engine_id: query.engine_id,
+            model: query.model,
+        },
+    ) {
+        SemanticResult::ElementVectorSearch(results) => results.len(),
+        other => panic!("expected element vector results, got {other:?}"),
+    }
+}
+
+#[test]
+fn changed_local_profile_excludes_previously_persisted_vectors() {
+    let fixture = PoolingOnnxFixture::new();
+    let old = vector_for(&fixture.profile_engine(512));
+    let current = vector_for(&fixture.profile_engine(128));
+    assert_ne!(old.engine_id, current.engine_id);
+    let db = lumvise_db_core::LocalPersistence::in_memory().unwrap();
+    persist_profile_vector(&db, old.clone());
+    assert_eq!(profile_search_count(&db, old), 1);
+    assert_eq!(profile_search_count(&db, current), 0);
 }

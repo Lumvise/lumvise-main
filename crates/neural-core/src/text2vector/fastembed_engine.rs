@@ -1,6 +1,14 @@
+#[cfg(test)]
+mod cached_planning_tests;
+mod chunk_planning;
+mod profile_identity;
+mod token_ranges;
+
 use crate::error::{NeuralError, Result, require_non_empty};
 use crate::semantic_mappers::VectorEmbedder;
-use crate::text2vector::{Text2VectorRequest, Text2VectorResponse};
+use crate::text2vector::{
+    Text2VectorRequest, Text2VectorResponse, TextChunkPlan, TextChunkPlanRequest, TextChunkPlanner,
+};
 use crate::types::EngineMetadata;
 use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
@@ -24,6 +32,7 @@ pub struct FastEmbedText2VectorEngine {
     config: FastEmbedText2VectorConfig,
     vector_engine_id: String,
     profile: TextProfile,
+    profile_fingerprint: Option<String>,
     model: Mutex<TextEmbedding>,
 }
 
@@ -158,7 +167,7 @@ impl FastEmbedText2VectorEngine {
     pub fn new(config: FastEmbedText2VectorConfig) -> Result<Self> {
         validate_config(&config)?;
         let pooling = local_pooling(&config.model_id);
-        let vector_engine_id = if config.model_dir.is_some() && pooling == Pooling::Cls {
+        let mut vector_engine_id = if config.model_dir.is_some() && pooling == Pooling::Cls {
             // A different embedding space must never reuse persisted mean-pooled vectors.
             format!("{}::bge-cls-v1", config.engine_id)
         } else {
@@ -166,14 +175,38 @@ impl FastEmbedText2VectorEngine {
         };
         let profile = text_profile(&config.model_id);
         let max_length = config.max_length.or(profile.max_length);
-        let model = match config.model_dir.as_deref() {
-            Some(model_dir) => local_model(model_dir, max_length, pooling)?,
-            None => builtin_model(&config, max_length)?,
+        let (model, assets) = match config.model_dir.as_deref() {
+            Some(model_dir) => {
+                let (model, digest) = local_model(model_dir, max_length, pooling.clone())?;
+                (model, Some(digest))
+            }
+            None => (builtin_model(&config, max_length)?, None),
         };
+        let configured_tokenizer =
+            model
+                .tokenizer
+                .to_string(false)
+                .map_err(|_| NeuralError::MalformedPayload {
+                    value: config.model_id.clone(),
+                    expected: "serializable loaded tokenizer configuration".into(),
+                })?;
+        let profile_fingerprint = assets.map(|assets| {
+            profile_identity::profile_digest(
+                &config,
+                &profile,
+                pooling,
+                &assets,
+                &configured_tokenizer,
+            )
+        });
+        if let Some(fingerprint) = &profile_fingerprint {
+            vector_engine_id = format!("{vector_engine_id}::profile-{fingerprint}");
+        }
         Ok(Self {
             config,
             vector_engine_id,
             profile,
+            profile_fingerprint,
             model: Mutex::new(model),
         })
     }
@@ -243,7 +276,7 @@ impl FastEmbedText2VectorEngine {
             .next()
             .filter(|vector| !vector.is_empty())
             .ok_or_else(|| NeuralError::MalformedPayload {
-                value: text.to_string(),
+                value: format!("{} source bytes", text.len()),
                 expected: "non-empty FastEmbed vector".to_string(),
             })?;
         self.profile.finish(vector)
@@ -291,19 +324,18 @@ fn local_model(
     model_dir: &Path,
     max_length: Option<usize>,
     pooling: Pooling,
-) -> Result<TextEmbedding> {
-    let model = UserDefinedEmbeddingModel::new(
-        read_model_file(model_dir, "model.onnx")?,
-        tokenizer_files(model_dir)?,
-    )
-    .with_pooling(pooling);
+) -> Result<(TextEmbedding, String)> {
+    let weights = read_model_file(model_dir, "model.onnx")?;
+    let tokenizer = tokenizer_files(model_dir)?;
+    let digest = profile_identity::local_asset_digest(&weights, &tokenizer);
+    let model = UserDefinedEmbeddingModel::new(weights, tokenizer).with_pooling(pooling);
     let options = InitOptionsUserDefined::new().with_max_length(max_length.unwrap_or(512));
-    TextEmbedding::try_new_from_user_defined(model, options).map_err(|error| {
-        NeuralError::ProviderFailed {
+    TextEmbedding::try_new_from_user_defined(model, options)
+        .map(|model| (model, digest))
+        .map_err(|error| NeuralError::ProviderFailed {
             provider_id: "fastembed-local".to_string(),
             message: error.to_string(),
-        }
-    })
+        })
 }
 
 fn tokenizer_files(model_dir: &Path) -> Result<TokenizerFiles> {

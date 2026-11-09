@@ -266,6 +266,7 @@ fn backfill_identity_properties(database: &GrafeoDB) -> Result<()> {
 }
 
 pub(crate) struct ElementUpsertPlan {
+    text_generation_node_ids: Vec<NodeId>,
     existing_node_ids: Vec<NodeId>,
     properties: Vec<(&'static str, GrafeoValue)>,
 }
@@ -320,6 +321,7 @@ pub(crate) struct ElementDeactivationPlan {
     element_node_ids: Vec<NodeId>,
     element_vector_node_ids: Vec<NodeId>,
     element_text_vector_node_ids: Vec<NodeId>,
+    text_generation_node_ids: Vec<NodeId>,
     pub(crate) entity_kind: String,
     relationship_edge_ids: Vec<EdgeId>,
     artifact_node_ids: Vec<NodeId>,
@@ -327,6 +329,19 @@ pub(crate) struct ElementDeactivationPlan {
     pub(crate) exists: bool,
     pub(crate) artifacts: Vec<SemanticArtifact>,
     pub(crate) project_root: String,
+}
+
+impl ElementDeactivationPlan {
+    pub(crate) fn has_generation_cleanup(&self) -> bool {
+        !self.text_generation_node_ids.is_empty()
+    }
+
+    pub(crate) fn clear_generations(&self, graph: &GraphTransaction<'_>) -> Result<()> {
+        for node in &self.text_generation_node_ids {
+            graph.delete_node(*node)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

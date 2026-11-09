@@ -151,6 +151,25 @@ pub enum SemanticOperation {
         project_root: String,
         vectors: Vec<StoredSemanticElementTextVector>,
     },
+    /// Starts or observes an idempotent local-only publication of a complete section.
+    BeginElementTextVectorGeneration {
+        spec: crate::ElementTextVectorGenerationSpec,
+    },
+    /// Durably stages the next chunk; it remains invisible until complete publication.
+    StageElementTextVectorChunk {
+        key: crate::ElementTextVectorGenerationKey,
+        chunk: u32,
+        vector: Vec<f32>,
+    },
+    /// Atomically publishes every expected chunk, preserving the old set on conflict.
+    CommitElementTextVectorGeneration {
+        key: crate::ElementTextVectorGenerationKey,
+    },
+    /// Removes hidden chunks without undoing a previously committed generation.
+    /// An absent key becomes a durable aborted tombstone, preventing a delayed begin.
+    AbortElementTextVectorGeneration {
+        key: crate::ElementTextVectorGenerationKey,
+    },
     SearchArtifactTextVectors {
         project_root: String,
         query: Vec<f32>,
@@ -314,6 +333,7 @@ pub struct ChangesSinceRevisionPage {
 /// Every successful semantic operation returns the data it observed or wrote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SemanticResult {
+    ElementTextVectorGeneration(crate::ElementTextVectorGenerationStatus),
     RevisionFamilies(Vec<crate::SemanticRevisionRemap>),
     RevisionConnections(Vec<crate::SemanticRevisionConnection>),
     RevisionMembership(Option<crate::SemanticRevisionSelectionState>),

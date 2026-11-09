@@ -26,6 +26,7 @@ mod revisions;
 mod scoped_read;
 pub(crate) mod semantic_graph_projection;
 mod semantic_snapshot;
+mod text_vector_generations;
 pub(crate) mod vector_search;
 
 pub(crate) mod semantic_storage;

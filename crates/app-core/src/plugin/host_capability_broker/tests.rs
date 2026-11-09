@@ -6,7 +6,7 @@ use lumvise_db_core::{
 };
 use std::sync::Arc;
 
-fn request(plugin_id: &str, capability_id: &str, input: Value) -> HostCapabilityRequest {
+pub(super) fn request(plugin_id: &str, capability_id: &str, input: Value) -> HostCapabilityRequest {
     HostCapabilityRequest {
         plugin_id: plugin_id.into(),
         invocation_id: "invocation-1".into(),
@@ -17,7 +17,7 @@ fn request(plugin_id: &str, capability_id: &str, input: Value) -> HostCapability
     }
 }
 
-fn app_with_default_broker() -> AppCore {
+pub(super) fn app_with_default_broker() -> AppCore {
     AppCore::in_memory().expect("in-memory App Core")
 }
 
@@ -507,7 +507,7 @@ fn invoke_embeds_bounded_text_batch_in_order() {
 
     assert_eq!(
         output,
-        json!({"vectors": [[1.0, 1.0], [4.0, 1.0]], "engine_id": "test-vectorizer", "model": "deterministic"})
+        json!({"vectors": [[1.0, 1.0], [4.0, 1.0]], "engine_id": "test-vectorizer", "model": "deterministic", "profile_fingerprint": null})
     );
 }
 
@@ -555,7 +555,9 @@ fn invoke_rejects_inconsistent_vector_dimensions() {
     let broker = app
         .default_plugin_host_capability_broker()
         .expect("default Plugin System broker");
-    *broker.vectorizer.lock().expect("vectorizer lock") = Some(Arc::new(InconsistentVectorizer));
+    *broker.vectorizer.lock().expect("vectorizer lock") = Some(PluginEmbeddingService::unplanned(
+        Arc::new(InconsistentVectorizer),
+    ));
 
     let error = broker
         .invoke(request(
@@ -625,7 +627,9 @@ fn invoke_forwards_embed_task_and_defaults_to_document() {
     let broker = app
         .default_plugin_host_capability_broker()
         .expect("default Plugin System broker");
-    *broker.vectorizer.lock().expect("vectorizer lock") = Some(Arc::new(TaskMarkerVectorizer));
+    *broker.vectorizer.lock().expect("vectorizer lock") = Some(PluginEmbeddingService::unplanned(
+        Arc::new(TaskMarkerVectorizer),
+    ));
 
     let vectors_for = |input: Value| {
         broker

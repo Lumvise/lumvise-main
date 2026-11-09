@@ -1117,120 +1117,235 @@
       }
     },
     {
-      "description": "Rebuild search vectors for existing indexed elements in explicit project_root. mode full (default) rebuilds name vectors, then text vectors within about 40 s, and sets index_state. mode names rebuilds name vectors only and sets index_state. mode text stores section text vectors for paths (or every page) and never changes index_state; continue with the returned pending_paths until it is empty. Inspect the returned index_state; this does not parse changed source or rebuild static relationships. Refresh stale source through the compiled project indexer first.",
+      "description": "Start a durable search-vector rebuild with action start, a stable operation_id, explicit project_root and mode full/names/text; paths are valid only for text. Continue pending work with action continue and the returned run_id/expected_revision. Cancel cooperatively with action cancel; already published complete elements remain. Retry the same start ID/body after a lost acknowledgement. Inspect status, progress, failures and index_state: a pending call is not completion, and source/model changes conflict the run. Text chunks are published only as complete sections; staged chunks remain invisible. This does not parse changed source; refresh static relationships through the source indexer first.",
       "execution": "background",
       "id": "rebuild_search_index",
       "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "mode": {
-            "enum": [
-              "full",
-              "names",
-              "text"
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "project_root",
+              "operation_id",
+              "mode"
             ],
-            "type": "string"
+            "properties": {
+              "action": {
+                "const": "start"
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "mode": {
+                "enum": [
+                  "full",
+                  "names",
+                  "text"
+                ]
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
           },
-          "paths": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "project_root",
+              "run_id",
+              "expected_revision"
+            ],
+            "properties": {
+              "action": {
+                "const": "continue"
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
           },
-          "project_root": {
-            "type": "string"
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "project_root",
+              "run_id",
+              "expected_revision"
+            ],
+            "properties": {
+              "action": {
+                "const": "cancel"
+              },
+              "project_root": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
           }
-        },
-        "required": [
-          "project_root"
-        ],
-        "type": "object"
+        ]
       },
       "kind": "mcp_tool",
       "name": "Rebuild semantic search index",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "commit_version": {
-            "type": "integer"
-          },
           "index_state": {
             "enum": [
+              "missing",
+              "stale",
               "rebuilding",
-              "ready"
-            ],
-            "type": "string"
-          },
-          "indexed_nodes": {
-            "type": "integer"
-          },
-          "pending_paths": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+              "ready",
+              "failed"
+            ]
           },
           "project_root": {
             "type": "string"
           },
-          "published_at": {
+          "run_id": {
             "type": "string"
           },
-          "text_vectors": {
+          "revision": {
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "complete",
+              "conflicted",
+              "canceled",
+              "failed"
+            ]
+          },
+          "phase": {
+            "enum": [
+              "names",
+              "text",
+              "done"
+            ]
+          },
+          "progress": {
+            "type": "object",
             "additionalProperties": false,
+            "required": [
+              "names_completed",
+              "sections_completed",
+              "chunks_staged"
+            ],
             "properties": {
-              "failures": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "path": {
-                      "type": "string"
-                    },
-                    "semantic_element_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "semantic_element_id",
-                    "error"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "skipped_pages": {
+              "names_completed": {
                 "type": "integer"
               },
-              "skipped_sections": {
+              "sections_completed": {
                 "type": "integer"
               },
-              "stored": {
+              "chunks_staged": {
                 "type": "integer"
               }
-            },
-            "required": [
-              "stored",
-              "skipped_sections",
-              "skipped_pages",
-              "failures"
-            ],
-            "type": [
-              "object",
-              "null"
+            }
+          },
+          "continuation": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "run_id",
+                  "expected_revision"
+                ],
+                "properties": {
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "type": "integer"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
             ]
+          },
+          "observed_source_revision": {
+            "type": "integer"
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "element_id",
+                "path",
+                "code",
+                "message"
+              ],
+              "properties": {
+                "element_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "required": [
           "project_root",
-          "text_vectors",
-          "pending_paths"
+          "run_id",
+          "revision",
+          "status",
+          "phase",
+          "progress",
+          "continuation",
+          "index_state",
+          "observed_source_revision",
+          "failures"
         ],
         "type": "object"
       }
@@ -5176,13 +5291,17 @@
     {
       "id": "neural.embed",
       "version": "^1.0"
+    },
+    {
+      "id": "neural.chunk_text",
+      "version": "^1.0"
     }
   ],
   "plugin_id": "builtin.semantic",
   "plugin_version": "0.2.2",
   "protocol": {
-    "max": 7,
-    "min": 7
+    "max": 8,
+    "min": 8
   },
   "publisher": {
     "key_id": "lumvise.production.1",

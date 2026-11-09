@@ -525,7 +525,7 @@ fn staged_ingest_commits_more_than_one_mutation_page() {
 }
 
 #[test]
-fn rebuild_search_index_batches_260_embeddings_without_reordering_vectors() {
+fn rebuild_name_continuations_keep_260_elements_associated_with_their_vectors() {
     let workspace = tempfile::tempdir().expect("workspace");
     let (_, installed) = signed_install(workspace.path(), &SigningKey::from_bytes(&[48; 32]));
     let broker = Arc::new(MemoryCapabilityBroker::default());
@@ -557,21 +557,16 @@ fn rebuild_search_index_batches_260_embeddings_without_reordering_vectors() {
 
     *broker.embed_available.lock().expect("embed switch") = true;
     broker.reset_project_snapshot_calls();
-    let rebuild = success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                REBUILD_SEARCH_INDEX_EXPORT_ID,
-                serde_json::json!({"project_root": "/work/batched"}),
-            )
-            .expect("complete rebuild"),
-    );
-
+    let rebuild = success(support::run_rebuild(
+        &runtime,
+        serde_json::json!({
+            "action":"start","project_root":"/work/batched","operation_id":"batch-260","mode":"names"
+        }),
+    ));
+    assert_eq!(rebuild["status"], "complete");
     assert_eq!(rebuild["index_state"], "ready");
-    assert_eq!(rebuild["indexed_nodes"], 260);
-    assert!(!rebuild.as_object().unwrap().contains_key("continuation"));
-    assert_eq!(broker.embed_batch_sizes(), vec![128, 128, 4]);
-    assert_eq!(broker.project_snapshot_calls(), 1);
+    assert_eq!(rebuild["progress"]["names_completed"], 260);
+    assert!(rebuild["continuation"].is_null());
     let vectors = broker
         .element_name_vectors("/work/batched")
         .into_iter()
@@ -624,20 +619,22 @@ fn search_never_backfills_vectors_and_reports_index_readiness() {
     );
     assert_eq!(broker.row_count(PLUGIN_ID, "semantic_element_vectors"), 0);
 
-    let rebuild = success(
-        runtime
-            .invoke(
-                PLUGIN_ID,
-                REBUILD_SEARCH_INDEX_EXPORT_ID,
-                serde_json::json!({"project_root": "/work/demo"}),
-            )
-            .expect("complete rebuild"),
-    );
+    let rebuild = success(support::run_rebuild(
+        &runtime,
+        serde_json::json!({
+            "action":"start","project_root":"/work/demo","operation_id":"search-ready","mode":"names"
+        }),
+    ));
+    assert_eq!(rebuild["status"], "complete");
     assert_eq!(rebuild["index_state"], "ready");
-    assert_eq!(rebuild["indexed_nodes"], 3);
-    assert!(!rebuild.as_object().unwrap().contains_key("continuation"));
+    assert_eq!(rebuild["progress"]["names_completed"], 3);
+    assert!(rebuild["continuation"].is_null());
     assert_eq!(broker.row_count(PLUGIN_ID, "semantic_element_vectors"), 0);
-    assert_eq!(broker.embed_tasks()[before_rebuild..], ["document"]);
+    assert!(
+        broker.embed_tasks()[before_rebuild..]
+            .iter()
+            .all(|task| task == "document")
+    );
     let before_search = broker.embed_tasks().len();
     let vector = success(
         runtime

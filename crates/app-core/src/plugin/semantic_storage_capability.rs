@@ -6,18 +6,15 @@
 
 mod attachment_copy;
 mod controlled;
+mod request;
 pub(super) use controlled::invoke_controlled;
-
-use std::collections::HashSet;
+use request::SemanticStorageRequest;
 
 use lumvise_db_core::{
-    ProjectSnapshotScope, SemanticArtifact, SemanticElement, SemanticGraphProjectionRequest,
-    SemanticOperation, SemanticPartition, SemanticPersistence, SemanticRelationship,
-    SemanticResult, StoredSemanticElementNameVector, StoredSemanticElementTextVector,
+    SemanticGraphProjectionRequest, SemanticOperation, SemanticPersistence, SemanticResult,
 };
 use lumvise_plugin_runtime::HostCapabilityError;
 use lumvise_resource_routing::InvocationControl;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::host_capability_catalog::SEMANTIC_STORAGE;
@@ -26,217 +23,6 @@ use super::semantic_snapshot_writes::{SemanticSnapshotPage, SemanticSnapshotWrit
 const SEMANTIC_PLUGIN_ID: &str = "builtin.semantic";
 const KNOWLEDGE_PLUGIN_ID: &str = "builtin.knowledge";
 const NUCLEUS_PLUGIN_ID: &str = "builtin.nucleus";
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-enum SemanticStorageRequest {
-    ProjectIdentity {
-        project_root: String,
-    },
-    RevisionSelection {
-        project_root: String,
-        selection_id: String,
-    },
-    InspectRevisionIntegrity {
-        project_root: String,
-        publication_operation_id: Option<String>,
-    },
-    RecoverRevisionIntegrity {
-        request: lumvise_db_core::SemanticRevisionRecoveryRequest,
-    },
-    SelectRevisions {
-        update: lumvise_db_core::SemanticRevisionSelectionUpdate,
-    },
-    PlanRevisionRetention {
-        project_root: String,
-        operation_id: String,
-        policy: lumvise_db_core::SemanticRevisionRetentionPolicy,
-    },
-    CollectRevisionRetention {
-        plan: lumvise_db_core::SemanticRevisionRetentionPlan,
-        policy: lumvise_db_core::SemanticRevisionRetentionPolicy,
-    },
-    RevisionSelectionMembers {
-        query: lumvise_db_core::SemanticRevisionSelectionQuery,
-    },
-    RevisionFamilies {
-        query: lumvise_db_core::SemanticRevisionFamilyQuery,
-    },
-    ResolveRevision {
-        project_root: String,
-        record: lumvise_db_core::SemanticRecordRef,
-    },
-    PublishRevisions {
-        publication: lumvise_db_core::SemanticRevisionPublication,
-    },
-    CopyArtifactAttachment {
-        source_artifact_id: String,
-        target_artifact_id: String,
-        content_ref: String,
-    },
-    SyncStructure {
-        project_root: String,
-        elements: Vec<SemanticElement>,
-        relationships: Vec<SemanticRelationship>,
-    },
-    BeginProjectSnapshot {
-        snapshot_id: String,
-        project_root: String,
-        #[serde(default)]
-        provider_instance_id: Option<String>,
-        partition_paths: Vec<String>,
-        page_count: usize,
-        observation: lumvise_contracts::SemanticIndexObservation,
-    },
-    StageProjectSnapshot {
-        snapshot_id: String,
-        page_index: usize,
-        elements: Vec<SemanticElement>,
-        relationships: Vec<SemanticRelationship>,
-        #[serde(default)]
-        sources: Vec<lumvise_contracts::SemanticSourceUpsert>,
-        #[serde(default)]
-        artifacts: Vec<lumvise_db_core::SemanticArtifactRevisionWrite>,
-        #[serde(default)]
-        removed_artifact_ids: Vec<String>,
-    },
-    CommitProjectSnapshot {
-        snapshot_id: String,
-    },
-    AbortProjectSnapshot {
-        snapshot_id: String,
-    },
-    SyncPartition {
-        partition: SemanticPartition,
-        elements: Vec<SemanticElement>,
-        relationships: Vec<SemanticRelationship>,
-    },
-    Element {
-        semantic_element_id: String,
-    },
-    ElementsByIds {
-        project_root: String,
-        semantic_element_ids: HashSet<String>,
-    },
-    ElementsByIdsIncludingInactive {
-        project_root: String,
-        semantic_element_ids: HashSet<String>,
-    },
-    ArtifactsByIds {
-        artifact_ids: HashSet<String>,
-    },
-    SearchElementCandidates {
-        project_root: Option<String>,
-        query: String,
-        limit: usize,
-    },
-    SearchElementNameVectors {
-        project_root: String,
-        query: Vec<f32>,
-        k: usize,
-        engine_id: String,
-        #[serde(default)]
-        model: Option<String>,
-    },
-    StoreElementNameVectors {
-        project_root: String,
-        vectors: Vec<StoredSemanticElementNameVector>,
-    },
-    SearchElementTextVectors {
-        project_root: String,
-        query: Vec<f32>,
-        k: usize,
-        engine_id: String,
-        #[serde(default)]
-        model: Option<String>,
-    },
-    StoreElementTextVectors {
-        project_root: String,
-        vectors: Vec<StoredSemanticElementTextVector>,
-    },
-    SearchArtifactTextVectors {
-        project_root: String,
-        query: Vec<f32>,
-        k: usize,
-        engine_id: String,
-        #[serde(default)]
-        model: Option<String>,
-    },
-    StoreArtifactTextVectors {
-        project_root: String,
-        vectors: Vec<lumvise_db_core::StoredArtifactTextVector>,
-    },
-    RelationshipsFrom {
-        semantic_element_id: String,
-    },
-    RelationshipsTouchingElements {
-        semantic_element_ids: HashSet<String>,
-    },
-    Artifact {
-        artifact_id: String,
-    },
-    ArtifactsForElements {
-        semantic_element_ids: HashSet<String>,
-    },
-    ArtifactsForElementWithInheritance {
-        semantic_element_id: String,
-    },
-    ArtifactDependents {
-        target_kind: String,
-        target_id: String,
-    },
-    UpsertArtifact {
-        artifact: SemanticArtifact,
-        #[serde(default = "default_media_type")]
-        media_type: String,
-    },
-    RemoveArtifact {
-        artifact_id: String,
-    },
-    RemoveElement {
-        semantic_element_id: String,
-    },
-    ProjectArtifacts {
-        project_root: String,
-        artifact_namespace: Option<String>,
-    },
-    ProjectRoots,
-    SemanticRevision,
-    ProjectElementCounts {
-        project_root: String,
-    },
-    ScopedRead {
-        request: lumvise_db_core::ScopedSemanticRead,
-    },
-    ProjectSnapshot {
-        scope: ProjectSnapshotScope,
-        artifact_namespace: Option<String>,
-    },
-    SearchProjectStructure {
-        project_root: String,
-    },
-    SelectiveSubgraph {
-        project_root: String,
-        root_element_id: String,
-        artifact_namespace: Option<String>,
-    },
-    ProjectRendererGraph {
-        project_root: String,
-        target_path: Option<String>,
-        granularity: lumvise_db_core::SemanticGraphGranularity,
-        #[serde(default = "default_true")]
-        recursive: bool,
-        #[serde(default)]
-        include_external: bool,
-        #[serde(default)]
-        include_first_neighbors: bool,
-    },
-    CandidateSourceElements {
-        content_fingerprints: HashSet<String>,
-        kind_name_keys: HashSet<String>,
-        kind_file_name_keys: HashSet<String>,
-    },
-}
 
 pub(super) fn invoke(
     semantic: &dyn SemanticPersistence,
@@ -321,6 +107,30 @@ fn dispatch(
     request: SemanticStorageRequest,
 ) -> lumvise_db_core::Result<Value> {
     match request {
+        SemanticStorageRequest::BeginElementTextVectorGeneration { spec } => {
+            generation_status(execute(
+                semantic,
+                SemanticOperation::BeginElementTextVectorGeneration { spec },
+            )?)
+        }
+        SemanticStorageRequest::StageElementTextVectorChunk { key, chunk, vector } => {
+            generation_status(execute(
+                semantic,
+                SemanticOperation::StageElementTextVectorChunk { key, chunk, vector },
+            )?)
+        }
+        SemanticStorageRequest::CommitElementTextVectorGeneration { key } => {
+            generation_status(execute(
+                semantic,
+                SemanticOperation::CommitElementTextVectorGeneration { key },
+            )?)
+        }
+        SemanticStorageRequest::AbortElementTextVectorGeneration { key } => {
+            generation_status(execute(
+                semantic,
+                SemanticOperation::AbortElementTextVectorGeneration { key },
+            )?)
+        }
         SemanticStorageRequest::RevisionSelection {
             project_root,
             selection_id,
@@ -961,6 +771,10 @@ fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), Ho
         | SemanticStorageRequest::RemoveElement { .. }
         | SemanticStorageRequest::StoreElementNameVectors { .. }
         | SemanticStorageRequest::StoreElementTextVectors { .. }
+        | SemanticStorageRequest::BeginElementTextVectorGeneration { .. }
+        | SemanticStorageRequest::StageElementTextVectorChunk { .. }
+        | SemanticStorageRequest::CommitElementTextVectorGeneration { .. }
+        | SemanticStorageRequest::AbortElementTextVectorGeneration { .. }
         | SemanticStorageRequest::StoreArtifactTextVectors { .. }
         | SemanticStorageRequest::ProjectRendererGraph { .. } => plugin_id == SEMANTIC_PLUGIN_ID,
         SemanticStorageRequest::ProjectArtifacts { .. } => {
@@ -1002,6 +816,13 @@ fn authorize(plugin_id: &str, request: &SemanticStorageRequest) -> Result<(), Ho
 
 fn default_true() -> bool {
     true
+}
+
+fn generation_status(result: SemanticResult) -> lumvise_db_core::Result<Value> {
+    match result {
+        SemanticResult::ElementTextVectorGeneration(status) => Ok(json!(status)),
+        result => unexpected_result("ElementTextVectorGeneration", result),
+    }
 }
 
 fn default_media_type() -> String {

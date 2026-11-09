@@ -2,7 +2,8 @@
 use super::*;
 mod controls;
 use lumvise_db_core::{
-    SemanticRevisionPublication, SemanticRevisionPublicationOutcome, SemanticRevisionStructure,
+    SemanticElement, SemanticRevisionPublication, SemanticRevisionPublicationOutcome,
+    SemanticRevisionStructure,
 };
 
 fn call(broker: &AppCoreHostCapabilityBroker, plugin: &str, input: Value) -> Value {

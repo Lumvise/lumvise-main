@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 mod audio_sessions;
 mod construction;
 mod document_conversion;
+mod invocation_deadline;
 mod project_import;
 mod speech_access;
 mod speech_playback;
@@ -650,11 +651,7 @@ fn workspace_session(session_id: &str) -> bool {
 /// classify it as a recoverable provider-turn timeout.
 pub(crate) fn invocation_control(context: &PluginInvocationContext) -> InvocationControlBridge {
     let deadline = context.deadline();
-    let control = InvocationControl::with_deadline(
-        deadline
-            .saturating_duration_since(Instant::now())
-            .min(Duration::from_secs(60)),
-    );
+    let control = invocation_deadline::from_parent(deadline);
     let cancellation = context.cancellation();
     // Admission must observe cancellation before the monitoring thread can run.
     if cancellation.is_cancelled() {

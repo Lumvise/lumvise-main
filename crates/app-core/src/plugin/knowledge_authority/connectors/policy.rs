@@ -142,6 +142,16 @@ impl KnowledgeAuthority {
         context: &PluginInvocationContext,
         operation: &SemanticOperation,
     ) -> Result<(), HostCapabilityError> {
+        // A Knowledge/Agent ancestor does not own MCP section-vector staging.
+        if context.mcp_origin().is_some() && text_generation_mutation(operation) {
+            return if search_index_rebuild_vectors(context, operation) {
+                Ok(())
+            } else {
+                Err(unsupported(
+                    "section-vector staging outside the innermost search rebuild",
+                ))
+            };
+        }
         if context.mcp_origin().is_none()
             || knowledge_export(context).is_some()
             || super::super::agent::agent_frame(context).is_some()
@@ -176,6 +186,16 @@ impl KnowledgeAuthority {
     }
 }
 
+fn text_generation_mutation(operation: &SemanticOperation) -> bool {
+    matches!(
+        operation,
+        SemanticOperation::BeginElementTextVectorGeneration { .. }
+            | SemanticOperation::StageElementTextVectorChunk { .. }
+            | SemanticOperation::CommitElementTextVectorGeneration { .. }
+            | SemanticOperation::AbortElementTextVectorGeneration { .. }
+    )
+}
+
 /// Vectors the Semantic search index rebuild derives from stored names and page text
 /// (ADR 0002, 2026-11-07): the caller passes only a project root, so it cannot supply content.
 fn search_index_rebuild_vectors(
@@ -186,6 +206,10 @@ fn search_index_rebuild_vectors(
         operation,
         SemanticOperation::StoreElementNameVectors { .. }
             | SemanticOperation::StoreElementTextVectors { .. }
+            | SemanticOperation::BeginElementTextVectorGeneration { .. }
+            | SemanticOperation::StageElementTextVectorChunk { .. }
+            | SemanticOperation::CommitElementTextVectorGeneration { .. }
+            | SemanticOperation::AbortElementTextVectorGeneration { .. }
     ) && context.plugin_chain().last().is_some_and(|frame| {
         frame.plugin_id == "builtin.semantic" && frame.export_id == "rebuild_search_index"
     })

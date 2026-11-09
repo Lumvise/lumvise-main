@@ -75,13 +75,10 @@ fn ingest_pages(
 }
 
 fn rebuild(runtime: &PluginSystem, root_text: &str) -> WireOutcome {
-    runtime
-        .invoke(
-            PLUGIN_ID,
-            REBUILD_SEARCH_INDEX_EXPORT_ID,
-            serde_json::json!({"project_root": root_text}),
-        )
-        .expect("rebuild invoke")
+    support::run_rebuild(
+        runtime,
+        serde_json::json!({"action":"start","project_root":root_text,"operation_id":"full-rebuild","mode":"full"}),
+    )
 }
 
 #[test]
@@ -166,7 +163,7 @@ fn section_body_words_find_their_section_through_text_vectors() {
 }
 
 #[test]
-fn rebuild_skips_only_a_rejected_section_and_stores_the_others() {
+fn rejected_generation_preserves_completed_sections_without_claiming_ready() {
     let workspace = tempfile::tempdir().expect("workspace");
     let broker = Arc::new(MemoryCapabilityBroker::default());
     let runtime = start_plugin(workspace.path(), &broker);
@@ -179,24 +176,15 @@ fn rebuild_skips_only_a_rejected_section_and_stores_the_others() {
 
     let rebuilt = success(rebuild(&runtime, &root_text));
 
-    assert_eq!(rebuilt["index_state"], "ready");
-    // Page A keeps its two other sections; page B keeps its one.
-    assert_eq!(rebuilt["text_vectors"]["stored"], 3);
-    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 1);
-    assert_eq!(rebuilt["text_vectors"]["skipped_pages"], 0);
-    assert_eq!(
-        rebuilt["text_vectors"]["failures"][0]["semantic_element_id"],
-        "sec:wiki/A.html#1"
-    );
-    assert!(
-        rebuilt["text_vectors"]["failures"][0]["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("stale_text_vector"))
-    );
+    assert_eq!(rebuilt["status"], "failed");
+    assert_eq!(rebuilt["index_state"], "failed");
+    assert_eq!(rebuilt["progress"]["sections_completed"], 1);
+    assert_eq!(rebuilt["failures"][0]["element_id"], "sec:wiki/A.html#1");
+    assert_eq!(rebuilt["failures"][0]["code"], "rebuild_step_failed");
 }
 
 #[test]
-fn rebuild_keeps_vectors_for_readable_pages_when_one_page_is_unreadable() {
+fn unreadable_source_keeps_completed_progress_and_reports_incomplete_coverage() {
     let workspace = tempfile::tempdir().expect("workspace");
     let broker = Arc::new(MemoryCapabilityBroker::default());
     let runtime = start_plugin(workspace.path(), &broker);
@@ -213,22 +201,18 @@ fn rebuild_keeps_vectors_for_readable_pages_when_one_page_is_unreadable() {
 
     let rebuilt = success(rebuild(&runtime, &root_text));
 
-    assert_eq!(rebuilt["index_state"], "ready");
-    assert_eq!(rebuilt["text_vectors"]["stored"], 3);
-    assert_eq!(rebuilt["text_vectors"]["skipped_pages"], 1);
-    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 1);
-    let failure = &rebuilt["text_vectors"]["failures"][0];
-    assert_eq!(failure["path"], "wiki/Missing.html");
-    assert!(failure["semantic_element_id"].is_null());
-    assert!(
-        failure["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("No such file"))
+    assert_eq!(rebuilt["status"], "failed");
+    assert_eq!(rebuilt["index_state"], "failed");
+    assert_eq!(rebuilt["progress"]["sections_completed"], 3);
+    assert_eq!(rebuilt["failures"][0]["path"], "wiki/Missing.html");
+    assert_eq!(
+        rebuilt["failures"][0]["element_id"],
+        "sec:wiki/Missing.html#0"
     );
 }
 
 #[test]
-fn rebuild_error_names_the_storage_cause_when_name_vectors_are_rejected() {
+fn rejected_name_storage_reports_safe_failed_run_without_raw_host_error() {
     let workspace = tempfile::tempdir().expect("workspace");
     let broker = Arc::new(MemoryCapabilityBroker::default());
     let runtime = start_plugin(workspace.path(), &broker);
@@ -238,11 +222,10 @@ fn rebuild_error_names_the_storage_cause_when_name_vectors_are_rejected() {
     *broker.embed_available.lock().expect("embed switch") = true;
     broker.fail_store_operation("store_element_name_vectors");
 
-    let error = failure(rebuild(&runtime, &root_text));
-
-    assert_eq!(error.code, "semantic_index_rebuild_failed");
-    assert!(error.message.contains("expected native vector storage"));
-    assert!(error.message.contains("injected_store_failure"));
+    let result = success(rebuild(&runtime, &root_text));
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["failures"][0]["code"], "rebuild_step_failed");
+    assert!(!result.to_string().contains("injected_store_failure"));
 }
 
 const PARSER_PAGE: &str =
@@ -271,13 +254,11 @@ fn ingest_parser_and_render(
 }
 
 fn rebuild_with(runtime: &PluginSystem, root_text: &str, extra: serde_json::Value) -> WireOutcome {
-    let mut input = serde_json::json!({"project_root": root_text});
+    let mut input = serde_json::json!({"action":"start","project_root":root_text,"operation_id":format!("case-{extra}"),"mode":"full"});
     for (key, value) in extra.as_object().expect("extra input object") {
         input[key] = value.clone();
     }
-    runtime
-        .invoke(PLUGIN_ID, REBUILD_SEARCH_INDEX_EXPORT_ID, input)
-        .expect("rebuild invoke")
+    support::run_rebuild(runtime, input)
 }
 
 /// The whole search response; the score is 0 when the element is not in the results.
@@ -324,8 +305,9 @@ fn names_mode_sets_ready_and_stores_no_text_vectors() {
     ));
 
     assert_eq!(rebuilt["index_state"], "ready");
-    assert!(rebuilt["text_vectors"].is_null());
-    assert_eq!(rebuilt["pending_paths"], serde_json::json!([]));
+    assert_eq!(rebuilt["status"], "complete");
+    assert_eq!(rebuilt["progress"]["chunks_staged"], 0);
+    assert!(rebuilt["continuation"].is_null());
     // The body word matches only a text vector; names-only leaves that section unmatched.
     assert_eq!(
         score_of(&search(&runtime, &root_text, "parser"), PARSER_SECTION),
@@ -359,8 +341,9 @@ fn text_mode_stores_only_the_given_paths_and_keeps_the_index_state() {
         serde_json::json!({"mode": "text", "paths": ["wiki/Parse.html"]}),
     ));
 
-    assert_eq!(first["text_vectors"]["stored"], 1);
-    assert_eq!(first["pending_paths"], serde_json::json!([]));
+    assert_eq!(first["progress"]["sections_completed"], 1);
+    assert_eq!(first["status"], "complete");
+    assert!(first["continuation"].is_null());
     let after_first = search(&runtime, &root_text, "parser");
     assert!(score_of(&after_first, PARSER_SECTION) > 0.0);
     assert_eq!(after_first["index_state"], "ready");
@@ -376,7 +359,8 @@ fn text_mode_stores_only_the_given_paths_and_keeps_the_index_state() {
         &root_text,
         serde_json::json!({"mode": "text", "paths": ["wiki/Draw.html"]}),
     ));
-    assert_eq!(second["text_vectors"]["stored"], 1);
+    assert_eq!(second["progress"]["sections_completed"], 1);
+    assert_eq!(second["status"], "complete");
     let after_second = search(&runtime, &root_text, "render");
     assert!(score_of(&after_second, RENDER_SECTION) > 0.0);
     assert_eq!(after_second["index_state"], "ready");
@@ -422,15 +406,15 @@ fn long_section_is_embedded_and_stored_as_one_vector_per_chunk() {
 
     let rebuilt = success(rebuild(&runtime, &root_text));
 
-    // 1,501 words make three chunks of 700, 700 and 101 words: one stored vector each.
-    assert_eq!(rebuilt["text_vectors"]["stored"], 3);
-    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 0);
-    assert_eq!(broker.embed_batch_sizes().last(), Some(&3));
-    assert_eq!(broker.embed_tasks(), vec!["document", "document"]);
+    // The fixture planner assigns at most 1,022 source characters per 1,024-token range.
+    assert_eq!(rebuilt["status"], "complete");
+    assert_eq!(rebuilt["progress"]["chunks_staged"], 8);
+    assert_eq!(rebuilt["progress"]["sections_completed"], 1);
+    assert!(broker.embed_tasks().iter().all(|task| task == "document"));
 }
 
 #[test]
-fn rejected_embed_batch_skips_only_the_section_that_fails_alone() {
+fn rejected_chunk_stops_run_without_hiding_uncovered_section() {
     let workspace = tempfile::tempdir().expect("workspace");
     let broker = Arc::new(MemoryCapabilityBroker::default());
     let runtime = start_plugin(workspace.path(), &broker);
@@ -447,12 +431,15 @@ fn rejected_embed_batch_skips_only_the_section_that_fails_alone() {
 
     let rebuilt = success(rebuild(&runtime, &root_text));
 
-    // Both sections share one rejected embed call; each is retried alone, so only Bad is lost.
-    assert_eq!(rebuilt["text_vectors"]["stored"], 1);
-    assert_eq!(rebuilt["text_vectors"]["skipped_sections"], 1);
-    assert_eq!(rebuilt["text_vectors"]["skipped_pages"], 0);
+    assert_eq!(rebuilt["status"], "failed");
+    assert_eq!(rebuilt["progress"]["sections_completed"], 1);
     assert_eq!(
-        rebuilt["text_vectors"]["failures"][0]["semantic_element_id"],
+        rebuilt["failures"][0]["element_id"],
         "sec:wiki/Mixed.html#1"
+    );
+    assert!(
+        !rebuilt["failures"]
+            .to_string()
+            .contains(support::EMBED_REJECTED_MARKER)
     );
 }

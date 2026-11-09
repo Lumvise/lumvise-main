@@ -5,6 +5,11 @@ pub(crate) fn prepare_element_upsert(
     element: &SemanticElement,
 ) -> Result<ElementUpsertPlan> {
     Ok(ElementUpsertPlan {
+        text_generation_node_ids: if element.lifecycle == "inactive" {
+            text_generation_node_ids(database, &element.semantic_element_id)?
+        } else {
+            Vec::new()
+        },
         existing_node_ids: node_ids_by_label_and_property(
             database,
             "SemanticElement",
@@ -25,6 +30,9 @@ pub(crate) fn apply_element_upsert(
     commit_version: i64,
     plan: ElementUpsertPlan,
 ) -> Result<()> {
+    for node in plan.text_generation_node_ids {
+        database.delete_node(node)?;
+    }
     if let Some(node_id) = plan.existing_node_ids.first() {
         for (property, value) in plan.properties {
             database.set_node_property(*node_id, property, value)?;
@@ -560,6 +568,7 @@ pub(crate) fn prepare_element_deactivation(
             SEMANTIC_ELEMENT_ID_PROPERTY,
             semantic_element_id,
         )?,
+        text_generation_node_ids: text_generation_node_ids(database, semantic_element_id)?,
         relationship_edge_ids,
         artifact_node_ids,
         artifact_vector_node_ids,
@@ -575,6 +584,7 @@ pub(crate) fn apply_element_deactivation(
     plan: ElementDeactivationPlan,
 ) -> Result<bool> {
     let deactivated = !plan.element_node_ids.is_empty();
+    plan.clear_generations(database)?;
     for edge_id in plan.relationship_edge_ids {
         database.delete_edge(edge_id)?;
     }
@@ -613,4 +623,17 @@ pub(crate) fn apply_element_deactivation(
         database.delete_node(node_id)?;
     }
     Ok(deactivated)
+}
+
+fn text_generation_node_ids(database: &GrafeoDB, element: &str) -> Result<Vec<NodeId>> {
+    let mut ids = Vec::new();
+    for label in ["ElementTextVectorGeneration", "ElementTextVectorStage"] {
+        ids.extend(node_ids_by_label_and_property(
+            database,
+            label,
+            SEMANTIC_ELEMENT_ID_PROPERTY,
+            element,
+        )?);
+    }
+    Ok(ids)
 }

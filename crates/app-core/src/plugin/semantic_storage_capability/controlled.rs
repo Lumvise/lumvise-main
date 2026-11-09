@@ -142,3 +142,6 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+mod generation_tests;

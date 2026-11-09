@@ -661,7 +661,7 @@ fn hex_encode(value: &str) -> String {
         .collect()
 }
 
-fn ensure(context: &mut PluginContext<'_>, table: &str) -> Result<(), PluginError> {
+pub(crate) fn ensure(context: &mut PluginContext<'_>, table: &str) -> Result<(), PluginError> {
     context.host_call(
         CAPABILITY,
         json!({

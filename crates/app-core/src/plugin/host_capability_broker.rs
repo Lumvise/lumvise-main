@@ -24,13 +24,13 @@ mod source_import;
 mod source_index;
 #[cfg(test)]
 use embedding::MAX_EMBED_TEXTS;
-use embedding::invoke_neural_embed;
+use embedding::{invoke_neural_chunk_text, invoke_neural_embed};
 pub(crate) use source_import::SourceImportAuthorization;
 
 use super::PluginHostServices;
 use super::host_capability_catalog::{
-    HostCapabilityRoute, NEURAL_EMBED_CAPABILITY, PLUGIN_STORAGE_CAPABILITY,
-    SEMANTIC_SNAPSHOT_CAPABILITY, host_capability_definition,
+    HostCapabilityRoute, NEURAL_CHUNK_TEXT_CAPABILITY, NEURAL_EMBED_CAPABILITY,
+    PLUGIN_STORAGE_CAPABILITY, SEMANTIC_SNAPSHOT_CAPABILITY, host_capability_definition,
 };
 use super::plugin_invoke_authorization::authorize_plugin_invoke;
 use super::semantic_snapshot_writes::SemanticSnapshotWrites;
@@ -46,8 +46,8 @@ const MAX_GLOBAL_STAGED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_PLUGIN_DATA_MUTATIONS: usize = 250_000;
 const MAX_PLUGIN_DATA_MUTATION_BYTES: usize = 128 * 1024 * 1024;
 
-pub(crate) type SharedPluginVectorizer =
-    Arc<Mutex<Option<Arc<dyn ArtifactTextVectorizer + Send + Sync>>>>;
+mod embedding_service;
+pub(crate) use embedding_service::{PluginEmbeddingService, SharedPluginVectorizer};
 
 /// Identity of the currently installed `neural.embed` vectorizer, tracked
 /// alongside the vectorizer instance so background vector maintenance can
@@ -181,6 +181,9 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
                 request.input,
             ),
             HostCapabilityRoute::SemanticSnapshot => self.invoke_semantic_snapshot(request.input),
+            HostCapabilityRoute::NeuralChunkText => {
+                invoke_neural_chunk_text(&self.vectorizer, request.input)
+            }
             HostCapabilityRoute::NeuralEmbed => {
                 invoke_neural_embed(&self.vectorizer, request.input)
             }

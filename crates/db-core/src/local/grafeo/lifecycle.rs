@@ -37,13 +37,21 @@ impl<'db> SemanticStorage<'db> {
     /// owned artifacts and graph relationships.
     pub fn remove_element(&self, semantic_element_id: &str) -> Result<bool> {
         require_non_empty(semantic_element_id, "non-empty semantic element id")?;
-        let (removed, artifacts) = self.commit_preplanned_graph_write(
-            |database| {
-                super::revision_rows::require_unmanaged_element(database, semantic_element_id)?;
-                prepare_element_deactivation(database, semantic_element_id)
-            },
+        self.check_active()?;
+        let prepare = |database: &grafeo::GrafeoDB| {
+            super::revision_rows::require_unmanaged_element(database, semantic_element_id)?;
+            prepare_element_deactivation(database, semantic_element_id)
+        };
+        let initial = self.graph.plan(&prepare)?;
+        if !initial.value().exists && !initial.value().has_generation_cleanup() {
+            return Ok(false);
+        }
+        let (removed, artifacts) = self.commit_prepared_graph_write(
+            initial,
+            prepare,
             |graph, commit_version, collector, plan| {
                 if !plan.exists {
+                    plan.clear_generations(graph)?;
                     return Ok((false, Vec::new()));
                 }
                 let artifacts = plan.artifacts.clone();

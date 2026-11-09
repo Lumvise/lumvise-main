@@ -1,18 +1,17 @@
 mod dependency;
+mod rebuild;
 pub(crate) use dependency::dependency_tree;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
-use std::time::{Duration, Instant};
 
 use crate::{
     models::{
-        DEFAULT_TREE_DEPTH, ElementAtLocationRequest, RebuildMode, RebuildSearchIndexRequest,
-        SemanticElement, SemanticRelationship, SemanticTreeRequest,
+        DEFAULT_TREE_DEPTH, ElementAtLocationRequest, SemanticElement, SemanticRelationship,
+        SemanticTreeRequest,
     },
     parse, require_non_empty, serialize_response,
     storage::{self, SEARCH_INDEX_STATE},
-    text_vectors,
 };
 use lumvise_contracts::{SearchContextRequestV2, SearchContextResponseV2, SemanticSearchResultV2};
 use lumvise_plugin_sdk::{PluginContext, PluginError};
@@ -192,178 +191,12 @@ struct SearchIndexState {
 }
 
 const MAX_NEURAL_EMBED_TEXTS: usize = 128;
-const MAX_NEURAL_EMBED_BYTES: usize = 256 * 1024;
-/// Vector records per storage call, so one rebuild is never a single unbounded write.
-const VECTOR_STORE_BATCH: usize = 128;
-
-/// Stops starting text-vector pages after this long; a page in progress is still finished.
-/// Keeps one call inside the 60 s invocation deadline; a live 40 s pass took 58.9 s.
-const TEXT_PASS_BUDGET: Duration = Duration::from_secs(30);
 
 pub(crate) fn rebuild_search_index(
     input: Value,
     context: &mut PluginContext<'_>,
 ) -> Result<Value, PluginError> {
-    // Measured from the start of the handler, so the budget covers the snapshot read too.
-    let started = Instant::now();
-    let request: RebuildSearchIndexRequest = parse(input, "semantic search index rebuild input")?;
-    require_non_empty(&request.project_root, "project_root")?;
-    if request.paths.is_some() && request.mode != RebuildMode::Text {
-        return Err(PluginError::new(
-            "invalid_semantic_input",
-            "`paths` is only valid with mode `text`",
-            false,
-        ));
-    }
-    // Text-only calls never touch the index state; the name vectors and state belong to full/names.
-    let state_key = storage::project_key(&request.project_root, "search-index", &["state"]);
-    let rebuilds_names = request.mode != RebuildMode::Text;
-    if rebuilds_names {
-        write_index_state(
-            context,
-            &state_key,
-            SearchIndexState {
-                project_root: request.project_root.clone(),
-                state: "rebuilding".into(),
-                indexed_nodes: 0,
-                error: None,
-            },
-        )?;
-    }
-    let snapshot = storage::project_snapshot::<SemanticElement, Value, Value>(
-        context,
-        &json!({"project_root": request.project_root}),
-        None,
-    )?;
-    let elements = snapshot.elements;
-    if rebuilds_names {
-        store_name_vectors(context, &state_key, &request.project_root, &elements)?;
-    }
-    // Text vectors are per page and per section: their failures are reported, not fatal.
-    let text = (request.mode != RebuildMode::Names).then(|| {
-        text_vectors::index_html_sections(
-            context,
-            &request.project_root,
-            &elements,
-            request.paths.as_deref(),
-            || started.elapsed() < TEXT_PASS_BUDGET,
-        )
-    });
-    let mut response = json!({"project_root": request.project_root});
-    if let Some(text) = text {
-        response["text_vectors"] = json!(text.report);
-        response["pending_paths"] = json!(text.pending_paths);
-    } else {
-        response["text_vectors"] = Value::Null;
-        response["pending_paths"] = json!([]);
-    }
-    if rebuilds_names {
-        write_index_state(
-            context,
-            &state_key,
-            SearchIndexState {
-                project_root: request.project_root.clone(),
-                state: "ready".into(),
-                indexed_nodes: elements.len(),
-                error: None,
-            },
-        )?;
-        response["index_state"] = json!("ready");
-        response["indexed_nodes"] = json!(elements.len());
-        response["commit_version"] = json!(snapshot.commit_version);
-        response["published_at"] = json!(snapshot.published_at);
-    }
-    Ok(response)
-}
-
-/// Embeds every element name and stores the vectors in batches. A failure marks the index failed.
-fn store_name_vectors(
-    context: &mut PluginContext<'_>,
-    state_key: &str,
-    project_root: &str,
-    elements: &[SemanticElement],
-) -> Result<(), PluginError> {
-    let names = elements
-        .iter()
-        .map(|element| element.name.as_str())
-        .collect::<Vec<_>>();
-    let embedded = if names.is_empty() {
-        EmbedBatch::empty()
-    } else {
-        embed_texts(context, &names, EmbedTask::Document).map_err(|cause| {
-            rebuild_failed(
-                context,
-                state_key,
-                project_root,
-                "neural.embed vectors",
-                cause,
-            )
-        })?
-    };
-    let mut vectors = elements.iter().zip(embedded.vectors).map(|(element, vector)| json!({
-        "semantic_element_id": element.semantic_element_id.clone(),
-        "project_root": project_root,
-        "source_text": element.name.trim(),
-        "vector": {"engine_id": embedded.engine_id, "model": embedded.model,
-            "dimensions": vector.len(), "vector": vector, "normalized": false, "metadata": {}}
-    }));
-    loop {
-        let batch = vectors
-            .by_ref()
-            .take(VECTOR_STORE_BATCH)
-            .collect::<Vec<_>>();
-        if batch.is_empty() {
-            return Ok(());
-        }
-        if let Err(cause) = storage::store_element_name_vectors(context, project_root, batch) {
-            return Err(rebuild_failed(
-                context,
-                state_key,
-                project_root,
-                "native vector storage",
-                cause,
-            ));
-        }
-    }
-}
-
-/// Stores the failed state with the cause, and returns the rebuild error that carries it.
-fn rebuild_failed(
-    context: &mut PluginContext<'_>,
-    state_key: &str,
-    project_root: &str,
-    expected: &str,
-    cause: PluginError,
-) -> PluginError {
-    let message = format!(
-        "failed to rebuild Semantic search index for `{project_root}`; expected {expected}: {}",
-        cause.message
-    );
-    let state = SearchIndexState {
-        project_root: project_root.into(),
-        state: "failed".into(),
-        indexed_nodes: 0,
-        error: Some(message.clone()),
-    };
-    match write_index_state(context, state_key, state) {
-        Ok(()) => PluginError::new("semantic_index_rebuild_failed", message, true),
-        Err(state_error) => PluginError::new(
-            "semantic_index_rebuild_failed",
-            format!(
-                "{message}; failed index state was not stored: {}",
-                state_error.message
-            ),
-            true,
-        ),
-    }
-}
-
-fn write_index_state(
-    context: &mut PluginContext<'_>,
-    state_key: &str,
-    state: SearchIndexState,
-) -> Result<(), PluginError> {
-    storage::put(context, SEARCH_INDEX_STATE, state_key, &state)
+    rebuild::invoke(input, context)
 }
 
 fn search_limit(limit: Option<usize>) -> Result<usize, PluginError> {
@@ -575,6 +408,7 @@ pub(crate) struct EmbedBatch {
     pub(crate) vectors: Vec<Vec<f32>>,
     pub(crate) engine_id: String,
     pub(crate) model: Option<String>,
+    pub(crate) profile_fingerprint: Option<String>,
 }
 
 impl EmbedBatch {
@@ -583,6 +417,7 @@ impl EmbedBatch {
             vectors: Vec::new(),
             engine_id: String::new(),
             model: None,
+            profile_fingerprint: None,
         }
     }
 }
@@ -603,27 +438,12 @@ impl EmbedTask {
     }
 }
 
-/// Splits `texts` into consecutive ranges that each fit one `neural.embed` call: at most
-/// `MAX_NEURAL_EMBED_TEXTS` texts and `MAX_NEURAL_EMBED_BYTES` bytes. A text over the byte
-/// limit gets a range of its own; the host decides whether it accepts it.
+/// Batches by the existing inference count contract, never by transport byte budgets.
 pub(crate) fn embed_batch_ranges(texts: &[&str]) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    let mut bytes = 0;
-    for (index, text) in texts.iter().enumerate() {
-        let full =
-            index - start == MAX_NEURAL_EMBED_TEXTS || bytes + text.len() > MAX_NEURAL_EMBED_BYTES;
-        if index > start && full {
-            ranges.push(start..index);
-            start = index;
-            bytes = 0;
-        }
-        bytes += text.len();
-    }
-    if start < texts.len() {
-        ranges.push(start..texts.len());
-    }
-    ranges
+    (0..texts.len())
+        .step_by(MAX_NEURAL_EMBED_TEXTS)
+        .map(|start| start..(start + MAX_NEURAL_EMBED_TEXTS).min(texts.len()))
+        .collect()
 }
 
 pub(crate) fn embed_texts(
@@ -631,35 +451,82 @@ pub(crate) fn embed_texts(
     texts: &[&str],
     task: EmbedTask,
 ) -> Result<EmbedBatch, PluginError> {
-    let mut vectors = Vec::with_capacity(texts.len());
-    let mut engine_id = None;
-    let mut model = None;
+    embed_texts_guarded(context, texts, task, None)
+}
+
+pub(crate) fn embed_texts_guarded(
+    context: &mut PluginContext<'_>,
+    texts: &[&str],
+    task: EmbedTask,
+    expected_profile: Option<&str>,
+) -> Result<EmbedBatch, PluginError> {
+    let mut combined = EmbedBatch::empty();
     for range in embed_batch_ranges(texts) {
-        let batch = &texts[range];
-        let output =
-            context.host_call("neural.embed", json!({"texts": batch, "task": task.wire()}))?;
-        let values = output["vectors"]
-            .as_array()
-            .filter(|values| values.len() == batch.len())
-            .ok_or_else(|| embedding_error(format!("expected {} vectors", batch.len())))?;
-        for value in values {
-            vectors.push(vector(value).ok_or_else(|| embedding_error("expected finite numbers"))?);
+        let mut input = json!({"texts": &texts[range.clone()], "task": task.wire()});
+        if let Some(profile) = expected_profile {
+            input["expected_profile_fingerprint"] = json!(profile);
         }
-        if engine_id.is_none() {
-            engine_id = output["engine_id"].as_str().map(str::to_string);
-            model = output["model"].as_str().map(str::to_string);
+        let output = context.host_call("neural.embed", input)?;
+        let batch = parse_embed_output(output, range.len(), expected_profile)?;
+        if !combined.vectors.is_empty()
+            && (combined.engine_id != batch.engine_id
+                || combined.model != batch.model
+                || combined.profile_fingerprint != batch.profile_fingerprint)
+        {
+            return Err(PluginError::new(
+                "rebuild_profile_conflict",
+                "embedding service changed between inference batches",
+                true,
+            ));
         }
+        combined.engine_id = batch.engine_id;
+        combined.model = batch.model;
+        combined.profile_fingerprint = batch.profile_fingerprint;
+        combined.vectors.extend(batch.vectors);
     }
-    let dimensions = vectors.first().map_or(0, Vec::len);
-    if !(dimensions > 0 && vectors.iter().all(|vector| vector.len() == dimensions)) {
+    let dimensions = combined.vectors.first().map_or(0, Vec::len);
+    if dimensions == 0
+        || combined
+            .vectors
+            .iter()
+            .any(|vector| vector.len() != dimensions)
+    {
         return Err(embedding_error(
             "expected equal non-empty vector dimensions",
         ));
     }
+    Ok(combined)
+}
+
+fn parse_embed_output(
+    output: Value,
+    expected: usize,
+    expected_profile: Option<&str>,
+) -> Result<EmbedBatch, PluginError> {
+    let values = output["vectors"]
+        .as_array()
+        .filter(|values| values.len() == expected)
+        .ok_or_else(|| embedding_error("expected one vector per source text"))?;
+    let vectors = values
+        .iter()
+        .map(|value| vector(value).ok_or_else(|| embedding_error("expected finite vector numbers")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let profile_fingerprint = output["profile_fingerprint"].as_str().map(str::to_string);
+    if expected_profile.is_some_and(|expected| Some(expected) != profile_fingerprint.as_deref()) {
+        return Err(PluginError::new(
+            "rebuild_profile_conflict",
+            "embedding profile differs from pinned plan",
+            true,
+        ));
+    }
     Ok(EmbedBatch {
         vectors,
-        engine_id: engine_id.ok_or_else(|| embedding_error("expected engine_id"))?,
-        model,
+        engine_id: output["engine_id"]
+            .as_str()
+            .ok_or_else(|| embedding_error("expected engine_id"))?
+            .into(),
+        model: output["model"].as_str().map(str::to_string),
+        profile_fingerprint,
     })
 }
 
@@ -978,17 +845,17 @@ mod tests {
     }
 
     #[test]
-    fn embed_batches_stay_under_256_kib() {
-        // Six texts of 40 KiB fit (240 KiB); a seventh would reach 280 KiB.
+    fn embed_batches_accept_large_texts_without_byte_budgets() {
+        // Token-planned source ranges may be large in bytes.
         let text = "a".repeat(40 * 1024);
         let texts = vec![text.as_str(); 13];
-        assert_eq!(embed_batch_ranges(&texts), vec![0..6, 6..12, 12..13]);
+        assert_eq!(embed_batch_ranges(&texts), vec![0..13]);
     }
 
     #[test]
-    fn a_text_over_the_byte_limit_gets_a_batch_of_its_own() {
+    fn one_large_text_does_not_change_element_vector_association() {
         let big = "a".repeat(300 * 1024);
         let texts = ["x", big.as_str(), "y"];
-        assert_eq!(embed_batch_ranges(&texts), vec![0..1, 1..2, 2..3]);
+        assert_eq!(embed_batch_ranges(&texts), vec![0..3]);
     }
 }

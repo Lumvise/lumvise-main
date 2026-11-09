@@ -7,6 +7,7 @@ mod delegation;
 mod inspection;
 mod project_access;
 mod recovery;
+mod vector_generations;
 
 struct AuthorityFixture {
     persistence: Arc<LocalPersistence>,

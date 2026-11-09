@@ -7,8 +7,20 @@ impl SemanticOperation {
     pub fn project_root(&self) -> Option<&str> {
         revision_root(self)
             .or_else(|| publication_root(self))
+            .or_else(|| text_vector_generation_root(self))
             .or_else(|| view_root(self))
             .or_else(|| selector_root(self))
+    }
+}
+
+fn text_vector_generation_root(operation: &SemanticOperation) -> Option<&str> {
+    use SemanticOperation::*;
+    match operation {
+        BeginElementTextVectorGeneration { spec } => Some(&spec.key.project_root),
+        StageElementTextVectorChunk { key, .. }
+        | CommitElementTextVectorGeneration { key }
+        | AbortElementTextVectorGeneration { key } => Some(&key.project_root),
+        _ => None,
     }
 }
 
