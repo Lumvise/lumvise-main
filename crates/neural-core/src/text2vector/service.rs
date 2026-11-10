@@ -157,14 +157,36 @@ impl lumvise_db_core::ArtifactTextVectorizer for Text2VectorService {
                 task,
             )
             .map_err(|error| lumvise_db_core::DbError::vectorizer(error.to_string()))?;
-        Ok(lumvise_db_core::ArtifactTextVector {
-            engine_id: response.metadata.engine_id,
-            model: response.metadata.model,
-            dimensions: response.dimensions,
-            vector: response.vector,
-            normalized: response.normalized,
-            metadata: response.metadata.metadata,
-        })
+        Ok(stored_vector(response))
+    }
+
+    fn vectorize_artifact_texts(
+        &self,
+        texts: &[&str],
+        task: TextEmbeddingTask,
+    ) -> lumvise_db_core::Result<Vec<lumvise_db_core::ArtifactTextVector>> {
+        match &self.backend {
+            Text2VectorBackend::Spawned(_) => texts
+                .iter()
+                .map(|text| self.vectorize_artifact_text(text, task))
+                .collect(),
+            #[cfg(feature = "fastembed")]
+            Text2VectorBackend::FastEmbed(engine) => engine
+                .embed_batch(texts, task)
+                .map(|responses| responses.into_iter().map(stored_vector).collect())
+                .map_err(|error| lumvise_db_core::DbError::vectorizer(error.to_string())),
+        }
+    }
+}
+
+fn stored_vector(response: Text2VectorResponse) -> lumvise_db_core::ArtifactTextVector {
+    lumvise_db_core::ArtifactTextVector {
+        engine_id: response.metadata.engine_id,
+        model: response.metadata.model,
+        dimensions: response.dimensions,
+        vector: response.vector,
+        normalized: response.normalized,
+        metadata: response.metadata.metadata,
     }
 }
 

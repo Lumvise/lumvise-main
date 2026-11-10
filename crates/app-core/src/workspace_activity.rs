@@ -1,4 +1,4 @@
-//! Owns the app's transient LLM activity history and change notification.
+//! Owns transient workspace activity and change notification.
 //! Producers publish lifecycle transitions; the workspace reads `wait_for_changes`.
 //! Prompts, responses, and scheduling decisions stay with their existing owners.
 
@@ -7,6 +7,8 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+mod embedding;
+pub(crate) use embedding::EmbeddingBatch;
 
 const FINISHED_HISTORY: usize = 200;
 
@@ -32,6 +34,13 @@ pub(crate) enum ActivityKind {
     Knowledge,
     Assistant,
     Llm,
+    Embedding,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ActivityProgress {
+    pub completed: usize,
+    pub total: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -44,6 +53,8 @@ pub(crate) struct ActivityEntry {
     pub semantic_element_id: Option<String>,
     pub document_id: Option<String>,
     pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<ActivityProgress>,
 }
 
 impl ActivityEntry {
@@ -62,6 +73,7 @@ impl ActivityEntry {
             semantic_element_id: None,
             document_id: None,
             detail: None,
+            progress: None,
         }
     }
 }

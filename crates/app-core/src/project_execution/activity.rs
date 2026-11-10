@@ -23,6 +23,7 @@ impl ProjectExecutionState {
             _ => "Generate functional knowledge".into(),
         };
         self.activity.record(ActivityEntry {
+            progress: None,
             id: job.job_id.clone(),
             project_root: Some(job.project_root.clone()),
             title,

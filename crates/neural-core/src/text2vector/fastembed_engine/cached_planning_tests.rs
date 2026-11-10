@@ -1,6 +1,151 @@
 //! Explicit offline canaries using an installed local ONNX/tokenizer, never downloads.
 use super::*;
 
+#[test]
+#[ignore = "requires explicit LUMVISE_TEST_NOMIC_MODEL_DIR; no downloads"]
+fn installed_nomic_batch_port_timing_and_scalar_agreement() {
+    use lumvise_db_core::ArtifactTextVectorizer;
+    let directory = std::env::var_os("LUMVISE_TEST_NOMIC_MODEL_DIR")
+        .expect("expected installed Nomic directory");
+    let service = crate::Text2VectorService::from_runtime_config(
+        crate::Text2VectorRuntimeConfig::FastEmbedLocalOnnx {
+            engine_id: "nomic-timing-canary".into(),
+            model_id: "nomic-embed-text-v1.5".into(),
+            model_dir: directory.into(),
+        },
+    )
+    .unwrap();
+    service
+        .vectorize_artifact_text("warm up", TextEmbeddingTask::Document)
+        .unwrap();
+    compare_batch_workload(
+        &service,
+        "short_names",
+        &(0..32)
+            .map(|n| format!("lookup semantic element {n}"))
+            .collect::<Vec<_>>(),
+    );
+    let mut mixed = vec!["small heading".to_owned(); 7];
+    mixed.push("This document describes source indexing and embedding vector storage. ".repeat(80));
+    compare_batch_workload(&service, "mixed_lengths", &mixed);
+}
+
+fn compare_batch_workload(service: &crate::Text2VectorService, name: &str, texts: &[String]) {
+    use lumvise_db_core::ArtifactTextVectorizer;
+    let input = texts.iter().map(String::as_str).collect::<Vec<_>>();
+    let start = std::time::Instant::now();
+    let scalar = input
+        .iter()
+        .map(|text| {
+            service
+                .vectorize_artifact_text(text, TextEmbeddingTask::Document)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let scalar_ms = start.elapsed().as_millis();
+    let start = std::time::Instant::now();
+    let batch = service
+        .vectorize_artifact_texts(&input, TextEmbeddingTask::Document)
+        .unwrap();
+    let batch_ms = start.elapsed().as_millis();
+    assert_eq!(scalar.len(), batch.len());
+    let similarities = scalar
+        .iter()
+        .zip(&batch)
+        .map(|(left, right)| cosine(&left.vector, &right.vector))
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::json!({"workload":name,"items":input.len(),"scalar_ms":scalar_ms,"batch_ms":batch_ms,"concurrent_host_load":true,"cosines":similarities})
+    );
+    for (index, similarity) in similarities.iter().enumerate() {
+        assert!(
+            *similarity > 0.99,
+            "{name} item {index} cosine {similarity}; expected >0.99 scalar/batch agreement"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires explicit LUMVISE_TEST_VECTOR_MODEL_DIR; no downloads"]
+fn installed_batch_port_keeps_order_dimensions_and_profile() {
+    let engine = installed_engine(false);
+    let texts = [
+        "fresh bread from the oven",
+        "quantum entanglement experiments",
+        "birds fly south in winter",
+    ]
+    .into_iter()
+    .cycle()
+    .take(19)
+    .collect::<Vec<_>>();
+    let batch = engine
+        .embed_batch(&texts, TextEmbeddingTask::Document)
+        .unwrap();
+    assert_eq!(batch.len(), 19);
+    for (index, text) in texts.iter().enumerate() {
+        let single = engine
+            .embed(&Text2VectorRequest {
+                text: (*text).into(),
+                model: None,
+            })
+            .unwrap();
+        assert_eq!(batch[index].metadata.engine_id, single.metadata.engine_id);
+        assert_eq!(batch[index].metadata.model, single.metadata.model);
+        assert_eq!(batch[index].dimensions, single.dimensions);
+        assert!(
+            cosine(&batch[index].vector, &single.vector) > 0.99,
+            "batch item {index} lost its source association"
+        );
+    }
+    assert!(
+        engine
+            .embed_batch(&[], TextEmbeddingTask::Document)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(cosine(&batch[0].vector, &batch[1].vector) < 0.95);
+}
+
+fn cosine(left: &[f32], right: &[f32]) -> f32 {
+    let dot = left.iter().zip(right).map(|(a, b)| a * b).sum::<f32>();
+    let norm = |v: &[f32]| v.iter().map(|a| a * a).sum::<f32>().sqrt();
+    dot / (norm(left) * norm(right))
+}
+
+#[test]
+#[ignore = "requires explicit LUMVISE_TEST_NOMIC_MODEL_DIR; no downloads"]
+fn installed_nomic_batch_port_keeps_512_dimensions_profile_task_and_source_order() {
+    use lumvise_db_core::ArtifactTextVectorizer;
+    let directory = std::env::var_os("LUMVISE_TEST_NOMIC_MODEL_DIR")
+        .expect("expected installed Nomic directory");
+    let service = crate::Text2VectorService::from_runtime_config(
+        crate::Text2VectorRuntimeConfig::FastEmbedLocalOnnx {
+            engine_id: "nomic-batch-canary".into(),
+            model_id: "nomic-embed-text-v1.5".into(),
+            model_dir: directory.into(),
+        },
+    )
+    .unwrap();
+    let texts = [
+        "fresh bread from the oven",
+        "quantum entanglement experiments",
+        "birds fly south in winter",
+    ];
+    for task in [TextEmbeddingTask::Document, TextEmbeddingTask::Query] {
+        let batch = service.vectorize_artifact_texts(&texts, task).unwrap();
+        assert_eq!(batch.len(), 3);
+        for (index, text) in texts.iter().enumerate() {
+            let scalar = service.vectorize_artifact_text(text, task).unwrap();
+            assert_eq!(batch[index].dimensions, 512);
+            assert_eq!(batch[index].vector.len(), 512);
+            assert_eq!(batch[index].engine_id, scalar.engine_id);
+            assert!(batch[index].engine_id.contains("::profile-"));
+            assert!(cosine(&batch[index].vector, &scalar.vector) > 0.99);
+        }
+    }
+}
+
 fn installed_engine(nomic_prefix: bool) -> FastEmbedText2VectorEngine {
     let directory = std::env::var_os("LUMVISE_TEST_VECTOR_MODEL_DIR")
         .expect("set LUMVISE_TEST_VECTOR_MODEL_DIR to an installed local MiniLM directory");

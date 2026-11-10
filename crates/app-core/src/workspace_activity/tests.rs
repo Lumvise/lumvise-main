@@ -1,6 +1,103 @@
 use super::*;
 use std::sync::mpsc;
 
+#[test]
+fn embedding_counts_are_project_scoped_and_saving_is_not_completed() {
+    let activity = Arc::new(WorkspaceActivity::default());
+    let mut batch = activity.track_embeddings("/repo", 50);
+    batch.advance(21);
+    let entry = activity
+        .wait_for_changes("/repo", None, Duration::ZERO)
+        .entries
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        entry.progress,
+        Some(ActivityProgress {
+            completed: 21,
+            total: 50
+        })
+    );
+    assert_eq!(entry.status, ActivityStatus::Running);
+    assert!(
+        activity
+            .wait_for_changes("/other", None, Duration::ZERO)
+            .entries
+            .unwrap()
+            .is_empty()
+    );
+    batch.advance(29);
+    batch.saving();
+    let entry = activity
+        .wait_for_changes("/repo", None, Duration::ZERO)
+        .entries
+        .unwrap()
+        .remove(0);
+    assert_eq!(entry.status, ActivityStatus::Running);
+    assert_eq!(entry.detail.as_deref(), Some("Saving vectors"));
+    batch.succeeded();
+    drop(batch);
+    assert_eq!(
+        activity
+            .wait_for_changes("/repo", None, Duration::ZERO)
+            .entries
+            .unwrap()[0]
+            .status,
+        ActivityStatus::Succeeded
+    );
+}
+
+#[test]
+fn failed_embedding_keeps_real_partial_count_and_retry_replaces_only_its_terminal_row() {
+    let activity = Arc::new(WorkspaceActivity::default());
+    activity.record(knowledge_entry("knowledge", "/repo"));
+    let mut batch = activity.track_embeddings("/repo", 50);
+    batch.advance(16);
+    drop(batch);
+    let entries = activity
+        .wait_for_changes("/repo", None, Duration::ZERO)
+        .entries
+        .unwrap();
+    assert_eq!(entries[0].status, ActivityStatus::Failed);
+    assert_eq!(entries[0].progress.as_ref().unwrap().completed, 16);
+    assert_eq!(
+        entries[0].detail.as_deref(),
+        Some("Embedding batch failed; will retry")
+    );
+    let _retry = activity.track_embeddings("/repo", 20);
+    let entries = activity
+        .wait_for_changes("/repo", None, Duration::ZERO)
+        .entries
+        .unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().any(|entry| entry.id == "knowledge"));
+    assert_eq!(
+        entries[0].progress,
+        Some(ActivityProgress {
+            completed: 0,
+            total: 20
+        })
+    );
+}
+
+#[test]
+fn embedding_progress_wakes_existing_workspace_cursor() {
+    let activity = Arc::new(WorkspaceActivity::default());
+    let mut batch = activity.track_embeddings("/repo", 2);
+    let before = activity.wait_for_changes("/repo", None, Duration::ZERO);
+    batch.advance(1);
+    let after = activity.wait_for_changes("/repo", Some(before.revision), Duration::ZERO);
+    assert!(after.revision > before.revision);
+    assert_eq!(
+        after.entries.unwrap()[0]
+            .progress
+            .as_ref()
+            .unwrap()
+            .completed,
+        1
+    );
+}
+
 fn knowledge_entry(id: &str, project_root: &str) -> ActivityEntry {
     ActivityEntry {
         id: id.into(),
@@ -11,6 +108,7 @@ fn knowledge_entry(id: &str, project_root: &str) -> ActivityEntry {
         semantic_element_id: Some("function:parse".into()),
         document_id: None,
         detail: None,
+        progress: None,
     }
 }
 

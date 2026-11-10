@@ -1,5 +1,7 @@
 use super::*;
+mod batch;
 use crate::plugin::host_capability_broker::tests::{app_with_default_broker, request};
+use lumvise_db_core::ArtifactTextVectorizer;
 use lumvise_neural_core::text2vector::{
     TextChunkPlan, TextChunkPlanRequest, TextChunkPlanner, TextChunkRange,
 };

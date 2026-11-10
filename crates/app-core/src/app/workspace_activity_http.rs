@@ -58,6 +58,40 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn native_activity_route_reports_real_embedding_counts_only_for_the_selected_project() {
+        let app = AppCore::in_memory().unwrap();
+        app.install_bridge_credential_store(std::sync::Arc::default())
+            .unwrap();
+        let mut work = app
+            .plugin_host_services
+            .activity()
+            .track_embeddings("/repo", 50);
+        work.advance(21);
+        let read = |root: &str| {
+            app.route_app_bridge_request(
+                "GET",
+                ACTIVITY_ENDPOINT,
+                BTreeMap::from([("project_root".into(), root.into())]),
+                Vec::new(),
+            )
+        };
+        let (status, body) = read("/repo");
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["entries"][0]["kind"], "embedding");
+        assert_eq!(value["entries"][0]["status"], "running");
+        assert_eq!(
+            value["entries"][0]["progress"],
+            serde_json::json!({"completed":21,"total":50})
+        );
+        let (_, body) = read("/other");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["entries"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
     fn activity_route_checks_credentials_then_validates_cursor() {
         let app = AppCore::in_memory().unwrap();
         let request = HttpRequest {

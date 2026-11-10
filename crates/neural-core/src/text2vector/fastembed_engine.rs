@@ -1,3 +1,4 @@
+mod batch;
 #[cfg(test)]
 mod cached_planning_tests;
 mod chunk_planning;
@@ -231,7 +232,24 @@ impl FastEmbedText2VectorEngine {
         require_non_empty(&request.text, "non-empty text to vectorize")?;
         require_requested_model(request.model.as_deref(), &self.config.model_id)?;
         let vector = self.embed_text_for_task(&request.text, task)?;
-        Ok(Text2VectorResponse {
+        Ok(self.vector_response(vector))
+    }
+
+    pub(super) fn embed_batch(
+        &self,
+        texts: &[&str],
+        task: TextEmbeddingTask,
+    ) -> Result<Vec<Text2VectorResponse>> {
+        self.embed_text_batch(texts, task).map(|vectors| {
+            vectors
+                .into_iter()
+                .map(|vector| self.vector_response(vector))
+                .collect()
+        })
+    }
+
+    fn vector_response(&self, vector: Vec<f32>) -> Text2VectorResponse {
+        Text2VectorResponse {
             dimensions: vector.len(),
             vector,
             normalized: false,
@@ -240,7 +258,7 @@ impl FastEmbedText2VectorEngine {
                 model: Some(self.config.model_id.clone()),
                 metadata: json!({ "backend": "fastembed" }),
             },
-        })
+        }
     }
 }
 
@@ -259,27 +277,12 @@ fn require_requested_model(requested: Option<&str>, configured: &str) -> Result<
 
 impl FastEmbedText2VectorEngine {
     fn embed_text_for_task(&self, text: &str, task: TextEmbeddingTask) -> Result<Vec<f32>> {
-        let prepared = self.profile.prepare(text, task);
-        let mut model = self.model.lock().map_err(|_| NeuralError::ProviderFailed {
-            provider_id: self.config.engine_id.clone(),
-            message: "FastEmbed model mutex poisoned".to_string(),
-        })?;
-        let embeddings =
-            model
-                .embed(vec![prepared], None)
-                .map_err(|error| NeuralError::ProviderFailed {
-                    provider_id: self.config.engine_id.clone(),
-                    message: error.to_string(),
-                })?;
-        let vector = embeddings
-            .into_iter()
-            .next()
-            .filter(|vector| !vector.is_empty())
+        self.embed_text_batch(&[text], task)?
+            .pop()
             .ok_or_else(|| NeuralError::MalformedPayload {
-                value: format!("{} source bytes", text.len()),
-                expected: "non-empty FastEmbed vector".to_string(),
-            })?;
-        self.profile.finish(vector)
+                value: "0 vectors".into(),
+                expected: "one FastEmbed vector".into(),
+            })
     }
 }
 

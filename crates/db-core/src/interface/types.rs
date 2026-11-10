@@ -282,7 +282,23 @@ pub trait ArtifactTextVectorizer {
         text: &str,
         task: TextEmbeddingTask,
     ) -> crate::Result<ArtifactTextVector>;
+
+    /// Embeds an ordered batch with one result per input; empty input returns no vectors.
+    /// Example: `vectorizer.vectorize_artifact_texts(&["one", "two"], TextEmbeddingTask::Document)`.
+    fn vectorize_artifact_texts(
+        &self,
+        texts: &[&str],
+        task: TextEmbeddingTask,
+    ) -> crate::Result<Vec<ArtifactTextVector>> {
+        texts
+            .iter()
+            .map(|text| self.vectorize_artifact_text(text, task))
+            .collect()
+    }
 }
+
+#[cfg(test)]
+mod vectorizer_batch_tests;
 
 /// Durable UUID v4 identity for one semantic project lineage.
 ///

@@ -7,7 +7,7 @@ use super::{
 };
 mod chunk_text;
 pub(super) use chunk_text::invoke_neural_chunk_text;
-use lumvise_db_core::{ArtifactTextVectorizer, TextEmbeddingTask};
+use lumvise_db_core::TextEmbeddingTask;
 use lumvise_plugin_runtime::HostCapabilityError;
 use serde_json::{Map, Value, json};
 
@@ -24,10 +24,15 @@ pub(super) fn invoke_neural_embed(
     let selected = selected_service(vectorizer, NEURAL_EMBED_CAPABILITY)?;
     let expected = expected_profile(&input)?;
     let profile_fingerprint = checked_profile(&selected, expected)?;
-    let embedded = texts
-        .iter()
-        .map(|text| embed_one(selected.vectorizer.as_ref(), text, task))
-        .collect::<Result<Vec<_>, _>>()?;
+    let embedded = selected
+        .vectorizer
+        .vectorize_artifact_texts(&texts, task)
+        .map_err(|_| {
+            embed_failure(format!(
+                "text vectorization failed for {} inputs; expected one ordered vector per input",
+                texts.len()
+            ))
+        })?;
     embedded_response(embedded, profile_fingerprint, texts.len())
 }
 
@@ -36,6 +41,7 @@ fn embedded_response(
     profile: Option<String>,
     expected: usize,
 ) -> Result<Value, HostCapabilityError> {
+    validate_embedding_identities(&embedded)?;
     let (engine_id, model) = embedded
         .first()
         .map(|result| (result.engine_id.clone(), result.model.clone()))
@@ -107,14 +113,23 @@ fn embed_text(value: &Value) -> Result<&str, HostCapabilityError> {
         .ok_or_else(|| invalid_embed_input(value, "non-empty UTF-8 string"))
 }
 
-fn embed_one(
-    vectorizer: &dyn ArtifactTextVectorizer,
-    text: &str,
-    task: TextEmbeddingTask,
-) -> Result<lumvise_db_core::ArtifactTextVector, HostCapabilityError> {
-    vectorizer
-        .vectorize_artifact_text(text, task)
-        .map_err(|_| embed_failure(format!("text vectorization failed for {} source bytes; expected a vector from the configured provider", text.len())))
+fn validate_embedding_identities(
+    vectors: &[lumvise_db_core::ArtifactTextVector],
+) -> Result<(), HostCapabilityError> {
+    let valid = vectors.first().is_none_or(|first| {
+        vectors.iter().all(|vector| {
+            vector.engine_id == first.engine_id
+                && vector.model == first.model
+                && vector.dimensions == vector.vector.len()
+        })
+    });
+    if valid {
+        return Ok(());
+    }
+    Err(embed_failure(format!(
+        "received {} batch vectors with inconsistent metadata; expected one engine/model and declared dimensions equal to vector length",
+        vectors.len()
+    )))
 }
 
 fn validate_vectors(vectors: &[Vec<f32>], expected: usize) -> Result<(), HostCapabilityError> {
