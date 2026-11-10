@@ -9,6 +9,12 @@ use lumvise_neural_core::process::StreamControl;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[derive(Clone, Copy)]
+struct ArtifactDispatchObservation {
+    provider_id: &'static str,
+    entered_at: Instant,
+}
+
 struct FakeArtifactEngine {
     provider_id: &'static str,
     requests: mpsc::Sender<LlmRequest>,
@@ -16,6 +22,7 @@ struct FakeArtifactEngine {
     reject_structured: bool,
     /// Remaining `complete` calls that fail with a transport-class reset.
     fail_transport_first: Arc<AtomicUsize>,
+    dispatch_observations: Arc<parking_lot::Mutex<Vec<ArtifactDispatchObservation>>>,
 }
 impl LlmProvider for FakeArtifactEngine {
     fn provider_id(&self) -> &str {
@@ -33,6 +40,13 @@ impl LlmProvider for FakeArtifactEngine {
         }
     }
     fn complete(&self, request: &LlmRequest) -> lumvise_neural_core::Result<LlmResponse> {
+        let entered_at = Instant::now();
+        self.dispatch_observations
+            .lock()
+            .push(ArtifactDispatchObservation {
+                provider_id: self.provider_id,
+                entered_at,
+            });
         if self.fail_transport_first.load(Ordering::Relaxed) > 0 {
             self.fail_transport_first.fetch_sub(1, Ordering::Relaxed);
             return Err(lumvise_neural_core::NeuralError::Io {
@@ -77,6 +91,7 @@ struct LocalArtifactFixture {
     requests: mpsc::Receiver<LlmRequest>,
     reply: mpsc::Sender<String>,
     fail_transport_first: Arc<AtomicUsize>,
+    dispatch_observations: Arc<parking_lot::Mutex<Vec<ArtifactDispatchObservation>>>,
 }
 impl LocalArtifactFixture {
     fn new() -> Self {
@@ -98,6 +113,7 @@ impl LocalArtifactFixture {
         let (requests, received) = mpsc::channel();
         let (reply, response) = mpsc::channel();
         let fail_transport_first = Arc::new(AtomicUsize::new(0));
+        let dispatch_observations = Arc::new(parking_lot::Mutex::new(Vec::new()));
         // The fake serves the engine the executor will actually dispatch to.
         let provider_id = match settings
             .generation_engine
@@ -113,6 +129,7 @@ impl LocalArtifactFixture {
                 response: parking_lot::Mutex::new(response),
                 reject_structured,
                 fail_transport_first: Arc::clone(&fail_transport_first),
+                dispatch_observations: Arc::clone(&dispatch_observations),
             })])
             .unwrap()
             .with_completion_concurrency(provider_id, concurrency);
@@ -134,6 +151,7 @@ impl LocalArtifactFixture {
             requests: received,
             reply,
             fail_transport_first,
+            dispatch_observations,
         }
     }
     fn fail_transport(&self, count: usize) {
@@ -732,6 +750,16 @@ fn transport_outage_trips_breaker_and_queues_jobs_until_cooldown_ends() {
     let health = fixture.health("cerebras");
     assert!(health.cooldown_until.is_some(), "breaker must be tripped");
     assert_eq!(health.cooldown, BREAKER_COOLDOWN_BASE * 2);
+    let cooldown_deadline = health.cooldown_until.unwrap();
+    // The fifth fake entry precedes failure bookkeeping, giving an independent duration bound.
+    let (dispatches_before_queued, minimum_recovery_at) = {
+        let observations = fixture.dispatch_observations.lock();
+        assert_eq!(observations.len(), 6);
+        (
+            observations.len(),
+            observations[4].entered_at + BREAKER_COOLDOWN_BASE,
+        )
+    };
 
     // A queued job is NOT failed while the provider cools down: nothing is
     // dispatched until the cooldown elapses, then it runs and succeeds.
@@ -741,18 +769,29 @@ fn transport_outage_trips_breaker_and_queues_jobs_until_cooldown_ends() {
         request.idempotency_key = "breaker-queued".into();
         fixture.service.submit(request).unwrap()
     };
-    assert!(
-        fixture.requests.try_recv().is_err(),
-        "dispatched during cooldown"
-    );
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(
-        fixture.requests.try_recv().is_err(),
-        "dispatched during cooldown"
-    );
     fixture.reply.send(fixture.output()).unwrap();
     let completed = fixture.wait_terminal(&queued);
     assert_eq!(completed.status, ProjectExecutionStatus::Succeeded);
+    let queued_dispatch = {
+        let observations = fixture.dispatch_observations.lock();
+        assert_eq!(observations.len(), dispatches_before_queued + 1);
+        observations[dispatches_before_queued]
+    };
+    assert_eq!(queued_dispatch.provider_id, "cerebras");
+    assert!(
+        queued_dispatch.entered_at >= cooldown_deadline,
+        "provider {} entered at {:?}; expected entry at or after {:?}",
+        queued_dispatch.provider_id,
+        queued_dispatch.entered_at,
+        cooldown_deadline
+    );
+    assert!(
+        queued_dispatch.entered_at >= minimum_recovery_at,
+        "provider {} entered at {:?}; expected entry at or after fifth-failure bound {:?}",
+        queued_dispatch.provider_id,
+        queued_dispatch.entered_at,
+        minimum_recovery_at
+    );
 
     // Success resets the breaker.
     let health = fixture.health("cerebras");
