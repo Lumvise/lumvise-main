@@ -1,9 +1,10 @@
-//! Durable connector identity and Knowledge-write approval, owned by the host authority.
+//! Durable connector identity and native Knowledge/source approval, owned by the host authority.
 //! Native review calls the AppCore API; MCP can register/request but cannot decide a grant.
 mod api;
 #[cfg(test)]
 mod enforcement_tests;
 mod policy;
+mod source_access;
 #[cfg(test)]
 mod tests;
 

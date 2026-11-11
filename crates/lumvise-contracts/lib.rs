@@ -1,5 +1,6 @@
 pub mod assistant;
 mod connector;
+mod connector_source;
 pub mod content_fingerprint;
 pub mod control;
 pub mod database;
@@ -7,6 +8,7 @@ pub mod governance;
 pub mod health;
 pub mod mcp;
 pub use connector::*;
+pub use connector_source::*;
 pub mod neural;
 pub mod obsidian;
 pub mod plugins;

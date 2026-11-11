@@ -173,6 +173,23 @@ pub struct DesktopPluginViewAsset {
 
 /// Native seam for the canonical indexed semantic graph projection.
 pub trait DesktopSemanticGraphBridge: std::fmt::Debug + Send + Sync {
+    /// Reads native source-access review. Example: Settings lists connector folder requests.
+    fn connector_source_access(
+        &self,
+    ) -> Result<Vec<lumvise_contracts::ConnectorSourceAccess>, String> {
+        Err("source access review; expected a configured native permission bridge".into())
+    }
+
+    /// Changes only the reviewed native revision. Example: Allow one pending folder.
+    fn change_connector_source_access(
+        &self,
+        change: lumvise_contracts::ConnectorSourceAccessChange,
+    ) -> Result<lumvise_contracts::ConnectorSourceAccess, String> {
+        Err(format!(
+            "source access change {change:?}; expected a configured native permission bridge"
+        ))
+    }
+
     /// Reads one project's connector requests after fresh native maintainer verification.
     /// Example: Settings passes its native account adapter, never a model-supplied approval flag.
     fn connector_knowledge_grants(

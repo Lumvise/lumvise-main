@@ -48,9 +48,17 @@ pub(super) fn invoke(
         .ok_or_else(requires_nested_context)?;
     require_import_membership(services, context)?;
     let policy = services.source_import_authorization();
-    let folder = policy.canonical_folder(&route.folder_path)?;
-    let root = effective_project_root(&route, &folder)?;
+    let control = super::super::plugin_host_capabilities::invocation_control(context);
+    let candidate = SourceImportAuthorization::inspect_folder(&route.folder_path)?;
+    let root = effective_project_root(&route, Path::new(&candidate.canonical_path))?;
     authorize_project(broker, context, &root)?;
+    let folder = broker.knowledge_authority.require_source_folder(
+        context,
+        &policy,
+        &route.folder_path,
+        &control.control(),
+        true,
+    )?;
     // The shared scanner receives the authorized canonical path, not a mutable alias.
     request["folderPath"] = serde_json::json!(folder);
     request["projectRoot"] = serde_json::json!(root);
@@ -71,7 +79,13 @@ pub(super) fn invoke(
     let output = service.import_folder(request, context, publisher)?;
     require_active_host_call("project.import", context)?;
     authorize_project(broker, context, &root)?;
-    policy.canonical_folder(folder.to_str().ok_or_else(requires_nested_context)?)?;
+    broker.knowledge_authority.require_source_folder(
+        context,
+        &policy,
+        folder.to_str().ok_or_else(requires_nested_context)?,
+        &control.control(),
+        false,
+    )?;
     Ok(output)
 }
 
@@ -167,6 +181,54 @@ struct ApprovedSourceRoot {
 }
 
 impl SourceImportAuthorization {
+    /// Inspects metadata only; permission must still be checked before reading source.
+    /// Example: native Settings pins a selected alias to its canonical directory.
+    pub(crate) fn inspect_folder(
+        folder: &str,
+    ) -> Result<lumvise_contracts::ConnectorSourceFolder, HostCapabilityError> {
+        let requested = Path::new(folder);
+        if !requested.is_absolute() {
+            return Err(import_denied(&format!(
+                "folder {folder:?}; expected an absolute directory"
+            )));
+        }
+        let root =
+            ApprovedSourceRoot::read(requested.into()).map_err(|error| import_denied(&error))?;
+        let canonical = root
+            .canonical
+            .to_str()
+            .ok_or_else(requires_nested_context)?;
+        Ok(lumvise_contracts::ConnectorSourceFolder {
+            requested_path: folder.into(),
+            canonical_path: canonical.into(),
+        })
+    }
+
+    pub(crate) fn bootstrap_allows(
+        &self,
+        folder: &lumvise_contracts::ConnectorSourceFolder,
+    ) -> Result<bool, HostCapabilityError> {
+        let roots = self.roots.as_ref().map_err(|error| import_denied(error))?;
+        for root in roots {
+            if root.contains_requested(Path::new(&folder.requested_path))
+                && Path::new(&folder.canonical_path).starts_with(&root.canonical)
+            {
+                let current = root
+                    .configured
+                    .canonicalize()
+                    .map_err(|error| import_denied(&format!("configured root {:?}: {error}; expected an accessible authorized directory", root.configured)))?;
+                if current != root.canonical {
+                    return Err(import_denied(&format!(
+                        "configured root {:?} resolves to {current:?}; expected {:?}",
+                        root.configured, root.canonical
+                    )));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn configured(value: Option<OsString>) -> Self {
         let roots = value.map_or_else(
             || Ok(Vec::new()),
@@ -179,33 +241,15 @@ impl SourceImportAuthorization {
         Self { roots }
     }
 
+    #[cfg(test)]
     pub(super) fn canonical_folder(&self, folder: &str) -> Result<PathBuf, HostCapabilityError> {
-        let roots = self.roots.as_ref().map_err(|error| import_denied(error))?;
-        let requested = Path::new(folder);
-        let approved = roots
-            .iter()
-            .filter(|root| root.contains_requested(requested))
-            .collect::<Vec<_>>();
-        if !requested.is_absolute() || approved.is_empty() {
-            return Err(import_denied(&format!(
-                "folder {folder:?}; expected a host-authorized absolute source root"
-            )));
+        let inspected = Self::inspect_folder(folder)?;
+        if self.bootstrap_allows(&inspected)? {
+            return Ok(PathBuf::from(inspected.canonical_path));
         }
-        let canonical = requested.canonicalize().map_err(|error| {
-            import_denied(&format!(
-                "folder {folder:?}: {error}; expected an accessible authorized directory"
-            ))
-        })?;
-        if !approved
-            .iter()
-            .any(|root| canonical.starts_with(&root.canonical))
-        {
-            return Err(import_denied(&format!(
-                "folder {folder:?} resolves to {canonical:?}; expected containment in the configured source root"
-            )));
-        }
-        require_directory(&canonical).map_err(|error| import_denied(&error))?;
-        Ok(canonical)
+        Err(import_denied(&format!(
+            "folder {folder:?}; expected a host-authorized absolute source root"
+        )))
     }
 }
 
@@ -369,11 +413,18 @@ impl crate::app::project_import::ImportAuthorization for ScopedImportAuthorizati
         self.membership
             .scope(connection, self.context.scope_epoch())
             .map_err(|error| import_denied(&error))?;
-        let canonical = self
-            .policy
-            .canonical_folder(self.folder.to_str().ok_or_else(requires_nested_context)?)?;
+        let canonical = self.authority.require_source_folder(
+            &self.context,
+            &self.policy,
+            self.folder.to_str().ok_or_else(requires_nested_context)?,
+            control,
+            false,
+        )?;
         if canonical != self.folder {
-            return Err(import_denied("source root changed after indexing began"));
+            return Err(import_denied(&format!(
+                "source folder {:?} resolves to {canonical:?}; expected the original directory",
+                self.folder
+            )));
         }
         self.authority.authorize_source(
             &self.context,
