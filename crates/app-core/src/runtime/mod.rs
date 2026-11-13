@@ -263,6 +263,8 @@ impl AppCore {
         semantic_snapshots: Arc<crate::SemanticSnapshotService>,
         #[cfg(test)] plugin_host_capability_broker: Option<Arc<AppCoreHostCapabilityBroker>>,
     ) -> Self {
+        // Realtime WebSockets cannot infer a default when both Rustls backends are linked.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         plugin_host_services
             .project_import_service()
             .install_runtime(&plugin_system);

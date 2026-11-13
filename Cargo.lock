@@ -3512,6 +3512,7 @@ dependencies = [
  "prost",
  "regex",
  "reqwest",
+ "rustls",
  "semver",
  "serde",
  "serde_json",
