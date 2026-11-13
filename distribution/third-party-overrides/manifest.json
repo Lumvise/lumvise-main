@@ -342,6 +342,15 @@
     },
     "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-go/3c3775faa968158a8b4ac190a7fda867fd5fb748/LICENSE"
   },
+  "cargo:tree-sitter-html@0.23.2": {
+    "files": [
+      "upstream/cargo/tree-sitter/tree-sitter-html/5a5ca8551a179998360b4a4ca2c0f366a35acc03/LICENSE"
+    ],
+    "sha256": {
+      "upstream/cargo/tree-sitter/tree-sitter-html/5a5ca8551a179998360b4a4ca2c0f366a35acc03/LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    "source_url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-html/5a5ca8551a179998360b4a4ca2c0f366a35acc03/LICENSE"
+  },
   "cargo:tree-sitter-javascript@0.23.1": {
     "files": [
       "upstream/cargo/tree-sitter/tree-sitter-javascript/3a837b6f3658ca3618f2022f8707e29739c91364/LICENSE"
