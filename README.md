@@ -10,7 +10,7 @@ the same project memory through MCP, background agents keep reports up to date,
 and you can talk the project through with an Assistant that draws on a
 whiteboard.
 
-## Download Lumvise 0.2.0
+## Download Lumvise
 
 | Platform | Edition | Package |
 | --- | --- | --- |
@@ -18,27 +18,49 @@ whiteboard.
 | Linux x64 | Full | AppImage |
 | Windows 10 or later, x64 | Full | Installer or portable ZIP |
 
-[**Download Lumvise 0.2.0**](https://github.com/Lumvise/lumvise-main/releases/latest)
-from the latest release. Each download has a SHA-256 checksum file and ships
+[**Download the latest published release**](https://github.com/Lumvise/lumvise-main/releases/latest)
+Each download has a SHA-256 checksum file and ships
 with signed plugins. Windows builds are not code-signed, so Windows shows a
 warning for unknown software; see the [platform notes](#platform-notes). Not sure which edition you need? See
 [Choose an edition](#choose-an-edition).
 
-Lumvise 0.2.0 starts with a fresh database and does not open data from earlier
-versions. Follow the steps under "Before you update" in the
-[0.2.0 release notes](https://github.com/Lumvise/lumvise-main/releases/tag/v0.2.0)
-before you start it.
+Read the release notes for the version you install before updating. The source
+milestones below describe 0.2.2; the release page is authoritative for published
+installers and available platforms.
 
-**New in 0.2.0**
+## 0.2.2 highlights
 
-- Reusable background agents and Automations that run on schedules or watches
-  (Full).
-- Documents that cite code, Knowledge records and other documents.
-- Notes on image regions and on audio and video time segments.
-- History and retention for Knowledge records and project content.
-- A redesigned Workspace: Overview, Knowledge, Reports, Automations, Scratchboard
-  and Chat.
-- An Assistant that queues requests instead of refusing them while it is busy.
+- Nomic text embeddings with 512-dimensional vectors and tokenizer-aware text
+  chunks, so search can reach evidence beyond the start of a long section.
+- Resumable search-index rebuilds that publish complete section vectors, with
+  embedding progress visible in the Workspace status strip.
+- HTML previews with section navigation from the inspector (Full).
+- Native Allow/Deny folder prompts for connectors, restricted by default, with
+  autoapproval limited to folders selected in Settings (Full).
+- A compact phone Workspace with the usual chat layout and working menu taps.
+- Canvas failures shown in a dismissible dialog (Full).
+
+### Measured retrieval improvement
+
+In a fixed 50-question FRAMES retrieval pilot over 190 linked Wikipedia pages,
+the Nomic pipeline improved mean gold-article recall over the saved MiniLM
+baseline:
+
+| Ranked hits | MiniLM baseline | Nomic pipeline | Change |
+| --- | ---: | ---: | ---: |
+| 5 | 54.4% | 61.5% | +7.1 percentage points |
+| 10 | 62.8% | 77.7% | +14.9 percentage points |
+| 20 | 70.1% | 87.5% | +17.4 percentage points |
+
+At 20 hits, every gold article was retrieved for **32 of 50 questions**, up
+from **19 of 50**. All 50 measured searches used vector mode with a ready index
+and completed without query errors.
+
+This measures retrieval, not answer accuracy or an external leaderboard rank.
+The gain combines model, chunking and index-coverage changes; the baseline had
+incomplete vector coverage. The full FRAMES answer-generation comparison has
+not run. See the [0.2.2 release notes and pilot methodology](docs/releases/0.2.2.md)
+for the protocol, evidence identities and limitations.
 
 [Watch the demo](#an-assistant-you-can-talk-to) ·
 [Explore a graph online](https://lumvise.com/workspace?repo=https%3A%2F%2Fraw.githubusercontent.com%2FLumvise%2Flumvise-main%2Fmain%2Fdemos%2Fhuggingface__safetensors%2F.lv%2Fgraph.pz) ·
