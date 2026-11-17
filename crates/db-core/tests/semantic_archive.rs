@@ -419,19 +419,20 @@ fn rewrite_manifest(
     use std::io::{Read, Write};
     let mut archive = zip::ZipArchive::new(std::fs::File::open(input).unwrap()).unwrap();
     let mut writer = zip::ZipWriter::new(std::fs::File::create(output).unwrap());
-    writer.set_zip64_comment(Some("PZ2"));
+    writer.set_raw_zip64_extensible_data_sector(Box::from(&b"PZ2"[..]));
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
         let mut bytes = vec![];
         entry.read_to_end(&mut bytes).unwrap();
-        if entry.name() == "manifest.json" {
+        let name = entry.name().unwrap().into_owned();
+        if name == "manifest.json" {
             let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             edit(&mut manifest);
             bytes = serde_json::to_vec(&manifest).unwrap();
         }
         writer
             .start_file(
-                entry.name(),
+                name,
                 zip::write::SimpleFileOptions::default()
                     .compression_method(zip::CompressionMethod::Stored)
                     .large_file(true),

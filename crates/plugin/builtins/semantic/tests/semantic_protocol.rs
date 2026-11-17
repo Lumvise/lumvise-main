@@ -834,7 +834,8 @@ fn modified_signed_manifest_is_rejected_before_execution() {
         let mut entry = source.by_index(index).expect("zip entry");
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).expect("entry bytes");
-        if entry.name() == "manifest.json" {
+        let name = entry.name().expect("UTF-8 entry name").into_owned();
+        if name == "manifest.json" {
             let position = bytes
                 .windows("builtin.semantic".len())
                 .position(|window| window == b"builtin.semantic")
@@ -842,7 +843,7 @@ fn modified_signed_manifest_is_rejected_before_execution() {
             bytes[position] = b'x';
         }
         writer
-            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .start_file(name, zip::write::SimpleFileOptions::default())
             .expect("start copied entry");
         writer.write_all(&bytes).expect("copy entry");
     }

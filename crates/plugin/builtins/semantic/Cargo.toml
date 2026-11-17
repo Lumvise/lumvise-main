@@ -28,7 +28,7 @@ lumvise-db-core.workspace = true
 lumvise-resource-routing.workspace = true
 lumvise-plugin-runtime.workspace = true
 tempfile.workspace = true
-zip = "2.4"
+zip = { version = "9.6.1", default-features = false, features = ["deflate"] }
 
 [[bin]]
 name = "lumvise-plugin-semantic"

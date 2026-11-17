@@ -91,7 +91,7 @@ fn rewrite_manifest(path: &std::path::Path, mutate: impl FnOnce(&mut serde_json:
         let mut entry = archive.by_index(index).unwrap();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
-        entries.push((entry.name().to_owned(), bytes));
+        entries.push((entry.name().unwrap().into_owned(), bytes));
     }
     let manifest = entries
         .iter_mut()
@@ -104,7 +104,7 @@ fn rewrite_manifest(path: &std::path::Path, mutate: impl FnOnce(&mut serde_json:
     let replacement = path.with_extension("rewritten.pz");
     let file = fs::File::create(&replacement).unwrap();
     let mut writer = zip::ZipWriter::new(file);
-    writer.set_zip64_comment(Some("PZ2"));
+    writer.set_raw_zip64_extensible_data_sector(Box::from(&b"PZ2"[..]));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Stored)
         .large_file(true);
@@ -569,6 +569,35 @@ fn rejects_manifest_row_group_ranges_that_do_not_match_parquet() {
             .to_string()
             .contains("manifest footer and row-group integrity metadata")
     );
+}
+
+/// Stores the real central-directory size and offset in the EOCD, as pre-zip-9 writers did,
+/// instead of the ZIP64 sentinels zip 9 writes.
+fn store_unsentineled_eocd(path: &std::path::Path) {
+    let mut bytes = fs::read(path).unwrap();
+    let zip64 = bytes
+        .windows(4)
+        .rposition(|window| window == b"PK\x06\x06")
+        .unwrap();
+    let eocd = bytes
+        .windows(4)
+        .rposition(|window| window == b"PK\x05\x06")
+        .unwrap();
+    let cd_size = u64::from_le_bytes(bytes[zip64 + 40..zip64 + 48].try_into().unwrap());
+    let cd_offset = u64::from_le_bytes(bytes[zip64 + 48..zip64 + 56].try_into().unwrap());
+    bytes[eocd + 12..eocd + 16].copy_from_slice(&(cd_size as u32).to_le_bytes());
+    bytes[eocd + 16..eocd + 20].copy_from_slice(&(cd_offset as u32).to_le_bytes());
+    fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn opens_archives_whose_zip64_eocd_offsets_are_not_sentineled() {
+    let db = seeded_db();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pre-zip9-eocd.pz");
+    db.create_semantic_snapshot("/repo", &path).unwrap();
+    store_unsentineled_eocd(&path);
+    PzArchive::open(&path).unwrap();
 }
 
 #[test]

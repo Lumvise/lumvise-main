@@ -20,7 +20,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.6.1", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 ed25519-dalek = "2.1"

@@ -83,7 +83,7 @@ impl GrafeoRevisionHeader for SemanticRevisionRecordHeader {
             property,
             &self.record.record_id,
         )?.into_iter().filter(|node| {
-            matches!(node.get_property(property), Some(Value::String(id)) if id.as_ref() == self.record.record_id)
+            matches!(node.get_property(property), Some(Value::String(id)) if id.as_str() == self.record.record_id)
         }).collect::<Vec<_>>();
         if nodes.is_empty() {
             return Ok(None);

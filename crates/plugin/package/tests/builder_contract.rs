@@ -102,7 +102,7 @@ fn identical_request_produces_byte_for_byte_identical_packages() {
         .map(|index| {
             let entry = archive.by_index(index).expect("deterministic entry");
             (
-                entry.name().to_owned(),
+                entry.name().expect("UTF-8 entry name").into_owned(),
                 entry.last_modified().unwrap_or_default(),
                 entry.unix_mode().expect("fixed Unix permissions") & 0o777,
             )

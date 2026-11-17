@@ -137,7 +137,7 @@ pub(super) fn build_manifest(
 pub(super) fn write_zip(path: &Path, entries: &[(&str, Vec<u8>)]) -> Result<()> {
     let file = File::create(path)?;
     let mut writer = ZipWriter::new(file);
-    writer.set_zip64_comment(Some("PZ3"));
+    writer.set_raw_zip64_extensible_data_sector(Box::from(&b"PZ3"[..]));
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Stored)
         .large_file(true)

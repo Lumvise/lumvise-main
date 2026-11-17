@@ -28,7 +28,7 @@ arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 parquet = { version = "59.1.0", default-features = false, features = ["arrow", "zstd"] }
 sha2.workspace = true
-zip = { version = "2.4.2", default-features = false }
+zip = { version = "9.6.1", default-features = false }
 bytes.workspace = true
 tempfile.workspace = true
 

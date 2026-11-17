@@ -111,7 +111,10 @@ fn read_entries<R: Read + Seek>(
         let mut entry = file
             .by_index(index)
             .map_err(|error| PackageError::InvalidArchive(error.to_string()))?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|error| PackageError::InvalidArchive(error.to_string()))?
+            .into_owned();
         validate_path(&name)?;
         validate_entry_size(&name, entry.size(), &mut total_uncompressed, limits)?;
         if !seen.insert(name.clone()) {

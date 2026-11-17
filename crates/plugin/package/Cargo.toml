@@ -14,4 +14,4 @@ serde_json.workspace = true
 sha2 = "0.10"
 tempfile.workspace = true
 thiserror.workspace = true
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.6.1", default-features = false, features = ["deflate"] }

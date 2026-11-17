@@ -146,10 +146,16 @@ pub(super) fn read_validated_tables(path: &Path) -> Result<(PzManifest, HashMap<
         ));
     }
     let file = File::open(&archive_path)?;
-    let mut zip = ZipArchive::new(file).map_err(zip_error)?;
+    // Existing PZ archives store unsentineled EOCD offsets next to ZIP64 records; zip 9's
+    // auto-detection reads that gap as prepended data. PZ archives never have prepended data.
+    let config = zip::read::Config {
+        archive_offset: zip::read::ArchiveOffset::Known(0),
+    };
+    let mut zip = ZipArchive::with_config(config, file).map_err(zip_error)?;
     let mut names = Vec::new();
     for i in 0..zip.len() {
-        names.push(zip.by_index(i).map_err(zip_error)?.name().to_owned());
+        let entry = zip.by_index(i).map_err(zip_error)?;
+        names.push(entry.name().map_err(zip_error)?.into_owned());
     }
     if names != PZ_REQUIRED_ENTRIES {
         return Err(DbError::invalid_value(
