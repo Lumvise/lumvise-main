@@ -10487,7 +10487,7 @@
     {
       "id": "create_document",
       "name": "Create independent document",
-      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, document_kind, title and content. Use report for Markdown reports, context for reference notes, and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership. For a working artifact citation, copy edit_version from the original get_knowledge or list_knowledge read into its reference; stale or missing edit versions fail without saving.",
+      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, document_kind, title and content. Use report for Markdown reports, context for reference notes, and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership. For a working artifact citation, copy edit_version from the original get_knowledge or list_knowledge read into its reference; stale or missing edit versions fail without saving. Write links as Markdown so readers can open them: [label](lumvise://element/ENCODED_ID) for source files and code (resolve the ID with get_element_at_location or search_semantic_elements), [label](lumvise://document/ENCODED_ID), [label](lumvise://artifact/ENCODED_ID?edit_version=N), [label](lumvise://canvas/ENCODED_ID) and [label](https://...) for web pages. ENCODED_ID is the percent-encoded ID. Plain `code` paths and bare URLs are not clickable.",
       "kind": "mcp_tool",
       "input_schema": {
         "type": "object",
@@ -11244,7 +11244,7 @@
     {
       "id": "document.create",
       "name": "Assistant document create",
-      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, document_kind, title and content. Use report for Markdown reports, context for reference notes, and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership. For a working artifact citation, copy edit_version from the original get_knowledge or list_knowledge read into its reference; stale or missing edit versions fail without saving.",
+      "description": "Create an independent project document without a source-file anchor. Supply a stable document_id, project_root, document_kind, title and content. Use report for Markdown reports, context for reference notes, and canvas for Canvas-owned scene content. Optional references cite sources, artifacts or other documents without giving those targets ownership. For a working artifact citation, copy edit_version from the original get_knowledge or list_knowledge read into its reference; stale or missing edit versions fail without saving. Write links as Markdown so readers can open them: [label](lumvise://element/ENCODED_ID) for source files and code (resolve the ID with get_element_at_location or search_semantic_elements), [label](lumvise://document/ENCODED_ID), [label](lumvise://artifact/ENCODED_ID?edit_version=N), [label](lumvise://canvas/ENCODED_ID) and [label](https://...) for web pages. ENCODED_ID is the percent-encoded ID. Plain `code` paths and bare URLs are not clickable.",
       "kind": "scoped_mcp_tool",
       "scope": "assistant_session",
       "input_schema": {
@@ -12891,7 +12891,7 @@
     {
       "id": "update_document",
       "name": "Update independent document",
-      "description": "Update supplied document fields after a fresh get_document. Pass expected_revision and expected_semantic_element_id from that read; stale revisions fail without writing. Unspecified fields remain. Organization path changes do not move source files. Preserve human edits and references; read back to verify a save. Keep each artifact reference edit_version from the originally read body; never refresh it silently while saving.",
+      "description": "Update supplied document fields after a fresh get_document. Pass expected_revision and expected_semantic_element_id from that read; stale revisions fail without writing. Unspecified fields remain. Organization path changes do not move source files. Preserve human edits and references; read back to verify a save. Keep each artifact reference edit_version from the originally read body; never refresh it silently while saving. Write links as Markdown so readers can open them: [label](lumvise://element/ENCODED_ID) for source files and code (resolve the ID with get_element_at_location or search_semantic_elements), [label](lumvise://document/ENCODED_ID), [label](lumvise://artifact/ENCODED_ID?edit_version=N), [label](lumvise://canvas/ENCODED_ID) and [label](https://...) for web pages. ENCODED_ID is the percent-encoded ID. Plain `code` paths and bare URLs are not clickable.",
       "kind": "mcp_tool",
       "input_schema": {
         "type": "object",
@@ -13657,7 +13657,7 @@
     {
       "id": "document.update",
       "name": "Assistant document update",
-      "description": "Update supplied document fields after a fresh get_document. Pass expected_revision and expected_semantic_element_id from that read; stale revisions fail without writing. Unspecified fields remain. Organization path changes do not move source files. Preserve human edits and references; read back to verify a save. Keep each artifact reference edit_version from the originally read body; never refresh it silently while saving.",
+      "description": "Update supplied document fields after a fresh get_document. Pass expected_revision and expected_semantic_element_id from that read; stale revisions fail without writing. Unspecified fields remain. Organization path changes do not move source files. Preserve human edits and references; read back to verify a save. Keep each artifact reference edit_version from the originally read body; never refresh it silently while saving. Write links as Markdown so readers can open them: [label](lumvise://element/ENCODED_ID) for source files and code (resolve the ID with get_element_at_location or search_semantic_elements), [label](lumvise://document/ENCODED_ID), [label](lumvise://artifact/ENCODED_ID?edit_version=N), [label](lumvise://canvas/ENCODED_ID) and [label](https://...) for web pages. ENCODED_ID is the percent-encoded ID. Plain `code` paths and bare URLs are not clickable.",
       "kind": "scoped_mcp_tool",
       "scope": "assistant_session",
       "input_schema": {
