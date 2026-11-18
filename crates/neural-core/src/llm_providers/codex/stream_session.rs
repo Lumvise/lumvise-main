@@ -1,7 +1,8 @@
 use super::{
     CODEX_ERROR_PREFIX, CODEX_MARKER_PREFIX, CODEX_NO_SESSION, CODEX_SESSION_PREFIX,
-    CodexStreamState, codex_stateless_args, decorate_hot_error, emit_codex_json_line, hot_closed,
-    hot_shell_script, missing_pipe, missing_spawn, parse_codex_output, write_prompt_file,
+    CodexStreamState, codex_assistant_workdir, codex_stateless_args, decorate_hot_error,
+    emit_codex_json_line, hot_closed, hot_shell_script, missing_pipe, missing_spawn,
+    parse_codex_output, write_prompt_file,
 };
 use crate::config::LlmProviderConfig;
 use crate::error::{NeuralError, Result};
@@ -35,9 +36,11 @@ impl CodexStreamProcess {
             .spawn
             .as_ref()
             .ok_or_else(|| missing_spawn("codex"))?;
+        let workdir = codex_assistant_workdir()?;
         let mut command = Command::new(&spawn.command);
+        command.current_dir(&workdir);
         command.args(spawn.args.iter());
-        command.args(codex_stateless_args(config, request, output_path));
+        command.args(codex_stateless_args(config, request, output_path, &workdir));
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(
@@ -177,6 +180,7 @@ impl CodexHotSession {
     pub(super) fn spawn(command: &str, config: &LlmProviderConfig) -> Result<Self> {
         let mut shell = Command::new("sh");
         shell
+            .current_dir(codex_assistant_workdir()?)
             .arg("-c")
             .arg(hot_shell_script(command, config))
             .stdin(Stdio::piped())

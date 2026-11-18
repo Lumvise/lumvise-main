@@ -1,6 +1,6 @@
 //! Private ownership of persistent Codex app-server turns for both provider interfaces.
 //! Completion and streaming share process, thread, deadline, and failure cleanup.
-use super::{CodexAppServerSession, CodexProvider, CodexTurnOutput, codex_mcp_stream_key};
+use super::{CodexAppServerSession, CodexProvider, CodexTurnOutput, codex_app_server_key};
 use crate::error::{NeuralError, Result};
 use crate::llm_providers::LlmRequest;
 use crate::llm_providers::contract::{LlmStreamEventSink, ProviderCallControl};
@@ -68,7 +68,7 @@ impl CodexProvider {
             .ok_or_else(|| super::missing_spawn("codex"))?
             .timeout();
         let invocation = CodexInvocation::new(timeout, caller, stream);
-        let key = codex_mcp_stream_key(request);
+        let key = codex_app_server_key(request);
         let slot = self.app_server_session_slot(&key)?;
         let mut session = self.lock_app_server_session(&slot, &invocation)?;
         self.prepare_app_server_session(&mut session, request, &invocation)?;
@@ -81,7 +81,8 @@ impl CodexProvider {
     }
 
     fn app_server_session_slot(&self, key: &str) -> Result<Arc<CodexSessionSlot>> {
-        // Only conversations sharing a scoped MCP connection share a process.
+        // One conversation keeps one app-server (and its thread). A replaced
+        // scoped URL recycles that slot's process, never adds a new one.
         // Never retain the registry lock during provider I/O or process cleanup.
         let mut sessions = self
             .app_server_sessions
@@ -143,6 +144,43 @@ fn missing_session(value: &str) -> NeuralError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scoped_request(conversation_id: Option<&str>, epoch: u64) -> LlmRequest {
+        LlmRequest {
+            messages: Vec::new(),
+            stream: true,
+            provider_id: Some("codex".into()),
+            model: None,
+            conversation_id: conversation_id.map(str::to_owned),
+            provider_session_id: None,
+            mcp_servers: vec![crate::llm_providers::LlmMcpServerConfig {
+                name: "lumvise-assistant".into(),
+                url: format!(
+                    "http://127.0.0.1:4180/api/scoped-plugin-mcp/messages/assistant_session/builtin.assistant/session-a/{epoch}"
+                ),
+            }],
+            modality_inputs: Vec::new(),
+            options: Default::default(),
+        }
+    }
+
+    #[test]
+    fn app_server_key_survives_epoch_change_within_one_conversation() {
+        let first = codex_app_server_key(&scoped_request(Some("session-a"), 1));
+        let next_epoch = codex_app_server_key(&scoped_request(Some("session-a"), 2));
+        let other_conversation = codex_app_server_key(&scoped_request(Some("session-b"), 1));
+
+        assert_eq!(first, next_epoch);
+        assert_ne!(first, other_conversation);
+    }
+
+    #[test]
+    fn app_server_key_uses_scoped_urls_only_without_a_conversation() {
+        let first = codex_app_server_key(&scoped_request(None, 1));
+        let next_epoch = codex_app_server_key(&scoped_request(None, 2));
+
+        assert_ne!(first, next_epoch);
+    }
 
     #[test]
     fn background_turn_uses_configured_deadline_beyond_sixty_seconds() {

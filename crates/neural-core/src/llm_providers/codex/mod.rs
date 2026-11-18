@@ -226,16 +226,15 @@ impl CodexProvider {
         control: Option<&dyn ProviderCallControl>,
     ) -> Result<CodexTurnOutput> {
         let output_path = unique_output_path("codex-output");
+        let args = codex_stateless_args(
+            &self.config,
+            request,
+            &output_path,
+            &codex_assistant_workdir()?,
+        );
         let output = match control {
-            Some(control) => self.client_runner()?.run_cancellable(
-                codex_stateless_args(&self.config, request, &output_path),
-                None,
-                control,
-            ),
-            None => self.client_runner()?.run(
-                codex_stateless_args(&self.config, request, &output_path),
-                None,
-            ),
+            Some(control) => self.client_runner()?.run_cancellable(args, None, control),
+            None => self.client_runner()?.run(args, None),
         };
         let file_output = std::fs::read_to_string(&output_path).unwrap_or_default();
         let _ = std::fs::remove_file(&output_path);
@@ -300,10 +299,13 @@ fn codex_stateless_args(
     config: &LlmProviderConfig,
     request: &LlmRequest,
     output_path: &Path,
+    workdir: &Path,
 ) -> Vec<String> {
     let mut args = vec![
         "exec".to_string(),
         "--skip-git-repo-check".to_string(),
+        "--cd".to_string(),
+        workdir.to_string_lossy().into_owned(),
         "--sandbox".to_string(),
         "read-only".to_string(),
         "--json".to_string(),
@@ -365,6 +367,20 @@ fn codex_home_from(
         .map(|home| home.join(".codex"))
 }
 
+/// Dedicated, fixed Assistant engine folder. The engine never runs in a project
+/// folder: project data reaches it only through Lumvise MCP tools. The provider
+/// receives no state root, so this is a fixed per-user temp path; nothing writes
+/// project files into it.
+fn codex_assistant_workdir() -> Result<PathBuf> {
+    let workdir = std::env::temp_dir().join("lumvise-assistant-engine");
+    std::fs::create_dir_all(&workdir).map_err(|source| NeuralError::Io {
+        value: workdir.display().to_string(),
+        expected: "neutral Codex working directory".to_string(),
+        source,
+    })?;
+    Ok(workdir)
+}
+
 fn unique_codex_home_path() -> PathBuf {
     let sequence = CODEX_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let millis = SystemTime::now()
@@ -394,7 +410,7 @@ fn write_isolated_codex_config(
 ) -> Result<()> {
     let source = source_home.join("config.toml");
     let config = std::fs::read_to_string(&source).unwrap_or_default();
-    let mut isolated = sanitize_codex_config_without_mcp_servers(&config);
+    let mut isolated = sanitize_codex_config_for_assistant(&config);
     isolated.push_str(&codex_mcp_config_toml(request));
     std::fs::write(target_home.join("config.toml"), isolated).map_err(|error| NeuralError::Io {
         value: target_home.display().to_string(),
@@ -436,44 +452,40 @@ fn codex_mcp_config_toml(request: &LlmRequest) -> String {
     config
 }
 
-fn sanitize_codex_config_without_mcp_servers(config: &str) -> String {
-    let mut result = Vec::new();
-    let mut skipping_mcp_section = false;
-    let mut in_section = false;
-    for line in config.lines() {
-        let trimmed = strip_toml_comment(line).trim().to_string();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_section = true;
-            skipping_mcp_section = toml_header_is_mcp_server(&trimmed);
-        }
-        if !skipping_mcp_section && !top_level_codex_session_setting(&trimmed, in_section) {
-            result.push(line);
-        }
-    }
-    result.join("\n")
+/// Keeps only model and provider settings from the user's Codex config. User
+/// plugins, marketplaces, skills, apps, projects and MCP servers would load into
+/// every Assistant thread and inflate its tool listing; the Lumvise scoped servers
+/// are appended separately. Feature flags are forced off because their defaults
+/// are on, and the sanitized file has no other source of them.
+fn sanitize_codex_config_for_assistant(config: &str) -> String {
+    let mut table = config.parse::<toml::Table>().unwrap_or_default();
+    table.retain(|key, _| {
+        matches!(
+            key,
+            "model"
+                | "model_provider"
+                | "model_reasoning_effort"
+                | "model_reasoning_summary"
+                | "model_verbosity"
+                | "model_providers"
+        )
+    });
+    let features = ASSISTANT_DISABLED_FEATURES
+        .iter()
+        .map(|feature| (feature.to_string(), toml::Value::Boolean(false)))
+        .collect();
+    table.insert("features".into(), toml::Value::Table(features));
+    toml::to_string(&table).unwrap_or_default()
 }
 
-fn toml_header_is_mcp_server(header: &str) -> bool {
-    let section = header.trim_start_matches('[').trim_end_matches(']').trim();
-    section == "mcp_servers" || section.starts_with("mcp_servers.")
-}
-
-fn top_level_codex_session_setting(line: &str, in_section: bool) -> bool {
-    if in_section || line.is_empty() {
-        return false;
-    }
-    let Some((key, _)) = line.split_once('=') else {
-        return false;
-    };
-    matches!(
-        key.trim(),
-        "model"
-            | "model_provider"
-            | "model_reasoning_effort"
-            | "model_reasoning_summary"
-            | "model_verbosity"
-    )
-}
+/// Codex features that load user-scoped tools into the Assistant engine.
+const ASSISTANT_DISABLED_FEATURES: [&str; 5] = [
+    "apps",
+    "plugins",
+    "remote_plugin",
+    "browser_use",
+    "computer_use",
+];
 
 fn hot_shell_script(command: &str, config: &LlmProviderConfig) -> String {
     let model = codex_model_argument(&config.model);
@@ -885,6 +897,21 @@ fn codex_mcp_server_urls(request: &LlmRequest) -> Vec<String> {
 
 fn codex_mcp_stream_key(request: &LlmRequest) -> String {
     codex_mcp_server_urls(request).join("|")
+}
+
+/// Keys the persistent app-server registry. The scoped URL carries
+/// `session_epoch`, which changes on every session start, so a conversation
+/// keys by its stable id; URLs only identify requests that have none.
+fn codex_app_server_key(request: &LlmRequest) -> String {
+    match request
+        .conversation_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(conversation_id) => format!("conversation\t{conversation_id}"),
+        None => format!("mcp\t{}", codex_mcp_stream_key(request)),
+    }
 }
 
 fn toml_string(value: &str) -> String {

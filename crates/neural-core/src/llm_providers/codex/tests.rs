@@ -11,7 +11,7 @@ fn app_owned_codex_commands_disable_recursive_completion_notifications() {
     let config = test_config(String::new());
     let request = test_request();
     for args in [
-        codex_stateless_args(&config, &request, Path::new("output")),
+        codex_stateless_args(&config, &request, Path::new("output"), Path::new("workdir")),
         codex_app_server_process_args(&config, &request),
     ] {
         assert!(args.windows(2).any(|pair| pair == ["-c", "notify=[]"]));
@@ -76,10 +76,28 @@ approval_mode = "approve"
 }
 
 #[test]
-fn isolated_codex_config_strips_mcp_server_tables() {
+fn isolated_codex_config_keeps_only_engine_tables() {
     let config = r#"
 model = "gpt-5"
 model_provider = "openai"
+approval_policy = "on-request"
+notify = ["/usr/local/bin/user-hook"]
+profile = "work"
+
+[features]
+apps = true
+skills = true
+multi_agent = true
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[marketplaces.openai-bundled]
+source_type = "git"
+source = "https://example.invalid/marketplace"
+
+[projects."/Users/example/project"]
+trust_level = "trusted"
 
 [mcp_servers.context7]
 command = "npx"
@@ -87,18 +105,32 @@ command = "npx"
 [mcp_servers.context7.env]
 TOKEN = "secret"
 
-[profiles.assistant]
-model = "gpt-5.4"
+[model_providers.openai]
+name = "OpenAI"
+env_key = "OPENAI_API_KEY"
 "#;
 
-    let sanitized = sanitize_codex_config_without_mcp_servers(config);
+    let sanitized = sanitize_codex_config_for_assistant(config);
+    let parsed: toml::Table = sanitized.parse().expect("sanitized config is TOML");
 
-    assert!(sanitized.contains("[profiles.assistant]"));
-    assert!(sanitized.contains("model = \"gpt-5.4\""));
-    assert!(!sanitized.contains("model = \"gpt-5\"\n"));
-    assert!(!sanitized.contains("[mcp_servers"));
-    assert!(!sanitized.contains("TOKEN ="));
-    assert!(!sanitized.contains("model_provider ="));
+    let keys: Vec<&str> = parsed.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        ["features", "model", "model_provider", "model_providers"]
+    );
+    assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
+    assert_eq!(parsed["model_provider"].as_str(), Some("openai"));
+    assert_eq!(
+        parsed["model_providers"]["openai"]["env_key"].as_str(),
+        Some("OPENAI_API_KEY")
+    );
+    // User `apps`/`skills`/`multi_agent` values are dropped; only the forced-off set remains.
+    let features = parsed["features"].as_table().expect("features table");
+    assert_eq!(features.len(), ASSISTANT_DISABLED_FEATURES.len());
+    for feature in ASSISTANT_DISABLED_FEATURES {
+        assert_eq!(features[feature].as_bool(), Some(false), "{feature}");
+    }
+    assert!(!sanitized.contains("secret"));
 }
 
 #[test]
@@ -124,6 +156,37 @@ fn isolated_codex_config_omits_mcp_tables_without_scoped_servers() {
     request.mcp_servers.clear();
 
     assert!(codex_mcp_config_toml(&request).is_empty());
+}
+
+#[test]
+fn codex_exec_is_pinned_to_the_neutral_workdir() {
+    let config = test_config(String::new());
+    let request = test_request();
+
+    let args = codex_stateless_args(
+        &config,
+        &request,
+        Path::new("output"),
+        Path::new("/neutral/workdir"),
+    );
+
+    let cd = args
+        .iter()
+        .position(|arg| arg == "--cd")
+        .expect("--cd flag");
+    assert_eq!(args[cd + 1], "/neutral/workdir");
+}
+
+#[test]
+fn codex_workdir_is_the_dedicated_assistant_folder_not_the_process_cwd() {
+    let workdir = codex_assistant_workdir().expect("assistant engine folder");
+
+    assert_eq!(
+        workdir,
+        std::env::temp_dir().join("lumvise-assistant-engine")
+    );
+    assert!(workdir.is_dir());
+    assert_ne!(workdir, std::env::current_dir().expect("process cwd"));
 }
 
 struct FakeCodexApprovalProbe;

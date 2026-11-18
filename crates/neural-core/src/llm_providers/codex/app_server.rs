@@ -2,9 +2,9 @@
 //! JSON-RPC API; Lumvise compiled-plugin transport remains Protobuf.
 use super::persistent::CodexInvocation;
 use super::{
-    CodexStreamState, CodexTurnOutput, codex_app_server_process_args, codex_mcp_server_urls,
-    emit_stream_events, isolated_codex_home, missing_pipe, missing_spawn, selected_codex_model,
-    unique_output_path,
+    CodexStreamState, CodexTurnOutput, codex_app_server_process_args, codex_assistant_workdir,
+    codex_mcp_server_urls, emit_stream_events, isolated_codex_home, missing_pipe, missing_spawn,
+    selected_codex_model, unique_output_path,
 };
 use crate::config::LlmProviderConfig;
 use crate::error::{NeuralError, Result};
@@ -15,7 +15,7 @@ use crate::process::ProcessFailureDiagnostics;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -30,6 +30,7 @@ pub(super) struct CodexAppServerSession {
     command_display: String,
     model: Option<String>,
     mcp_server_urls: Vec<String>,
+    workdir: PathBuf,
     next_id: u64,
     provider_thread_id: Option<String>,
 }
@@ -44,7 +45,9 @@ impl CodexAppServerSession {
             .spawn
             .as_ref()
             .ok_or_else(|| missing_spawn("codex"))?;
+        let workdir = codex_assistant_workdir()?;
         let mut command = Command::new(&spawn.command);
+        command.current_dir(&workdir);
         let codex_home = isolated_codex_home(request)?;
         if let Some(codex_home) = &codex_home {
             command.env("CODEX_HOME", codex_home);
@@ -83,6 +86,7 @@ impl CodexAppServerSession {
             command_display: spawn.display_command(),
             model: selected_codex_model(config, request).map(ToOwned::to_owned),
             mcp_server_urls: codex_mcp_server_urls(request),
+            workdir,
             next_id: 1,
             provider_thread_id: None,
         };
@@ -123,8 +127,7 @@ impl CodexAppServerSession {
         if self.provider_thread_id.is_some() {
             return Ok(());
         }
-        let mut params =
-            json!({"model": self.model, "sandbox": "read-only", "approvalPolicy": "never"});
+        let mut params = codex_thread_params(self.model.as_deref(), &self.workdir);
         let response = if let Some(thread_id) = request.provider_session_id.as_deref() {
             params["threadId"] = json!(thread_id);
             let resumed = self.request("thread/resume", params.clone(), invocation)?;
@@ -384,6 +387,17 @@ impl AppServerTurn {
     }
 }
 
+/// Thread parameters shared by `thread/start` and `thread/resume`. The thread's
+/// cwd is its project context, so it must be the neutral workdir, never the app's.
+fn codex_thread_params(model: Option<&str>, workdir: &Path) -> Value {
+    json!({
+        "model": model,
+        "cwd": workdir.to_string_lossy(),
+        "sandbox": "read-only",
+        "approvalPolicy": "never",
+    })
+}
+
 fn response_result(value: &Value) -> Result<&Value> {
     if value.get("error").is_some() {
         return Err(invalid_response(
@@ -410,4 +424,20 @@ fn missing_thread(value: &Value) -> bool {
         .unwrap_or_default()
         .to_lowercase();
     message.contains("thread not found") || message.contains("no rollout found")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_params_pin_the_dedicated_assistant_folder_as_cwd() {
+        let workdir = codex_assistant_workdir().expect("assistant engine folder");
+
+        let params = codex_thread_params(Some("gpt-5.5"), &workdir);
+
+        assert_eq!(params["cwd"].as_str(), workdir.to_str());
+        assert_eq!(params["model"], "gpt-5.5");
+        assert_ne!(workdir, std::env::current_dir().expect("process cwd"));
+    }
 }
