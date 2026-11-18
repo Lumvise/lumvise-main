@@ -208,7 +208,7 @@ fn cancellation_uses_logical_scoped_target_then_interrupts_and_cleans_up() {
     assert!(runtime.active_target(&context).unwrap().is_none());
 }
 
-fn read_test_request(stream: &TcpStream) -> (String, Vec<u8>) {
+pub(super) fn read_test_request(stream: &TcpStream) -> (String, Vec<u8>) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone request stream"));
     let mut request_line = String::new();
     reader
@@ -232,7 +232,7 @@ fn read_test_request(stream: &TcpStream) -> (String, Vec<u8>) {
     (request_line.trim_end().into(), body)
 }
 
-fn write_test_protobuf_response(stream: &mut TcpStream, body: Vec<u8>) {
+pub(super) fn write_test_protobuf_response(stream: &mut TcpStream, body: Vec<u8>) {
     write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: application/protobuf\r\nContent-Length: {}\r\n\r\n",

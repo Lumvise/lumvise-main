@@ -19,8 +19,12 @@ use std::sync::{
 };
 
 const RUNTIME_DISCOVERY_FILE: &str = "runtime.json";
+/// Discovery must stay responsive; a slow request list only degrades the notice.
+const CONNECTOR_REQUEST_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 mod startup_connection;
 use startup_connection::StartupConnection;
+#[cfg(test)]
+mod discovery_tests;
 #[cfg(test)]
 mod startup_tests;
 #[derive(Clone)]
@@ -232,6 +236,34 @@ impl AppBridgeRuntime {
     ) -> std::result::Result<AppBridgeInvocationResponseV3, String> {
         let (capability, input) = direct_capability(arguments)?;
         self.invoke_controlled(context, &capability, input)
+    }
+
+    /// Only an authenticated connector identity can own Assistant requests.
+    pub(crate) fn has_connector_identity(&self) -> bool {
+        self.config.connector_credential.is_some()
+    }
+
+    /// Lists open Assistant requests for the connector that owns this MCP connection.
+    pub(crate) fn invoke_connector_requests_controlled(
+        &self,
+        context: &McpInvocationContext,
+    ) -> std::result::Result<AppBridgeInvocationResponseV3, String> {
+        let capability = PluginCapability {
+            plugin_id: "builtin.assistant".into(),
+            capability_id: "list_connector_requests".into(),
+            dynamic_tool_name: None,
+            input_schema: None,
+            availability: None,
+            description: None,
+        };
+        let bounded = McpInvocationContext::with_timeout(
+            context.request_id(),
+            context.owner_id(),
+            context.session_id(),
+            context.scope_id().map(str::to_owned),
+            CONNECTOR_REQUEST_DISCOVERY_TIMEOUT,
+        );
+        self.invoke_controlled(&bounded, &capability, json!({}))
     }
 
     pub(crate) fn invoke_scoped_tool_controlled(

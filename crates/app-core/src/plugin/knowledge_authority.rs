@@ -3,6 +3,7 @@
 //! Persistence and session row formats remain private to this module.
 mod agent;
 mod citation_retention;
+mod connector_requests;
 pub(crate) mod connectors;
 mod delegation;
 mod inspection;
@@ -34,7 +35,7 @@ const ASSISTANT: &str = "builtin.assistant";
 
 pub(crate) struct KnowledgeAuthority {
     relational: Arc<dyn RelationalPersistence>,
-    mcp_membership: Arc<crate::app::mcp_session_registry::McpSessionMembership>,
+    pub(super) mcp_membership: Arc<crate::app::mcp_session_registry::McpSessionMembership>,
     incarnation: String,
     connector_review_actions: Option<Arc<Mutex<Vec<Value>>>>,
     binding_write: Mutex<()>,
@@ -292,15 +293,12 @@ impl KnowledgeAuthority {
         self.current_origin(semantic, context, control)
     }
 
-    fn current_origin(
+    /// Returns the host-registered binding only when this invocation is that live Assistant route.
+    fn live_assistant_binding(
         &self,
-        semantic: &dyn SemanticPersistence,
         context: &PluginInvocationContext,
         control: &InvocationControl,
-    ) -> Result<KnowledgeAccessContext, HostCapabilityError> {
-        if context.scope_id() == Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE) {
-            return self.current_mcp(semantic, context, control);
-        }
+    ) -> Result<AssistantScopeBinding, HostCapabilityError> {
         if context.scope_id() != Some("assistant_session") || context.owner_id() != ASSISTANT {
             return Err(unbound(context));
         }
@@ -327,6 +325,19 @@ impl KnowledgeAuthority {
                 return Err(unbound(context));
             }
         }
+        Ok(binding)
+    }
+
+    fn current_origin(
+        &self,
+        semantic: &dyn SemanticPersistence,
+        context: &PluginInvocationContext,
+        control: &InvocationControl,
+    ) -> Result<KnowledgeAccessContext, HostCapabilityError> {
+        if context.scope_id() == Some(lumvise_contracts::KNOWLEDGE_MCP_SCOPE) {
+            return self.current_mcp(semantic, context, control);
+        }
+        let binding = self.live_assistant_binding(context, control)?;
         let authority = self.identity(control)?;
         let grants = project_grants(semantic, &authority, control)?;
         if binding.source_projects.iter().any(|project| {

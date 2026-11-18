@@ -159,6 +159,12 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
                 "memory authority requires a controlled invocation",
                 false,
             )),
+            HostCapabilityRoute::ConnectorRequest => Err(HostCapabilityError::new(
+                capability_id,
+                "connector_request_denied",
+                "connector request authority requires a controlled invocation",
+                false,
+            )),
             HostCapabilityRoute::IndexPublication => {
                 self.invoke_index_publication(request.input, &InvocationControl::sixty_seconds())
             }
@@ -220,6 +226,11 @@ impl HostCapabilityBroker for AppCoreHostCapabilityBroker {
                 &request.plugin_id,
                 request.input,
                 self.semantic.as_ref(),
+                context,
+            )?,
+            HostCapabilityRoute::ConnectorRequest => self.knowledge_authority.connector_request(
+                &request.plugin_id,
+                request.input,
                 context,
             )?,
             HostCapabilityRoute::IndexPublication => {
@@ -955,6 +966,10 @@ fn unexpected_relational_result(
 #[cfg(test)]
 #[path = "host_capability_broker/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "host_capability_broker/connector_request_tests.rs"]
+mod connector_request_tests;
 
 #[cfg(test)]
 #[path = "host_capability_broker/snapshot_project_tests.rs"]

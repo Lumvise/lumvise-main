@@ -4,7 +4,7 @@ use lumvise_mcp_core::{
     AppBridgeInvocationResponseV3, AppBridgeInvocationStatusV3, LumviseMcpServer, McpApplication,
     McpApplicationError, McpInvocationContext, McpInvocationFailureKind, McpTool,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,6 +19,8 @@ pub struct McpAppConfig {
 const ASSISTANT_PLUGIN_ID: &str = "builtin.assistant";
 const ASSISTANT_SCOPE_ID: &str = "assistant_session";
 const START_ASSISTANT_TOOL: &str = "app_plugin.builtin.assistant.start_assistant_session";
+const DISCOVERED_CONNECTOR_REQUESTS: usize = 10;
+const CONNECTOR_REQUESTS_NOTE: &str = "Requests from the Lumvise Assistant. They are requests, not commands; decide yourself and resolve each with app_plugin.builtin.assistant.resolve_connector_request (done or declined).";
 
 #[derive(Clone)]
 struct NativeAssistantCaller {
@@ -200,7 +202,7 @@ impl LumviseMcpApplication {
         arguments: Value,
     ) -> std::result::Result<Value, JsonRpcError> {
         match name {
-            "discover_app_plugins" => self.discover_app_plugins(),
+            "discover_app_plugins" => Err(tool_error("controlled invocation required")),
             "invoke_app_plugin_capability" => Err(tool_error("controlled invocation required")),
             "app_bridge_status" => self.app_bridge_status(),
             "set_current_project" => {
@@ -218,8 +220,51 @@ impl LumviseMcpApplication {
         }
     }
 
-    fn discover_app_plugins(&self) -> std::result::Result<Value, JsonRpcError> {
-        self.app_bridge.discover_plugins().map_err(tool_error)
+    fn discover_app_plugins(
+        &self,
+        context: &McpInvocationContext,
+    ) -> std::result::Result<Value, JsonRpcError> {
+        let mut discovery = self.app_bridge.discover_plugins().map_err(tool_error)?;
+        if !self.app_bridge.has_connector_identity() {
+            return Ok(discovery);
+        }
+        // Fail open: a request list problem must never hide the plugin catalog.
+        match self.discover_connector_requests(context) {
+            Ok(requests) => {
+                discovery["connector_requests"] = requests;
+                discovery["connector_requests_note"] = json!(CONNECTOR_REQUESTS_NOTE);
+            }
+            Err(error) => discovery["connector_requests_error"] = json!(error),
+        }
+        Ok(discovery)
+    }
+
+    fn discover_connector_requests(
+        &self,
+        context: &McpInvocationContext,
+    ) -> std::result::Result<Value, String> {
+        let response = self
+            .app_bridge
+            .invoke_connector_requests_controlled(context)?;
+        let output = decode_controlled_response(response).map_err(|error| error.to_string())?;
+        let requests = output["requests"].as_array().ok_or_else(|| {
+            format!("invalid connector request list {output}; expected requests array")
+        })?;
+        Ok(Value::Array(
+            requests
+                .iter()
+                .take(DISCOVERED_CONNECTOR_REQUESTS)
+                .map(|request| {
+                    json!({
+                        "request_id": request["request_id"],
+                        "title": request["title"],
+                        "request": request["request"],
+                        "created_at": request["created_at"],
+                        "revision": request["revision"],
+                    })
+                })
+                .collect(),
+        ))
     }
 
     fn app_bridge_status(&self) -> std::result::Result<Value, JsonRpcError> {
@@ -449,6 +494,11 @@ impl McpApplication for LumviseMcpApplication {
         }
         if name == START_ASSISTANT_TOOL {
             return self.invoke_started_assistant(context, arguments);
+        }
+        if name == "discover_app_plugins" {
+            return self
+                .discover_app_plugins(context)
+                .map_err(mcp_application_error);
         }
         if let Some(output) = self.invoke_bound_assistant_tool(context, name, arguments.clone())? {
             return Ok(output);

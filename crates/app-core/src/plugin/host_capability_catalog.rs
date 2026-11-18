@@ -14,6 +14,7 @@ pub(super) const SEMANTIC_SNAPSHOT_CAPABILITY: &str = "semantic.snapshot";
 pub(super) const NEURAL_CHUNK_TEXT_CAPABILITY: &str = "neural.chunk_text";
 pub(super) const NEURAL_EMBED_CAPABILITY: &str = "neural.embed";
 pub(super) const PLUGIN_INVOKE_CAPABILITY: &str = "plugin.invoke";
+pub(super) const CONNECTOR_REQUEST_CAPABILITY: &str = "runtime.connector_request";
 pub(super) const FRONTEND_ACTION: &str = "frontend.action";
 pub(super) const FRONTEND_CANVAS: &str = "frontend.canvas";
 pub(super) const NEURAL_LLM: &str = "neural.llm";
@@ -49,6 +50,7 @@ pub(super) enum HostCapabilityRoute {
     NeuralChunkText,
     PluginInvokeAuthorization,
     KnowledgeAuthority,
+    ConnectorRequest,
     Services,
 }
 
@@ -67,7 +69,7 @@ impl HostCapabilityDefinition {
     }
 }
 
-const HOST_CAPABILITIES: [HostCapabilityDefinition; 26] = [
+const HOST_CAPABILITIES: [HostCapabilityDefinition; 27] = [
     HostCapabilityDefinition {
         minor: 4,
         ..capability(
@@ -98,6 +100,10 @@ const HOST_CAPABILITIES: [HostCapabilityDefinition; 26] = [
     capability(
         PLUGIN_INVOKE_CAPABILITY,
         HostCapabilityRoute::PluginInvokeAuthorization,
+    ),
+    capability(
+        CONNECTOR_REQUEST_CAPABILITY,
+        HostCapabilityRoute::ConnectorRequest,
     ),
     capability(FRONTEND_ACTION, HostCapabilityRoute::Services),
     capability(FRONTEND_CANVAS, HostCapabilityRoute::Services),
@@ -178,7 +184,7 @@ mod tests {
             .map(|definition| definition.id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(identities.len(), 26);
+        assert_eq!(identities.len(), 27);
         assert_eq!(identities, expected_identities());
     }
 
@@ -242,7 +248,7 @@ mod tests {
         expected_routes().into_iter().map(|(id, _)| id).collect()
     }
 
-    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 26] {
+    fn expected_routes() -> [(&'static str, HostCapabilityRoute); 27] {
         [
             (
                 super::super::knowledge_authority::CAPABILITY,
@@ -268,6 +274,10 @@ mod tests {
             (
                 PLUGIN_INVOKE_CAPABILITY,
                 HostCapabilityRoute::PluginInvokeAuthorization,
+            ),
+            (
+                CONNECTOR_REQUEST_CAPABILITY,
+                HostCapabilityRoute::ConnectorRequest,
             ),
             (FRONTEND_ACTION, HostCapabilityRoute::Services),
             (FRONTEND_CANVAS, HostCapabilityRoute::Services),
