@@ -5,7 +5,7 @@
     "key_id": "lumvise.production.1"
   },
   "plugin_id": "builtin.knowledge",
-  "plugin_version": "0.2.2",
+  "plugin_version": "0.2.3",
   "protocol": {
     "min": 8,
     "max": 8
