@@ -10,18 +10,22 @@ use lumvise_mcp_core::app_bridge_transport::{AppBridgeHttpMethod, AppBridgeHttpT
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::watch;
 
 mod command_queue;
+#[cfg(test)]
+mod follow_tests;
 mod native_command;
 #[cfg(test)]
 mod tests;
 
 const CAPABILITY: &str = "semantic.generate_functional_artifacts.v1";
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const RECONNECT_DELAY_CAP: Duration = Duration::from_secs(30);
 const EXECUTION_DEADLINE: Duration = Duration::from_secs(60);
 const LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -39,6 +43,7 @@ pub struct ProjectExecutionConfig {
     provider_id: String,
     project_root: PathBuf,
     native_llm_engine: Option<String>,
+    reconnect: ReconnectBackoff,
 }
 
 impl ProjectExecutionConfig {
@@ -64,6 +69,7 @@ impl ProjectExecutionConfig {
             provider_id: provider_id.into(),
             project_root: project_root.as_ref().to_path_buf(),
             native_llm_engine: None,
+            reconnect: ReconnectBackoff::new(RECONNECT_DELAY, RECONNECT_DELAY_CAP),
         }
     }
 
@@ -118,6 +124,69 @@ impl Drop for ProjectExecutionProvider {
     }
 }
 
+/// Keeps one provider registered for the project an MCP connection is bound to.
+/// Dropped with the connection: the last provider unregisters and its worker is joined.
+pub(crate) struct ProjectExecutionFollower {
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ProjectExecutionFollower {
+    /// Follows `bound_roots` (`None` = unbound) until every sender is dropped.
+    pub(crate) fn spawn(
+        app_bridge: AppBridgeConfig,
+        provider_id: String,
+        native_llm_engine: String,
+        bound_roots: Receiver<Option<String>>,
+    ) -> Result<Self, String> {
+        let worker = std::thread::Builder::new()
+            .name("lumvise-mcp-project-follower".into())
+            .spawn(move || {
+                follow_bound_roots(app_bridge, &provider_id, &native_llm_engine, bound_roots)
+            })
+            .map_err(|error| format!("failed to spawn project execution follower: {error}"))?;
+        Ok(Self {
+            worker: Some(worker),
+        })
+    }
+}
+
+impl Drop for ProjectExecutionFollower {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn follow_bound_roots(
+    app_bridge: AppBridgeConfig,
+    provider_id: &str,
+    native_llm_engine: &str,
+    bound_roots: Receiver<Option<String>>,
+) {
+    let mut served: Option<String> = None;
+    let mut provider: Option<ProjectExecutionProvider> = None;
+    for bound in bound_roots {
+        if bound == served {
+            continue;
+        }
+        // Taking the old provider drops it: it unregisters before the new root registers.
+        drop(provider.take());
+        served = bound;
+        let Some(root) = served.as_deref() else {
+            continue;
+        };
+        let config = ProjectExecutionConfig::new(app_bridge.clone(), provider_id, root)
+            .with_native_llm_engine(native_llm_engine);
+        match ProjectExecutionProvider::spawn(config) {
+            Ok(spawned) => provider = Some(spawned),
+            Err(error) => {
+                tracing::warn!(%error, %provider_id, "project execution provider not started for bound project")
+            }
+        }
+    }
+}
+
 fn run_worker(config: ProjectExecutionConfig, shutdown: watch::Receiver<bool>) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -134,29 +203,100 @@ fn run_worker(config: ProjectExecutionConfig, shutdown: watch::Receiver<bool>) {
 
 async fn run_provider(config: ProjectExecutionConfig, mut shutdown: watch::Receiver<bool>) {
     let client = AppBridgeHttpTransport::new();
+    let mut reconnect = config.reconnect.clone();
     loop {
         if *shutdown.borrow() || config.app_bridge.is_terminal() {
             return;
         }
-        if let Err(error) = run_connected(&client, &config, &mut shutdown).await {
-            if config.app_bridge.is_terminal() {
-                tracing::info!(
-                    provider_id = %config.provider_id,
-                    "project execution provider stopping after terminal runtime shutdown"
-                );
-                return;
+        let wait = match run_connected(&client, &config, &mut reconnect, &mut shutdown).await {
+            // Only the shutdown signal ends a connection without error.
+            Ok(()) => return,
+            Err(error) => {
+                if config.app_bridge.is_terminal() {
+                    tracing::info!(
+                        provider_id = %config.provider_id,
+                        "project execution provider stopping after terminal runtime shutdown"
+                    );
+                    return;
+                }
+                let (wait, log) = reconnect.after_failure();
+                if log {
+                    tracing::warn!(%error, provider_id = %config.provider_id, retry_in = ?wait, "project execution provider reconnecting");
+                }
+                wait
             }
-            tracing::warn!(%error, provider_id = %config.provider_id, "project execution provider reconnecting");
-        }
-        if wait_or_shutdown(&mut shutdown, RECONNECT_DELAY).await {
+        };
+        if wait_or_shutdown(&mut shutdown, wait).await {
             return;
         }
+    }
+}
+
+/// Paces reconnects: each consecutive failure doubles the wait up to `cap`, and a successful
+/// registration restarts it at `base`.
+#[derive(Clone, Debug)]
+struct ReconnectBackoff {
+    base: Duration,
+    cap: Duration,
+    next: Duration,
+    logged: Option<Duration>,
+    #[cfg(test)]
+    waits: Option<std::sync::Arc<std::sync::Mutex<Vec<Duration>>>>,
+}
+
+impl ReconnectBackoff {
+    fn new(base: Duration, cap: Duration) -> Self {
+        Self {
+            base,
+            cap,
+            next: base,
+            logged: None,
+            #[cfg(test)]
+            waits: None,
+        }
+    }
+
+    /// Returns the wait after a failed attempt, and whether to log it: once per distinct wait,
+    /// so a retry held at the cap stays silent.
+    fn after_failure(&mut self) -> (Duration, bool) {
+        let wait = self.next;
+        #[cfg(test)]
+        if let Some(waits) = &self.waits {
+            waits.lock().unwrap().push(wait);
+        }
+        let log = self.logged != Some(wait);
+        self.logged = Some(wait);
+        self.next = (wait * 2).min(self.cap);
+        (wait, log)
+    }
+
+    fn reset(&mut self) {
+        self.next = self.base;
+        self.logged = None;
+    }
+}
+
+#[cfg(test)]
+impl ProjectExecutionConfig {
+    /// Shortens the reconnect schedule and records every wait the provider chooses.
+    fn with_reconnect_backoff(
+        mut self,
+        base: Duration,
+        cap: Duration,
+        waits: std::sync::Arc<std::sync::Mutex<Vec<Duration>>>,
+    ) -> Self {
+        self.reconnect = ReconnectBackoff {
+            waits: Some(waits),
+            ..ReconnectBackoff::new(base, cap)
+        };
+        self
     }
 }
 
 async fn run_connected(
     client: &AppBridgeHttpTransport,
     config: &ProjectExecutionConfig,
+    reconnect: &mut ReconnectBackoff,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
     let connection: ProviderConnection = post_json(
@@ -170,6 +310,7 @@ async fn run_connected(
         },
     )
     .await?;
+    reconnect.reset();
     tracing::info!(provider_id = %config.provider_id, project_root = %config.project_root.display(), "registered project execution provider");
     let mut queue = command_queue::ProjectCommandQueue::default();
     loop {

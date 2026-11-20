@@ -3,11 +3,10 @@
 //! External launchers call `run_lumvise` or `run_lumvise_with_runtime`; parsing and role-specific startup
 //! remain private so the product cannot grow parallel executable contracts.
 
-use crate::{
-    AppBridgeConfig, McpAppConfig, ProjectExecutionConfig, ProjectExecutionProvider, open_server,
-};
+use crate::project_execution::ProjectExecutionFollower;
+use crate::{AppBridgeConfig, McpAppConfig, open_server};
 use lumvise_app_core::{AcquireResult, ActivationRequest, AppRuntimeCoordinator, OwnerLease};
-use lumvise_mcp_core::run_stdio;
+use lumvise_mcp_core::{LumviseMcpServer, run_stdio};
 use std::io::IsTerminal;
 
 /// Leading runtime-role flag used by MCP brokers; never foregrounds a running app.
@@ -104,9 +103,9 @@ struct McpOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct McpIdentity {
-    engine: String,
-    instance_id: String,
+pub(crate) struct McpIdentity {
+    pub(crate) engine: String,
+    pub(crate) instance_id: String,
 }
 
 impl ProductInvocation {
@@ -163,21 +162,6 @@ impl McpOptions {
                 .unwrap_or_else(|| format!("lumvise-mcp-{}", std::process::id())),
         }
     }
-
-    fn project_provider(
-        &self,
-        app_bridge: &AppBridgeConfig,
-        identity: &McpIdentity,
-    ) -> Result<Option<ProjectExecutionProvider>, String> {
-        let Some(project_root) = self.project_root.as_deref() else {
-            return Ok(None);
-        };
-        ProjectExecutionProvider::spawn(
-            ProjectExecutionConfig::new(app_bridge.clone(), &identity.instance_id, project_root)
-                .with_native_llm_engine(&identity.engine),
-        )
-        .map(Some)
-    }
 }
 
 fn run_mcp(options: McpOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -196,23 +180,49 @@ fn run_mcp(options: McpOptions) -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(&identity.engine),
         );
     }
-    let _project_provider = options.project_provider(&app_bridge, &identity)?;
-    let mut config = McpAppConfig::from_app_bridge(app_bridge)
-        .with_native_assistant_caller(identity.engine, identity.instance_id);
-    if let Some(project_root) = options.project_root {
-        config = config.with_project_root(project_root);
-    } else if let Some(workspace) = std::env::current_dir()
+    // MCP clients launch this process inside the agent's workspace.
+    let default_root = std::env::current_dir()
         .ok()
-        .and_then(|path| path.to_str().map(str::to_owned))
-    {
-        // MCP clients launch this process inside the agent's workspace.
-        config = config.with_default_project_root(workspace);
-    }
-    let server = open_server(config);
+        .and_then(|path| path.to_str().map(str::to_owned));
+    // The follower must outlive run_stdio: its drop unregisters the last provider.
+    let (server, _project_execution) =
+        open_mcp_server(app_bridge, identity, options.project_root, default_root);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     run_stdio(server, stdin.lock(), stdout)?;
     Ok(())
+}
+
+/// Builds the MCP server and the follower that serves its bound project. Startup never fails
+/// on provider setup: a failed follower only leaves this connection without local execution.
+pub(crate) fn open_mcp_server(
+    app_bridge: AppBridgeConfig,
+    identity: McpIdentity,
+    project_root: Option<String>,
+    default_root: Option<String>,
+) -> (LumviseMcpServer, Option<ProjectExecutionFollower>) {
+    let (bound_roots, follower_roots) = std::sync::mpsc::channel();
+    let follower = ProjectExecutionFollower::spawn(
+        app_bridge.clone(),
+        identity.instance_id.clone(),
+        identity.engine.clone(),
+        follower_roots,
+    )
+    .inspect_err(|error| tracing::warn!(%error, "MCP project execution unavailable"))
+    .ok();
+    let mut config = McpAppConfig::from_app_bridge(app_bridge)
+        .with_native_assistant_caller(identity.engine, identity.instance_id);
+    if let Some(project_root) = project_root {
+        // An explicit root serves from startup, before the client publishes its binding.
+        let _ = bound_roots.send(Some(project_root.clone()));
+        config = config.with_project_root(project_root);
+    } else if let Some(workspace) = default_root {
+        // The launch folder serves from startup; a later set_current_project replaces it.
+        let _ = bound_roots.send(Some(workspace.clone()));
+        config = config.with_default_project_root(workspace);
+    }
+    let config = config.with_bound_project_roots(bound_roots);
+    (open_server(config), follower)
 }
 
 fn run_runtime(

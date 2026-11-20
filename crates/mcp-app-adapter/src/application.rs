@@ -5,6 +5,7 @@ use lumvise_mcp_core::{
     McpApplicationError, McpInvocationContext, McpInvocationFailureKind, McpTool,
 };
 use serde_json::{Value, json};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ pub struct McpAppConfig {
     native_assistant_caller: NativeAssistantCaller,
     initial_project_root: Option<String>,
     default_project_root: Option<String>,
+    bound_project_roots: Option<Sender<Option<String>>>,
 }
 
 const ASSISTANT_PLUGIN_ID: &str = "builtin.assistant";
@@ -41,6 +43,7 @@ struct LumviseMcpApplication {
     native_assistant_caller: NativeAssistantCaller,
     bound_assistant_session: Mutex<Option<BoundAssistantSession>>,
     project_binding: SessionProjectBinding,
+    bound_project_roots: Option<Sender<Option<String>>>,
 }
 
 pub use crate::app_bridge::AppBridgeConfig;
@@ -77,6 +80,7 @@ impl McpAppConfig {
             native_assistant_caller: default_native_assistant_caller(),
             initial_project_root: None,
             default_project_root: None,
+            bound_project_roots: None,
         }
     }
 
@@ -95,6 +99,7 @@ impl McpAppConfig {
             native_assistant_caller: default_native_assistant_caller(),
             initial_project_root: None,
             default_project_root: None,
+            bound_project_roots: None,
         }
     }
 
@@ -121,6 +126,12 @@ impl McpAppConfig {
     /// names another project; e.g. `.with_default_project_root("/work/repo")`.
     pub fn with_default_project_root(mut self, project_root: impl Into<String>) -> Self {
         self.default_project_root = Some(project_root.into());
+        self
+    }
+
+    /// Reports each published binding (`None` when unbound) so a project execution follower can follow it.
+    pub(crate) fn with_bound_project_roots(mut self, roots: Sender<Option<String>>) -> Self {
+        self.bound_project_roots = Some(roots);
         self
     }
 }
@@ -161,6 +172,7 @@ pub fn open_server(config: McpAppConfig) -> LumviseMcpServer {
         app_bridge,
         native_assistant_caller: config.native_assistant_caller,
         bound_assistant_session: Mutex::new(None),
+        bound_project_roots: config.bound_project_roots,
     };
     LumviseMcpServer::with_identity(Arc::new(application), owner_id.clone(), owner_id)
 }
@@ -206,18 +218,32 @@ impl LumviseMcpApplication {
             "invoke_app_plugin_capability" => Err(tool_error("controlled invocation required")),
             "app_bridge_status" => self.app_bridge_status(),
             "set_current_project" => {
-                self.project_binding
-                    .select(arguments)
-                    .map_err(|error| match error {
-                        McpApplicationError::InvalidParams(message) => invalid_params(message),
-                        other => tool_error(other),
-                    })
+                let selection =
+                    self.project_binding
+                        .select(arguments)
+                        .map_err(|error| match error {
+                            McpApplicationError::InvalidParams(message) => invalid_params(message),
+                            other => tool_error(other),
+                        })?;
+                self.report_bound_project(&selection);
+                Ok(selection)
             }
             other if other.starts_with("app_plugin.") => {
                 Err(tool_error("controlled invocation required"))
             }
             other => Err(invalid_params(format!("unknown tool {other:?}"))),
         }
+    }
+
+    /// Only a ready binding serves a project; a failed selection leaves the follower as it was.
+    fn report_bound_project(&self, selection: &Value) {
+        let Some(roots) = &self.bound_project_roots else {
+            return;
+        };
+        let root = (selection["binding_status"] == "ready")
+            .then(|| selection["project_root"].as_str().map(str::to_owned))
+            .flatten();
+        let _ = roots.send(root);
     }
 
     fn discover_app_plugins(
